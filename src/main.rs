@@ -12,7 +12,7 @@ const WORLD_SET_FILE: &str = "/etc/emerge/world.set";
     name = "emerge",
     bin_name = "emerge",
     about = "Portage-like wrapper for Arch Linux using Aura",
-    version = "1.7.0 (aura-emerge)\nAuthor: Undercat037"
+    version = "1.8.0 (aura-emerge)\nAuthor: Undercat037"
 )]
 struct Cli {
     /// Search for packages
@@ -150,7 +150,11 @@ fn main() {
         let mut aura_args = if cli.aur { vec!["-A"] } else { vec!["-S"] };
 
         if cli.pretend {
-            aura_args.push("--print");
+            if cli.aur {
+                aura_args.push("--dryrun");  // aura -A --dryrun
+            } else {
+                aura_args.push("--print");   // aura -S --print
+            }
         }
         if !cli.ask && !cli.pretend {
             aura_args.push("--noconfirm");
