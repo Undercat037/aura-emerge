@@ -12,7 +12,7 @@ const WORLD_SET_FILE: &str = "/etc/emerge/world.set";
     name = "emerge", 
     bin_name = "emerge", 
     about = "Portage-like wrapper for Arch Linux using Aura", 
-    version = "1.4.0 (aura-emerge)\nAuthor: Undercat037"
+    version = "1.5.0 (aura-emerge)\nAuthor: Undercat037"
 )]
 struct Cli {
     /// Search for packages
@@ -47,11 +47,14 @@ struct Cli {
     #[arg(long = "aur")]
     aur: bool,
 
+    /// Verbose output (or detailed info in search mode)
+    #[arg(short = 'v', long = "verbose")]
+    verbose: bool,
+
     // Dummy flags for compatibility
     #[arg(short = 'D', long = "deep")] deep: bool,
     #[arg(short = 'N', long = "newuse")] newuse: bool,
     #[arg(short = 'e', long = "emptytree")] emptytree: bool,
-    #[arg(short = 'v', long = "verbose")] verbose: bool,
 
     /// Packages to install or '@world'
     packages: Vec<String>,
@@ -66,8 +69,28 @@ fn main() {
             eprintln!(">>> Error: Specify search term.");
             std::process::exit(1);
         }
-        let args = if cli.aur { vec!["-As"] } else { vec!["-Ss"] };
-        run_aura(&args, &cli.packages);
+        
+    if cli.verbose {
+        // -sv: показати детальну інфо про пакет
+        if !cli.aur {
+            let found = run_aura(&["-Si"], &cli.packages);
+            if !found {
+                // пакет не в офіційних — шукаємо в AUR
+                run_aura(&["-Ai"], &cli.packages);
+            }
+        } else {
+            run_aura(&["-Ai"], &cli.packages);
+        }
+    } else {
+        // звичайний пошук — офіційні + AUR разом
+        if cli.aur {
+            run_aura(&["-As"], &cli.packages);
+        } else {
+            run_aura(&["-Ss"], &cli.packages);
+            println!(); // відступ між результатами
+            run_aura(&["-As"], &cli.packages);
+        }
+    }
         return;
     }
 
@@ -81,8 +104,13 @@ fn main() {
     // 3. Update
     if cli.update && (cli.packages.is_empty() || cli.packages.contains(&"@world".to_string())) {
         println!(">>> Updating system (@world)...");
-        // Update repos, then AUR
-        run_aura(&["-Syu"], &[]);
+        
+        // Оновлення офіційних репо (verbose)
+        let mut s_args = vec!["-Syu"];
+        if cli.verbose { s_args.push("--verbose"); }
+        run_aura(&s_args, &[]);
+        
+        // Оновлення AUR
         run_aura(&["-Au"], &[]);
         return;
     }
@@ -120,6 +148,10 @@ fn main() {
         }
         if cli.oneshot {
             aura_args.push("--asdeps");
+        }
+        
+        if cli.verbose && !cli.aur {
+            aura_args.push("--verbose");
         }
 
         let success = run_aura(&aura_args, &target_pkgs);
