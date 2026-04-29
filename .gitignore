@@ -1,1 +1,3 @@
 target/
+!target/release/aura-emerge
+.init
