@@ -1,6 +1,7 @@
 # aura-emerge
+[en](README.MD) | ua
 
-Обгортка у стилі Gentoo `emerge` для Arch Linux, побудована на основі [Aura](https://github.com/fosskers/aura).
+> Обгортка у стилі Gentoo `emerge` для Arch Linux, побудована на основі [Aura](https://github.com/fosskers/aura).
 
 Керує пакунками через файл `world.set` — встановив один раз, відстежується назавжди.
 
