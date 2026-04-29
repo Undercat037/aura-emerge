@@ -74,23 +74,23 @@ fn main() {
         }
 
         if cli.verbose {
-            // -sv: детальна інфо про пакет
+            // -sv: show detailed package info
             if cli.aur {
-                // явно вказано --aur — одразу AUR
+                // --aur explicitly specified — go straight to AUR
                 run_aura(&["-Ai"], &cli.packages);
             } else {
-                // тихо пробуємо офіційні репо
+                // silently probe official repos first
                 let found = run_aura_quiet(&["-Si"], &cli.packages);
                 if found {
-                    // є в офіційних — показуємо нормально
+                    // found in official repos — show normally
                     run_aura(&["-Si"], &cli.packages);
                 } else {
-                    // немає в офіційних — шукаємо в AUR (без зайвої помилки)
+                    // not in official repos — fall back to AUR without extra error output
                     run_aura(&["-Ai"], &cli.packages);
                 }
             }
         } else {
-            // -s: звичайний пошук — офіційні + AUR
+            // -s: regular search — official repos + AUR
             if cli.aur {
                 run_aura(&["-As"], &cli.packages);
             } else {
@@ -119,6 +119,7 @@ fn main() {
         }
         run_aura(&s_args, &[]);
 
+        // Update AUR packages
         run_aura(&["-Au"], &[]);
         return;
     }
@@ -132,6 +133,7 @@ fn main() {
 
     // 5. Install
     if !cli.packages.is_empty() {
+        // Filter out 'world' and '@world' literals
         let target_pkgs: Vec<String> = cli
             .packages
             .iter()
@@ -162,6 +164,7 @@ fn main() {
 
         let success = run_aura(&aura_args, &target_pkgs);
 
+        // Save to world.set only if install succeeded and not oneshot/pretend
         if success && !cli.oneshot && !cli.pretend {
             add_to_world_set(&target_pkgs);
         }
@@ -184,7 +187,7 @@ fn run_aura(args: &[&str], packages: &[String]) -> bool {
     }
 }
 
-/// Run aura with stderr suppressed — used for silent probing.
+/// Run aura with stderr and stdout suppressed — used for silent probing.
 /// Returns true if the command succeeded (package found).
 fn run_aura_quiet(args: &[&str], packages: &[String]) -> bool {
     let mut cmd = Command::new("aura");
@@ -192,8 +195,7 @@ fn run_aura_quiet(args: &[&str], packages: &[String]) -> bool {
     for p in packages {
         cmd.arg(p);
     }
-    cmd.stderr(Stdio::null())
-        .stdout(Stdio::null());
+    cmd.stderr(Stdio::null()).stdout(Stdio::null());
     match cmd.status() {
         Ok(s) => s.success(),
         Err(_) => false,
@@ -204,6 +206,7 @@ fn run_aura_quiet(args: &[&str], packages: &[String]) -> bool {
 fn add_to_world_set(packages: &[String]) {
     println!(">>> Adding to world.set...");
 
+    // Read existing entries
     let mut current_set: HashSet<String> = HashSet::new();
     if let Ok(file) = fs::File::open(WORLD_SET_FILE) {
         let reader = io::BufReader::new(file);
@@ -215,6 +218,7 @@ fn add_to_world_set(packages: &[String]) {
         }
     }
 
+    // Add new packages, track whether anything changed
     let mut changed = false;
     for pkg in packages {
         if current_set.insert(pkg.clone()) {
@@ -226,9 +230,11 @@ fn add_to_world_set(packages: &[String]) {
         return;
     }
 
+    // Sort alphabetically before writing
     let mut sorted: Vec<String> = current_set.into_iter().collect();
     sorted.sort();
 
+    // Write back via sudo tee (world.set is root-owned)
     let mut child = Command::new("sudo")
         .arg("tee")
         .arg(WORLD_SET_FILE)
