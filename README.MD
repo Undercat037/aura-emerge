@@ -1,6 +1,7 @@
 # aura-emerge
 en | [ua](UA-README.MD)
-A Gentoo-style `emerge` wrapper for Arch Linux, built on top of [Aura](https://github.com/fosskers/aura).
+
+> A Gentoo-style `emerge` wrapper for Arch Linux, built on top of [Aura](https://github.com/fosskers/aura).
 
 Manages packages via a `world.set` file — install once, track forever.
 
