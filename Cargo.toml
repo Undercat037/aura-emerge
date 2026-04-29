@@ -2,6 +2,7 @@
 name = "aura-emerge"
 version = "1.7.0"
 edition = "2021"
+license = "GNU GPLv3"
 
 [dependencies]
 clap = { version = "4.4", features = ["derive"] }
