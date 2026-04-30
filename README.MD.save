@@ -12,12 +12,15 @@ git clone https://github.com/Undercat037/aura-emerge
 cd aura-emerge
 cargo build --release
 sudo cp target/release/aura-emerge /usr/local/bin/emerge
-sudo mkdir -p /etc/emerge
-sudo touch /etc/emerge/world.set
 ```
 or
 ```bash
 paru -S aura-emerge 
+```
+
+```bash
+sudo mkdir -p /etc/emerge
+sudo touch /etc/emerge/world.set
 ```
 
 **Requirements:** `aura` must be installed and in `$PATH`.

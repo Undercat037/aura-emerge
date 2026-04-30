@@ -15,6 +15,10 @@ sudo cp target/release/aura-emerge /usr/local/bin/emerge
 sudo mkdir -p /etc/emerge
 sudo touch /etc/emerge/world.set
 ```
+або
+```bash
+paru -S aura-emerge 
+```
 
 **Вимоги:** `aura` має бути встановлена та доступна в `$PATH`.
 
