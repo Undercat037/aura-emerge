@@ -12,7 +12,7 @@ const WORLD_SET_FILE: &str = "/etc/emerge/world.set";
     name = "emerge", 
     bin_name = "emerge", 
     about = "Portage-like wrapper for Arch Linux using Aura", 
-    version = "1.9.0 (aura-emerge)\nAuthor: Undercat037"
+    version = "1.11.0 (aura-emerge)\nAuthor: Undercat037"
 )]
 struct Cli {
     /// Search for packages
@@ -47,13 +47,17 @@ struct Cli {
     #[arg(short = '1', long = "oneshot")]
     oneshot: bool,
 
-    /// Explicitly use AUR
+    /// Explicitly force AUR only
     #[arg(long = "aur")]
     aur: bool,
 
     /// Verbose output / detailed info in search mode (-sv = aura -Si/-Ai)
     #[arg(short = 'v', long = "verbose")]
     verbose: bool,
+
+    /// Do not reinstall if already installed (pacman --needed)
+    #[arg(short = 'O', long = "noreplace")]
+    noreplace: bool,
 
     // Dummy flags for compatibility
     #[arg(short = 'D', long = "deep")] deep: bool,
@@ -75,29 +79,23 @@ fn main() {
         }
 
         if cli.verbose {
-            // -sv: show detailed package info
             if cli.aur {
-                // --aur explicitly specified — go straight to AUR
-                run_aura(&["-Ai"], &cli.packages);
+                run_cmd("aura", &["-Ai"], &cli.packages, false);
             } else {
-                // silently probe official repos first
-                let found = run_aura_quiet(&["-Si"], &cli.packages);
+                let found = run_cmd_quiet("aura", &["-Si"], &cli.packages);
                 if found {
-                    // found in official repos — show normally
-                    run_aura(&["-Si"], &cli.packages);
+                    run_cmd("aura", &["-Si"], &cli.packages, false);
                 } else {
-                    // not in official repos — fall back to AUR without extra error output
-                    run_aura(&["-Ai"], &cli.packages);
+                    run_cmd("aura", &["-Ai"], &cli.packages, false);
                 }
             }
         } else {
-            // -s: regular search — official repos + AUR
             if cli.aur {
-                run_aura(&["-As"], &cli.packages);
+                run_cmd("aura", &["-As"], &cli.packages, false);
             } else {
-                run_aura(&["-Ss"], &cli.packages);
+                run_cmd("aura", &["-Ss"], &cli.packages, false);
                 println!();
-                run_aura(&["-As"], &cli.packages);
+                run_cmd("aura", &["-As"], &cli.packages, false);
             }
         }
         return;
@@ -106,7 +104,7 @@ fn main() {
     // 2. Sync
     if cli.sync {
         println!(">>> Syncing database...");
-        run_aura(&["-Sy"], &[]);
+        run_cmd("aura", &["-Sy"], &[], false);
         return;
     }
 
@@ -118,21 +116,51 @@ fn main() {
         if cli.verbose {
             s_args.push("--verbose");
         }
-        run_aura(&s_args, &[]);
+        run_cmd("aura", &s_args, &[], false);
 
         // Update AUR packages
-        run_aura(&["-Au"], &[]);
+        run_cmd("aura", &["-Au"], &[], false);
         return;
     }
 
-    // 4. Depclean
+    // 4. Depclean (Orphans)
     if cli.depclean {
-        println!(">>> Removing orphans...");
-        run_aura(&["-O"], &[]);
+        println!(">>> Checking for orphans...");
+        
+        let output = Command::new("pacman").arg("-Qtdq").output();
+        
+        match output {
+            Ok(out) => {
+                let orphans_str = String::from_utf8_lossy(&out.stdout);
+                let orphans: Vec<String> = orphans_str
+                    .lines()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+
+                if orphans.is_empty() {
+                    println!(">>> No orphans found. System is clean!");
+                    return;
+                }
+
+                println!(">>> Found {} orphans.", orphans.len());
+                let mut pacman_args = vec!["pacman", "-Rns"];
+                
+                if cli.pretend {
+                    pacman_args.push("--print");
+                }
+                if !cli.ask && !cli.pretend {
+                    pacman_args.push("--noconfirm");
+                }
+
+                run_cmd("sudo", &pacman_args, &orphans, false);
+            }
+            Err(_) => eprintln!(">>> Error: Failed to check for orphans."),
+        }
         return;
     }
 
-    // 5. Unmerge (Remove specific packages)
+    // 5. Unmerge (Remove)
     if cli.unmerge {
         if cli.packages.is_empty() {
             eprintln!(">>> Error: Specify packages to remove.");
@@ -153,9 +181,8 @@ fn main() {
             aura_args.push("--verbose");
         }
 
-        let success = run_aura(&aura_args, &cli.packages);
+        let success = run_cmd("aura", &aura_args, &cli.packages, false);
 
-        // Remove from world.set if successful and not a dry run
         if success && !cli.pretend {
             remove_from_world_set(&cli.packages);
         }
@@ -164,7 +191,6 @@ fn main() {
 
     // 6. Install
     if !cli.packages.is_empty() {
-        // Filter out 'world' and '@world' literals
         let target_pkgs: Vec<String> = cli
             .packages
             .iter()
@@ -178,26 +204,45 @@ fn main() {
 
         println!(">>> Install mode: {:?}", target_pkgs);
 
-        let mut aura_args = if cli.aur { vec!["-A"] } else { vec!["-S"] };
-
-        if cli.pretend {
-            if cli.aur {
-                aura_args.push("--dryrun"); // aura -A --dryrun
-            } else {
-                aura_args.push("--print"); // aura -S --print
-            }
-        }
+        let mut base_args = Vec::new();
         if !cli.ask && !cli.pretend {
-            aura_args.push("--noconfirm");
+            base_args.push("--noconfirm");
         }
         if cli.oneshot {
-            aura_args.push("--asdeps");
+            base_args.push("--asdeps");
         }
-        if cli.verbose && !cli.aur {
-            aura_args.push("--verbose");
+        if cli.noreplace {
+            base_args.push("--needed");
         }
 
-        let success = run_aura(&aura_args, &target_pkgs);
+        let success: bool;
+
+        if cli.aur {
+            let mut aur_args = vec!["-A"];
+            if cli.pretend { aur_args.push("--dryrun"); }
+            aur_args.extend(&base_args);
+            success = run_cmd("aura", &aur_args, &target_pkgs, false);
+        } else {
+            // Check if packages exist in official repos first
+            println!(">>> Checking official repositories...");
+            let off_exists = run_cmd_quiet("aura", &["-Si"], &target_pkgs);
+
+            if off_exists {
+                // Install from official repos
+                let mut off_args = vec!["-S"];
+                if cli.pretend { off_args.push("--print"); }
+                if cli.verbose { off_args.push("--verbose"); }
+                off_args.extend(&base_args);
+                success = run_cmd("aura", &off_args, &target_pkgs, false);
+            } else {
+                // Not found in official repos, try AUR
+                println!(">>> Not found in official repos. Trying AUR...");
+                let mut aur_args = vec!["-A"];
+                if cli.pretend { aur_args.push("--dryrun"); }
+                aur_args.extend(&base_args);
+                success = run_cmd("aura", &aur_args, &target_pkgs, false);
+            }
+        }
 
         // Save to world.set only if install succeeded and not oneshot/pretend
         if success && !cli.oneshot && !cli.pretend {
@@ -206,26 +251,32 @@ fn main() {
     }
 }
 
-/// Run aura, inherit all stdio, return success.
-fn run_aura(args: &[&str], packages: &[String]) -> bool {
-    let mut cmd = Command::new("aura");
+/// Execute a command. If `ignore_fail` is true, the program will not output its own errors,
+/// allowing the package manager to handle them (useful for fallbacks).
+fn run_cmd(prog: &str, args: &[&str], packages: &[String], ignore_fail: bool) -> bool {
+    let mut cmd = Command::new(prog);
     cmd.args(args);
     for p in packages {
         cmd.arg(p);
     }
     match cmd.status() {
-        Ok(s) => s.success(),
+        Ok(s) => {
+            if ignore_fail {
+                s.success()
+            } else {
+                s.success()
+            }
+        }
         Err(e) => {
-            eprintln!(">>> Aura execution error: {}", e);
+            eprintln!(">>> Execution error ({}): {}", prog, e);
             false
         }
     }
 }
 
-/// Run aura with stderr and stdout suppressed — used for silent probing.
-/// Returns true if the command succeeded (package found).
-fn run_aura_quiet(args: &[&str], packages: &[String]) -> bool {
-    let mut cmd = Command::new("aura");
+/// Execute silently (no stdout/stderr). Returns true if successful.
+fn run_cmd_quiet(prog: &str, args: &[&str], packages: &[String]) -> bool {
+    let mut cmd = Command::new(prog);
     cmd.args(args);
     for p in packages {
         cmd.arg(p);
@@ -237,11 +288,9 @@ fn run_aura_quiet(args: &[&str], packages: &[String]) -> bool {
     }
 }
 
-/// Add packages to world.set via sudo tee.
 fn add_to_world_set(packages: &[String]) {
     println!(">>> Adding to world.set...");
 
-    // Read existing entries
     let mut current_set: HashSet<String> = HashSet::new();
     if let Ok(file) = fs::File::open(WORLD_SET_FILE) {
         let reader = io::BufReader::new(file);
@@ -253,7 +302,6 @@ fn add_to_world_set(packages: &[String]) {
         }
     }
 
-    // Add new packages, track whether anything changed
     let mut changed = false;
     for pkg in packages {
         if current_set.insert(pkg.clone()) {
@@ -265,36 +313,15 @@ fn add_to_world_set(packages: &[String]) {
         return;
     }
 
-    // Sort alphabetically before writing
     let mut sorted: Vec<String> = current_set.into_iter().collect();
     sorted.sort();
 
-    // Write back via sudo tee (world.set is root-owned)
-    let mut child = Command::new("sudo")
-        .arg("tee")
-        .arg(WORLD_SET_FILE)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .spawn()
-        .expect("Failed to run sudo tee");
-
-    if let Some(mut stdin) = child.stdin.take() {
-        for pkg in sorted {
-            if let Err(e) = writeln!(stdin, "{}", pkg) {
-                eprintln!(">>> Write error: {}", e);
-            }
-        }
-    }
-
-    child.wait().expect("sudo tee failed");
-    println!(">>> world.set updated.");
+    write_to_world_set(&sorted);
 }
 
-/// Remove packages from world.set via sudo tee.
 fn remove_from_world_set(packages: &[String]) {
     println!(">>> Removing from world.set...");
 
-    // Read existing entries
     let mut current_set: HashSet<String> = HashSet::new();
     if let Ok(file) = fs::File::open(WORLD_SET_FILE) {
         let reader = io::BufReader::new(file);
@@ -306,7 +333,6 @@ fn remove_from_world_set(packages: &[String]) {
         }
     }
 
-    // Remove packages, track whether anything changed
     let mut changed = false;
     for pkg in packages {
         if current_set.remove(pkg) {
@@ -318,27 +344,41 @@ fn remove_from_world_set(packages: &[String]) {
         return;
     }
 
-    // Sort alphabetically before writing
     let mut sorted: Vec<String> = current_set.into_iter().collect();
     sorted.sort();
 
-    // Write back via sudo tee
-    let mut child = Command::new("sudo")
+    write_to_world_set(&sorted);
+}
+
+/// Safely write to world.set without panics/expects
+fn write_to_world_set(packages: &[String]) {
+    let child_proc = Command::new("sudo")
         .arg("tee")
         .arg(WORLD_SET_FILE)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .spawn()
-        .expect("Failed to run sudo tee");
+        .spawn();
 
-    if let Some(mut stdin) = child.stdin.take() {
-        for pkg in sorted {
-            if let Err(e) = writeln!(stdin, "{}", pkg) {
-                eprintln!(">>> Write error: {}", e);
+    match child_proc {
+        Ok(mut child) => {
+            if let Some(mut stdin) = child.stdin.take() {
+                for pkg in packages {
+                    if let Err(e) = writeln!(stdin, "{}", pkg) {
+                        eprintln!(">>> Error writing to world.set pipeline: {}", e);
+                    }
+                }
+            }
+            match child.wait() {
+                Ok(status) => {
+                    if status.success() {
+                        println!(">>> world.set updated.");
+                    } else {
+                        eprintln!(">>> Error: sudo tee exited with non-zero status.");
+                    }
+                }
+                Err(e) => eprintln!(">>> Error waiting for sudo tee: {}", e),
             }
         }
+        Err(e) => eprintln!(">>> Error: Failed to spawn sudo tee: {}", e),
     }
-
-    child.wait().expect("sudo tee failed");
-    println!(">>> world.set updated.");
 }
