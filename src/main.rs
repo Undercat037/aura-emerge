@@ -9,10 +9,10 @@ const WORLD_SET_FILE: &str = "/etc/emerge/world.set";
 /// Emerge-like wrapper for Arch Linux using Aura
 #[derive(Parser, Debug)]
 #[command(
-    name = "emerge",
-    bin_name = "emerge",
-    about = "Portage-like wrapper for Arch Linux using Aura",
-    version = "1.8.0 (aura-emerge)\nAuthor: Undercat037"
+    name = "emerge", 
+    bin_name = "emerge", 
+    about = "Portage-like wrapper for Arch Linux using Aura", 
+    version = "1.9.0 (aura-emerge)\nAuthor: Undercat037"
 )]
 struct Cli {
     /// Search for packages
@@ -30,6 +30,10 @@ struct Cli {
     /// Remove orphans
     #[arg(short = 'c', long = "depclean")]
     depclean: bool,
+
+    /// Remove specific packages
+    #[arg(short = 'C', long = "unmerge")]
+    unmerge: bool,
 
     /// Pretend (dry run)
     #[arg(short = 'p', long = "pretend")]
@@ -52,12 +56,9 @@ struct Cli {
     verbose: bool,
 
     // Dummy flags for compatibility
-    #[arg(short = 'D', long = "deep")]
-    deep: bool,
-    #[arg(short = 'N', long = "newuse")]
-    newuse: bool,
-    #[arg(short = 'e', long = "emptytree")]
-    emptytree: bool,
+    #[arg(short = 'D', long = "deep")] deep: bool,
+    #[arg(short = 'N', long = "newuse")] newuse: bool,
+    #[arg(short = 'e', long = "emptytree")] emptytree: bool,
 
     /// Packages to install or '@world'
     packages: Vec<String>,
@@ -131,7 +132,37 @@ fn main() {
         return;
     }
 
-    // 5. Install
+    // 5. Unmerge (Remove specific packages)
+    if cli.unmerge {
+        if cli.packages.is_empty() {
+            eprintln!(">>> Error: Specify packages to remove.");
+            std::process::exit(1);
+        }
+
+        println!(">>> Unmerge mode: {:?}", cli.packages);
+
+        let mut aura_args = vec!["-R"];
+
+        if cli.pretend {
+            aura_args.push("--print");
+        }
+        if !cli.ask && !cli.pretend {
+            aura_args.push("--noconfirm");
+        }
+        if cli.verbose {
+            aura_args.push("--verbose");
+        }
+
+        let success = run_aura(&aura_args, &cli.packages);
+
+        // Remove from world.set if successful and not a dry run
+        if success && !cli.pretend {
+            remove_from_world_set(&cli.packages);
+        }
+        return;
+    }
+
+    // 6. Install
     if !cli.packages.is_empty() {
         // Filter out 'world' and '@world' literals
         let target_pkgs: Vec<String> = cli
@@ -151,9 +182,9 @@ fn main() {
 
         if cli.pretend {
             if cli.aur {
-                aura_args.push("--dryrun");  // aura -A --dryrun
+                aura_args.push("--dryrun"); // aura -A --dryrun
             } else {
-                aura_args.push("--print");   // aura -S --print
+                aura_args.push("--print"); // aura -S --print
             }
         }
         if !cli.ask && !cli.pretend {
@@ -239,6 +270,59 @@ fn add_to_world_set(packages: &[String]) {
     sorted.sort();
 
     // Write back via sudo tee (world.set is root-owned)
+    let mut child = Command::new("sudo")
+        .arg("tee")
+        .arg(WORLD_SET_FILE)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("Failed to run sudo tee");
+
+    if let Some(mut stdin) = child.stdin.take() {
+        for pkg in sorted {
+            if let Err(e) = writeln!(stdin, "{}", pkg) {
+                eprintln!(">>> Write error: {}", e);
+            }
+        }
+    }
+
+    child.wait().expect("sudo tee failed");
+    println!(">>> world.set updated.");
+}
+
+/// Remove packages from world.set via sudo tee.
+fn remove_from_world_set(packages: &[String]) {
+    println!(">>> Removing from world.set...");
+
+    // Read existing entries
+    let mut current_set: HashSet<String> = HashSet::new();
+    if let Ok(file) = fs::File::open(WORLD_SET_FILE) {
+        let reader = io::BufReader::new(file);
+        for line in reader.lines().map_while(Result::ok) {
+            let trimmed = line.trim().to_string();
+            if !trimmed.is_empty() {
+                current_set.insert(trimmed);
+            }
+        }
+    }
+
+    // Remove packages, track whether anything changed
+    let mut changed = false;
+    for pkg in packages {
+        if current_set.remove(pkg) {
+            changed = true;
+        }
+    }
+
+    if !changed {
+        return;
+    }
+
+    // Sort alphabetically before writing
+    let mut sorted: Vec<String> = current_set.into_iter().collect();
+    sorted.sort();
+
+    // Write back via sudo tee
     let mut child = Command::new("sudo")
         .arg("tee")
         .arg(WORLD_SET_FILE)
