@@ -4,6 +4,17 @@ use std::fs;
 use std::io::{self, BufRead, Write};
 use std::process::{Command, Stdio};
 
+// ── Secure binary paths ───────────────────────────────────────────────────────
+
+const AURA_BIN:   &str = "/usr/bin/aura";
+const PACMAN_BIN: &str = "/usr/bin/pacman";
+const SUDO_BIN:   &str = "/usr/bin/sudo";
+const TEE_BIN:    &str = "/usr/bin/tee";
+const MV_BIN:     &str = "/usr/bin/mv";
+const RM_BIN:     &str = "/usr/bin/rm";
+
+// ── Files ─────────────────────────────────────────────────────────────────────
+
 const WORLD_SET_FILE: &str = "/etc/emerge/world.set";
 const WORLD_SET_TMP: &str = "/etc/emerge/world.set.tmp";
 
@@ -13,7 +24,7 @@ const WORLD_SET_TMP: &str = "/etc/emerge/world.set.tmp";
     name = "emerge",
     bin_name = "emerge",
     about = "Portage-like wrapper for Arch Linux using Aura",
-    version = "1.14.0 (aura-emerge)\nAuthor: Undercat037"
+    version = "1.15.0 (aura-emerge)\nAuthor: Undercat037"
 )]
 struct Cli {
     /// Search for packages
@@ -75,7 +86,7 @@ struct Cli {
 // ── Validation ────────────────────────────────────────────────────────────────
 
 fn validate_pkg(pkg: &str) -> bool {
-    if pkg.starts_with('-') {
+    if pkg.starts_with('-') || pkg.contains("..") || pkg.contains("//") {
         return false;
     }
     pkg.chars()
@@ -97,6 +108,28 @@ fn validate_packages(packages: &[String]) -> Vec<String> {
         .collect()
 }
 
+// ── Binary existence check ────────────────────────────────────────────────────
+
+/// Abort early if required binaries are missing.
+fn check_binaries() {
+    for bin in &[AURA_BIN, PACMAN_BIN, SUDO_BIN, TEE_BIN, MV_BIN, RM_BIN] {
+        if !std::path::Path::new(bin).exists() {
+            eprintln!(">>> Fatal: required binary not found: {}", bin);
+            std::process::exit(1);
+        }
+    }
+}
+
+// ── Symlink guard ─────────────────────────────────────────────────────────────
+
+/// Returns true if the path is safe (not a symlink, or does not exist yet).
+fn is_safe_path(path: &str) -> bool {
+    match fs::symlink_metadata(path) {
+        Ok(meta) => !meta.file_type().is_symlink(),
+        Err(_) => true, // does not exist — safe to create
+    }
+}
+
 // ── Package info ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -113,7 +146,7 @@ fn probe_official(pkgs: &[String]) -> Option<Vec<PkgInfo>> {
     let pkg_refs: Vec<&str> = pkgs.iter().map(String::as_str).collect();
     args.extend_from_slice(&pkg_refs);
 
-    let output = Command::new("aura")
+    let output = Command::new(AURA_BIN)
         .args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -148,7 +181,7 @@ fn probe_official(pkgs: &[String]) -> Option<Vec<PkgInfo>> {
 fn resolve_aur(pkgs: &[String]) -> Vec<PkgInfo> {
     let mut result = Vec::new();
     for pkg in pkgs {
-        let output = Command::new("aura")
+        let output = Command::new(AURA_BIN)
             .args(["-Ai", pkg])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -178,7 +211,7 @@ fn resolve_aur(pkgs: &[String]) -> Vec<PkgInfo> {
 
 /// Check if a package is currently installed.
 fn is_installed(pkg: &str) -> bool {
-    Command::new("pacman")
+    Command::new(PACMAN_BIN)
         .args(["-Q", pkg])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -218,6 +251,8 @@ fn print_emerge_emerging(pkgs: &[PkgInfo]) {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 fn main() {
+    check_binaries();
+
     let cli = Cli::parse();
 
     // 1. Search
@@ -230,30 +265,30 @@ fn main() {
         if cli.verbose {
             if cli.aur {
                 println!(">>> Searching in AUR for '{}'...", cli.packages.join(" "));
-                run_cmd("aura", &["-Ai"], &cli.packages, false);
+                run_cmd(AURA_BIN, &["-Ai"], &cli.packages, false);
             } else {
                 // Single probe: try official first
                 let found = probe_official(&cli.packages).is_some();
                 if found {
                     println!(">>> Searching for '{}'...", cli.packages.join(" "));
-                    run_cmd("aura", &["-Si"], &cli.packages, false);
+                    run_cmd(AURA_BIN, &["-Si"], &cli.packages, false);
                 } else {
                     println!(
                         ">>> '{}' not found in official repos, searching AUR...",
                         cli.packages.join(" ")
                     );
-                    run_cmd("aura", &["-Ai"], &cli.packages, false);
+                    run_cmd(AURA_BIN, &["-Ai"], &cli.packages, false);
                 }
             }
         } else if cli.aur {
             println!(">>> Searching in AUR for '{}'...", cli.packages.join(" "));
-            run_cmd("aura", &["-As"], &cli.packages, false);
+            run_cmd(AURA_BIN, &["-As"], &cli.packages, false);
         } else {
             println!(">>> Searching for '{}'...", cli.packages.join(" "));
-            run_cmd("aura", &["-Ss"], &cli.packages, false);
+            run_cmd(AURA_BIN, &["-Ss"], &cli.packages, false);
             println!();
             println!(">>> Searching in AUR for '{}'...", cli.packages.join(" "));
-            run_cmd("aura", &["-As"], &cli.packages, false);
+            run_cmd(AURA_BIN, &["-As"], &cli.packages, false);
         }
         return;
     }
@@ -261,7 +296,7 @@ fn main() {
     // 2. Sync
     if cli.sync {
         println!(">>> Syncing package databases...");
-        run_cmd("aura", &["-Sy"], &[], false);
+        run_cmd(AURA_BIN, &["-Sy"], &[], false);
         return;
     }
 
@@ -274,10 +309,10 @@ fn main() {
         if cli.verbose {
             s_args.push("--verbose");
         }
-        run_cmd("aura", &s_args, &[], false);
+        run_cmd(AURA_BIN, &s_args, &[], false);
 
         println!(">>> Upgrading AUR packages...");
-        run_cmd("aura", &["-Au"], &[], false);
+        run_cmd(AURA_BIN, &["-Au"], &[], false);
 
         println!();
         println!(">>> Auto-cleaning packages...");
@@ -289,7 +324,7 @@ fn main() {
         println!(">>> Calculating dependencies... done!");
         println!(">>> Checking for orphaned packages...");
 
-        match Command::new("pacman").arg("-Qtdq").output() {
+        match Command::new(PACMAN_BIN).arg("-Qtdq").output() {
             Ok(out) => {
                 let orphans_str = String::from_utf8_lossy(&out.stdout);
                 let orphans: Vec<String> = orphans_str
@@ -312,14 +347,14 @@ fn main() {
                 println!("Total: {} orphaned package(s) to remove", orphans.len());
                 println!();
 
-                let mut pacman_args = vec!["pacman", "-Rns"];
+                let mut pacman_args = vec![PACMAN_BIN, "-Rns"];
                 if cli.pretend {
                     pacman_args.push("--print");
                 }
                 if !cli.ask && !cli.pretend {
                     pacman_args.push("--noconfirm");
                 }
-                run_cmd("sudo", &pacman_args, &orphans, false);
+                run_cmd(SUDO_BIN, &pacman_args, &orphans, false);
             }
             Err(_) => eprintln!(">>> Error: Failed to check for orphans."),
         }
@@ -357,7 +392,7 @@ fn main() {
             aura_args.push("--verbose");
         }
 
-        let success = run_cmd("aura", &aura_args, &valid_pkgs, false);
+        let success = run_cmd(AURA_BIN, &aura_args, &valid_pkgs, false);
         if success && !cli.pretend {
             remove_from_world_set(&valid_pkgs);
         }
@@ -401,7 +436,7 @@ fn main() {
 
             let mut aur_args = vec!["-A"];
             aur_args.extend(&base_args);
-            success = run_cmd("aura", &aur_args, &target_pkgs, false);
+            success = run_cmd(AURA_BIN, &aur_args, &target_pkgs, false);
         } else {
             // Single probe — get info and check existence in one call
             if let Some(pkg_infos) = probe_official(&target_pkgs) {
@@ -416,7 +451,7 @@ fn main() {
                     off_args.push("--verbose");
                 }
                 off_args.extend(&base_args);
-                success = run_cmd("aura", &off_args, &target_pkgs, false);
+                success = run_cmd(AURA_BIN, &off_args, &target_pkgs, false);
             } else {
                 println!(
                     ">>> Not found in official repos. Searching AUR for '{}'...",
@@ -431,7 +466,7 @@ fn main() {
 
                 let mut aur_args = vec!["-A"];
                 aur_args.extend(&base_args);
-                success = run_cmd("aura", &aur_args, &target_pkgs, false);
+                success = run_cmd(AURA_BIN, &aur_args, &target_pkgs, false);
             }
         }
 
@@ -466,12 +501,17 @@ fn run_cmd(prog: &str, args: &[&str], packages: &[String], _ignore_fail: bool) -
 fn add_to_world_set(packages: &[String]) {
     println!(">>> Adding to world.set...");
 
+    if !is_safe_path(WORLD_SET_FILE) {
+        eprintln!(">>> Warning: {} is a symlink — refusing to read", WORLD_SET_FILE);
+        return;
+    }
+
     let mut current_set: HashSet<String> = HashSet::new();
     if let Ok(file) = fs::File::open(WORLD_SET_FILE) {
         let reader = io::BufReader::new(file);
         for line in reader.lines().map_while(Result::ok) {
             let trimmed = line.trim().to_string();
-            if !trimmed.is_empty() {
+            if !trimmed.is_empty() && validate_pkg(&trimmed) {
                 current_set.insert(trimmed);
             }
         }
@@ -496,12 +536,17 @@ fn add_to_world_set(packages: &[String]) {
 fn remove_from_world_set(packages: &[String]) {
     println!(">>> Removing from world.set...");
 
+    if !is_safe_path(WORLD_SET_FILE) {
+        eprintln!(">>> Warning: {} is a symlink — refusing to read", WORLD_SET_FILE);
+        return;
+    }
+
     let mut current_set: HashSet<String> = HashSet::new();
     if let Ok(file) = fs::File::open(WORLD_SET_FILE) {
         let reader = io::BufReader::new(file);
         for line in reader.lines().map_while(Result::ok) {
             let trimmed = line.trim().to_string();
-            if !trimmed.is_empty() {
+            if !trimmed.is_empty() && validate_pkg(&trimmed) {
                 current_set.insert(trimmed);
             }
         }
@@ -525,9 +570,24 @@ fn remove_from_world_set(packages: &[String]) {
 
 /// Atomic write: tee to .tmp then mv to final path.
 fn write_world_set(packages: &[String]) {
+    // Guard against symlink attacks on both paths
+    if !is_safe_path(WORLD_SET_TMP) {
+        eprintln!(">>> Refusing to write: {} is a symlink", WORLD_SET_TMP);
+        return;
+    }
+    if !is_safe_path(WORLD_SET_FILE) {
+        eprintln!(">>> Refusing to write: {} is a symlink", WORLD_SET_FILE);
+        return;
+    }
+
+    // Remove stale tmp file
+    let _ = Command::new(SUDO_BIN)
+        .args([RM_BIN, "-f", WORLD_SET_TMP])
+        .status();
+
     let write_ok = {
-        let child_proc = Command::new("sudo")
-            .arg("tee")
+        let child_proc = Command::new(SUDO_BIN)
+            .arg(TEE_BIN)
             .arg(WORLD_SET_TMP)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
@@ -565,8 +625,8 @@ fn write_world_set(packages: &[String]) {
         return;
     }
 
-    match Command::new("sudo")
-        .args(["mv", WORLD_SET_TMP, WORLD_SET_FILE])
+    match Command::new(SUDO_BIN)
+        .args([MV_BIN, WORLD_SET_TMP, WORLD_SET_FILE])
         .status()
     {
         Ok(s) if s.success() => println!(">>> world.set updated."),
