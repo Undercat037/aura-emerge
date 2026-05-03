@@ -16,15 +16,17 @@ const RM_BIN:     &str = "/usr/bin/rm";
 // ── Files ─────────────────────────────────────────────────────────────────────
 
 const WORLD_SET_FILE: &str = "/etc/emerge/world.set";
-const WORLD_SET_TMP: &str = "/etc/emerge/world.set.tmp";
+const WORLD_SET_TMP:  &str = "/etc/emerge/world.set.tmp";
 
-/// Emerge-like wrapper for Arch Linux using Aura
+// ── CLI ───────────────────────────────────────────────────────────────────────
+
+/// Portage-like wrapper for Arch Linux using Aura
 #[derive(Parser, Debug)]
 #[command(
     name = "emerge",
     bin_name = "emerge",
     about = "Portage-like wrapper for Arch Linux using Aura",
-    version = "1.15.0 (aura-emerge)\nAuthor: Undercat037"
+    version = "1.16.0 (aura-emerge)\nAuthor: Undercat037"
 )]
 struct Cli {
     /// Search for packages
@@ -126,7 +128,7 @@ fn check_binaries() {
 fn is_safe_path(path: &str) -> bool {
     match fs::symlink_metadata(path) {
         Ok(meta) => !meta.file_type().is_symlink(),
-        Err(_) => true, // does not exist — safe to create
+        Err(_) => true,
     }
 }
 
@@ -140,7 +142,7 @@ struct PkgInfo {
 }
 
 /// Probe official repos in a single call using --print-format.
-/// Returns Some(infos) if all packages are found, None if not found.
+/// Returns Some(infos) if packages are found, None otherwise.
 fn probe_official(pkgs: &[String]) -> Option<Vec<PkgInfo>> {
     let mut args = vec!["-Sp", "--print-format", "%n %v", "--color", "never"];
     let pkg_refs: Vec<&str> = pkgs.iter().map(String::as_str).collect();
@@ -170,11 +172,7 @@ fn probe_official(pkgs: &[String]) -> Option<Vec<PkgInfo>> {
         })
         .collect();
 
-    if infos.is_empty() {
-        None
-    } else {
-        Some(infos)
-    }
+    if infos.is_empty() { None } else { Some(infos) }
 }
 
 /// Fetch AUR package info via -Ai output parsing.
@@ -248,6 +246,23 @@ fn print_emerge_emerging(pkgs: &[PkgInfo]) {
     println!();
 }
 
+// ── Command helper ────────────────────────────────────────────────────────────
+
+fn run_cmd(prog: &str, args: &[&str], packages: &[String]) -> bool {
+    let mut cmd = Command::new(prog);
+    cmd.args(args);
+    for p in packages {
+        cmd.arg(p);
+    }
+    match cmd.status() {
+        Ok(s) => s.success(),
+        Err(e) => {
+            eprintln!(">>> Execution error ({}): {}", prog, e);
+            false
+        }
+    }
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -255,53 +270,68 @@ fn main() {
 
     let cli = Cli::parse();
 
+    // Detect @world / world in package list
+    let has_world = cli.packages.iter()
+        .any(|p| p == "@world");
+
+    // Build validated package list (excluding world aliases)
+    let target_pkgs: Vec<String> = validate_packages(
+        &cli.packages
+            .iter()
+            .filter(|p| *p != "@world")
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
+
     // 1. Search
     if cli.search {
-        if cli.packages.is_empty() {
+        if target_pkgs.is_empty() {
             eprintln!(">>> Error: Specify search term.");
             std::process::exit(1);
         }
 
         if cli.verbose {
             if cli.aur {
-                println!(">>> Searching in AUR for '{}'...", cli.packages.join(" "));
-                run_cmd(AURA_BIN, &["-Ai"], &cli.packages, false);
+                println!(">>> Searching in AUR for '{}'...", target_pkgs.join(" "));
+                run_cmd(AURA_BIN, &["-Ai"], &target_pkgs);
             } else {
-                // Single probe: try official first
-                let found = probe_official(&cli.packages).is_some();
+                let found = probe_official(&target_pkgs).is_some();
                 if found {
-                    println!(">>> Searching for '{}'...", cli.packages.join(" "));
-                    run_cmd(AURA_BIN, &["-Si"], &cli.packages, false);
+                    println!(">>> Searching for '{}'...", target_pkgs.join(" "));
+                    run_cmd(AURA_BIN, &["-Si"], &target_pkgs);
                 } else {
                     println!(
                         ">>> '{}' not found in official repos, searching AUR...",
-                        cli.packages.join(" ")
+                        target_pkgs.join(" ")
                     );
-                    run_cmd(AURA_BIN, &["-Ai"], &cli.packages, false);
+                    run_cmd(AURA_BIN, &["-Ai"], &target_pkgs);
                 }
             }
         } else if cli.aur {
-            println!(">>> Searching in AUR for '{}'...", cli.packages.join(" "));
-            run_cmd(AURA_BIN, &["-As"], &cli.packages, false);
+            println!(">>> Searching in AUR for '{}'...", target_pkgs.join(" "));
+            run_cmd(AURA_BIN, &["-As"], &target_pkgs);
         } else {
-            println!(">>> Searching for '{}'...", cli.packages.join(" "));
-            run_cmd(AURA_BIN, &["-Ss"], &cli.packages, false);
+            println!(">>> Searching for '{}'...", target_pkgs.join(" "));
+            run_cmd(AURA_BIN, &["-Ss"], &target_pkgs);
             println!();
-            println!(">>> Searching in AUR for '{}'...", cli.packages.join(" "));
-            run_cmd(AURA_BIN, &["-As"], &cli.packages, false);
+            println!(">>> Searching in AUR for '{}'...", target_pkgs.join(" "));
+            run_cmd(AURA_BIN, &["-As"], &target_pkgs);
         }
         return;
     }
 
-    // 2. Sync
+    // 2. Sync — sync DB, then continue to install if packages given
     if cli.sync {
         println!(">>> Syncing package databases...");
-        run_cmd(AURA_BIN, &["-Sy"], &[], false);
-        return;
+        run_cmd(AURA_BIN, &["-Sy"], &[]);
+        if target_pkgs.is_empty() && !has_world {
+            return;
+        }
+        // fall through to update or install
     }
 
-    // 3. Update @world
-    if cli.update && (cli.packages.is_empty() || cli.packages.contains(&"@world".to_string())) {
+    // 3. Update @world — triggered by -u or bare @world/world
+    if cli.update || (has_world && target_pkgs.is_empty()) {
         println!(">>> Calculating dependencies... done!");
         println!();
         println!(">>> Upgrading system (official repos)...");
@@ -309,10 +339,10 @@ fn main() {
         if cli.verbose {
             s_args.push("--verbose");
         }
-        run_cmd(AURA_BIN, &s_args, &[], false);
+        run_cmd(AURA_BIN, &s_args, &[]);
 
         println!(">>> Upgrading AUR packages...");
-        run_cmd(AURA_BIN, &["-Au"], &[], false);
+        run_cmd(AURA_BIN, &["-Au"], &[]);
 
         println!();
         println!(">>> Auto-cleaning packages...");
@@ -354,7 +384,7 @@ fn main() {
                 if !cli.ask && !cli.pretend {
                     pacman_args.push("--noconfirm");
                 }
-                run_cmd(SUDO_BIN, &pacman_args, &orphans, false);
+                run_cmd(SUDO_BIN, &pacman_args, &orphans);
             }
             Err(_) => eprintln!(">>> Error: Failed to check for orphans."),
         }
@@ -363,23 +393,18 @@ fn main() {
 
     // 5. Unmerge (remove)
     if cli.unmerge {
-        if cli.packages.is_empty() {
+        if target_pkgs.is_empty() {
             eprintln!(">>> Error: Specify packages to remove.");
             std::process::exit(1);
         }
 
-        let valid_pkgs = validate_packages(&cli.packages);
-        if valid_pkgs.is_empty() {
-            return;
-        }
-
         println!("Calculating dependencies... done!");
         println!();
-        for p in &valid_pkgs {
+        for p in &target_pkgs {
             println!("[unmerge     ] {}", p);
         }
         println!();
-        println!(">>> Unmerging {}...", valid_pkgs.join(", "));
+        println!(">>> Unmerging {}...", target_pkgs.join(", "));
 
         let mut aura_args = vec!["-R"];
         if cli.pretend {
@@ -392,27 +417,15 @@ fn main() {
             aura_args.push("--verbose");
         }
 
-        let success = run_cmd(AURA_BIN, &aura_args, &valid_pkgs, false);
+        let success = run_cmd(AURA_BIN, &aura_args, &target_pkgs);
         if success && !cli.pretend {
-            remove_from_world_set(&valid_pkgs);
+            remove_from_world_set(&target_pkgs);
         }
         return;
     }
 
     // 6. Install
-    if !cli.packages.is_empty() {
-        let raw_pkgs: Vec<String> = cli
-            .packages
-            .iter()
-            .filter(|p| *p != "world" && *p != "@world")
-            .cloned()
-            .collect();
-
-        let target_pkgs = validate_packages(&raw_pkgs);
-        if target_pkgs.is_empty() {
-            return;
-        }
-
+    if !target_pkgs.is_empty() {
         let mut base_args: Vec<&str> = Vec::new();
         if !cli.ask && !cli.pretend {
             base_args.push("--noconfirm");
@@ -429,45 +442,34 @@ fn main() {
         if cli.aur {
             let pkg_infos = resolve_aur(&target_pkgs);
             print_emerge_plan(&pkg_infos);
-            if cli.pretend {
-                return;
-            }
+            if cli.pretend { return; }
             print_emerge_emerging(&pkg_infos);
 
             let mut aur_args = vec!["-A"];
             aur_args.extend(&base_args);
-            success = run_cmd(AURA_BIN, &aur_args, &target_pkgs, false);
+            success = run_cmd(AURA_BIN, &aur_args, &target_pkgs);
+        } else if let Some(pkg_infos) = probe_official(&target_pkgs) {
+            print_emerge_plan(&pkg_infos);
+            if cli.pretend { return; }
+            print_emerge_emerging(&pkg_infos);
+
+            let mut off_args = vec!["-S"];
+            if cli.verbose { off_args.push("--verbose"); }
+            off_args.extend(&base_args);
+            success = run_cmd(AURA_BIN, &off_args, &target_pkgs);
         } else {
-            // Single probe — get info and check existence in one call
-            if let Some(pkg_infos) = probe_official(&target_pkgs) {
-                print_emerge_plan(&pkg_infos);
-                if cli.pretend {
-                    return;
-                }
-                print_emerge_emerging(&pkg_infos);
+            println!(
+                ">>> Not found in official repos. Searching AUR for '{}'...",
+                target_pkgs.join(", ")
+            );
+            let pkg_infos = resolve_aur(&target_pkgs);
+            print_emerge_plan(&pkg_infos);
+            if cli.pretend { return; }
+            print_emerge_emerging(&pkg_infos);
 
-                let mut off_args = vec!["-S"];
-                if cli.verbose {
-                    off_args.push("--verbose");
-                }
-                off_args.extend(&base_args);
-                success = run_cmd(AURA_BIN, &off_args, &target_pkgs, false);
-            } else {
-                println!(
-                    ">>> Not found in official repos. Searching AUR for '{}'...",
-                    target_pkgs.join(", ")
-                );
-                let pkg_infos = resolve_aur(&target_pkgs);
-                print_emerge_plan(&pkg_infos);
-                if cli.pretend {
-                    return;
-                }
-                print_emerge_emerging(&pkg_infos);
-
-                let mut aur_args = vec!["-A"];
-                aur_args.extend(&base_args);
-                success = run_cmd(AURA_BIN, &aur_args, &target_pkgs, false);
-            }
+            let mut aur_args = vec!["-A"];
+            aur_args.extend(&base_args);
+            success = run_cmd(AURA_BIN, &aur_args, &target_pkgs);
         }
 
         if success && !cli.oneshot && !cli.pretend {
@@ -477,24 +479,6 @@ fn main() {
         }
     }
 }
-
-// ── Command helpers ───────────────────────────────────────────────────────────
-
-fn run_cmd(prog: &str, args: &[&str], packages: &[String], _ignore_fail: bool) -> bool {
-    let mut cmd = Command::new(prog);
-    cmd.args(args);
-    for p in packages {
-        cmd.arg(p);
-    }
-    match cmd.status() {
-        Ok(s) => s.success(),
-        Err(e) => {
-            eprintln!(">>> Execution error ({}): {}", prog, e);
-            false
-        }
-    }
-}
-
 
 // ── world.set ─────────────────────────────────────────────────────────────────
 
@@ -508,8 +492,7 @@ fn add_to_world_set(packages: &[String]) {
 
     let mut current_set: HashSet<String> = HashSet::new();
     if let Ok(file) = fs::File::open(WORLD_SET_FILE) {
-        let reader = io::BufReader::new(file);
-        for line in reader.lines().map_while(Result::ok) {
+        for line in io::BufReader::new(file).lines().map_while(Result::ok) {
             let trimmed = line.trim().to_string();
             if !trimmed.is_empty() && validate_pkg(&trimmed) {
                 current_set.insert(trimmed);
@@ -524,9 +507,7 @@ fn add_to_world_set(packages: &[String]) {
         }
     }
 
-    if !changed {
-        return;
-    }
+    if !changed { return; }
 
     let mut sorted: Vec<String> = current_set.into_iter().collect();
     sorted.sort();
@@ -543,8 +524,7 @@ fn remove_from_world_set(packages: &[String]) {
 
     let mut current_set: HashSet<String> = HashSet::new();
     if let Ok(file) = fs::File::open(WORLD_SET_FILE) {
-        let reader = io::BufReader::new(file);
-        for line in reader.lines().map_while(Result::ok) {
+        for line in io::BufReader::new(file).lines().map_while(Result::ok) {
             let trimmed = line.trim().to_string();
             if !trimmed.is_empty() && validate_pkg(&trimmed) {
                 current_set.insert(trimmed);
@@ -559,9 +539,7 @@ fn remove_from_world_set(packages: &[String]) {
         }
     }
 
-    if !changed {
-        return;
-    }
+    if !changed { return; }
 
     let mut sorted: Vec<String> = current_set.into_iter().collect();
     sorted.sort();
@@ -570,7 +548,6 @@ fn remove_from_world_set(packages: &[String]) {
 
 /// Atomic write: tee to .tmp then mv to final path.
 fn write_world_set(packages: &[String]) {
-    // Guard against symlink attacks on both paths
     if !is_safe_path(WORLD_SET_TMP) {
         eprintln!(">>> Refusing to write: {} is a symlink", WORLD_SET_TMP);
         return;
@@ -604,26 +581,15 @@ fn write_world_set(packages: &[String]) {
                 }
                 match child.wait() {
                     Ok(s) if s.success() => true,
-                    Ok(_) => {
-                        eprintln!(">>> Error: sudo tee exited with non-zero status.");
-                        false
-                    }
-                    Err(e) => {
-                        eprintln!(">>> Error waiting for sudo tee: {}", e);
-                        false
-                    }
+                    Ok(_) => { eprintln!(">>> Error: sudo tee exited with non-zero status."); false }
+                    Err(e) => { eprintln!(">>> Error waiting for sudo tee: {}", e); false }
                 }
             }
-            Err(e) => {
-                eprintln!(">>> Error: Failed to spawn sudo tee: {}", e);
-                false
-            }
+            Err(e) => { eprintln!(">>> Error: Failed to spawn sudo tee: {}", e); false }
         }
     };
 
-    if !write_ok {
-        return;
-    }
+    if !write_ok { return; }
 
     match Command::new(SUDO_BIN)
         .args([MV_BIN, WORLD_SET_TMP, WORLD_SET_FILE])
