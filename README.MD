@@ -21,7 +21,7 @@ paru -S aura-emerge
 ```
 [Release binary](target/release/)
 
-**Requirements:** `aura` must be installed and in your `$PATH`.
+**Requirements:** `aura` must be installed and in /usr/bin/aura.
 
 ## Usage
 
