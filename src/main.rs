@@ -36,7 +36,7 @@ const WORLD_SET_TMP:  &str = "/etc/emerge/world.set.tmp";
     name = "emerge",
     bin_name = "emerge",
     about = "Portage-like wrapper for Arch Linux using Aura",
-    version = "1.16.0 (aura-emerge)\nAuthor: Undercat037"
+    version = "1.17.0 (aura-emerge)\nAuthor: Undercat037"
 )]
 struct Cli {
     /// Search for packages
