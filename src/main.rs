@@ -80,14 +80,19 @@ struct Cli {
     verbose: bool,
 
     /// Do not reinstall if already installed (pacman --needed)
-    #[arg(short = 'O', long = "noreplace")]
+    #[arg(short = 'n', long = "noreplace")]
     noreplace: bool,
 
     // Dummy flags for compatibility
+    /// Consider the whole dependency tree
     #[arg(short = 'D', long = "deep")]
     deep: bool,
+    
+    /// Include installed pkgs with changed USE flags
     #[arg(short = 'N', long = "newuse")]
     newuse: bool,
+    
+    /// Reinstall all world pkgs
     #[arg(short = 'e', long = "emptytree")]
     emptytree: bool,
 

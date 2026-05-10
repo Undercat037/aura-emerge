@@ -36,7 +36,7 @@ emerge -s nano               # search in official repos + AUR
 emerge -sv nano              # detailed info (aura -Si / -Ai)
 emerge -sv nano --aur        # detailed info from AUR only
 emerge -1 nano               # install as dependency (no world.set)
-emerge -O nano               # do not reinstall if already installed (--noreplace)
+emerge -n nano               # do not reinstall if already installed (--noreplace)
 emerge -p nano               # pretend (dry run)
 emerge -a nano               # ask before installing
 ```
@@ -65,7 +65,7 @@ setrixtui
 | `-a` | Ask for confirmation |
 | `-1` | Install as dep (oneshot) |
 | `-v` | Verbose output |
-| `-O` | Do not reinstall (noreplace) |
+| `-n` | Do not reinstall (noreplace) |
 | `--aur` | Force AUR |
 | `--sync` | Sync databases |
 
