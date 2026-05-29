@@ -14,7 +14,7 @@ use std::fs;
 use std::io::{self, BufRead, Write};
 use std::process::{Command, Stdio};
 
-// ── Secure binary paths ───────────────────────────────────────────────────────
+// ── Binary paths ───────────────────────────────────────────────────────
 
 const AURA_BIN:   &str = "/usr/bin/aura";
 const PACMAN_BIN: &str = "/usr/bin/pacman";
@@ -36,7 +36,7 @@ const WORLD_SET_TMP:  &str = "/etc/emerge/world.set.tmp";
     name = "emerge",
     bin_name = "emerge",
     about = "Portage-like wrapper for Arch Linux using Aura",
-    version = "1.17.0 (aura-emerge)\nAuthor: Undercat037"
+    version = "1.18.0 (aura-emerge)\nAuthor: Undercat037"
 )]
 struct Cli {
     /// Search for packages
@@ -95,6 +95,42 @@ struct Cli {
     /// Reinstall all world pkgs
     #[arg(short = 'e', long = "emptytree")]
     emptytree: bool,
+
+    /// Resume a previously interrupted merge
+    #[arg(long = "resume")]
+    resume: bool,
+
+    /// Skip the first package in the resume list
+    #[arg(long = "skipfirst")]
+    skipfirst: bool,
+
+    /// Remove packages not in world.set (prune)
+    #[arg(long = "prune")]
+    prune: bool,
+
+    /// Regenerate package metadata cache (regen)
+    #[arg(long = "regen")]
+    regen: bool,
+
+    /// Search package descriptions (--searchdesc)
+    #[arg(long = "searchdesc")]
+    searchdesc: bool,
+
+    /// Explicitly add packages to world.set (--select)
+    #[arg(long = "select")]
+    select: bool,
+
+    /// Remove packages from world.set without unmerging (--deselect)
+    #[arg(long = "deselect")]
+    deselect: bool,
+
+    /// Pull in build-time dependencies (informational)
+    #[arg(long = "with-bdeps")]
+    with_bdeps: bool,
+
+    /// Show verbose slot/conflict info (informational)
+    #[arg(long = "verbose-conflicts")]
+    verbose_conflicts: bool,
 
     /// Packages to install or '@world'
     packages: Vec<String>,
@@ -233,6 +269,52 @@ fn is_installed(pkg: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Get the repository a package was installed from (e.g. "cachyos-extra-v3", "aur").
+/// Falls back to bare package name if unknown.
+fn get_pkg_repo(pkg: &str) -> Option<String> {
+    // Try pacman -Qi first (installed packages)
+    let output = Command::new(PACMAN_BIN)
+        .args(["-Qi", pkg])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            // "From local DB: ..."  or  "Repository      : core"
+            if line.starts_with("Repository") || line.starts_with("From") {
+                if let Some(val) = line.splitn(2, ':').nth(1) {
+                    let repo = val.trim().to_string();
+                    if !repo.is_empty() && repo != "Unknown Packager" {
+                        return Some(repo);
+                    }
+                }
+            }
+        }
+        // Check if it's an AUR package: no Repository field means local/AUR
+        // pacman -Qi on AUR package won't have a Repository line
+        let has_repo = stdout.lines().any(|l| l.starts_with("Repository"));
+        if !has_repo {
+            return Some("aur".to_string());
+        }
+    }
+    None
+}
+
+/// Format package entry for world.set: "repo/name" if repo known, else just "name".
+fn pkg_world_entry(pkg: &str) -> String {
+    // If already has a slash (user passed repo/pkg), keep as-is
+    if pkg.contains('/') {
+        return pkg.to_string();
+    }
+    match get_pkg_repo(pkg) {
+        Some(repo) => format!("{}/{}", repo, pkg),
+        None => pkg.to_string(),
+    }
+}
+
 // ── Emerge-style output ───────────────────────────────────────────────────────
 
 fn print_emerge_plan(pkgs: &[PkgInfo]) {
@@ -298,11 +380,21 @@ fn main() {
             .collect::<Vec<_>>(),
     );
 
-    // 1. Search
-    if cli.search {
+    // 1. Search (including --searchdesc)
+    if cli.search || cli.searchdesc {
         if target_pkgs.is_empty() {
             eprintln!(">>> Error: Specify search term.");
             std::process::exit(1);
+        }
+
+        if cli.searchdesc {
+            // Search descriptions: pacman -Ss for official, aura -As for AUR
+            println!(">>> Searching descriptions for '{}'...", target_pkgs.join(" "));
+            run_cmd(AURA_BIN, &["-Ss"], &target_pkgs);
+            println!();
+            println!(">>> Searching AUR descriptions for '{}'...", target_pkgs.join(" "));
+            run_cmd(AURA_BIN, &["-As"], &target_pkgs);
+            return;
         }
 
         if cli.verbose {
@@ -343,6 +435,108 @@ fn main() {
             return;
         }
         // fall through to update or install
+    }
+
+    // --regen: regenerate package metadata cache
+    if cli.regen {
+        println!(">>> Regenerating package metadata cache...");
+        run_cmd(SUDO_BIN, &[PACMAN_BIN, "-Fy"], &[]);
+        return;
+    }
+
+    // --prune: remove installed packages not in world.set
+    if cli.prune {
+        println!(">>> Pruning packages not in world.set...");
+        if !is_safe_path(WORLD_SET_FILE) {
+            eprintln!(">>> Warning: {} is a symlink — refusing to read", WORLD_SET_FILE);
+            std::process::exit(1);
+        }
+        let world_bare: HashSet<String> = match fs::File::open(WORLD_SET_FILE) {
+            Ok(file) => io::BufReader::new(file)
+                .lines()
+                .map_while(Result::ok)
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| l.trim().split('/').last().unwrap_or("").to_string())
+                .collect(),
+            Err(_) => {
+                eprintln!(">>> Error: cannot open world.set");
+                std::process::exit(1);
+            }
+        };
+        let output = Command::new(PACMAN_BIN)
+            .args(["-Qeq"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output();
+        match output {
+            Ok(out) => {
+                let installed: Vec<String> = String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty())
+                    .collect();
+                let to_remove: Vec<String> = installed
+                    .into_iter()
+                    .filter(|p| !world_bare.contains(p))
+                    .collect();
+                if to_remove.is_empty() {
+                    println!(">>> Nothing to prune. All explicitly installed packages are in world.set.");
+                    return;
+                }
+                println!();
+                for p in &to_remove {
+                    println!("[unmerge     ] {}", p);
+                }
+                println!();
+                println!("Total: {} package(s) to prune", to_remove.len());
+                println!();
+                if cli.pretend { return; }
+                let mut args = vec![PACMAN_BIN, "-Rns"];
+                if !cli.ask { args.push("--noconfirm"); }
+                run_cmd(SUDO_BIN, &args, &to_remove);
+            }
+            Err(_) => eprintln!(">>> Error: failed to list installed packages"),
+        }
+        return;
+    }
+
+    // --resume: re-run last interrupted aura/pacman operation
+    if cli.resume {
+        println!(">>> Attempting to resume last interrupted transaction...");
+        let mut args = vec!["-S", "--needed"];
+        if cli.skipfirst {
+            // Can't truly replicate portage skipfirst on pacman, so we warn
+            println!(">>> Note: --skipfirst is not directly supported; resuming normally.");
+        }
+        if !cli.ask { args.push("--noconfirm"); }
+        run_cmd(SUDO_BIN, &[PACMAN_BIN, "--noconfirm", "-Syu"], &[]);
+        return;
+    }
+
+    // --select: explicitly add packages to world.set without installing
+    if cli.select {
+        if target_pkgs.is_empty() {
+            eprintln!(">>> Error: specify packages to add to world.set.");
+            std::process::exit(1);
+        }
+        for p in &target_pkgs {
+            println!(">>> Selecting {} into world.set...", p);
+        }
+        add_to_world_set(&target_pkgs);
+        return;
+    }
+
+    // --deselect: remove packages from world.set without unmerging
+    if cli.deselect {
+        if target_pkgs.is_empty() {
+            eprintln!(">>> Error: specify packages to deselect from world.set.");
+            std::process::exit(1);
+        }
+        for p in &target_pkgs {
+            println!(">>> Deselecting {} from world.set (package stays installed)...", p);
+        }
+        remove_from_world_set(&target_pkgs);
+        return;
     }
 
     // 3. Update @world — triggered by -u or bare @world/world
@@ -505,26 +699,32 @@ fn add_to_world_set(packages: &[String]) {
         return;
     }
 
-    let mut current_set: HashSet<String> = HashSet::new();
+    // current_set keyed by bare package name → full "repo/name" or "name" entry
+    let mut current_set: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     if let Ok(file) = fs::File::open(WORLD_SET_FILE) {
         for line in io::BufReader::new(file).lines().map_while(Result::ok) {
             let trimmed = line.trim().to_string();
             if !trimmed.is_empty() && validate_pkg(&trimmed) {
-                current_set.insert(trimmed);
+                // bare name is the part after the last '/'
+                let bare = trimmed.split('/').last().unwrap_or(&trimmed).to_string();
+                current_set.insert(bare, trimmed);
             }
         }
     }
 
     let mut changed = false;
     for pkg in packages {
-        if current_set.insert(pkg.clone()) {
+        let bare = pkg.split('/').last().unwrap_or(pkg).to_string();
+        let entry = pkg_world_entry(&bare);
+        if current_set.get(&bare).map(|e| e != &entry).unwrap_or(true) {
+            current_set.insert(bare, entry);
             changed = true;
         }
     }
 
     if !changed { return; }
 
-    let mut sorted: Vec<String> = current_set.into_iter().collect();
+    let mut sorted: Vec<String> = current_set.into_values().collect();
     sorted.sort();
     write_world_set(&sorted);
 }
@@ -537,26 +737,30 @@ fn remove_from_world_set(packages: &[String]) {
         return;
     }
 
-    let mut current_set: HashSet<String> = HashSet::new();
+    // key = bare name, value = full entry
+    let mut current_set: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     if let Ok(file) = fs::File::open(WORLD_SET_FILE) {
         for line in io::BufReader::new(file).lines().map_while(Result::ok) {
             let trimmed = line.trim().to_string();
             if !trimmed.is_empty() && validate_pkg(&trimmed) {
-                current_set.insert(trimmed);
+                let bare = trimmed.split('/').last().unwrap_or(&trimmed).to_string();
+                current_set.insert(bare, trimmed);
             }
         }
     }
 
     let mut changed = false;
     for pkg in packages {
-        if current_set.remove(pkg) {
+        // match on bare name regardless of whether user passed "repo/pkg" or "pkg"
+        let bare = pkg.split('/').last().unwrap_or(pkg).to_string();
+        if current_set.remove(&bare).is_some() {
             changed = true;
         }
     }
 
     if !changed { return; }
 
-    let mut sorted: Vec<String> = current_set.into_iter().collect();
+    let mut sorted: Vec<String> = current_set.into_values().collect();
     sorted.sort();
     write_world_set(&sorted);
 }
