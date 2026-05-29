@@ -35,10 +35,19 @@ const WORLD_SET_TMP:  &str = "/etc/emerge/world.set.tmp";
 #[command(
     name = "emerge",
     bin_name = "emerge",
-    about = "Portage-like wrapper for Arch Linux using Aura",
-    version = "1.18.0 (aura-emerge)\nAuthor: Undercat037"
+    version = concat!(env!("CARGO_PKG_VERSION"), " (aura-emerge)"),
+    disable_help_flag = true,
+    disable_version_flag = true,
 )]
 struct Cli {
+    /// Show help information
+    #[arg(short = 'h', long = "help", action = clap::ArgAction::SetTrue)]
+    help: bool,
+
+    /// Show version
+    #[arg(short = 'V', long = "version", action = clap::ArgAction::SetTrue)]
+    version: bool,
+
     /// Search for packages
     #[arg(short = 's', long)]
     search: bool,
@@ -87,11 +96,11 @@ struct Cli {
     /// Consider the whole dependency tree
     #[arg(short = 'D', long = "deep")]
     deep: bool,
-    
+
     /// Include installed pkgs with changed USE flags
     #[arg(short = 'N', long = "newuse")]
     newuse: bool,
-    
+
     /// Reinstall all world pkgs
     #[arg(short = 'e', long = "emptytree")]
     emptytree: bool,
@@ -124,16 +133,85 @@ struct Cli {
     #[arg(long = "deselect")]
     deselect: bool,
 
-    /// Pull in build-time dependencies (informational)
-    #[arg(long = "with-bdeps")]
-    with_bdeps: bool,
-
     /// Show verbose slot/conflict info (informational)
     #[arg(long = "verbose-conflicts")]
     verbose_conflicts: bool,
 
+    // ── Gentoo compat flags (accepted silently, no-op) ──────────────────────
+
+    // Actions
+    #[arg(long = "list-sets")]              list_sets: bool,
+    #[arg(long = "info")]                   info: bool,
+    #[arg(long = "metadata")]               metadata: bool,
+    #[arg(long = "check-news")]             check_news: bool,
+    #[arg(long = "clean")]                  clean: bool,
+    #[arg(long = "config")]                 config: bool,
+
+    // Output control
+    #[arg(short = 'q', long = "quiet")]     quiet: bool,
+    #[arg(long = "nospinner")]              nospinner: bool,
+    #[arg(long = "noconfmem")]              noconfmem: bool,
+    #[arg(long = "color")]                  color: Option<String>,
+    #[arg(long = "columns")]               columns: bool,
+    #[arg(long = "ignore-default-opts")]    ignore_default_opts: bool,
+
+    // Dependency / graph control
+    #[arg(short = 'O', long = "nodeps")]    nodeps: bool,
+    #[arg(short = 'o', long = "onlydeps")]  onlydeps: bool,
+    #[arg(short = 't', long = "tree")]      tree: bool,
+    #[arg(long = "complete-graph")]         complete_graph: bool,
+    #[arg(long = "changed-use")]            changed_use: bool,
+    #[arg(long = "keep-going")]             keep_going: bool,
+    #[arg(long = "backtrack")]              backtrack: Option<u32>,
+    #[arg(long = "jobs")]                   jobs: Option<u32>,
+    #[arg(long = "load-average")]           load_average: Option<f32>,
+    #[arg(long = "exclude")]                exclude: Option<String>,
+
+    // Binary pkg flags (emerge -k/-K/-g/-G/-b/-B)
+    #[arg(short = 'k', long = "usepkg")]          usepkg: bool,
+    #[arg(short = 'K', long = "usepkgonly")]       usepkgonly: bool,
+    #[arg(short = 'g', long = "getbinpkg")]        getbinpkg: bool,
+    #[arg(short = 'G', long = "getbinpkgonly")]    getbinpkgonly: bool,
+    #[arg(short = 'b', long = "buildpkg")]         buildpkg: bool,
+    #[arg(short = 'B', long = "buildpkgonly")]     buildpkgonly: bool,
+
+    // Fetch flags
+    #[arg(short = 'f', long = "fetchonly")]        fetchonly: bool,
+    #[arg(short = 'F', long = "fetch-all-uri")]    fetch_all_uri: bool,
+
+    // Misc compat
+    #[arg(short = 'l', long = "changelog")]        changelog: bool,
+    #[arg(long = "newrepo")]                        newrepo: bool,
+    #[arg(long = "reinstall")]                      reinstall: Option<String>,
+    #[arg(long = "quiet-build")]                    quiet_build: Option<String>,
+    #[arg(long = "with-bdeps")]                     with_bdeps: Option<String>,
+    #[arg(long = "alert", short = 'A')]             alert: bool,
+
     /// Packages to install or '@world'
     packages: Vec<String>,
+}
+
+fn print_help() {
+    println!("aura-emerge: command-line interface to the Portage system (Arch Linux)");
+    println!("Usage:");
+    println!("   emerge [ options ] [ action ] [ package | @set ] [ ... ]");
+    println!("   emerge [ options ] [ action ] < @world >");
+    println!("   emerge < --sync | --info >");
+    println!("   emerge --resume [ --pretend | --ask | --skipfirst ]");
+    println!("   emerge --help");
+    println!("Options: -[1aCcDehNnpsuVv]");
+    println!("          [ --aur                        ] [ --deep       ]");
+    println!("          [ --emptytree                  ] [ --newuse     ]");
+    println!("          [ --noreplace                  ] [ --oneshot    ]");
+    println!("          [ --pretend                    ] [ --skipfirst  ]");
+    println!("          [ --verbose-conflicts          ] [ --with-bdeps ]");
+    println!("Actions:  [ --depclean  | --deselect | --prune   | --regen      ]");
+    println!("          [ --resume    | --search   | --select  | --searchdesc ]");
+    println!("          [ --sync      | --unmerge  | --update  | --version    ]");
+    println!();
+    println!("   For more help consult the README: https://github.com/Undercat037/aura-emerge");
+    println!();
+    println!("Author: Undercat037");
 }
 
 // ── Validation ────────────────────────────────────────────────────────────────
@@ -270,48 +348,74 @@ fn is_installed(pkg: &str) -> bool {
 }
 
 /// Get the repository a package was installed from (e.g. "cachyos-extra-v3", "aur").
-/// Falls back to bare package name if unknown.
+///
+/// Strategy:
+///   1. pacman -Qi <pkg>  — local DB; knows exactly which repo the *installed*
+///      package came from. No Repository line -> AUR/foreign build.
+///   2. pacman -Si <pkg>  — sync DB fallback for packages not yet installed
+///      (e.g. --select). Returns the first Repository field found.
+///   3. Neither succeeds -> return None (bare name used in world.set).
 fn get_pkg_repo(pkg: &str) -> Option<String> {
-    // Try pacman -Qi first (installed packages)
-    let output = Command::new(PACMAN_BIN)
-        .args(["-Qi", pkg])
+    // Strip repo prefix if caller passed "repo/pkg" — we only need bare name
+    let bare = pkg.split('/').last().unwrap_or(pkg);
+
+    // 1. Local DB — most accurate for installed packages
+    let qi = Command::new(PACMAN_BIN)
+        .args(["-Qi", bare])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .output()
-        .ok()?;
+        .output();
 
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            // "From local DB: ..."  or  "Repository      : core"
-            if line.starts_with("Repository") || line.starts_with("From") {
-                if let Some(val) = line.splitn(2, ':').nth(1) {
-                    let repo = val.trim().to_string();
-                    if !repo.is_empty() && repo != "Unknown Packager" {
-                        return Some(repo);
+    if let Ok(out) = qi {
+        if out.status.success() {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            for line in stdout.lines() {
+                if line.starts_with("Repository") {
+                    if let Some(val) = line.splitn(2, ':').nth(1) {
+                        let repo = val.trim().to_string();
+                        if !repo.is_empty() {
+                            return Some(repo);
+                        }
+                    }
+                }
+            }
+            // pacman -Qi succeeded but has no Repository field -> AUR/foreign
+            return Some("aur".to_string());
+        }
+    }
+
+    // 2. Sync DB fallback — for packages not yet installed (e.g. --select)
+    let si = Command::new(PACMAN_BIN)
+        .args(["-Si", bare])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output();
+
+    if let Ok(out) = si {
+        if out.status.success() {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            for line in stdout.lines() {
+                if line.starts_with("Repository") {
+                    if let Some(val) = line.splitn(2, ':').nth(1) {
+                        let repo = val.trim().to_string();
+                        if !repo.is_empty() {
+                            return Some(repo);
+                        }
                     }
                 }
             }
         }
-        // Check if it's an AUR package: no Repository field means local/AUR
-        // pacman -Qi on AUR package won't have a Repository line
-        let has_repo = stdout.lines().any(|l| l.starts_with("Repository"));
-        if !has_repo {
-            return Some("aur".to_string());
-        }
     }
+
     None
 }
 
 /// Format package entry for world.set: "repo/name" if repo known, else just "name".
 fn pkg_world_entry(pkg: &str) -> String {
-    // If already has a slash (user passed repo/pkg), keep as-is
-    if pkg.contains('/') {
-        return pkg.to_string();
-    }
-    match get_pkg_repo(pkg) {
-        Some(repo) => format!("{}/{}", repo, pkg),
-        None => pkg.to_string(),
+    let bare = pkg.split('/').last().unwrap_or(pkg);
+    match get_pkg_repo(bare) {
+        Some(repo) => format!("{}/{}", repo, bare),
+        None => bare.to_string(),
     }
 }
 
@@ -360,12 +464,91 @@ fn run_cmd(prog: &str, args: &[&str], packages: &[String]) -> bool {
     }
 }
 
+// ── portageq shim ─────────────────────────────────────────────────────────────
+
+/// Called when the binary is invoked as "portageq" (via symlink).
+/// Answers fish shell completion queries so emerge.fish doesn't crash.
+fn portageq_shim(args: &[String]) {
+    let cmd = args.get(1).map(String::as_str).unwrap_or("");
+    match cmd {
+        "envvar" => {
+            match args.get(2).map(String::as_str).unwrap_or("") {
+                "EROOT" | "ROOT" => println!("/"),
+                "PORTDIR"        => println!("/var/db/pkg"),
+                "DISTDIR"        => println!("/var/cache/distfiles"),
+                _                => {}
+            }
+        }
+        "get_repos" => {
+            // One dummy repo is enough; fish just needs a non-empty list
+            println!("arch");
+        }
+        "get_repo_path" => {
+            // args: eroot repo — return any existing dir
+            println!("/var/db/pkg");
+        }
+        "get_repo_news_path" => {
+            println!("/var/db/pkg");
+        }
+        "match_pkgs" | "best_version" => {
+            let pkg = args.get(3).or_else(|| args.get(2)).map(String::as_str).unwrap_or("");
+            if let Ok(out) = Command::new(PACMAN_BIN)
+                .args(["-Q", pkg])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .output()
+            {
+                let s = String::from_utf8_lossy(&out.stdout);
+                for line in s.lines() {
+                    let mut p = line.splitn(2, ' ');
+                    if let (Some(n), Some(v)) = (p.next(), p.next()) {
+                        println!("{}-{}", n, v);
+                    }
+                }
+            }
+        }
+        "list_repo_pkgs" => {
+            if let Ok(out) = Command::new(PACMAN_BIN)
+                .args(["-Ssq"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .output()
+            {
+                print!("{}", String::from_utf8_lossy(&out.stdout));
+            }
+        }
+        // Unknown command — exit silently so fish doesn't crash
+        _ => {}
+    }
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 fn main() {
-    check_binaries();
+    // If invoked as "portageq" (symlink), act as the shim
+    let argv: Vec<String> = std::env::args().collect();
+    let invoked_as = std::path::Path::new(&argv[0])
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    if invoked_as == "portageq" {
+        portageq_shim(&argv);
+        return;
+    }
 
     let cli = Cli::parse();
+
+    if cli.help {
+        print_help();
+        return;
+    }
+
+    if cli.version {
+        println!("aura-emerge {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
+    check_binaries();
 
     // Detect @world / world in package list
     let has_world = cli.packages.iter()
@@ -715,7 +898,7 @@ fn add_to_world_set(packages: &[String]) {
     let mut changed = false;
     for pkg in packages {
         let bare = pkg.split('/').last().unwrap_or(pkg).to_string();
-        let entry = pkg_world_entry(&bare);
+        let entry = pkg_world_entry(pkg);
         if current_set.get(&bare).map(|e| e != &entry).unwrap_or(true) {
             current_set.insert(bare, entry);
             changed = true;
