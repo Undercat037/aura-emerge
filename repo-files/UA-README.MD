@@ -49,7 +49,7 @@ sudo nvim /etc/makepkg.conf
 
 Довідка по `CFLAGS`/`CXXFLAGS` — [прапори оптимізації GCC](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html), по `RUSTFLAGS` — [параметри кодогенерації rustc](https://doc.rust-lang.org/rustc/codegen-options/index.html).
 
-[**→ Приклад makepkg.conf**](makepkg.conf)
+[**→ Приклад makepkg.conf**](repo-files/makepkg.conf)
 
 ## Використання
 
@@ -126,6 +126,10 @@ extra/firefox
 | `--verbose-conflicts` | Детальні конфлікти слотів (сумісність) |
 | `-h` / `--help` | Показати довідку |
 | `-V` / `--version` | Показати версію |
+
+## Приклад роботи
+
+[**vhs-emerge**](repo-files/emerge.mp4)
 
 ## Автор
 

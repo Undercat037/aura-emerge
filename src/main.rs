@@ -31,7 +31,8 @@ const ABS_GITLAB_BASE: &str = "https://gitlab.archlinux.org/archlinux/packaging/
 
 // ── Files ─────────────────────────────────────────────────────────────────────
 
-const WORLD_SET_FILE: &str = "/etc/emerge/world.set";
+const WORLD_SET_FILE:  &str = "/etc/emerge/world.set";
+const ABS_BUILD_BASE:  &str = "/tmp/aura-emerge-abs";
 const WORLD_SET_TMP:  &str = "/etc/emerge/world.set.tmp";
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
@@ -61,6 +62,10 @@ struct Cli {
     /// Sync package database
     #[arg(long)]
     sync: bool,
+
+    /// Force-refresh all databases even if up to date (like pacman -Syy)
+    #[arg(long)]
+    refresh: bool,
 
     /// Update packages
     #[arg(short = 'u', long)]
@@ -312,15 +317,34 @@ fn pkg_status(name: &str, new_ver: &str) -> String {
     if installed == new_ver  { return "R".to_string(); }
     // Compare: if installed > new_ver it's a downgrade
     // Use pacman vercmp
-    let cmp = std::process::Command::new("vercmp")
+    let cmp: i32 = std::process::Command::new("vercmp")
         .args([&installed, new_ver])
         .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
-    match cmp.as_str() {
-        s if s.starts_with('-') => "U".to_string(),  // installed < new → upgrade
-        s if s.starts_with('0') => "R".to_string(), // equal
-        _ => "D".to_string(),                         // installed > new → downgrade
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().parse().unwrap_or(0))
+        .unwrap_or(0);
+    match cmp {
+        c if c < 0 => "U".to_string(),
+        0           => "R".to_string(),
+        _           => "D".to_string(),
+    }
+}
+
+/// Format package atom for display.
+fn format_atom(p: &PkgInfo) -> String {
+    if p.repo.is_empty() {
+        format!("{}-{}", p.name, p.version)
+    } else {
+        format!("{}/{}-{}", p.repo, p.name, p.version)
+    }
+}
+
+/// Colored status badge.
+fn status_colored(status: &str) -> String {
+    match status {
+        "N" => status.green().bold().to_string(),
+        "U" => status.yellow().bold().to_string(),
+        "D" => status.red().bold().to_string(),
+        _   => status.cyan().bold().to_string(),
     }
 }
 
@@ -396,16 +420,6 @@ fn resolve_aur(pkgs: &[String]) -> Vec<PkgInfo> {
     result
 }
 
-/// Check if a package is currently installed.
-fn is_installed(pkg: &str) -> bool {
-    Command::new(PACMAN_BIN)
-        .args(["-Q", pkg])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
 
 /// Get the repository a package was installed from (e.g. "cachyos-extra-v3", "aur").
 ///
@@ -486,18 +500,14 @@ fn print_emerge_plan(pkgs: &[PkgInfo]) {
     println!("Calculating dependencies... done!");
     println!();
     for p in pkgs {
-        let atom = if p.repo.is_empty() {
-            format!("{}-{}", p.name, p.version)
-        } else {
-            format!("{}/{}-{}", p.repo, p.name, p.version)
-        };
-        let status_col = match p.status.as_str() {
-            "N" => p.status.green().bold().to_string(),
-            "U" => p.status.yellow().bold().to_string(),
-            "D" => p.status.red().bold().to_string(),
-            _   => p.status.cyan().bold().to_string(),
-        };
-        println!("[{}  {:<4} ] {}", "ebuild".green(), status_col, atom.bold());
+        if p.status == "D" {
+            println!("{} {}: downgrading package!", " *".yellow().bold(), p.name.bold());
+        }
+        println!("[{}  {:<4} ] {}",
+            "ebuild".green(),
+            status_colored(&p.status),
+            format_atom(p).green().bold()
+        );
     }
     println!();
     println!("{}: {} package(s)", "Total".bold(), pkgs.len());
@@ -509,12 +519,12 @@ fn print_emerge_emerging(pkgs: &[PkgInfo]) {
     let pfx = ">>>".green().bold();
     println!("{} Verifying ebuild manifests", pfx);
     for (i, p) in pkgs.iter().enumerate() {
-        let atom = if p.repo.is_empty() {
-            format!("{}-{}", p.name, p.version)
-        } else {
-            format!("{}/{}-{}", p.repo, p.name, p.version)
-        };
-        println!("{} Emerging ({} of {}) {}", pfx, i + 1, total, atom.green().bold());
+        println!("{} Emerging ({} of {}) {}",
+            pfx,
+            (i + 1).to_string().yellow().bold(),
+            total.to_string().yellow().bold(),
+            format_atom(p).green().bold()
+        );
     }
     println!();
 }
@@ -523,15 +533,14 @@ fn print_emerge_completed(pkgs: &[PkgInfo]) {
     let total = pkgs.len();
     let pfx = ">>>".green().bold();
     for (i, p) in pkgs.iter().enumerate() {
-        let atom = if p.repo.is_empty() {
-            format!("{}-{}", p.name, p.version)
-        } else {
-            format!("{}/{}-{}", p.repo, p.name, p.version)
-        };
-        println!("{} Installing ({} of {}) {}", pfx, i + 1, total, atom.green().bold());
-        println!("{} Completed  ({} of {}) {}", pfx, i + 1, total, atom.green().bold());
+        let atom = format_atom(p).green().bold().to_string();
+        let n = (i + 1).to_string().yellow().bold().to_string();
+        let t = total.to_string().yellow().bold().to_string();
+        println!("{} Installing ({} of {}) {}", pfx, n, t, atom);
+        println!("{} Completed  ({} of {}) {}", pfx, n, t, atom);
     }
-    println!("{} Jobs: {} of {} complete", pfx, total, total);
+    let tg = total.to_string().green().bold().to_string();
+    println!("{} Jobs: {} of {} complete", pfx, tg, tg);
     println!();
 }
 
@@ -605,32 +614,42 @@ fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp
 
     if pkg_infos.is_empty() { return false; }
 
-    println!("
-These are the packages that would be merged, in order:
-");
+    println!();
+    println!("{}", "These are the packages that would be merged, in order:".green().bold());
+    println!();
     println!("Calculating dependencies... done!");
     println!();
     for p in &pkg_infos {
-        let atom = if p.repo.is_empty() {
-            format!("{}-{} (ABS)", p.name, p.version)
-        } else {
-            format!("{}/{}-{} (ABS)", p.repo, p.name, p.version)
-        };
-        println!("[ebuild  {:<4} ] {}", p.status, atom);
+        if p.status == "D" {
+            println!("{} {}: downgrading package!", " *".yellow().bold(), p.name.bold());
+        }
+        let atom = format!("{} (ABS)", format_atom(p));
+        println!("[{}  {:<4} ] {}",
+            "ebuild".green(),
+            status_colored(&p.status),
+            atom.green().bold()
+        );
     }
     println!();
-    println!("Total: {} package(s)", pkg_infos.len());
+    println!("{}: {} package(s)", "Total".bold(), pkg_infos.len());
     println!();
 
     if pretend { return true; }
 
-    let build_base = std::env::temp_dir().join("aura-emerge-abs");
+    // Clean up any stale build dir from interrupted previous run
+    let build_base = std::path::PathBuf::from(ABS_BUILD_BASE);
+    if build_base.exists() {
+        let _ = std::fs::remove_dir_all(&build_base);
+    }
     let mut all_ok = true;
 
     for (i, info) in pkg_infos.iter().enumerate() {
-        println!(
-            ">>> Emerging ({} of {}) {}-{} from ABS",
-            i + 1, pkg_infos.len(), info.name, info.version
+        let pfx = ">>>".green().bold();
+        println!("{} Emerging ({} of {}) {} (ABS)",
+            pfx,
+            (i + 1).to_string().yellow().bold(),
+            pkg_infos.len().to_string().yellow().bold(),
+            format_atom(info).green().bold()
         );
         println!();
 
@@ -647,7 +666,7 @@ These are the packages that would be merged, in order:
         }
         let _ = std::fs::create_dir_all(&build_base);
 
-        println!(">>> Fetching {} from ABS via asp...", info.name);
+        println!("{} Fetching {} from ABS via asp...", ">>>".green().bold(), info.name.green().bold());
         let checkout_ok = Command::new(ASP_BIN)
             .args(["checkout", &info.name])
             .current_dir(&build_base)
@@ -656,8 +675,8 @@ These are the packages that would be merged, in order:
             .unwrap_or(false);
 
         if !checkout_ok {
-            eprintln!(">>> Error: asp checkout failed for '{}'", info.name);
-            eprintln!(">>> Note: package may not exist in ABS. Try without --abs or use --aur.");
+            eprintln!("{} asp checkout failed for '{}'", ">>> Error:".red().bold(), info.name);
+            eprintln!("{} package may not exist in ABS. Try without --abs or use --aur.", ">>> Note:".yellow().bold());
             all_ok = false;
             continue;
         }
@@ -679,9 +698,9 @@ These are the packages that would be merged, in order:
             .unwrap_or(false);
 
         if !build_ok {
-            eprintln!(">>> Error: makepkg failed for '{}'", info.name);
+            eprintln!("{} makepkg failed for '{}'", ">>> Error:".red().bold(), info.name);
             if !skippgp {
-                eprintln!(">>> Hint: if the build failed due to a missing PGP key, run:");
+                eprintln!("{} if the build failed due to a missing PGP key, run:", ">>> Hint:".yellow().bold());
                 eprintln!(">>>   gpg --recv-keys <key-id>");
                 eprintln!(">>> Or retry with --skippgp to bypass signature checks.");
             }
@@ -812,12 +831,12 @@ fn main() {
 
         if cli.verbose {
             if cli.aur {
-                println!(">>> Searching in AUR for '{}'...", target_pkgs.join(" "));
+                println!("{} Searching in {} for '{}'...", ">>>".green().bold(), "AUR".cyan().bold(), target_pkgs.join(" "));
                 run_cmd(AURA_BIN, &["-Ai"], &target_pkgs);
             } else {
                 let found = probe_official(&target_pkgs).is_some();
                 if found {
-                    println!(">>> Searching for '{}'...", target_pkgs.join(" "));
+                    println!("{} Searching for '{}'...", ">>>".green().bold(), target_pkgs.join(" "));
                     run_cmd(AURA_BIN, &["-Si"], &target_pkgs);
                 } else {
                     println!(
@@ -828,13 +847,13 @@ fn main() {
                 }
             }
         } else if cli.aur {
-            println!(">>> Searching in AUR for '{}'...", target_pkgs.join(" "));
+            println!("{} Searching in {} for '{}'...", ">>>".green().bold(), "AUR".cyan().bold(), target_pkgs.join(" "));
             run_cmd(AURA_BIN, &["-As"], &target_pkgs);
         } else {
-            println!(">>> Searching for '{}'...", target_pkgs.join(" "));
+            println!("{} Searching for '{}'...", ">>>".green().bold(), target_pkgs.join(" "));
             run_cmd(AURA_BIN, &["-Ss"], &target_pkgs);
             println!();
-            println!(">>> Searching in AUR for '{}'...", target_pkgs.join(" "));
+            println!("{} Searching in {} for '{}'...", ">>>".green().bold(), "AUR".cyan().bold(), target_pkgs.join(" "));
             run_cmd(AURA_BIN, &["-As"], &target_pkgs);
         }
         return;
@@ -842,8 +861,12 @@ fn main() {
 
     // 2. Sync — sync DB, then continue to install if packages given
     if cli.sync {
-        println!(">>> Syncing package databases...");
-        run_cmd(AURA_BIN, &["-Sy"], &[]);
+        let sync_flag = if cli.refresh { "-Syy" } else { "-Sy" };
+        println!("{} Syncing package databases{}...",
+            ">>>".green().bold(),
+            if cli.refresh { " (force refresh)" } else { "" }
+        );
+        run_cmd(AURA_BIN, &[sync_flag], &[]);
         if target_pkgs.is_empty() && !has_world {
             return;
         }
@@ -852,7 +875,7 @@ fn main() {
 
     // --regen: regenerate package metadata cache
     if cli.regen {
-        println!(">>> Regenerating package metadata cache...");
+        println!("{} Regenerating package metadata cache...", ">>>".green().bold());
         run_cmd(SUDO_BIN, &[PACMAN_BIN, "-Fy"], &[]);
         return;
     }
@@ -865,7 +888,7 @@ fn main() {
 
     // --prune: remove installed packages not in world.set
     if cli.prune {
-        println!(">>> Pruning packages not in world.set...");
+        println!("{} Pruning packages not in world.set...", ">>>".green().bold());
         if !is_safe_path(WORLD_SET_FILE) {
             eprintln!(">>> Warning: {} is a symlink — refusing to read", WORLD_SET_FILE);
             std::process::exit(1);
@@ -958,8 +981,15 @@ fn main() {
         return;
     }
 
+    // 3a. Mixed: specific pkgs + @world (e.g. emerge nano @world)
+    //     Install the named packages first, then fall through to world update
+    if has_world && !target_pkgs.is_empty() && !cli.update {
+        println!("{} Installing specified packages before @world update...", ">>>".green().bold());
+        // will fall through to install block below, then world update happens separately
+    }
+
     // 3. Update @world — triggered by -u or bare @world/world
-    if cli.update || (has_world && target_pkgs.is_empty()) {
+    if cli.update || has_world {
         println!(">>> Calculating dependencies... done!");
         println!();
         println!(">>> Upgrading system (official repos)...");

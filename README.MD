@@ -1,5 +1,5 @@
 # aura-emerge
-en | [ua](UA-README.MD)
+en | [ua](repo-files/UA-README.MD)
 
 > A Gentoo-style `emerge` wrapper for Arch Linux, built on top of [Aura](https://github.com/fosskers/aura).
 
@@ -45,11 +45,9 @@ Key options that map to Gentoo concepts:
 | `FEATURES="ccache"`          | `BUILDENV+=(ccache)`          | Build cache                    |
 | `PORTDIR` / `PKGDIR`         | `PKGDEST`, `SRCDEST`          | Build artefact directories     |
 
-> **Note:** USE flags don't exist in Arch — packages are compiled with a fixed set of options by the maintainer. You can patch a PKGBUILD from ABS (`emerge --abs <pkg>`) to add or remove features before building.
-
 For `CFLAGS`/`CXXFLAGS` reference see [GCC optimization flags](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html), for `RUSTFLAGS` see [rustc codegen options](https://doc.rust-lang.org/rustc/codegen-options/index.html).
 
-[**→ Example makepkg.conf**](makepkg.conf)
+[**→ Example makepkg.conf**](repo-files/makepkg.conf)
 
 ## Usage
 
