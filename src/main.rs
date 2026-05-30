@@ -134,6 +134,10 @@ struct Cli {
     #[arg(long = "regen")]
     regen: bool,
 
+    /// Re-resolve repository prefixes for all packages in world.set
+    #[arg(long = "regen-world")]
+    regen_world: bool,
+
     /// Search package descriptions (--searchdesc)
     #[arg(long = "searchdesc")]
     searchdesc: bool,
@@ -776,6 +780,12 @@ fn main() {
         return;
     }
 
+    // --regen-world: re-resolve repo prefixes for all entries in world.set
+    if cli.regen_world {
+        regen_world_set();
+        return;
+    }
+
     // --prune: remove installed packages not in world.set
     if cli.prune {
         println!(">>> Pruning packages not in world.set...");
@@ -1026,6 +1036,53 @@ fn main() {
 }
 
 // ── world.set ─────────────────────────────────────────────────────────────────
+
+/// Re-resolve repository prefixes for every package in world.set.
+/// Reads current entries, calls get_pkg_repo() for each, rewrites the file.
+/// Useful after locale fixes, repo migrations, or manual edits.
+fn regen_world_set() {
+    println!(">>> Regenerating world.set repository prefixes...");
+
+    if !is_safe_path(WORLD_SET_FILE) {
+        eprintln!(">>> Warning: {} is a symlink — refusing to modify", WORLD_SET_FILE);
+        std::process::exit(1);
+    }
+
+    let entries: Vec<String> = match fs::File::open(WORLD_SET_FILE) {
+        Ok(file) => io::BufReader::new(file)
+            .lines()
+            .map_while(Result::ok)
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect(),
+        Err(_) => {
+            eprintln!(">>> Error: cannot open {}", WORLD_SET_FILE);
+            std::process::exit(1);
+        }
+    };
+
+    let mut updated: Vec<String> = Vec::new();
+    let mut changed = 0usize;
+
+    for entry in &entries {
+        let bare = entry.split('/').last().unwrap_or(entry);
+        let new_entry = pkg_world_entry(bare, None);
+        if &new_entry != entry {
+            println!("  {} -> {}", entry, new_entry);
+            changed += 1;
+        }
+        updated.push(new_entry);
+    }
+
+    if changed == 0 {
+        println!(">>> world.set is already up to date.");
+        return;
+    }
+
+    updated.sort();
+    write_world_set(&updated);
+    println!(">>> world.set updated ({} entries changed).", changed);
+}
 
 fn add_to_world_set(packages: &[String], forced_prefix: Option<&str>) {
     println!(">>> Adding to world.set...");
