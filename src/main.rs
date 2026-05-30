@@ -287,7 +287,40 @@ fn is_safe_path(path: &str) -> bool {
 struct PkgInfo {
     name: String,
     version: String,
-    is_new: bool,
+    repo: String,
+    /// "N" new, "U" upgrade, "D" downgrade, "R" reinstall
+    status: String,
+}
+
+/// Compute install status: N=new, U=upgrade, D=downgrade, R=reinstall.
+fn pkg_status(name: &str, new_ver: &str) -> String {
+    let out = std::process::Command::new(PACMAN_BIN)
+        .args(["-Q", name])
+        .env("LC_ALL", "C")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output();
+    let installed = match out {
+        Ok(o) if o.status.success() => {
+            let s = String::from_utf8_lossy(&o.stdout).into_owned();
+            s.split_whitespace().nth(1).unwrap_or("").to_string()
+        }
+        _ => return "N".to_string(),
+    };
+    if installed.is_empty() { return "N".to_string(); }
+    if installed == new_ver  { return "R".to_string(); }
+    // Compare: if installed > new_ver it's a downgrade
+    // Use pacman vercmp
+    let cmp = std::process::Command::new("vercmp")
+        .args([&installed, new_ver])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    match cmp.as_str() {
+        s if s.starts_with('-') => "U".to_string(),  // installed < new → upgrade
+        s if s.starts_with('0') => "R".to_string(), // equal
+        _ => "D".to_string(),                         // installed > new → downgrade
+    }
 }
 
 /// Probe official repos in a single call using --print-format.
@@ -316,8 +349,14 @@ fn probe_official(pkgs: &[String]) -> Option<Vec<PkgInfo>> {
             let mut parts = line.splitn(2, ' ');
             let name = parts.next().unwrap_or("").to_string();
             let version = parts.next().unwrap_or("").to_string();
-            let is_new = !is_installed(&name);
-            PkgInfo { name, version, is_new }
+            let (repo, bare_name) = if name.contains('/') {
+                let mut p = name.splitn(2, '/');
+                (p.next().unwrap_or("").to_string(), p.next().unwrap_or(&name).to_string())
+            } else {
+                (String::new(), name.clone())
+            };
+            let status = pkg_status(&bare_name, &version);
+            PkgInfo { name: bare_name, version, repo, status }
         })
         .collect();
 
@@ -349,8 +388,8 @@ fn resolve_aur(pkgs: &[String]) -> Vec<PkgInfo> {
                     }
                 }
             }
-            let is_new = !is_installed(&name);
-            result.push(PkgInfo { name, version, is_new });
+            let status = pkg_status(&name, &version);
+            result.push(PkgInfo { name, version, repo: "aur".to_string(), status });
         }
     }
     result
@@ -444,8 +483,12 @@ fn print_emerge_plan(pkgs: &[PkgInfo]) {
     println!("Calculating dependencies... done!");
     println!();
     for p in pkgs {
-        let status = if p.is_new { "N" } else { "U" };
-        println!("[ebuild  {:<4} ] {}-{}", status, p.name, p.version);
+        let atom = if p.repo.is_empty() {
+            format!("{}-{}", p.name, p.version)
+        } else {
+            format!("{}/{}-{}", p.repo, p.name, p.version)
+        };
+        println!("[ebuild  {:<4} ] {}", p.status, atom);
     }
     println!();
     println!("Total: {} package(s)", pkgs.len());
@@ -453,15 +496,31 @@ fn print_emerge_plan(pkgs: &[PkgInfo]) {
 }
 
 fn print_emerge_emerging(pkgs: &[PkgInfo]) {
+    let total = pkgs.len();
+    println!(">>> Verifying ebuild manifests");
     for (i, p) in pkgs.iter().enumerate() {
-        println!(
-            ">>> Emerging ({} of {}) {}-{}",
-            i + 1,
-            pkgs.len(),
-            p.name,
-            p.version
-        );
+        let atom = if p.repo.is_empty() {
+            format!("{}-{}", p.name, p.version)
+        } else {
+            format!("{}/{}-{}", p.repo, p.name, p.version)
+        };
+        println!(">>> Emerging ({} of {}) {}", i + 1, total, atom);
     }
+    println!();
+}
+
+fn print_emerge_completed(pkgs: &[PkgInfo]) {
+    let total = pkgs.len();
+    for (i, p) in pkgs.iter().enumerate() {
+        let atom = if p.repo.is_empty() {
+            format!("{}-{}", p.name, p.version)
+        } else {
+            format!("{}/{}-{}", p.repo, p.name, p.version)
+        };
+        println!(">>> Installing ({} of {}) {}", i + 1, total, atom);
+        println!(">>> Completed  ({} of {}) {}", i + 1, total, atom);
+    }
+    println!(">>> Jobs: {} of {} complete", total, total);
     println!();
 }
 
@@ -528,8 +587,9 @@ fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp
             return None;
         }
         let version = abs_get_version(bare);
-        let is_new = !is_installed(bare);
-        Some(PkgInfo { name: bare.to_string(), version, is_new })
+
+        let status = pkg_status(bare, &version);
+        Some(PkgInfo { name: bare.to_string(), version, repo: "abs".to_string(), status })
     }).collect();
 
     if pkg_infos.is_empty() { return false; }
@@ -540,8 +600,12 @@ These are the packages that would be merged, in order:
     println!("Calculating dependencies... done!");
     println!();
     for p in &pkg_infos {
-        let status = if p.is_new { "N" } else { "U" };
-        println!("[ebuild  {:<4} ] {}-{} (ABS)", status, p.name, p.version);
+        let atom = if p.repo.is_empty() {
+            format!("{}-{} (ABS)", p.name, p.version)
+        } else {
+            format!("{}/{}-{} (ABS)", p.repo, p.name, p.version)
+        };
+        println!("[ebuild  {:<4} ] {}", p.status, atom);
     }
     println!();
     println!("Total: {} package(s)", pkg_infos.len());
@@ -951,11 +1015,38 @@ fn main() {
             std::process::exit(1);
         }
 
-        println!("Calculating dependencies... done!");
+        println!(" * This action can remove important packages! In order to be safer, use");
+        println!(" * `emerge -p --depclean <atom>` to check for reverse dependencies before");
+        println!(" * removing packages.");
+        println!();
+        println!(">>> These are the packages that would be unmerged:");
         println!();
         for p in &target_pkgs {
-            println!("[unmerge     ] {}", p);
+            let bare = p.split('/').last().unwrap_or(p);
+            let ver = {
+                let out = std::process::Command::new(PACMAN_BIN)
+                    .args(["-Q", bare]).env("LC_ALL", "C")
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::null())
+                    .output();
+                match out {
+                    Ok(o) if o.status.success() =>
+                        String::from_utf8_lossy(&o.stdout)
+                            .split_whitespace().nth(1)
+                            .unwrap_or("?").to_string(),
+                    _ => "?".to_string(),
+                }
+            };
+            let repo = get_pkg_repo(bare).unwrap_or_default();
+            let atom = if repo.is_empty() { bare.to_string() } else { format!("{}/{}", repo, bare) };
+            println!(" {}", atom);
+            println!("    selected: {}", ver);
+            println!("   protected: none");
+            println!("     omitted: none");
         }
+        println!();
+        println!(">>> 'Selected' packages are slated for removal.");
+        println!(">>> 'Protected' and 'omitted' packages will not be removed.");
         println!();
         println!(">>> Unmerging {}...", target_pkgs.join(", "));
 
@@ -991,28 +1082,28 @@ fn main() {
         }
 
         let success: bool;
+        let mut installed_infos: Vec<PkgInfo> = Vec::new();
 
         if cli.abs {
-            // ABS: build from official Arch source repos
             success = abs_install(&target_pkgs, cli.pretend, cli.ask, cli.oneshot, cli.skippgp);
         } else if cli.aur {
             let pkg_infos = resolve_aur(&target_pkgs);
             print_emerge_plan(&pkg_infos);
             if cli.pretend { return; }
             print_emerge_emerging(&pkg_infos);
-
             let mut aur_args = vec!["-A"];
             aur_args.extend(&base_args);
             success = run_cmd(AURA_BIN, &aur_args, &target_pkgs);
+            if success { installed_infos = pkg_infos; }
         } else if let Some(pkg_infos) = probe_official(&target_pkgs) {
             print_emerge_plan(&pkg_infos);
             if cli.pretend { return; }
             print_emerge_emerging(&pkg_infos);
-
             let mut off_args = vec!["-S"];
             if cli.verbose { off_args.push("--verbose"); }
             off_args.extend(&base_args);
             success = run_cmd(AURA_BIN, &off_args, &target_pkgs);
+            if success { installed_infos = pkg_infos; }
         } else {
             println!(
                 ">>> Not found in official repos. Searching AUR for '{}'...",
@@ -1022,17 +1113,21 @@ fn main() {
             print_emerge_plan(&pkg_infos);
             if cli.pretend { return; }
             print_emerge_emerging(&pkg_infos);
-
             let mut aur_args = vec!["-A"];
             aur_args.extend(&base_args);
             success = run_cmd(AURA_BIN, &aur_args, &target_pkgs);
+            if success { installed_infos = pkg_infos; }
         }
 
-        if success && !cli.oneshot && !cli.pretend {
-            println!();
-            println!(">>> Auto-cleaning packages...");
-            let prefix = if cli.abs { Some("abs") } else if cli.aur { Some("aur") } else { None };
-            add_to_world_set(&target_pkgs, prefix);
+        if success && !cli.pretend {
+            if !installed_infos.is_empty() {
+                print_emerge_completed(&installed_infos);
+            }
+            if !cli.oneshot {
+                println!(">>> Auto-cleaning packages...");
+                let prefix = if cli.abs { Some("abs") } else if cli.aur { Some("aur") } else { None };
+                add_to_world_set(&target_pkgs, prefix);
+            }
         }
     }
 }
