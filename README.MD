@@ -21,13 +21,35 @@ paru -S aura-emerge
 ```
 [Release binary](target/release/)
 
-**Requirements:** `aura` must be installed and in `/usr/bin/aura`.
+**Requirements:** `aura` must be installed and in `/usr/bin/aura`.  
+**Optional:** `asp` for `--abs` support (`emerge asp`).
+
+## Gentoo → Arch: make.conf equivalent
+
+Arch Linux doesn't have USE flags, but you can configure compilation options similarly to Gentoo's `/etc/portage/make.conf` by editing `/etc/makepkg.conf`:
+
+```bash
+sudo nvim /etc/makepkg.conf
+```
+
+Key options that map to Gentoo concepts:
+
+| Gentoo (`make.conf`)         | Arch (`makepkg.conf`)         | Purpose                        |
+|------------------------------|-------------------------------|--------------------------------|
+| `CFLAGS="-O2 -march=native"` | `CFLAGS="-O2 -march=native"`  | Compiler optimisation flags    |
+| `MAKEOPTS="-j$(nproc)"`      | `MAKEFLAGS="-j$(nproc)"`      | Parallel build jobs            |
+| `USE="lto"`                  | `OPTIONS+=(lto)`              | Link-time optimisation         |
+| `FEATURES="ccache"`          | `BUILDENV+=(ccache)`          | Build cache                    |
+| `PORTDIR` / `PKGDIR`         | `PKGDEST`, `SRCDEST`          | Build artefact directories     |
+
+> **Note:** USE flags don't exist in Arch — packages are compiled with a fixed set of options by the maintainer. You can patch a PKGBUILD from ABS (`emerge --abs <pkg>`) to add or remove features before building.
 
 ## Usage
 
 ```bash
 emerge nano                  # install package (official repos, fallbacks to AUR)
 emerge nano --aur            # install from AUR explicitly
+emerge nano --abs            # build from ABS (Arch Build System) source via asp
 emerge -c                    # remove orphans (depclean)
 emerge -C nano               # remove specific package (unmerge)
 emerge -u @world             # update entire system (official + AUR)
@@ -78,6 +100,7 @@ extra/firefox
 | `-v` | Verbose output |
 | `-n` | Do not reinstall (noreplace) |
 | `--aur` | Force AUR |
+| `--abs` | Build from ABS source via asp |
 | `--sync` | Sync databases |
 | `--select` | Add to world.set (no install) |
 | `--deselect` | Remove from world.set (no unmerge) |

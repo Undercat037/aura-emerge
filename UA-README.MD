@@ -21,13 +21,35 @@ paru -S aura-emerge
 ```
 [Релізний бінарник](target/release/)
 
-**Вимоги:** `aura` має бути встановлена та доступна в `/usr/bin/aura`.
+**Вимоги:** `aura` має бути встановлена та доступна в `/usr/bin/aura`.  
+**Опційно:** `asp` для підтримки `--abs` (`emerge asp`).
+
+## Gentoo → Arch: аналог make.conf
+
+В Arch Linux немає USE-прапорів, але налаштувати компіляцію можна схоже до Gentoo `/etc/portage/make.conf` — через `/etc/makepkg.conf`:
+
+```bash
+sudo nvim /etc/makepkg.conf
+```
+
+Основні опції, що відповідають концепціям Gentoo:
+
+| Gentoo (`make.conf`)         | Arch (`makepkg.conf`)         | Призначення                        |
+|------------------------------|-------------------------------|-------------------------------------|
+| `CFLAGS="-O2 -march=native"` | `CFLAGS="-O2 -march=native"`  | Прапори оптимізації компілятора     |
+| `MAKEOPTS="-j$(nproc)"`      | `MAKEFLAGS="-j$(nproc)"`      | Паралельна збірка                   |
+| `USE="lto"`                  | `OPTIONS+=(lto)`              | Link-time optimisation              |
+| `FEATURES="ccache"`          | `BUILDENV+=(ccache)`          | Кеш збірки                          |
+| `PORTDIR` / `PKGDIR`         | `PKGDEST`, `SRCDEST`          | Директорії артефактів збірки        |
+
+> **Примітка:** USE-прапори в Arch відсутні — пакунки компілюються з фіксованим набором опцій від мейнтейнера. Щоб додати або прибрати функціональність, можна підправити PKGBUILD з ABS (`emerge --abs <pkg>`) перед збіркою.
 
 ## Використання
 
 ```bash
 emerge nano                  # встановити пакунок (офіційні репо, автоматичний пошук в AUR)
 emerge nano --aur            # встановити виключно з AUR
+emerge nano --abs            # зібрати з ABS (Arch Build System) через asp
 emerge -c                    # видалити сиріт (depclean)
 emerge -C nano               # видалити конкретний пакунок (unmerge)
 emerge -u @world             # оновити всю систему (офіційні + AUR)
@@ -78,6 +100,7 @@ extra/firefox
 | `-v` | Детальний вивід (verbose) |
 | `-n` | Не перевстановлювати (noreplace) |
 | `--aur` | Примусово використати AUR |
+| `--abs` | Зібрати з ABS через asp |
 | `--sync` | Синхронізувати бази даних |
 | `--select` | Додати до world.set (без встановлення) |
 | `--deselect` | Прибрати з world.set (без видалення) |

@@ -22,6 +22,11 @@ const SUDO_BIN:   &str = "/usr/bin/sudo";
 const TEE_BIN:    &str = "/usr/bin/tee";
 const MV_BIN:     &str = "/usr/bin/mv";
 const RM_BIN:     &str = "/usr/bin/rm";
+const MAKEPKG_BIN: &str = "/usr/bin/makepkg";
+const ASP_BIN: &str = "/usr/bin/asp";
+
+/// Base URL for Arch Linux packaging repos on GitLab
+const ABS_GITLAB_BASE: &str = "https://gitlab.archlinux.org/archlinux/packaging/packages";
 
 // ── Files ─────────────────────────────────────────────────────────────────────
 
@@ -83,6 +88,14 @@ struct Cli {
     /// Explicitly force AUR only
     #[arg(long = "aur")]
     aur: bool,
+
+    /// Build from ABS (Arch Build System) source
+    #[arg(long = "abs")]
+    abs: bool,
+
+    /// Skip PGP signature checks when building from ABS (passes --skippgpcheck to makepkg)
+    #[arg(long = "skippgp")]
+    skippgp: bool,
 
     /// Verbose output / detailed info in search mode (-sv = aura -Si/-Ai)
     #[arg(short = 'v', long = "verbose")]
@@ -200,7 +213,8 @@ fn print_help() {
     println!("   emerge --resume [ --pretend | --ask | --skipfirst ]");
     println!("   emerge --help");
     println!("Options: -[1aCcDehNnpsuVv]");
-    println!("          [ --aur                        ] [ --deep       ]");
+    println!("          [ --abs                        ] [ --aur        ]");
+    println!("          [ --deep                       ] [ --deep       ]");
     println!("          [ --emptytree                  ] [ --newuse     ]");
     println!("          [ --noreplace                  ] [ --oneshot    ]");
     println!("          [ --pretend                    ] [ --skipfirst  ]");
@@ -349,72 +363,70 @@ fn is_installed(pkg: &str) -> bool {
 
 /// Get the repository a package was installed from (e.g. "cachyos-extra-v3", "aur").
 ///
+/// pacman output is locale-dependent ("Repository" / "Сховище" / "Repository" etc.).
+/// We force LC_ALL=C so field names are always English.
+///
 /// Strategy:
-///   1. pacman -Qi <pkg>  — local DB; knows exactly which repo the *installed*
-///      package came from. No Repository line -> AUR/foreign build.
-///   2. pacman -Si <pkg>  — sync DB fallback for packages not yet installed
-///      (e.g. --select). Returns the first Repository field found.
-///   3. Neither succeeds -> return None (bare name used in world.set).
+///   1. LC_ALL=C pacman -Qi <pkg> — local DB; knows the exact repo of the
+///      installed package. No "Repository" line → AUR/foreign build.
+///   2. LC_ALL=C pacman -Si <pkg> — sync DB fallback for not-yet-installed
+///      packages (e.g. --select). Takes the first hit (highest-priority repo).
 fn get_pkg_repo(pkg: &str) -> Option<String> {
-    // Strip repo prefix if caller passed "repo/pkg" — we only need bare name
     let bare = pkg.split('/').last().unwrap_or(pkg);
 
-    // 1. Local DB — most accurate for installed packages
-    let qi = Command::new(PACMAN_BIN)
-        .args(["-Qi", bare])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output();
-
-    if let Ok(out) = qi {
+    fn pacman_c(args: &[&str]) -> Option<String> {
+        let out = Command::new("/usr/bin/pacman")
+            .args(args)
+            .env("LC_ALL", "C")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
         if out.status.success() {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            for line in stdout.lines() {
-                if line.starts_with("Repository") {
-                    if let Some(val) = line.splitn(2, ':').nth(1) {
-                        let repo = val.trim().to_string();
-                        if !repo.is_empty() {
-                            return Some(repo);
-                        }
-                    }
-                }
-            }
-            // pacman -Qi succeeded but has no Repository field -> AUR/foreign
-            return Some("aur".to_string());
+            Some(String::from_utf8_lossy(&out.stdout).into_owned())
+        } else {
+            None
         }
     }
 
-    // 2. Sync DB fallback — for packages not yet installed (e.g. --select)
-    let si = Command::new(PACMAN_BIN)
-        .args(["-Si", bare])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output();
-
-    if let Ok(out) = si {
-        if out.status.success() {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            for line in stdout.lines() {
-                if line.starts_with("Repository") {
-                    if let Some(val) = line.splitn(2, ':').nth(1) {
-                        let repo = val.trim().to_string();
-                        if !repo.is_empty() {
-                            return Some(repo);
-                        }
-                    }
+    fn first_repo(stdout: &str) -> Option<String> {
+        for line in stdout.lines() {
+            // -Qi (C locale) uses "Installed From", -Si uses "Repository"
+            if line.starts_with("Installed From") || line.starts_with("Repository") {
+                if let Some(val) = line.splitn(2, ':').nth(1) {
+                    let r = val.trim().to_string();
+                    if !r.is_empty() { return Some(r); }
                 }
             }
         }
+        None
+    }
+
+    // 1. Local DB — authoritative for installed packages
+    if let Some(stdout) = pacman_c(&["-Qi", bare]) {
+        return first_repo(&stdout);  // None here = locally built, no repo field
+    }
+
+    // 2. Sync DB — for packages not yet installed (--select etc.)
+    if let Some(stdout) = pacman_c(&["-Si", bare]) {
+        return first_repo(&stdout);
     }
 
     None
 }
 
-/// Format package entry for world.set: "repo/name" if repo known, else just "name".
-fn pkg_world_entry(pkg: &str) -> String {
+/// Format package entry for world.set.
+/// - Known repo (official/AUR overlay)  → "repo/name"
+/// - Locally built (pacman "None")       → "forced_prefix/name" if known, else "Err/name"
+/// - Not installed, not in sync DB       → bare "name"
+fn pkg_world_entry(pkg: &str, forced_prefix: Option<&str>) -> String {
     let bare = pkg.split('/').last().unwrap_or(pkg);
     match get_pkg_repo(bare) {
-        Some(repo) => format!("{}/{}", repo, bare),
+        Some(repo) if repo != "None" => format!("{}/{}", repo, bare),
+        Some(_) /* "None" = local build */ => {
+            let prefix = forced_prefix.unwrap_or("Err");
+            format!("{}/{}", prefix, bare)
+        }
         None => bare.to_string(),
     }
 }
@@ -462,6 +474,143 @@ fn run_cmd(prog: &str, args: &[&str], packages: &[String]) -> bool {
             false
         }
     }
+}
+
+// ── ABS (Arch Build System) support ──────────────────────────────────────────
+
+/// Query .SRCINFO from ABS GitLab (raw) to get pkgver without cloning.
+fn abs_get_version(pkg: &str) -> String {
+    // Try to fetch .SRCINFO from GitLab raw API
+    let url = format!("{}/{}/raw/HEAD/.SRCINFO", ABS_GITLAB_BASE, pkg);
+    let output = Command::new("curl")
+        .args(["-sf", "--max-time", "5", &url])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output();
+
+    if let Ok(out) = output {
+        if out.status.success() {
+            let text = String::from_utf8_lossy(&out.stdout);
+            for line in text.lines() {
+                let line = line.trim();
+                if line.starts_with("pkgver = ") {
+                    return line["pkgver = ".len()..].trim().to_string();
+                }
+            }
+        }
+    }
+    "?".to_string()
+}
+
+/// Build and install packages from ABS (Arch Build System) via asp.
+/// Uses `asp checkout <pkg>` to fetch the official PKGBUILD, then runs makepkg -si.
+fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool) -> bool {
+    for bin in &[ASP_BIN, MAKEPKG_BIN] {
+        if !std::path::Path::new(bin).exists() {
+            eprintln!(">>> Fatal: required binary not found: {}", bin);
+            if *bin == ASP_BIN {
+                eprintln!(">>> Hint: install asp with: emerge asp");
+            }
+            return false;
+        }
+    }
+
+    let pkg_infos: Vec<PkgInfo> = pkgs.iter().filter_map(|pkg| {
+        let bare = pkg.split('/').last().unwrap_or(pkg);
+        if !validate_pkg(bare) || bare.contains('/') {
+            eprintln!(">>> Error: invalid package name '{}' — skipping", bare);
+            return None;
+        }
+        let version = abs_get_version(bare);
+        let is_new = !is_installed(bare);
+        Some(PkgInfo { name: bare.to_string(), version, is_new })
+    }).collect();
+
+    if pkg_infos.is_empty() { return false; }
+
+    println!("
+These are the packages that would be merged, in order:
+");
+    println!("Calculating dependencies... done!");
+    println!();
+    for p in &pkg_infos {
+        let status = if p.is_new { "N" } else { "U" };
+        println!("[ebuild  {:<4} ] {}-{} (ABS)", status, p.name, p.version);
+    }
+    println!();
+    println!("Total: {} package(s)", pkg_infos.len());
+    println!();
+
+    if pretend { return true; }
+
+    let build_base = std::env::temp_dir().join("aura-emerge-abs");
+    let mut all_ok = true;
+
+    for (i, info) in pkg_infos.iter().enumerate() {
+        println!(
+            ">>> Emerging ({} of {}) {}-{} from ABS",
+            i + 1, pkg_infos.len(), info.name, info.version
+        );
+        println!();
+
+        let pkg_dir = build_base.join(&info.name);
+
+        if !pkg_dir.starts_with(&build_base) {
+            eprintln!(">>> Error: suspicious path for '{}' — skipping", info.name);
+            all_ok = false;
+            continue;
+        }
+
+        if pkg_dir.exists() {
+            let _ = std::fs::remove_dir_all(&pkg_dir);
+        }
+        let _ = std::fs::create_dir_all(&build_base);
+
+        println!(">>> Fetching {} from ABS via asp...", info.name);
+        let checkout_ok = Command::new(ASP_BIN)
+            .args(["checkout", &info.name])
+            .current_dir(&build_base)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+        if !checkout_ok {
+            eprintln!(">>> Error: asp checkout failed for '{}'", info.name);
+            eprintln!(">>> Note: package may not exist in ABS. Try without --abs or use --aur.");
+            all_ok = false;
+            continue;
+        }
+
+        // asp creates <pkg>/trunk/ — that's where PKGBUILD lives
+        let trunk_dir = pkg_dir.join("trunk");
+        let build_dir = if trunk_dir.exists() { trunk_dir } else { pkg_dir.clone() };
+
+        let mut makepkg_args = vec!["-si"];
+        if !ask    { makepkg_args.push("--noconfirm"); }
+        if oneshot { makepkg_args.push("--asdeps"); }
+        if skippgp { makepkg_args.push("--skippgpcheck"); }
+
+        let build_ok = Command::new(MAKEPKG_BIN)
+            .args(&makepkg_args)
+            .current_dir(&build_dir)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+        if !build_ok {
+            eprintln!(">>> Error: makepkg failed for '{}'", info.name);
+            if !skippgp {
+                eprintln!(">>> Hint: if the build failed due to a missing PGP key, run:");
+                eprintln!(">>>   gpg --recv-keys <key-id>");
+                eprintln!(">>> Or retry with --skippgp to bypass signature checks.");
+            }
+            all_ok = false;
+        }
+
+        let _ = std::fs::remove_dir_all(&pkg_dir);
+    }
+
+    all_ok
 }
 
 // ── portageq shim ─────────────────────────────────────────────────────────────
@@ -705,7 +854,7 @@ fn main() {
         for p in &target_pkgs {
             println!(">>> Selecting {} into world.set...", p);
         }
-        add_to_world_set(&target_pkgs);
+        add_to_world_set(&target_pkgs, None);
         return;
     }
 
@@ -831,7 +980,10 @@ fn main() {
 
         let success: bool;
 
-        if cli.aur {
+        if cli.abs {
+            // ABS: build from official Arch source repos
+            success = abs_install(&target_pkgs, cli.pretend, cli.ask, cli.oneshot, cli.skippgp);
+        } else if cli.aur {
             let pkg_infos = resolve_aur(&target_pkgs);
             print_emerge_plan(&pkg_infos);
             if cli.pretend { return; }
@@ -867,14 +1019,15 @@ fn main() {
         if success && !cli.oneshot && !cli.pretend {
             println!();
             println!(">>> Auto-cleaning packages...");
-            add_to_world_set(&target_pkgs);
+            let prefix = if cli.abs { Some("abs") } else if cli.aur { Some("aur") } else { None };
+            add_to_world_set(&target_pkgs, prefix);
         }
     }
 }
 
 // ── world.set ─────────────────────────────────────────────────────────────────
 
-fn add_to_world_set(packages: &[String]) {
+fn add_to_world_set(packages: &[String], forced_prefix: Option<&str>) {
     println!(">>> Adding to world.set...");
 
     if !is_safe_path(WORLD_SET_FILE) {
@@ -898,8 +1051,11 @@ fn add_to_world_set(packages: &[String]) {
     let mut changed = false;
     for pkg in packages {
         let bare = pkg.split('/').last().unwrap_or(pkg).to_string();
-        let entry = pkg_world_entry(pkg);
-        if current_set.get(&bare).map(|e| e != &entry).unwrap_or(true) {
+        let entry = pkg_world_entry(&bare, forced_prefix);
+        // Always overwrite: re-resolves repo on every install so stale entries
+        // (e.g. "aur/nano" left from a locale-parsing bug) get corrected.
+        let stale = current_set.get(&bare).map(|e| e != &entry).unwrap_or(true);
+        if stale {
             current_set.insert(bare, entry);
             changed = true;
         }
