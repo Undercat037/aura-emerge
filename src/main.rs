@@ -9,6 +9,7 @@ aura-emerge: A gentoo-like wrapper for the aura AUR helper.
 */
 
 use clap::Parser;
+use colored::Colorize;
 use std::collections::HashSet;
 use std::fs;
 use std::io::{self, BufRead, Write};
@@ -479,7 +480,9 @@ fn pkg_world_entry(pkg: &str, forced_prefix: Option<&str>) -> String {
 // ── Emerge-style output ───────────────────────────────────────────────────────
 
 fn print_emerge_plan(pkgs: &[PkgInfo]) {
-    println!("\nThese are the packages that would be merged, in order:\n");
+    println!();
+    println!("{}", "These are the packages that would be merged, in order:".green().bold());
+    println!();
     println!("Calculating dependencies... done!");
     println!();
     for p in pkgs {
@@ -488,39 +491,47 @@ fn print_emerge_plan(pkgs: &[PkgInfo]) {
         } else {
             format!("{}/{}-{}", p.repo, p.name, p.version)
         };
-        println!("[ebuild  {:<4} ] {}", p.status, atom);
+        let status_col = match p.status.as_str() {
+            "N" => p.status.green().bold().to_string(),
+            "U" => p.status.yellow().bold().to_string(),
+            "D" => p.status.red().bold().to_string(),
+            _   => p.status.cyan().bold().to_string(),
+        };
+        println!("[{}  {:<4} ] {}", "ebuild".green(), status_col, atom.bold());
     }
     println!();
-    println!("Total: {} package(s)", pkgs.len());
+    println!("{}: {} package(s)", "Total".bold(), pkgs.len());
     println!();
 }
 
 fn print_emerge_emerging(pkgs: &[PkgInfo]) {
     let total = pkgs.len();
-    println!(">>> Verifying ebuild manifests");
+    let pfx = ">>>".green().bold();
+    println!("{} Verifying ebuild manifests", pfx);
     for (i, p) in pkgs.iter().enumerate() {
         let atom = if p.repo.is_empty() {
             format!("{}-{}", p.name, p.version)
         } else {
             format!("{}/{}-{}", p.repo, p.name, p.version)
         };
-        println!(">>> Emerging ({} of {}) {}", i + 1, total, atom);
+        println!("{} Emerging ({} of {}) {}", pfx, i + 1, total, atom.green().bold());
     }
     println!();
 }
 
 fn print_emerge_completed(pkgs: &[PkgInfo]) {
     let total = pkgs.len();
+    let pfx = ">>>".green().bold();
     for (i, p) in pkgs.iter().enumerate() {
         let atom = if p.repo.is_empty() {
             format!("{}-{}", p.name, p.version)
         } else {
             format!("{}/{}-{}", p.repo, p.name, p.version)
         };
-        println!(">>> Installing ({} of {}) {}", i + 1, total, atom);
-        println!(">>> Completed  ({} of {}) {}", i + 1, total, atom);
+        println!("{} Installing ({} of {}) {}", pfx, i + 1, total, atom.green().bold());
+        println!("{} Completed  ({} of {}) {}", pfx, i + 1, total, atom.green().bold());
     }
-    println!(">>> Jobs: {} of {} complete", total, total);
+    println!("{} Jobs: {} of {} complete", pfx, total, total);
     println!();
 }
 
@@ -791,10 +802,10 @@ fn main() {
 
         if cli.searchdesc {
             // Search descriptions: pacman -Ss for official, aura -As for AUR
-            println!(">>> Searching descriptions for '{}'...", target_pkgs.join(" "));
+            println!("{} Searching descriptions for '{}'...", ">>>".green().bold(), target_pkgs.join(" "));
             run_cmd(AURA_BIN, &["-Ss"], &target_pkgs);
             println!();
-            println!(">>> Searching AUR descriptions for '{}'...", target_pkgs.join(" "));
+            println!("{} Searching {} descriptions for '{}'...", ">>>".green().bold(), "AUR".cyan().bold(), target_pkgs.join(" "));
             run_cmd(AURA_BIN, &["-As"], &target_pkgs);
             return;
         }
@@ -893,7 +904,7 @@ fn main() {
                 }
                 println!();
                 for p in &to_remove {
-                    println!("[unmerge     ] {}", p);
+                    println!("[{}] {}", "unmerge".red().bold(), p);
                 }
                 println!();
                 println!("Total: {} package(s) to prune", to_remove.len());
@@ -962,7 +973,7 @@ fn main() {
         run_cmd(AURA_BIN, &["-Au"], &[]);
 
         println!();
-        println!(">>> Auto-cleaning packages...");
+        println!("{} Auto-cleaning packages...", ">>>".green().bold());
         return;
     }
 
@@ -988,7 +999,7 @@ fn main() {
 
                 println!();
                 for o in &orphans {
-                    println!("[unmerge     ] {}", o);
+                    println!("[{}] {}", "unmerge".red().bold(), o);
                 }
                 println!();
                 println!("Total: {} orphaned package(s) to remove", orphans.len());
@@ -1015,11 +1026,11 @@ fn main() {
             std::process::exit(1);
         }
 
-        println!(" * This action can remove important packages! In order to be safer, use");
-        println!(" * `emerge -p --depclean <atom>` to check for reverse dependencies before");
-        println!(" * removing packages.");
+        println!("{} This action can remove important packages! In order to be safer, use", " *".yellow().bold());
+        println!("{} `emerge -p --depclean <atom>` to check for reverse dependencies before", " *".yellow().bold());
+        println!("{} removing packages.", " *".yellow().bold());
         println!();
-        println!(">>> These are the packages that would be unmerged:");
+        println!("{} These are the packages that would be unmerged:", ">>>".green().bold());
         println!();
         for p in &target_pkgs {
             let bare = p.split('/').last().unwrap_or(p);
@@ -1045,10 +1056,10 @@ fn main() {
             println!("     omitted: none");
         }
         println!();
-        println!(">>> 'Selected' packages are slated for removal.");
-        println!(">>> 'Protected' and 'omitted' packages will not be removed.");
+        println!("{} {} packages are slated for removal.", ">>>".green().bold(), "'Selected'".yellow().bold());
+        println!("{} {} and {} packages will not be removed.", ">>>".green().bold(), "'Protected'".green(), "'omitted'".cyan());
         println!();
-        println!(">>> Unmerging {}...", target_pkgs.join(", "));
+        println!("{} Unmerging {}...", ">>>".green().bold(), target_pkgs.join(", ").bold());
 
         let mut aura_args = vec!["-R"];
         if cli.pretend {
@@ -1124,7 +1135,7 @@ fn main() {
                 print_emerge_completed(&installed_infos);
             }
             if !cli.oneshot {
-                println!(">>> Auto-cleaning packages...");
+                println!("{} Auto-cleaning packages...", ">>>".green().bold());
                 let prefix = if cli.abs { Some("abs") } else if cli.aur { Some("aur") } else { None };
                 add_to_world_set(&target_pkgs, prefix);
             }
@@ -1138,7 +1149,7 @@ fn main() {
 /// Reads current entries, calls get_pkg_repo() for each, rewrites the file.
 /// Useful after locale fixes, repo migrations, or manual edits.
 fn regen_world_set() {
-    println!(">>> Regenerating world.set repository prefixes...");
+    println!("{} Regenerating world.set repository prefixes...", ">>>".green().bold());
 
     if !is_safe_path(WORLD_SET_FILE) {
         eprintln!(">>> Warning: {} is a symlink — refusing to modify", WORLD_SET_FILE);
@@ -1172,17 +1183,17 @@ fn regen_world_set() {
     }
 
     if changed == 0 {
-        println!(">>> world.set is already up to date.");
+        println!("{} world.set is already up to date.", ">>>".green().bold());
         return;
     }
 
     updated.sort();
     write_world_set(&updated);
-    println!(">>> world.set updated ({} entries changed).", changed);
+    println!("{} world.set updated ({} entries changed).", ">>>".green().bold(), changed);
 }
 
 fn add_to_world_set(packages: &[String], forced_prefix: Option<&str>) {
-    println!(">>> Adding to world.set...");
+    println!("{} Adding to world.set...", ">>>".green().bold());
 
     if !is_safe_path(WORLD_SET_FILE) {
         eprintln!(">>> Warning: {} is a symlink — refusing to read", WORLD_SET_FILE);
