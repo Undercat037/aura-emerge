@@ -26,7 +26,7 @@ paru -S aura-emerge
 
 ## Gentoo → Arch: make.conf equivalent
 
-Arch Linux doesn't have USE flags, but you can configure compilation options similarly to Gentoo's `/etc/portage/make.conf` by editing `/etc/makepkg.conf`:
+Arch Linux doesn't have USE flags, but you can configure compilation options similarly to [Gentoo](https://wiki.gentoo.org/wiki/Main_Page)'s `/etc/portage/make.conf` by editing `/etc/makepkg.conf`:
 
 ```bash
 sudo nvim /etc/makepkg.conf
@@ -37,6 +37,8 @@ Key options that map to Gentoo concepts:
 | Gentoo (`make.conf`)         | Arch (`makepkg.conf`)         | Purpose                        |
 |------------------------------|-------------------------------|--------------------------------|
 | `CFLAGS="-O2 -march=native"` | `CFLAGS="-O2 -march=native"`  | Compiler optimisation flags    |
+| `CXXFLAGS="-O2 -march=..."`  | `CXXFLAGS="-O2 -march=..."`   | C++ compiler flags             |
+| `RUSTFLAGS="-C opt-level=3"` | `RUSTFLAGS="-C opt-level=3"`  | Rust compiler flags            |
 | `MAKEOPTS="-j$(nproc)"`      | `MAKEFLAGS="-j$(nproc)"`      | Parallel build jobs            |
 | `USE="lto"`                  | `OPTIONS+=(lto)`              | Link-time optimisation         |
 | `FEATURES="ccache"`          | `BUILDENV+=(ccache)`          | Build cache                    |
@@ -44,12 +46,17 @@ Key options that map to Gentoo concepts:
 
 > **Note:** USE flags don't exist in Arch — packages are compiled with a fixed set of options by the maintainer. You can patch a PKGBUILD from ABS (`emerge --abs <pkg>`) to add or remove features before building.
 
+For `CFLAGS`/`CXXFLAGS` reference see [GCC optimization flags](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html), for `RUSTFLAGS` see [rustc codegen options](https://doc.rust-lang.org/rustc/codegen-options/index.html).
+
+[**→ Example makepkg.conf**](makepkg.conf)
+
 ## Usage
 
 ```bash
 emerge nano                  # install package (official repos, fallbacks to AUR)
 emerge nano --aur            # install from AUR explicitly
 emerge nano --abs            # build from ABS (Arch Build System) source via asp
+emerge nano --abs --skippgp  # build from ABS, skip PGP signature check
 emerge -c                    # remove orphans (depclean)
 emerge -C nano               # remove specific package (unmerge)
 emerge -u @world             # update entire system (official + AUR)
@@ -66,6 +73,7 @@ emerge --select nano         # add to world.set without installing
 emerge --deselect nano       # remove from world.set without unmerging
 emerge --prune               # remove packages not tracked in world.set
 emerge --regen               # regenerate package metadata cache
+emerge --regen-world         # re-resolve repository prefixes in world.set
 emerge --resume              # resume last interrupted transaction
 emerge --resume --skipfirst  # resume, skipping the first package
 ```
@@ -81,8 +89,11 @@ cachyos-extra-v3/rust-analyzer
 chaotic-aur/visual-studio-code-bin
 core/nano
 aur/ayugram-desktop-bin
+abs/nano-custom
 extra/firefox
 ```
+
+Prefixes: official repo name, `aur/` for AUR packages, `abs/` for locally built from ABS, `Err/` if the source cannot be determined.
 
 ## Flags
 
@@ -101,11 +112,13 @@ extra/firefox
 | `-n` | Do not reinstall (noreplace) |
 | `--aur` | Force AUR |
 | `--abs` | Build from ABS source via asp |
+| `--skippgp` | Skip PGP checks when building from ABS |
 | `--sync` | Sync databases |
 | `--select` | Add to world.set (no install) |
 | `--deselect` | Remove from world.set (no unmerge) |
 | `--prune` | Remove packages not in world.set |
 | `--regen` | Regenerate metadata cache |
+| `--regen-world` | Re-resolve repo prefixes in world.set |
 | `--resume` | Resume interrupted transaction |
 | `--skipfirst` | Skip first pkg when resuming |
 | `--with-bdeps` | Pull in build-time deps (compat) |
