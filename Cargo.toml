@@ -1,6 +1,6 @@
 [package]
 name = "aura-emerge"
-version = "1.21.0"
+version = "1.21.1"
 edition = "2021"
 license = "GPLv3 or later"
 
