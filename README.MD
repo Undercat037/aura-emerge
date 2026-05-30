@@ -125,6 +125,10 @@ Prefixes: official repo name, `aur/` for AUR packages, `abs/` for locally built 
 | `-h` / `--help` | Show help |
 | `-V` / `--version` | Show version |
 
+## Demo
+
+[vhs-emerge](repo-files/emerge.gif)
+
 ## Author
 
 **Undercat037**

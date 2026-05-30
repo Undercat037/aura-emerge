@@ -127,9 +127,9 @@ extra/firefox
 | `-h` / `--help` | Показати довідку |
 | `-V` / `--version` | Показати версію |
 
-## Приклад роботи
+## Демонстрація
 
-[**vhs-emerge**](repo-files/emerge.mp4)
+[vhs-emerge](repo-files/emerge.gif)
 
 ## Автор
 
