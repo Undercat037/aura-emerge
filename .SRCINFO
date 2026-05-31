@@ -1,0 +1,17 @@
+pkgbase = aura-emerge
+	pkgdesc = Portage-like wrapper for Arch Linux using Aura
+	pkgver = 1.21.0
+	pkgrel = 1
+	url = https://github.com/Undercat037/aura-emerge
+	arch = x86_64
+	license = GPL-3.0
+	makedepends = rust
+	makedepends = cargo
+	depends = aura
+	optdepends = asp: for --abs support (build from ABS source)
+	optdepends = gnupg: for PGP verification when building from ABS
+	backup = etc/emerge/world.set
+	source = aura-emerge-1.21.0.tar.gz::https://github.com/Undercat037/aura-emerge/archive/refs/heads/main.tar.gz
+	sha256sums = SKIP
+
+pkgname = aura-emerge

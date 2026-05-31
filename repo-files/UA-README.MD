@@ -56,6 +56,7 @@ emerge nano                  # встановити пакунок (офіцій
 emerge nano --aur            # встановити виключно з AUR
 emerge nano --abs            # зібрати з ABS (Arch Build System) через asp
 emerge nano --abs --skippgp  # зібрати з ABS, пропустити перевірку PGP підпису
+emerge nano --abs --edit     # зібрати з ABS, з редагуванням PKGBUILD
 emerge -c                    # видалити сиріт (depclean)
 emerge -C nano               # видалити конкретний пакунок (unmerge)
 emerge -u @world             # оновити всю систему (офіційні + AUR)
@@ -112,6 +113,7 @@ extra/firefox
 | `--aur` | Примусово використати AUR |
 | `--abs` | Зібрати з ABS через asp |
 | `--skippgp` | Пропустити перевірку PGP при збірці з ABS |
+| `--edit` | Редагування PKGBUILD перед збіркою пакета через ABS |
 | `--sync` | Синхронізувати бази даних |
 | `--select` | Додати до world.set (без встановлення) |
 | `--deselect` | Прибрати з world.set (без видалення) |
