@@ -1204,7 +1204,25 @@ fn regen_world_set() {
 
     for entry in &entries {
         let bare = entry.split('/').last().unwrap_or(entry);
-        let new_entry = pkg_world_entry(bare, None);
+        // Preserve existing prefix for locally-built and unknown packages
+        let old_prefix: Option<&str> = if entry.contains('/') {
+            entry.splitn(2, '/').next()
+        } else {
+            None
+        };
+
+        let new_entry = match get_pkg_repo(bare) {
+            // Known repo → update to actual repo
+            Some(repo) if repo != "None" => format!("{}/{}", repo, bare),
+            // "None" = locally built (AUR/ABS) → keep old prefix
+            Some(_) => match old_prefix {
+                Some(p) => format!("{}/{}", p, bare),
+                None    => format!("Err/{}", bare),
+            },
+            // Not installed, not in sync DB → keep entry unchanged
+            None => entry.clone(),
+        };
+
         if &new_entry != entry {
             println!("  {} -> {}", entry, new_entry);
             changed += 1;
