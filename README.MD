@@ -56,6 +56,7 @@ emerge nano                  # install package (official repos, fallbacks to AUR
 emerge nano --aur            # install from AUR explicitly
 emerge nano --abs            # build from ABS (Arch Build System) source via asp
 emerge nano --abs --skippgp  # build from ABS, skip PGP signature check
+emerge nano --abs --edit     # build from ABS, with edit PKGBUILD
 emerge -c                    # remove orphans (depclean)
 emerge -C nano               # remove specific package (unmerge)
 emerge -u @world             # update entire system (official + AUR)
@@ -112,6 +113,7 @@ Prefixes: official repo name, `aur/` for AUR packages, `abs/` for locally built 
 | `--aur` | Force AUR |
 | `--abs` | Build from ABS source via asp |
 | `--skippgp` | Skip PGP checks when building from ABS |
+| `--edit` | Edit PKGBUILD when building from ABS |
 | `--sync` | Sync databases |
 | `--select` | Add to world.set (no install) |
 | `--deselect` | Remove from world.set (no unmerge) |

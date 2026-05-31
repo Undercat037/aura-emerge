@@ -103,6 +103,10 @@ struct Cli {
     #[arg(long = "skippgp")]
     skippgp: bool,
 
+    /// Open $EDITOR on PKGBUILD before building (use with --abs)
+    #[arg(long = "edit")]
+    edit: bool,
+
     /// Verbose output / detailed info in search mode (-sv = aura -Si/-Ai)
     #[arg(short = 'v', long = "verbose")]
     verbose: bool,
@@ -589,7 +593,7 @@ fn abs_get_version(pkg: &str) -> String {
 
 /// Build and install packages from ABS (Arch Build System) via asp.
 /// Uses `asp checkout <pkg>` to fetch the official PKGBUILD, then runs makepkg -si.
-fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool) -> bool {
+fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool) -> bool {
     for bin in &[ASP_BIN, MAKEPKG_BIN] {
         if !std::path::Path::new(bin).exists() {
             eprintln!(">>> Fatal: required binary not found: {}", bin);
@@ -684,6 +688,26 @@ fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp
         // asp creates <pkg>/trunk/ — that's where PKGBUILD lives
         let trunk_dir = pkg_dir.join("trunk");
         let build_dir = if trunk_dir.exists() { trunk_dir } else { pkg_dir.clone() };
+
+        // Open PKGBUILD in $EDITOR before building if --edit is set
+        if edit {
+            let editor = std::env::var("EDITOR")
+                .or_else(|_| std::env::var("VISUAL"))
+                .unwrap_or_else(|_| "nano".to_string());
+            let pkgbuild = build_dir.join("PKGBUILD");
+            println!("{} Opening {} in {}...",
+                ">>>".green().bold(),
+                "PKGBUILD".bold(),
+                editor.green().bold()
+            );
+            println!("{} Save and close the editor to continue building.",
+                ">>>".yellow().bold()
+            );
+            Command::new(&editor)
+                .arg(&pkgbuild)
+                .status()
+                .ok();
+        }
 
         let mut makepkg_args = vec!["-si"];
         if !ask    { makepkg_args.push("--noconfirm"); }
@@ -1126,7 +1150,7 @@ fn main() {
         let mut installed_infos: Vec<PkgInfo> = Vec::new();
 
         if cli.abs {
-            success = abs_install(&target_pkgs, cli.pretend, cli.ask, cli.oneshot, cli.skippgp);
+            success = abs_install(&target_pkgs, cli.pretend, cli.ask, cli.oneshot, cli.skippgp, cli.edit);
         } else if cli.aur {
             let pkg_infos = resolve_aur(&target_pkgs);
             print_emerge_plan(&pkg_infos);
@@ -1204,25 +1228,7 @@ fn regen_world_set() {
 
     for entry in &entries {
         let bare = entry.split('/').last().unwrap_or(entry);
-        // Preserve existing prefix for locally-built and unknown packages
-        let old_prefix: Option<&str> = if entry.contains('/') {
-            entry.splitn(2, '/').next()
-        } else {
-            None
-        };
-
-        let new_entry = match get_pkg_repo(bare) {
-            // Known repo → update to actual repo
-            Some(repo) if repo != "None" => format!("{}/{}", repo, bare),
-            // "None" = locally built (AUR/ABS) → keep old prefix
-            Some(_) => match old_prefix {
-                Some(p) => format!("{}/{}", p, bare),
-                None    => format!("Err/{}", bare),
-            },
-            // Not installed, not in sync DB → keep entry unchanged
-            None => entry.clone(),
-        };
-
+        let new_entry = pkg_world_entry(bare, None);
         if &new_entry != entry {
             println!("  {} -> {}", entry, new_entry);
             changed += 1;
