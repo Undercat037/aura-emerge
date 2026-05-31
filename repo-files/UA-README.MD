@@ -45,8 +45,6 @@ sudo nvim /etc/makepkg.conf
 | `FEATURES="ccache"`          | `BUILDENV+=(ccache)`          | Кеш збірки                          |
 | `PORTDIR` / `PKGDIR`         | `PKGDEST`, `SRCDEST`          | Директорії артефактів збірки        |
 
-> **Примітка:** USE-прапори в Arch відсутні — пакунки компілюються з фіксованим набором опцій від мейнтейнера. Щоб додати або прибрати функціональність, можна підправити PKGBUILD з ABS (`emerge --abs <pkg>`) перед збіркою.
-
 Довідка по `CFLAGS`/`CXXFLAGS` — [прапори оптимізації GCC](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html), по `RUSTFLAGS` — [параметри кодогенерації rustc](https://doc.rust-lang.org/rustc/codegen-options/index.html).
 
 [**→ Приклад makepkg.conf**](repo-files/makepkg.conf)
