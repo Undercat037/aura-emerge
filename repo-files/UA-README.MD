@@ -20,7 +20,7 @@ sudo touch /etc/emerge/world.set
 ```bash
 paru -S aura-emerge 
 ```
-[Релізний бінарник](target/release/)
+[Релізний бінарник](target/release/) (RUSTFLAGS="-C target-cpu=znver3 -C opt-level=2")
 
 **Вимоги:** `aura` має бути встановлена та доступна в `/usr/bin/aura`.  
 **Опційно:** `asp` для підтримки `--abs` (`emerge asp`).

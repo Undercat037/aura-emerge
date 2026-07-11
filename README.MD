@@ -20,7 +20,7 @@ or via AUR:
 ```bash
 paru -S aura-emerge 
 ```
-[Release binary](target/release/)
+[Release binary](target/release/) (RUSTFLAGS="-C target-cpu=znver3 -C opt-level=2")
 
 **Requirements:** `aura` must be installed and in `/usr/bin/aura`.  
 **Optional:** `asp` for `--abs` support (`emerge asp`).
