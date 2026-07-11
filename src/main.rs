@@ -840,7 +840,6 @@ fn portageq_shim(args: &[String]) {
     }
 }
 
-
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -1294,14 +1293,47 @@ fn main() {
             }
         }
 
-        if success && !cli.pretend {
+        if !cli.pretend {
             if !installed_infos.is_empty() {
                 print_emerge_completed(&installed_infos);
             }
+
             if !cli.oneshot {
-                println!("{} Auto-cleaning packages...", ">>>".green().bold());
-                let prefix = if cli.abs { Some("abs") } else if cli.aur { Some("aur") } else { None };
-                add_to_world_set(&target_pkgs, prefix);
+                if cli.abs {
+                    // abs_install() doesn't populate installed_infos (single
+                    // build source, no partial-success case to track).
+                    if success {
+                        println!("{} Auto-cleaning packages...", ">>>".green().bold());
+                        add_to_world_set(&target_pkgs, Some("abs"));
+                    }
+                } else if !installed_infos.is_empty() {
+                    println!("{} Auto-cleaning packages...", ">>>".green().bold());
+                    // Record only what actually got installed, with the
+                    // correct repo prefix per package. This matters for a
+                    // mixed official+AUR install where one half can succeed
+                    // while the other fails — we must not lose track of the
+                    // half that worked, and must not force an "aur" prefix
+                    // onto an official package or vice versa.
+                    let official_names: Vec<String> = installed_infos.iter()
+                        .filter(|p| p.repo != "aur")
+                        .map(|p| p.name.clone())
+                        .collect();
+                    let aur_names: Vec<String> = installed_infos.iter()
+                        .filter(|p| p.repo == "aur")
+                        .map(|p| p.name.clone())
+                        .collect();
+                    if !official_names.is_empty() {
+                        add_to_world_set(&official_names, None);
+                    }
+                    if !aur_names.is_empty() {
+                        add_to_world_set(&aur_names, Some("aur"));
+                    }
+                }
+            }
+
+            if !success {
+                eprintln!(">>> Warning: not all requested packages were installed successfully.");
+                std::process::exit(1);
             }
         }
     }
