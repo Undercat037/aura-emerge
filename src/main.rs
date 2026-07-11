@@ -95,6 +95,10 @@ struct Cli {
     #[arg(long = "aur")]
     aur: bool,
 
+    /// Only use official repos: never search or install from the AUR
+    #[arg(long = "only-repos")]
+    only_repos: bool,
+
     /// Build from ABS (Arch Build System) source
     #[arg(long = "abs")]
     abs: bool,
@@ -228,7 +232,7 @@ fn print_help() {
     println!("   emerge --help");
     println!("Options: -[1aCcDehNnpsuVv]");
     println!("          [ --abs                        ] [ --aur        ]");
-    println!("          [ --skippgp                    ] [ --with-bdeps ]");
+    println!("          [ --only-repos                 ] [ --skippgp    ]");
     println!("          [ --deep                       ] [ --deep       ]");
     println!("          [ --emptytree                  ] [ --newuse     ]");
     println!("          [ --noreplace                  ] [ --oneshot    ]");
@@ -390,6 +394,47 @@ fn probe_official(pkgs: &[String]) -> Option<Vec<PkgInfo>> {
         .collect();
 
     if infos.is_empty() { None } else { Some(infos) }
+}
+
+/// Probe official repos and split the requested packages into those that were
+/// found (with full PkgInfo) and those that were not.
+///
+/// aura/pacman's `-Sp` fails (or simply omits a line) for the *whole* batch
+/// query if even a single package name doesn't match anything in the sync
+/// databases. Querying everything in one shot and treating a failure as
+/// "nothing found" would then incorrectly push every package — including the
+/// ones that DO exist officially — over to the AUR. To avoid that, we first
+/// try the fast batch probe; if it doesn't account for every package we asked
+/// about, we fall back to probing the missing ones individually so a single
+/// bad name can't poison the rest.
+fn probe_official_split(pkgs: &[String]) -> (Vec<PkgInfo>, Vec<String>) {
+    let bare_of = |p: &str| p.split('/').last().unwrap_or(p).to_string();
+
+    let mut found: Vec<PkgInfo> = Vec::new();
+    let mut found_names: HashSet<String> = HashSet::new();
+
+    if let Some(infos) = probe_official(pkgs) {
+        for info in infos {
+            found_names.insert(info.name.clone());
+            found.push(info);
+        }
+    }
+
+    // Anything the batch call didn't confirm gets re-checked one at a time.
+    let unresolved: Vec<&String> = pkgs
+        .iter()
+        .filter(|p| !found_names.contains(&bare_of(p)))
+        .collect();
+
+    let mut missing: Vec<String> = Vec::new();
+    for pkg in unresolved {
+        match probe_official(std::slice::from_ref(pkg)) {
+            Some(mut infos) if !infos.is_empty() => found.append(&mut infos),
+            _ => missing.push(pkg.clone()),
+        }
+    }
+
+    (found, missing)
 }
 
 /// Fetch AUR package info via -Ai output parsing.
@@ -795,6 +840,7 @@ fn portageq_shim(args: &[String]) {
     }
 }
 
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -823,6 +869,11 @@ fn main() {
 
     check_binaries();
 
+    if cli.aur && cli.only_repos {
+        eprintln!(">>> Error: --aur and --only-repos are mutually exclusive.");
+        std::process::exit(1);
+    }
+
     // Detect @world / world in package list
     let has_world = cli.packages.iter()
         .any(|p| p == "@world");
@@ -847,9 +898,11 @@ fn main() {
             // Search descriptions: pacman -Ss for official, aura -As for AUR
             println!("{} Searching descriptions for '{}'...", ">>>".green().bold(), target_pkgs.join(" "));
             run_cmd(AURA_BIN, &["-Ss"], &target_pkgs);
-            println!();
-            println!("{} Searching {} descriptions for '{}'...", ">>>".green().bold(), "AUR".cyan().bold(), target_pkgs.join(" "));
-            run_cmd(AURA_BIN, &["-As"], &target_pkgs);
+            if !cli.only_repos {
+                println!();
+                println!("{} Searching {} descriptions for '{}'...", ">>>".green().bold(), "AUR".cyan().bold(), target_pkgs.join(" "));
+                run_cmd(AURA_BIN, &["-As"], &target_pkgs);
+            }
             return;
         }
 
@@ -862,6 +915,11 @@ fn main() {
                 if found {
                     println!("{} Searching for '{}'...", ">>>".green().bold(), target_pkgs.join(" "));
                     run_cmd(AURA_BIN, &["-Si"], &target_pkgs);
+                } else if cli.only_repos {
+                    println!(
+                        ">>> '{}' not found in official repos. (--only-repos set, not searching AUR)",
+                        target_pkgs.join(" ")
+                    );
                 } else {
                     println!(
                         ">>> '{}' not found in official repos, searching AUR...",
@@ -876,9 +934,11 @@ fn main() {
         } else {
             println!("{} Searching for '{}'...", ">>>".green().bold(), target_pkgs.join(" "));
             run_cmd(AURA_BIN, &["-Ss"], &target_pkgs);
-            println!();
-            println!("{} Searching in {} for '{}'...", ">>>".green().bold(), "AUR".cyan().bold(), target_pkgs.join(" "));
-            run_cmd(AURA_BIN, &["-As"], &target_pkgs);
+            if !cli.only_repos {
+                println!();
+                println!("{} Searching in {} for '{}'...", ">>>".green().bold(), "AUR".cyan().bold(), target_pkgs.join(" "));
+                run_cmd(AURA_BIN, &["-As"], &target_pkgs);
+            }
         }
         return;
     }
@@ -1146,7 +1206,7 @@ fn main() {
             base_args.push("--needed");
         }
 
-        let success: bool;
+        let mut success: bool;
         let mut installed_infos: Vec<PkgInfo> = Vec::new();
 
         if cli.abs {
@@ -1160,28 +1220,78 @@ fn main() {
             aur_args.extend(&base_args);
             success = run_cmd(AURA_BIN, &aur_args, &target_pkgs);
             if success { installed_infos = pkg_infos; }
-        } else if let Some(pkg_infos) = probe_official(&target_pkgs) {
-            print_emerge_plan(&pkg_infos);
-            if cli.pretend { return; }
-            print_emerge_emerging(&pkg_infos);
-            let mut off_args = vec!["-S"];
-            if cli.verbose { off_args.push("--verbose"); }
-            off_args.extend(&base_args);
-            success = run_cmd(AURA_BIN, &off_args, &target_pkgs);
-            if success { installed_infos = pkg_infos; }
         } else {
-            println!(
-                ">>> Not found in official repos. Searching AUR for '{}'...",
-                target_pkgs.join(", ")
-            );
-            let pkg_infos = resolve_aur(&target_pkgs);
-            print_emerge_plan(&pkg_infos);
-            if cli.pretend { return; }
-            print_emerge_emerging(&pkg_infos);
-            let mut aur_args = vec!["-A"];
-            aur_args.extend(&base_args);
-            success = run_cmd(AURA_BIN, &aur_args, &target_pkgs);
-            if success { installed_infos = pkg_infos; }
+            // Probe official repos in a way that's safe against partial matches:
+            // a single unmatched name no longer drags every other package into
+            // an AUR search.
+            let (official_infos, missing) = probe_official_split(&target_pkgs);
+
+            if missing.is_empty() {
+                // Everything found in official repos.
+                print_emerge_plan(&official_infos);
+                if cli.pretend { return; }
+                print_emerge_emerging(&official_infos);
+                let mut off_args = vec!["-S"];
+                if cli.verbose { off_args.push("--verbose"); }
+                off_args.extend(&base_args);
+                success = run_cmd(AURA_BIN, &off_args, &target_pkgs);
+                if success { installed_infos = official_infos; }
+            } else if cli.only_repos {
+                // --only-repos: never touch the AUR, fail on unresolved names.
+                eprintln!(
+                    ">>> Error: the following package(s) were not found in official repos \
+                    and --only-repos is set, so the AUR was not searched:"
+                );
+                for m in &missing {
+                    eprintln!("    {}", m);
+                }
+                std::process::exit(1);
+            } else if official_infos.is_empty() {
+                // Nothing found officially at all — search AUR for everything.
+                println!(
+                    ">>> Not found in official repos. Searching AUR for '{}'...",
+                    missing.join(", ")
+                );
+                let pkg_infos = resolve_aur(&missing);
+                print_emerge_plan(&pkg_infos);
+                if cli.pretend { return; }
+                print_emerge_emerging(&pkg_infos);
+                let mut aur_args = vec!["-A"];
+                aur_args.extend(&base_args);
+                success = run_cmd(AURA_BIN, &aur_args, &missing);
+                if success { installed_infos = pkg_infos; }
+            } else {
+                // Mixed case: some packages are official, some need the AUR.
+                println!(
+                    ">>> Not found in official repos: '{}'. Searching AUR...",
+                    missing.join(", ")
+                );
+                let aur_infos = resolve_aur(&missing);
+                let mut all_infos = official_infos.clone();
+                all_infos.extend(aur_infos.clone());
+                print_emerge_plan(&all_infos);
+                if cli.pretend { return; }
+                print_emerge_emerging(&all_infos);
+
+                let official_names: Vec<String> =
+                    official_infos.iter().map(|p| p.name.clone()).collect();
+                let mut off_args = vec!["-S"];
+                if cli.verbose { off_args.push("--verbose"); }
+                off_args.extend(&base_args);
+                success = run_cmd(AURA_BIN, &off_args, &official_names);
+                if success {
+                    installed_infos.extend(official_infos);
+                }
+
+                let mut aur_args = vec!["-A"];
+                aur_args.extend(&base_args);
+                let aur_success = run_cmd(AURA_BIN, &aur_args, &missing);
+                if aur_success {
+                    installed_infos.extend(aur_infos);
+                } else {
+                    success = false;
+                }
+            }
         }
 
         if success && !cli.pretend {

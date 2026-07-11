@@ -20,7 +20,7 @@ or via AUR:
 ```bash
 paru -S aura-emerge 
 ```
-[Release binary](target/release/) (RUSTFLAGS="-C target-cpu=znver3 -C opt-level=2")
+[Release binary](target/release/)
 
 **Requirements:** `aura` must be installed and in `/usr/bin/aura`.  
 **Optional:** `asp` for `--abs` support (`emerge asp`).
@@ -54,6 +54,7 @@ For `CFLAGS`/`CXXFLAGS` reference see [GCC optimization flags](https://gcc.gnu.o
 ```bash
 emerge nano                  # install package (official repos, fallbacks to AUR)
 emerge nano --aur            # install from AUR explicitly
+emerge nano --only-repos     # install only from official repos, never touch the AUR
 emerge nano --abs            # build from ABS (Arch Build System) source via asp
 emerge nano --abs --skippgp  # build from ABS, skip PGP signature check
 emerge nano --abs --edit     # build from ABS, with edit PKGBUILD
@@ -62,6 +63,7 @@ emerge -C nano               # remove specific package (unmerge)
 emerge -u @world             # update entire system (official + AUR)
 emerge --sync                # sync package databases
 emerge -s nano               # search in official repos + AUR
+emerge -s nano --only-repos  # search official repos only, skip AUR
 emerge --searchdesc nano     # search by package description
 emerge -sv nano              # detailed info (aura -Si / -Ai)
 emerge -sv nano --aur        # detailed info from AUR only
@@ -111,6 +113,7 @@ Prefixes: official repo name, `aur/` for AUR packages, `abs/` for locally built 
 | `-v` | Verbose output |
 | `-n` | Do not reinstall (noreplace) |
 | `--aur` | Force AUR |
+| `--only-repos` | Only official repos, never search/install from AUR |
 | `--abs` | Build from ABS source via asp |
 | `--skippgp` | Skip PGP checks when building from ABS |
 | `--edit` | Edit PKGBUILD when building from ABS |

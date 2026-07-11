@@ -20,7 +20,7 @@ sudo touch /etc/emerge/world.set
 ```bash
 paru -S aura-emerge 
 ```
-[Релізний бінарник](target/release/) (RUSTFLAGS="-C target-cpu=znver3 -C opt-level=2")
+[Релізний бінарник](target/release/)
 
 **Вимоги:** `aura` має бути встановлена та доступна в `/usr/bin/aura`.  
 **Опційно:** `asp` для підтримки `--abs` (`emerge asp`).
@@ -54,6 +54,7 @@ sudo nvim /etc/makepkg.conf
 ```bash
 emerge nano                  # встановити пакунок (офіційні репо, автоматичний пошук в AUR)
 emerge nano --aur            # встановити виключно з AUR
+emerge nano --only-repos     # встановити лише з офіційних репо, без звернення до AUR
 emerge nano --abs            # зібрати з ABS (Arch Build System) через asp
 emerge nano --abs --skippgp  # зібрати з ABS, пропустити перевірку PGP підпису
 emerge nano --abs --edit     # зібрати з ABS, з редагуванням PKGBUILD
@@ -62,6 +63,7 @@ emerge -C nano               # видалити конкретний пакун�
 emerge -u @world             # оновити всю систему (офіційні + AUR)
 emerge --sync                # синхронізувати бази даних
 emerge -s nano               # пошук в офіційних репо + AUR
+emerge -s nano --only-repos  # пошук лише в офіційних репо, без AUR
 emerge --searchdesc nano     # пошук за описом пакунка
 emerge -sv nano              # детальна інформація (aura -Si / -Ai)
 emerge -sv nano --aur        # детальна інформація виключно з AUR
@@ -111,6 +113,7 @@ extra/firefox
 | `-v` | Детальний вивід (verbose) |
 | `-n` | Не перевстановлювати (noreplace) |
 | `--aur` | Примусово використати AUR |
+| `--only-repos` | Лише офіційні репо, без пошуку/встановлення з AUR |
 | `--abs` | Зібрати з ABS через asp |
 | `--skippgp` | Пропустити перевірку PGP при збірці з ABS |
 | `--edit` | Редагування PKGBUILD перед збіркою пакета через ABS |
