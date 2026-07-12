@@ -17,7 +17,9 @@ source=("$pkgname-$pkgver.tar.gz::https://github.com/Undercat037/aura-emerge/arc
 sha256sums=('SKIP')
 
 pkgver() {
-  cd "$pkgname"
+  # GitHub packs a branch archive as "<repo>-<branch>", not "$pkgname" —
+  # matches the cd used in build()/package() below.
+  cd "aura-emerge-main"
   # Pull version directly from Cargo.toml — no manual bumps needed
   grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/'
 }
@@ -34,4 +36,12 @@ package() {
   install -Dm644 README.MD "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -dm755 "$pkgdir/etc/emerge"
   install -Dm644 /dev/null "$pkgdir/etc/emerge/world.set"
+
+  local bin="target/release/aura-emerge"
+  install -Dm644 <("$bin" --gen-completions bash) \
+    "$pkgdir/usr/share/bash-completion/completions/emerge"
+  install -Dm644 <("$bin" --gen-completions zsh) \
+    "$pkgdir/usr/share/zsh/site-functions/_emerge"
+  install -Dm644 <("$bin" --gen-completions fish) \
+    "$pkgdir/usr/share/fish/vendor_completions.d/emerge.fish"
 }
