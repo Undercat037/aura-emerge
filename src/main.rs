@@ -9,6 +9,7 @@ aura-emerge: A gentoo-like wrapper for the aura AUR helper.
 */
 
 use clap::Parser;
+use clap_complete::Shell;
 use colored::Colorize;
 use std::collections::HashSet;
 use std::fs;
@@ -217,6 +218,12 @@ struct Cli {
     #[arg(long = "quiet-build")]                    quiet_build: Option<String>,
     #[arg(long = "with-bdeps")]                     with_bdeps: Option<String>,
     #[arg(long = "alert", short = 'A')]             alert: bool,
+
+    /// Generate a shell completion script and print it to stdout.
+    /// Used by packaging (PKGBUILD) to install completions — not meant
+    /// for interactive use, hence hidden from --help.
+    #[arg(long = "gen-completions", hide = true, value_name = "SHELL")]
+    gen_completions: Option<Shell>,
 
     /// Packages to install or '@world'
     packages: Vec<String>,
@@ -855,6 +862,15 @@ fn main() {
     }
 
     let cli = Cli::parse();
+
+    // Shell completion generation: no aura/pacman needed, no world.set
+    // touched — this just prints a script to stdout. Handled before
+    // check_binaries() so it also works in a clean chroot/build environment.
+    if let Some(shell) = cli.gen_completions {
+        let mut cmd = <Cli as clap::CommandFactory>::command();
+        clap_complete::generate(shell, &mut cmd, "emerge", &mut io::stdout());
+        return;
+    }
 
     if cli.help {
         print_help();
