@@ -1236,15 +1236,47 @@ fn main() {
                 success = run_cmd(AURA_BIN, &off_args, &target_pkgs);
                 if success { installed_infos = official_infos; }
             } else if cli.only_repos {
-                // --only-repos: never touch the AUR, fail on unresolved names.
+                // --only-repos: never touch the AUR. Unresolved names are
+                // skipped (with a warning) rather than aborting the whole
+                // request — packages that *were* found officially still get
+                // installed, same as e.g. `pacman -S` reporting "target not
+                // found" for one name without refusing the rest.
                 eprintln!(
-                    ">>> Error: the following package(s) were not found in official repos \
-                    and --only-repos is set, so the AUR was not searched:"
+                    ">>> Warning: --only-repos is set; the following package(s) were not \
+                    found in official repos and will be skipped (AUR was not searched):"
                 );
                 for m in &missing {
                     eprintln!("    {}", m);
                 }
-                std::process::exit(1);
+
+                if official_infos.is_empty() {
+                    eprintln!(">>> Error: no requested packages were found in official repos.");
+                    std::process::exit(1);
+                }
+
+                print_emerge_plan(&official_infos);
+                if cli.pretend {
+                    // Not everything could be resolved — still exit non-zero
+                    // so scripts can detect the partial result.
+                    std::process::exit(1);
+                }
+                print_emerge_emerging(&official_infos);
+
+                let official_names: Vec<String> =
+                    official_infos.iter().map(|p| p.name.clone()).collect();
+                let mut off_args = vec!["-S"];
+                if cli.verbose { off_args.push("--verbose"); }
+                off_args.extend(&base_args);
+                let off_success = run_cmd(AURA_BIN, &off_args, &official_names);
+                if off_success {
+                    installed_infos = official_infos;
+                }
+                // Even on a clean install of the found packages, some
+                // requested names were never resolved — surface that as an
+                // overall failure/non-zero exit. The tail below still
+                // credits world.set / prints "Completed" for whatever did
+                // succeed, based on installed_infos.
+                success = false;
             } else if official_infos.is_empty() {
                 // Nothing found officially at all — search AUR for everything.
                 println!(
