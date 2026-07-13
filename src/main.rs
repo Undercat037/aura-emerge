@@ -859,6 +859,22 @@ fn portageq_shim(args: &[String]) {
 // ── --info ──────────────────────────────────────────────────────────────────
 
 /// Run a command and return trimmed stdout, or None on any failure.
+/// Pull the first bare `X.Y[.Z]` version token out of a string — used to
+/// dig a clean version number out of `aura --version`'s output, which
+/// mixes ASCII-art banner rows in with the text and isn't safe to grab a
+/// whole line from.
+fn extract_version_token(text: &str) -> Option<String> {
+    text.split(|c: char| c.is_whitespace() || c == ',')
+        .map(|tok| tok.trim_start_matches('v'))
+        .find(|tok| {
+            !tok.is_empty()
+                && tok.chars().next().unwrap().is_ascii_digit()
+                && tok.contains('.')
+                && tok.chars().all(|c| c.is_ascii_digit() || c == '.')
+        })
+        .map(str::to_string)
+}
+
 fn cmd_stdout(bin: &str, args: &[&str]) -> Option<String> {
     let output = Command::new(bin)
         .args(args)
@@ -1021,8 +1037,9 @@ fn world_set_stats() -> Option<(usize, u64)> {
 /// Repositories block, flag dump, world set) is intentionally familiar.
 fn print_system_info() {
     let aura_ver = cmd_stdout(AURA_BIN, &["--version"])
-        .and_then(|s| s.lines().next().map(str::to_string))
-        .unwrap_or_else(|| "unknown".to_string());
+        .and_then(|s| extract_version_token(&s))
+        .map(|v| format!("aura {}", v))
+        .unwrap_or_else(|| "aura unknown".to_string());
     let pacman_ver = cmd_stdout(PACMAN_BIN, &["--version"])
         .and_then(|s| s.lines().find(|l| l.to_lowercase().contains("pacman")).map(str::trim).map(str::to_string))
         .unwrap_or_else(|| "unknown".to_string());
@@ -1039,7 +1056,7 @@ fn print_system_info() {
         .unwrap_or_else(|| "unknown".to_string());
 
     println!(
-        "{} {} (aura {}, {}, linux {}, {})",
+        "{} {} ({}, {}, linux {}, {})",
         "aura-emerge".bold(),
         env!("CARGO_PKG_VERSION"),
         aura_ver,
