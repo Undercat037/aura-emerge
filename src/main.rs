@@ -11,7 +11,7 @@ aura-emerge: A gentoo-like wrapper for the aura AUR helper.
 use clap::Parser;
 use clap_complete::Shell;
 use colored::Colorize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::process::{Command, Stdio};
@@ -35,6 +35,10 @@ const ABS_GITLAB_BASE: &str = "https://gitlab.archlinux.org/archlinux/packaging/
 const WORLD_SET_FILE:  &str = "/etc/emerge/world.set";
 const ABS_BUILD_BASE:  &str = "/tmp/aura-emerge-abs";
 const WORLD_SET_TMP:  &str = "/etc/emerge/world.set.tmp";
+const PACMAN_CONF: &str = "/etc/pacman.conf";
+const MAKEPKG_CONF_SYSTEM: &str = "/etc/makepkg.conf";
+const BASH_BIN: &str = "/usr/bin/bash";
+const UNAME_BIN: &str = "/usr/bin/uname";
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
@@ -173,7 +177,6 @@ struct Cli {
 
     // Actions
     #[arg(long = "list-sets")]              list_sets: bool,
-    #[arg(long = "info")]                   info: bool,
     #[arg(long = "metadata")]               metadata: bool,
     #[arg(long = "check-news")]             check_news: bool,
     #[arg(long = "clean")]                  clean: bool,
@@ -225,6 +228,10 @@ struct Cli {
     #[arg(long = "gen-completions", hide = true, value_name = "SHELL")]
     gen_completions: Option<Shell>,
 
+    /// Display info about the system, mirroring `emerge --info`
+    #[arg(long = "info")]
+    info: bool,
+
     /// Packages to install or '@world'
     packages: Vec<String>,
 }
@@ -248,7 +255,7 @@ fn print_help() {
     println!("Actions:  [ --depclean  | --deselect | --prune      | --regen       ]");
     println!("          [ --resume    | --search   | --select     | --searchdesc  ]");
     println!("          [ --sync      | --unmerge  | --update     | --regen-world ]");
-    println!("          [ --version                               ]");
+    println!("          [ --version   | --info                                    ]");
     println!();
     println!("   For more help consult the README: https://github.com/Undercat037/aura-emerge");
     println!();
@@ -849,7 +856,249 @@ fn portageq_shim(args: &[String]) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
+// ── --info ──────────────────────────────────────────────────────────────────
+
+/// Run a command and return trimmed stdout, or None on any failure.
+fn cmd_stdout(bin: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(bin)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Merge /etc/makepkg.conf with the user-level override exactly the way
+/// makepkg itself resolves precedence: the system file is sourced first,
+/// then (if present) $XDG_CONFIG_HOME/pacman/makepkg.conf — falling back to
+/// ~/.config/pacman/makepkg.conf — then the legacy ~/.makepkg.conf, each
+/// later file able to override values set before it. We let bash do the
+/// actual sourcing (arrays, `$(nproc)`, quoting rules) instead of
+/// hand-parsing shell syntax ourselves, then just read the results back.
+fn read_makepkg_vars() -> HashMap<String, String> {
+    let watched = [
+        "CARCH", "CHOST", "CFLAGS", "CXXFLAGS", "LDFLAGS", "RUSTFLAGS",
+        "MAKEFLAGS", "OPTIONS", "BUILDENV", "PKGEXT",
+    ];
+    let mut dump = String::new();
+    for v in &watched {
+        dump.push_str(&format!("echo \"{v}=${{{v}[*]}}\"\n"));
+    }
+
+    let script = format!(
+        r#"
+source {sys} 2>/dev/null
+if [ -n "$XDG_CONFIG_HOME" ] && [ -f "$XDG_CONFIG_HOME/pacman/makepkg.conf" ]; then
+    source "$XDG_CONFIG_HOME/pacman/makepkg.conf" 2>/dev/null
+elif [ -f "$HOME/.config/pacman/makepkg.conf" ]; then
+    source "$HOME/.config/pacman/makepkg.conf" 2>/dev/null
+fi
+[ -f "$HOME/.makepkg.conf" ] && source "$HOME/.makepkg.conf" 2>/dev/null
+{dump}"#,
+        sys = MAKEPKG_CONF_SYSTEM,
+        dump = dump,
+    );
+
+    let mut map = HashMap::new();
+    if let Ok(output) = Command::new(BASH_BIN)
+        .arg("-c")
+        .arg(&script)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+    {
+        if output.status.success() {
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                if let Some((k, v)) = line.split_once('=') {
+                    map.insert(k.to_string(), v.to_string());
+                }
+            }
+        }
+    }
+    map
+}
+
+/// The path to whichever user-level makepkg.conf override would actually
+/// take effect, mirroring makepkg's own lookup order.
+fn user_makepkg_conf_path() -> String {
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        return format!("{}/pacman/makepkg.conf", xdg);
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return format!("{}/.config/pacman/makepkg.conf", home);
+    }
+    String::new()
+}
+
+/// Parse /etc/pacman.conf for repository sections in file order — which is
+/// also pacman's own resolution priority: on a name clash between repos,
+/// the one listed first wins. Each repo's Server/Include lines are kept;
+/// Include lines are resolved one level deep (into the mirrorlist) so the
+/// actual mirror is visible instead of just the pointer file.
+fn parse_pacman_repos() -> Vec<(String, Vec<String>)> {
+    let mut repos: Vec<(String, Vec<String>)> = Vec::new();
+    let Ok(file) = fs::File::open(PACMAN_CONF) else { return repos; };
+    let reader = io::BufReader::new(file);
+
+    let mut current: Option<(String, Vec<String>)> = None;
+    for line in reader.lines().map_while(Result::ok) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            if let Some(repo) = current.take() {
+                repos.push(repo);
+            }
+            let name = trimmed.trim_start_matches('[').trim_end_matches(']').to_string();
+            if name != "options" {
+                current = Some((name, Vec::new()));
+            }
+            continue;
+        }
+        let Some((_, lines)) = current.as_mut() else { continue };
+        if let Some((key, val)) = trimmed.split_once('=') {
+            let key = key.trim();
+            let val = val.trim();
+            if key == "Include" {
+                let resolved = fs::read_to_string(val).ok().and_then(|inc| {
+                    inc.lines()
+                        .map(str::trim)
+                        .find(|l| l.starts_with("Server") && !l.starts_with('#'))
+                        .map(str::to_string)
+                });
+                match resolved {
+                    Some(server) => lines.push(format!("Include = {}  ({})", val, server)),
+                    None => lines.push(format!("Include = {}", val)),
+                }
+            } else if key == "Server" {
+                lines.push(format!("Server = {}", val));
+            }
+        }
+    }
+    if let Some(repo) = current.take() {
+        repos.push(repo);
+    }
+    repos
+}
+
+fn read_meminfo() -> Option<(u64, u64, u64, u64)> {
+    let content = fs::read_to_string("/proc/meminfo").ok()?;
+    let mut mem_total = 0u64;
+    let mut mem_free = 0u64;
+    let mut swap_total = 0u64;
+    let mut swap_free = 0u64;
+    for line in content.lines() {
+        let mut parts = line.split_whitespace();
+        let key = parts.next().unwrap_or("");
+        let val: u64 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+        match key {
+            "MemTotal:" => mem_total = val,
+            "MemFree:" => mem_free = val,
+            "SwapTotal:" => swap_total = val,
+            "SwapFree:" => swap_free = val,
+            _ => {}
+        }
+    }
+    Some((mem_total, mem_free, swap_total, swap_free))
+}
+
+fn world_set_stats() -> Option<(usize, u64)> {
+    let meta = fs::metadata(WORLD_SET_FILE).ok()?;
+    let content = fs::read_to_string(WORLD_SET_FILE).ok()?;
+    let count = content.lines().filter(|l| !l.trim().is_empty()).count();
+    Some((count, meta.len()))
+}
+
+/// `emerge --info`: a system/build-environment summary in the spirit of
+/// Gentoo's `emerge --info`, adapted to aura/pacman. Not a literal
+/// impersonation of Portage's output — field names are relabeled where the
+/// underlying concept differs — but the overall shape (uname/mem block,
+/// Repositories block, flag dump, world set) is intentionally familiar.
+fn print_system_info() {
+    let aura_ver = cmd_stdout(AURA_BIN, &["--version"])
+        .and_then(|s| s.lines().next().map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string());
+    let pacman_ver = cmd_stdout(PACMAN_BIN, &["--version"])
+        .and_then(|s| s.lines().find(|l| l.to_lowercase().contains("pacman")).map(str::trim).map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string());
+    let kernel = cmd_stdout(UNAME_BIN, &["-r"]).unwrap_or_else(|| "unknown".to_string());
+    let arch = cmd_stdout(UNAME_BIN, &["-m"]).unwrap_or_else(|| "unknown".to_string());
+    let uname_full = cmd_stdout(UNAME_BIN, &["-srvm"]).unwrap_or_else(|| "unknown".to_string());
+    let cpu_model = fs::read_to_string("/proc/cpuinfo")
+        .ok()
+        .and_then(|c| {
+            c.lines()
+                .find(|l| l.starts_with("model name"))
+                .and_then(|l| l.split_once(':').map(|(_, v)| v.trim().to_string()))
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+
+    println!(
+        "{} {} (aura {}, {}, linux {}, {})",
+        "aura-emerge".bold(),
+        env!("CARGO_PKG_VERSION"),
+        aura_ver,
+        pacman_ver,
+        kernel,
+        arch
+    );
+    println!("{}", "=".repeat(70));
+    println!("System uname: {}", uname_full);
+    println!("CPU: {}", cpu_model);
+    if let Some((mem_total, mem_free, swap_total, swap_free)) = read_meminfo() {
+        println!("KiB Mem:    {} total, {} free", mem_total, mem_free);
+        println!("KiB Swap:   {} total, {} free", swap_total, swap_free);
+    }
+    println!();
+
+    println!("Repositories:");
+    println!();
+    let repos = parse_pacman_repos();
+    if repos.is_empty() {
+        println!("    (could not read {})", PACMAN_CONF);
+    }
+    for (i, (name, lines)) in repos.iter().enumerate() {
+        println!("{}", name);
+        println!("    priority: {} (order of appearance in {})", i + 1, PACMAN_CONF);
+        for l in lines {
+            println!("    {}", l);
+        }
+        println!();
+    }
+
+    let user_conf = user_makepkg_conf_path();
+    let user_conf_active = !user_conf.is_empty() && std::path::Path::new(&user_conf).exists();
+    if user_conf_active {
+        println!("makepkg.conf: {} -> overridden by {}", MAKEPKG_CONF_SYSTEM, user_conf);
+    } else {
+        println!("makepkg.conf: {} (no user override present)", MAKEPKG_CONF_SYSTEM);
+    }
+    println!();
+
+    let vars = read_makepkg_vars();
+    let get = |k: &str| vars.get(k).cloned().unwrap_or_default();
+    for key in ["CARCH", "CHOST", "CFLAGS", "CXXFLAGS", "LDFLAGS", "RUSTFLAGS",
+                "MAKEFLAGS", "OPTIONS", "BUILDENV", "PKGEXT"] {
+        println!("{}=\"{}\"", key, get(key));
+    }
+    println!();
+
+    match world_set_stats() {
+        Some((count, size)) => println!(
+            "world.set: {} package(s), {} bytes ({})",
+            count, size, WORLD_SET_FILE
+        ),
+        None => println!("world.set: not found ({})", WORLD_SET_FILE),
+    }
+}
+
 fn main() {
+
     // If invoked as "portageq" (symlink), act as the shim
     let argv: Vec<String> = std::env::args().collect();
     let invoked_as = std::path::Path::new(&argv[0])
@@ -879,6 +1128,11 @@ fn main() {
 
     if cli.version {
         println!("aura-emerge {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
+    if cli.info {
+        print_system_info();
         return;
     }
 
