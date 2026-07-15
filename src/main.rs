@@ -26,6 +26,10 @@ const MV_BIN:     &str = "/usr/bin/mv";
 const RM_BIN:     &str = "/usr/bin/rm";
 const MAKEPKG_BIN: &str = "/usr/bin/makepkg";
 const ASP_BIN: &str = "/usr/bin/asp";
+const GPG_BIN: &str = "/usr/bin/gpg";
+/// Keyserver used for automatic/suggested PGP key imports (--abs). Same
+/// SKS-successor pool most distro tooling defaults to.
+const PGP_KEYSERVER: &str = "keyserver.ubuntu.com";
 
 /// Base URL for Arch Linux packaging repos on GitLab
 const ABS_GITLAB_BASE: &str = "https://gitlab.archlinux.org/archlinux/packaging/packages";
@@ -112,7 +116,13 @@ struct Cli {
     #[arg(long = "skippgp")]
     skippgp: bool,
 
-    /// Open $EDITOR on PKGBUILD before building (use with --abs)
+    /// Automatically import missing PGP keys (from validpgpkeys) via a
+    /// trusted keyserver before building with --abs, without prompting
+    #[arg(long = "autopgp")]
+    autopgp: bool,
+
+    /// Open PKGBUILD for editing before building (ABS: opens in $EDITOR;
+    /// AUR: passes aura's own --hotedit, since aura owns that build flow)
     #[arg(long = "edit")]
     edit: bool,
 
@@ -247,6 +257,7 @@ fn print_help() {
     println!("Options: -[1aCcDehNnpsuVv]");
     println!("          [ --abs                        ] [ --aur        ]");
     println!("          [ --only-repos                 ] [ --skippgp    ]");
+    println!("          [ --autopgp                    ] [ --edit       ]");
     println!("          [ --deep                       ] [ --deep       ]");
     println!("          [ --emptytree                  ] [ --newuse     ]");
     println!("          [ --noreplace                  ] [ --oneshot    ]");
@@ -652,7 +663,127 @@ fn abs_get_version(pkg: &str) -> String {
 
 /// Build and install packages from ABS (Arch Build System) via asp.
 /// Uses `asp checkout <pkg>` to fetch the official PKGBUILD, then runs makepkg -si.
-fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool) -> bool {
+/// Extract PGP key IDs/fingerprints listed in a PKGBUILD's
+/// `validpgpkeys=(...)` array. Handles multi-line arrays and either quote
+/// style. Returns uppercased tokens, since gpg is case-insensitive about
+/// key IDs but comparisons here are simpler kept consistent.
+fn parse_validpgpkeys(pkgbuild_text: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    let idx = match pkgbuild_text.find("validpgpkeys=") {
+        Some(i) => i,
+        None => return keys,
+    };
+    let rest = &pkgbuild_text[idx..];
+    let open = match rest.find('(') {
+        Some(o) => o,
+        None => return keys,
+    };
+    let close = match rest[open..].find(')') {
+        Some(c) => open + c,
+        None => return keys,
+    };
+    let inner = &rest[open + 1..close];
+
+    let mut in_quote = false;
+    let mut quote_char = '\'';
+    let mut cur = String::new();
+    for c in inner.chars() {
+        if in_quote {
+            if c == quote_char {
+                in_quote = false;
+                if !cur.is_empty() {
+                    keys.push(cur.trim().to_uppercase());
+                    cur.clear();
+                }
+            } else {
+                cur.push(c);
+            }
+        } else if c == '\'' || c == '"' {
+            in_quote = true;
+            quote_char = c;
+        }
+    }
+    keys.retain(|k| !k.is_empty());
+    keys
+}
+
+/// Is this key already in the local GPG keyring?
+fn gpg_key_present(key: &str) -> bool {
+    Command::new(GPG_BIN)
+        .args(["--list-keys", key])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Parse `validpgpkeys` out of a checked-out PKGBUILD, check which of those
+/// keys are missing from the local keyring, and either import them
+/// automatically (`--autopgp`, from `keyserver.ubuntu.com` — a standard,
+/// widely-trusted keyserver pool, not an arbitrary/attacker-controlled
+/// source) or print the *exact* import command for each missing key so the
+/// user isn't left guessing a key ID from a cryptic makepkg failure.
+///
+/// Runs proactively, before makepkg, so this catches the problem ahead of
+/// time rather than reactively parsing a build failure.
+fn ensure_pgp_keys(pkgbuild_path: &std::path::Path, autopgp: bool) {
+    if !std::path::Path::new(GPG_BIN).exists() {
+        return; // nothing we can check without gpg present
+    }
+    let text = match std::fs::read_to_string(pkgbuild_path) {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+    let keys = parse_validpgpkeys(&text);
+    if keys.is_empty() {
+        return;
+    }
+
+    let missing: Vec<String> = keys.into_iter().filter(|k| !gpg_key_present(k)).collect();
+    if missing.is_empty() {
+        return;
+    }
+
+    if autopgp {
+        println!(
+            "{} Importing {} missing PGP key(s) from {}...",
+            ">>>".green().bold(),
+            missing.len(),
+            PGP_KEYSERVER
+        );
+        for key in &missing {
+            print!("    {} ... ", key);
+            io::stdout().flush().ok();
+            let ok = Command::new(GPG_BIN)
+                .args(["--keyserver", PGP_KEYSERVER, "--recv-keys", key])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            println!("{}", if ok { "ok".green().to_string() } else { "failed".red().to_string() });
+        }
+    } else {
+        eprintln!();
+        eprintln!(
+            "{} This PKGBUILD lists {} PGP key(s) not in your keyring:",
+            ">>> Note:".yellow().bold(),
+            missing.len()
+        );
+        for key in &missing {
+            eprintln!("    gpg --keyserver {} --recv-keys {}", PGP_KEYSERVER, key);
+        }
+        eprintln!(
+            "{} Run the command(s) above, retry with --autopgp to do it automatically, \
+            or --skippgp to bypass signature verification.",
+            ">>>".yellow().bold()
+        );
+    }
+}
+
+
+fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, autopgp: bool) -> bool {
     for bin in &[ASP_BIN, MAKEPKG_BIN] {
         if !std::path::Path::new(bin).exists() {
             eprintln!(">>> Fatal: required binary not found: {}", bin);
@@ -768,6 +899,13 @@ fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp
                 .ok();
         }
 
+        // Proactively check/import PGP keys listed in validpgpkeys before
+        // even attempting the build (unless --skippgp, which makes this
+        // moot).
+        if !skippgp {
+            ensure_pgp_keys(&build_dir.join("PKGBUILD"), autopgp);
+        }
+
         let mut makepkg_args = vec!["-si"];
         if !ask    { makepkg_args.push("--noconfirm"); }
         if oneshot { makepkg_args.push("--asdeps"); }
@@ -783,9 +921,13 @@ fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp
         if !build_ok {
             eprintln!("{} makepkg failed for '{}'", ">>> Error:".red().bold(), info.name);
             if !skippgp {
-                eprintln!("{} if the build failed due to a missing PGP key, run:", ">>> Hint:".yellow().bold());
-                eprintln!(">>>   gpg --recv-keys <key-id>");
-                eprintln!(">>> Or retry with --skippgp to bypass signature checks.");
+                eprintln!(
+                    "{} if this failed on a missing PGP key not listed in validpgpkeys, \
+                    find the key ID in the error above and run:",
+                    ">>> Hint:".yellow().bold()
+                );
+                eprintln!(">>>   gpg --keyserver {} --recv-keys <key-id>", PGP_KEYSERVER);
+                eprintln!(">>> Or retry with --autopgp (auto-import) or --skippgp (bypass checks).");
             }
             all_ok = false;
         }
@@ -1278,6 +1420,42 @@ fn contains_raw_ipv4(source: &str) -> bool {
     false
 }
 
+/// A run of `\xHH` hex-escape sequences long enough to be an encoded
+/// payload (e.g. shellcode or a binary stuffed into a string literal) fed
+/// to something like `printf`/`echo -e`. Deliberately keyed on the `\x`
+/// escape form specifically, *not* on bare long hex strings — bare hex is
+/// extremely common in legitimate PKGBUILDs (sha256sums/b2sums checksums,
+/// PGP key fingerprints in validpgpkeys, git commit hashes) and flagging
+/// those would be pure noise. `\xHH\xHH...` escape sequences have no such
+/// legitimate use in a PKGBUILD.
+fn is_hex_escape_payload(source: &str) -> bool {
+    const THRESHOLD: usize = 8; // consecutive \xHH escapes in one line
+    for line in source.lines() {
+        let l = line.trim();
+        if l.starts_with('#') {
+            continue;
+        }
+        let bytes = l.as_bytes();
+        let mut i = 0;
+        let mut run = 0usize;
+        while i < bytes.len() {
+            if bytes[i] == b'\\' && i + 3 < bytes.len() && (bytes[i + 1] == b'x' || bytes[i + 1] == b'X')
+                && bytes[i + 2].is_ascii_hexdigit() && bytes[i + 3].is_ascii_hexdigit()
+            {
+                run += 1;
+                if run >= THRESHOLD {
+                    return true;
+                }
+                i += 4;
+            } else {
+                run = 0;
+                i += 1;
+            }
+        }
+    }
+    false
+}
+
 /// Run all heuristics against one PKGBUILD, returning human-readable
 /// findings (empty vec = clean).
 fn scan_pkgbuild_source(source: &str) -> Vec<String> {
@@ -1293,6 +1471,9 @@ fn scan_pkgbuild_source(source: &str) -> Vec<String> {
     }
     if contains_raw_ipv4(source) {
         findings.push("fetches from or references a hardcoded raw IP address instead of a domain".to_string());
+    }
+    if is_hex_escape_payload(source) {
+        findings.push("contains a long run of \\xHH hex-escape sequences (possible encoded/obfuscated payload)".to_string());
     }
     findings
 }
@@ -1412,6 +1593,46 @@ package() {
     }
 
     #[test]
+    fn validpgpkeys_single_line() {
+        let src = "validpgpkeys=('ABCDEF0123456789ABCDEF0123456789ABCDEF01')";
+        assert_eq!(parse_validpgpkeys(src), vec!["ABCDEF0123456789ABCDEF0123456789ABCDEF01"]);
+    }
+
+    #[test]
+    fn validpgpkeys_multi_line_mixed_quotes() {
+        let src = "validpgpkeys=('AAAA0123456789ABCDEF0123456789ABCDEF0123'\n              \"BBBB0123456789ABCDEF0123456789ABCDEF0123\")\n";
+        assert_eq!(
+            parse_validpgpkeys(src),
+            vec![
+                "AAAA0123456789ABCDEF0123456789ABCDEF0123",
+                "BBBB0123456789ABCDEF0123456789ABCDEF0123"
+            ]
+        );
+    }
+
+    #[test]
+    fn validpgpkeys_absent() {
+        assert!(parse_validpgpkeys("pkgname=foo\npkgver=1.0\n").is_empty());
+    }
+
+    #[test]
+    fn hex_escape_payload_detected() {
+        assert!(is_hex_escape_payload(
+            r#"printf '\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90' > /tmp/x"#
+        ));
+        // Legitimate hex doesn't use \x escapes: checksums, fingerprints, hashes.
+        assert!(!is_hex_escape_payload(
+            "sha256sums=('deadbeefcafebabe0011223344556677889900112233445566778899aabbcc')"
+        ));
+        assert!(!is_hex_escape_payload(
+            "validpgpkeys=('ABCDEF0123456789ABCDEF0123456789ABCDEF01')"
+        ));
+        assert!(!is_hex_escape_payload("commit=1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"));
+        // A couple of stray \x escapes (e.g. one ANSI color code) shouldn't trip it.
+        assert!(!is_hex_escape_payload(r#"echo -e '\x1b[32mgreen\x1b[0m'"#));
+    }
+
+    #[test]
     fn malicious_pkgbuild_flagged() {
         let src = r#"
 pkgname=evil
@@ -1425,7 +1646,35 @@ build() {
     }
 }
 
+/// Reset SIGPIPE to its default disposition (terminate, not panic).
+///
+/// Rust's stdout is fully buffered and treats a write error as fatal via
+/// panic — but on Unix, the *first* symptom of a downstream reader closing
+/// early (e.g. `| head -3`) is normally just a SIGPIPE that kills the
+/// process quietly. Rust masks SIGPIPE by default (SIG_IGN) so that write()
+/// returns EPIPE instead of killing the process, which is convenient for
+/// libraries but means every plain `println!` in this codebase has to
+/// handle that error or it panics — which is exactly what was happening.
+/// Restoring the default disposition here makes `emerge --info | head -3`
+/// behave like every other well-behaved Unix CLI: it just stops silently
+/// when the reader goes away.
+#[cfg(unix)]
+fn reset_sigpipe() {
+    extern "C" {
+        fn signal(signum: i32, handler: usize) -> usize;
+    }
+    const SIGPIPE: i32 = 13;
+    const SIG_DFL: usize = 0;
+    unsafe {
+        signal(SIGPIPE, SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+fn reset_sigpipe() {}
+
 fn main() {
+    reset_sigpipe();
 
     // If invoked as "portageq" (symlink), act as the shim
     let argv: Vec<String> = std::env::args().collect();
@@ -1807,7 +2056,7 @@ fn main() {
         let mut installed_infos: Vec<PkgInfo> = Vec::new();
 
         if cli.abs {
-            success = abs_install(&target_pkgs, cli.pretend, cli.ask, cli.oneshot, cli.skippgp, cli.edit);
+            success = abs_install(&target_pkgs, cli.pretend, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.autopgp);
         } else if cli.aur {
             let pkg_infos = resolve_aur(&target_pkgs);
             print_emerge_plan(&pkg_infos);
@@ -1816,6 +2065,7 @@ fn main() {
             scan_aur_pkgbuilds_or_abort(&target_pkgs);
             let mut aur_args = vec!["-A"];
             aur_args.extend(&base_args);
+            if cli.edit { aur_args.push("--hotedit"); }
             success = run_cmd(AURA_BIN, &aur_args, &target_pkgs);
             if success { installed_infos = pkg_infos; }
         } else {
@@ -1889,6 +2139,7 @@ fn main() {
                 scan_aur_pkgbuilds_or_abort(&missing);
                 let mut aur_args = vec!["-A"];
                 aur_args.extend(&base_args);
+                if cli.edit { aur_args.push("--hotedit"); }
                 success = run_cmd(AURA_BIN, &aur_args, &missing);
                 if success { installed_infos = pkg_infos; }
             } else {
@@ -1917,6 +2168,7 @@ fn main() {
                 scan_aur_pkgbuilds_or_abort(&missing);
                 let mut aur_args = vec!["-A"];
                 aur_args.extend(&base_args);
+                if cli.edit { aur_args.push("--hotedit"); }
                 let aur_success = run_cmd(AURA_BIN, &aur_args, &missing);
                 if aur_success {
                     installed_infos.extend(aur_infos);
