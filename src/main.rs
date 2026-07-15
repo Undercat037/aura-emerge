@@ -1275,14 +1275,15 @@ fn print_system_info() {
 
 const CURL_BIN: &str = "/usr/bin/curl";
 
-/// Download the raw PKGBUILD for `pkg` from the AUR cgit web UI.
-/// Returns None on any network/parse failure (missing package, no
+/// Download an arbitrary raw file from a package's AUR git tree via the
+/// cgit web UI (e.g. "PKGBUILD" or a referenced "<pkg>.install" hook).
+/// Returns None on any network/parse failure (missing file, no
 /// connectivity, AUR down, etc.) — callers should *not* treat that as a
 /// clean scan, just as "nothing to check".
-fn fetch_aur_pkgbuild(pkg: &str) -> Option<String> {
+fn fetch_aur_file(pkg: &str, filename: &str) -> Option<String> {
     let url = format!(
-        "https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h={}",
-        pkg
+        "https://aur.archlinux.org/cgit/aur.git/plain/{}?h={}",
+        filename, pkg
     );
     let output = Command::new(CURL_BIN)
         .args(["-sfL", "--max-time", "10", &url])
@@ -1299,6 +1300,32 @@ fn fetch_aur_pkgbuild(pkg: &str) -> Option<String> {
     } else {
         Some(text)
     }
+}
+
+fn fetch_aur_pkgbuild(pkg: &str) -> Option<String> {
+    fetch_aur_file(pkg, "PKGBUILD")
+}
+
+/// Extract the `.install` hook script filename referenced by a PKGBUILD's
+/// `install=` variable, if any. That script runs pre/post install/upgrade/
+/// remove — as part of the pacman transaction, i.e. effectively as root —
+/// so it's at least as sensitive an execution point as build()/package(),
+/// and the June 2026 "Atomic Arch" AUR campaign specifically used both
+/// PKGBUILD *and* `.install` hooks to smuggle in its payload.
+fn parse_install_filename(pkgbuild_text: &str) -> Option<String> {
+    for line in pkgbuild_text.lines() {
+        let l = line.trim();
+        if l.starts_with('#') {
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("install=") {
+            let name = rest.trim().trim_matches('\'').trim_matches('"');
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// `curl ... | sh` / `wget ... | bash` / `... | source` style remote-code-exec
@@ -1456,7 +1483,65 @@ fn is_hex_escape_payload(source: &str) -> bool {
     false
 }
 
-/// Run all heuristics against one PKGBUILD, returning human-readable
+/// Exact indicators from currently-known, still-circulating AUR
+/// supply-chain campaigns. This list *will* go stale as campaigns rotate
+/// package names (already true here: wave 1 used "atomic-lockfile", wave 2
+/// moved to "js-digest"/"lockfile-js") — it's a targeted catch for known
+/// IOCs, not a general defense, but it costs nothing to check and it's a
+/// zero-false-positive, high-confidence hit if it ever fires.
+///
+/// Background: the "Atomic Arch" campaign (disclosed June 11-12, 2026)
+/// adopted 400+ orphaned AUR packages and edited their PKGBUILD *or*
+/// `.install` hooks to run `npm install atomic-lockfile` / `bun install
+/// js-digest` / `lockfile-js` during the build, pulling in a Rust
+/// infostealer that loads an eBPF rootkit when it lands as root.
+const KNOWN_MALICIOUS_PACKAGE_NAMES: &[&str] = &["atomic-lockfile", "js-digest", "lockfile-js"];
+
+fn contains_known_malicious_package(source: &str) -> Option<&'static str> {
+    KNOWN_MALICIOUS_PACKAGE_NAMES.iter().copied().find(|name| source.contains(name))
+}
+
+/// `npm install <pkg>` / `npm i <pkg>` / `bun install <pkg>` / `bun add
+/// <pkg>` / `yarn add <pkg>` / `pip(3) install <pkg>` / `gem install <pkg>`
+/// naming a specific *external* package — as opposed to a bare `npm
+/// install` / `npm ci` with no package argument, which just installs a
+/// project's own declared package.json deps and is extremely common and
+/// legitimate in PKGBUILDs for JS-based projects. Pulling an arbitrary
+/// named package from a registry mid-build (especially one unrelated to
+/// the package actually being built) is exactly the mechanism the Atomic
+/// Arch campaign used. Known trade-off: a PKGBUILD that legitimately
+/// installs a *named* build-time tool this way (e.g. a global CLI via
+/// `npm install -g typescript`) will also flag — that's an acceptable
+/// false positive here, same as the IPv4 heuristic below; this only ever
+/// costs a review prompt, never a hard block.
+fn is_foreign_pkg_manager_install(source: &str) -> bool {
+    const PATTERNS: &[&str] = &[
+        "npm install ", "npm i ", "bun install ", "bun add ",
+        "yarn add ", "pip install ", "pip3 install ", "gem install ",
+    ];
+    for line in source.lines() {
+        let l = line.trim();
+        if l.starts_with('#') {
+            continue;
+        }
+        let lower = l.to_lowercase();
+        for p in PATTERNS {
+            if let Some(idx) = lower.find(p) {
+                let rest = &l[idx + p.len()..];
+                let first_pkg_tok = rest.split_whitespace().find(|t| !t.starts_with('-'));
+                if let Some(tok) = first_pkg_tok {
+                    if !tok.starts_with('.') && !tok.starts_with('/') {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Run all heuristics against one PKGBUILD (or `.install` hook — same
+/// shell-script surface, same heuristics apply), returning human-readable
 /// findings (empty vec = clean).
 fn scan_pkgbuild_source(source: &str) -> Vec<String> {
     let mut findings = Vec::new();
@@ -1475,37 +1560,64 @@ fn scan_pkgbuild_source(source: &str) -> Vec<String> {
     if is_hex_escape_payload(source) {
         findings.push("contains a long run of \\xHH hex-escape sequences (possible encoded/obfuscated payload)".to_string());
     }
+    if let Some(name) = contains_known_malicious_package(source) {
+        findings.push(format!(
+            "references '{}' — a known-malicious package name from a documented AUR supply-chain campaign (Atomic Arch, June 2026)",
+            name
+        ));
+    }
+    if is_foreign_pkg_manager_install(source) {
+        findings.push("installs a named external package via npm/bun/yarn/pip/gem mid-build — the mechanism the Atomic Arch AUR campaign used to smuggle in its payload".to_string());
+    }
     findings
 }
 
-/// Fetch + scan the PKGBUILD for every package about to be installed from
-/// the AUR. If anything suspicious turns up in any of them, print the
+/// Fetch + scan the PKGBUILD — and, if it references one, the `.install`
+/// hook — for every package about to be installed from the AUR. If
+/// anything suspicious turns up in either file for any package, print the
 /// findings and block until the user types an explicit "y". Anything else
 /// aborts the whole install (exits the process), matching the "block and
 /// require explicit y" behavior the user confirmed.
 ///
-/// Packages whose PKGBUILD couldn't be fetched (network hiccup, AUR down,
-/// name not found, split-package headers, etc.) are silently skipped rather
-/// than treated as a hit — this scanner only ever adds friction on actual
-/// findings, never on lookup failures.
+/// Files that couldn't be fetched (network hiccup, AUR down, name not
+/// found, split-package headers, no `.install` referenced, etc.) are
+/// silently skipped rather than treated as a hit — this scanner only ever
+/// adds friction on actual findings, never on lookup failures.
 fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) {
     let mut any_findings = false;
-    println!("{} Scanning AUR PKGBUILDs for suspicious patterns...", ">>>".green().bold());
+    println!("{} Scanning AUR PKGBUILDs and .install hooks for suspicious patterns...", ">>>".green().bold());
 
     for pkg in pkgs {
-        let source = match fetch_aur_pkgbuild(pkg) {
+        let pkgbuild_src = match fetch_aur_pkgbuild(pkg) {
             Some(s) => s,
             None => continue,
         };
-        let findings = scan_pkgbuild_source(&source);
-        if findings.is_empty() {
+
+        // (file label, finding) pairs across both PKGBUILD and, if present,
+        // the referenced .install hook.
+        let mut pkg_findings: Vec<(String, String)> = scan_pkgbuild_source(&pkgbuild_src)
+            .into_iter()
+            .map(|f| ("PKGBUILD".to_string(), f))
+            .collect();
+
+        if let Some(install_name) = parse_install_filename(&pkgbuild_src) {
+            if let Some(install_src) = fetch_aur_file(pkg, &install_name) {
+                pkg_findings.extend(
+                    scan_pkgbuild_source(&install_src)
+                        .into_iter()
+                        .map(|f| (install_name.clone(), f)),
+                );
+            }
+        }
+
+        if pkg_findings.is_empty() {
             continue;
         }
         any_findings = true;
         eprintln!();
-        eprintln!("{} {} {}", "!!!".red().bold(), "Suspicious PKGBUILD:".red().bold(), pkg.bold());
-        for f in &findings {
-            eprintln!("    - {}", f);
+        eprintln!("{} {} {}", "!!!".red().bold(), "Suspicious AUR package:".red().bold(), pkg.bold());
+        for (file, finding) in &pkg_findings {
+            eprintln!("    [{}] {}", file, finding);
         }
     }
 
@@ -1515,8 +1627,8 @@ fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) {
 
     eprintln!();
     eprintln!(
-        "{} One or more AUR packages have PKGBUILDs matching known-suspicious \
-        patterns. Review them yourself before proceeding:",
+        "{} One or more AUR packages have PKGBUILD/.install content matching \
+        known-suspicious patterns. Review them yourself before proceeding:",
         ">>>".red().bold()
     );
     for pkg in pkgs {
@@ -1615,6 +1727,46 @@ package() {
     }
 
     #[test]
+    fn known_malicious_package_detected() {
+        assert_eq!(
+            contains_known_malicious_package("npm install atomic-lockfile"),
+            Some("atomic-lockfile")
+        );
+        assert_eq!(
+            contains_known_malicious_package("bun install js-digest"),
+            Some("js-digest")
+        );
+        assert_eq!(contains_known_malicious_package("npm install typescript"), None);
+    }
+
+    #[test]
+    fn foreign_pkg_manager_install_detected() {
+        assert!(is_foreign_pkg_manager_install("npm install atomic-lockfile"));
+        assert!(is_foreign_pkg_manager_install("bun add js-digest"));
+        assert!(is_foreign_pkg_manager_install("pip install requests"));
+        // Local/project installs — no named external package — must NOT flag.
+        assert!(!is_foreign_pkg_manager_install("npm install"));
+        assert!(!is_foreign_pkg_manager_install("npm ci"));
+        assert!(!is_foreign_pkg_manager_install("npm install ."));
+        assert!(!is_foreign_pkg_manager_install("npm install --production"));
+        assert!(!is_foreign_pkg_manager_install("yarn add ./vendor/local-pkg"));
+    }
+
+    #[test]
+    fn parse_install_filename_variants() {
+        assert_eq!(
+            parse_install_filename("pkgname=foo\ninstall=foo.install\npkgver=1.0"),
+            Some("foo.install".to_string())
+        );
+        assert_eq!(
+            parse_install_filename("install='foo.install'"),
+            Some("foo.install".to_string())
+        );
+        assert_eq!(parse_install_filename("# install=foo.install"), None);
+        assert_eq!(parse_install_filename("pkgname=foo\npkgver=1.0"), None);
+    }
+
+    #[test]
     fn hex_escape_payload_detected() {
         assert!(is_hex_escape_payload(
             r#"printf '\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90' > /tmp/x"#
@@ -1694,6 +1846,34 @@ Depends On      : None
 Required By     : None
 ";
         assert!(parse_depends_on_all(qi).is_empty());
+    }
+
+    #[test]
+    fn atomic_arch_style_pkgbuild_and_install_flagged() {
+        let pkgbuild = r#"
+pkgname=totally-legit-tool
+pkgver=1.2.3
+pkgrel=1
+install=totally-legit-tool.install
+source=("https://github.com/foo/totally-legit-tool/archive/v$pkgver.tar.gz")
+build() {
+  cd "$pkgname-$pkgver"
+  make
+}
+"#;
+        let install_hook = r#"
+post_install() {
+  npm install atomic-lockfile
+}
+"#;
+        let pkgbuild_findings = scan_pkgbuild_source(pkgbuild);
+        assert!(pkgbuild_findings.is_empty(), "clean PKGBUILD should have no findings on its own");
+
+        assert_eq!(parse_install_filename(pkgbuild), Some("totally-legit-tool.install".to_string()));
+
+        let install_findings = scan_pkgbuild_source(install_hook);
+        assert!(install_findings.iter().any(|f| f.contains("atomic-lockfile")));
+        assert!(install_findings.iter().any(|f| f.contains("Atomic Arch") || f.contains("npm/bun/yarn")));
     }
 
     #[test]
