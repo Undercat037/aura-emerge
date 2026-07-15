@@ -1525,9 +1525,8 @@ fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) {
     eprint!("{} Continue anyway? [y/N] ", ">>>".yellow().bold());
     io::stderr().flush().ok();
 
-    let mut answer = String::new();
-    let confirmed = io::stdin().lock().read_line(&mut answer).is_ok()
-        && answer.trim().eq_ignore_ascii_case("y");
+    let answer = read_line_raw();
+    let confirmed = answer.trim().eq_ignore_ascii_case("y");
 
     if !confirmed {
         eprintln!("{} Aborted.", ">>>".red().bold());
@@ -1633,6 +1632,71 @@ package() {
     }
 
     #[test]
+    fn strip_version_operator_variants() {
+        assert_eq!(strip_version_operator("glibc>=2.38"), "glibc");
+        assert_eq!(strip_version_operator("libc.so=6-64"), "libc.so");
+        assert_eq!(strip_version_operator("bash"), "bash");
+        assert_eq!(strip_version_operator("foo<=1.2"), "foo");
+        assert_eq!(strip_version_operator("foo<1.2"), "foo");
+    }
+
+    #[test]
+    fn parse_depends_on_basic() {
+        let qi = "\
+Name            : bash
+Version         : 5.2.32-1
+Description     : The GNU Bourne Again shell
+Depends On      : readline  libc.so=6-64
+Optional Deps   : None
+Required By     : filesystem
+
+Name            : coreutils
+Version         : 9.5-1
+Depends On      : glibc>=2.38  acl  attr
+Required By     : base
+
+Name            : filesystem
+Version         : 2024.01-1
+Depends On      : None
+Required By     : None
+";
+        let deps = parse_depends_on_all(qi);
+        for expect in ["readline", "libc.so", "glibc", "acl", "attr"] {
+            assert!(deps.contains(expect), "missing: {}", expect);
+        }
+        assert_eq!(deps.len(), 5);
+    }
+
+    #[test]
+    fn parse_depends_on_wrapped_continuation() {
+        // Simulates pacman wrapping a long Depends On value onto a second,
+        // indented line with no field label.
+        let qi = "\
+Name            : bigpkg
+Version         : 1.0-1
+Depends On      : dep-one  dep-two  dep-three
+                  dep-four  dep-five
+Required By     : None
+";
+        let deps = parse_depends_on_all(qi);
+        for expect in ["dep-one", "dep-two", "dep-three", "dep-four", "dep-five"] {
+            assert!(deps.contains(expect), "missing: {}", expect);
+        }
+        assert_eq!(deps.len(), 5);
+    }
+
+    #[test]
+    fn parse_depends_on_none_and_missing_field() {
+        let qi = "\
+Name            : justapkg
+Version         : 1.0-1
+Depends On      : None
+Required By     : None
+";
+        assert!(parse_depends_on_all(qi).is_empty());
+    }
+
+    #[test]
     fn malicious_pkgbuild_flagged() {
         let src = r#"
 pkgname=evil
@@ -1644,6 +1708,49 @@ build() {
         let findings = scan_pkgbuild_source(src);
         assert_eq!(findings.len(), 3);
     }
+}
+
+/// Read one line from stdin, byte by byte, via the raw fd — deliberately
+/// bypassing Rust's global `Stdin`, which wraps a shared `BufReader` and
+/// will happily read *more* than one line's worth of bytes from the
+/// underlying fd/pty in a single syscall, stashing the leftover in its own
+/// internal buffer. That's invisible and harmless on its own, but this
+/// tool always follows a "y/N, please confirm" read with spawning a child
+/// process (`aura`/`pacman`) that inherits the same stdin and expects to
+/// do its *own* interactive read right after (e.g. pacman's package-
+/// conflict prompt) — any bytes the parent over-read are gone as far as
+/// the OS and the child are concerned, so the child's read comes back
+/// empty/EOF immediately, and its prompt gets silently declined with no
+/// real chance for the user to answer. Reading strictly one byte at a time
+/// via the raw fd guarantees we never consume more than our own line,
+/// leaving the fd's read position exactly where the child needs it.
+#[cfg(unix)]
+fn read_line_raw() -> String {
+    use std::os::unix::io::FromRawFd;
+    let mut file = unsafe { std::fs::File::from_raw_fd(0) };
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        match std::io::Read::read(&mut file, &mut byte) {
+            Ok(0) => break, // EOF
+            Ok(_) => {
+                if byte[0] == b'\n' {
+                    break;
+                }
+                line.push(byte[0]);
+            }
+            Err(_) => break,
+        }
+    }
+    std::mem::forget(file); // don't close fd 0 out from under the process
+    String::from_utf8_lossy(&line).trim_end_matches('\r').to_string()
+}
+
+#[cfg(not(unix))]
+fn read_line_raw() -> String {
+    let mut line = String::new();
+    io::stdin().lock().read_line(&mut line).ok();
+    line.trim_end().to_string()
 }
 
 /// Reset SIGPIPE to its default disposition (terminate, not panic).
@@ -1672,6 +1779,179 @@ fn reset_sigpipe() {
 
 #[cfg(not(unix))]
 fn reset_sigpipe() {}
+
+// ── @preserved-rebuild ──────────────────────────────────────────────────────
+//
+// There's no Portage-style preserved-libs tracking on Arch, so this doesn't
+// literally port Gentoo's @preserved-rebuild set. What it does instead:
+// collect every dependency every installed package declares (via
+// `pacman -Qi`), hand the whole deduplicated list to `pacman -T` (which
+// correctly understands provides/virtual packages, unlike a naive string
+// diff against `pacman -Qq`), and offer to reinstall whatever comes back
+// unsatisfied — deps that got removed out from under something, e.g. via
+// `pacman -Rdd` or a provider package that stopped providing them.
+
+/// Run `pacman -Qi` (info for every installed package) forced to the C
+/// locale. Forcing the locale matters: pacman's field labels ("Depends
+/// On", etc.) are gettext-translated, so on a system with e.g. LANG=uk_UA
+/// they would NOT be the English strings this parser looks for. `LC_ALL=C`
+/// guarantees English output regardless of the user's actual locale — the
+/// standard trick for scripts that parse command output.
+fn pacman_qi_all() -> Option<String> {
+    let out = Command::new(PACMAN_BIN)
+        .arg("-Qi")
+        .env("LC_ALL", "C")
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// Strip a version-comparison operator/suffix off a dependency atom:
+/// "glibc>=2.38" -> "glibc", "libc.so=6-64" -> "libc.so", "bash" -> "bash".
+fn strip_version_operator(atom: &str) -> String {
+    match atom.find(['<', '>', '=']) {
+        Some(i) => atom[..i].to_string(),
+        None => atom.to_string(),
+    }
+}
+
+/// Parse every "Depends On" field out of a full `pacman -Qi` dump (one
+/// block per installed package, blocks separated by a blank line), stripping
+/// version operators and deduplicating. Handles wrapped/continuation lines:
+/// pacman indents continuation lines to align under the value column, so
+/// any line within a block that starts with several spaces and doesn't
+/// itself look like a new "Label   : value" field is treated as more of the
+/// same field's value.
+fn parse_depends_on_all(qi_text: &str) -> HashSet<String> {
+    let mut deps = HashSet::new();
+
+    for block in qi_text.split("\n\n") {
+        let mut capturing = false;
+        for line in block.lines() {
+            let leading_spaces = line.len() - line.trim_start().len();
+            let looks_like_new_field = leading_spaces == 0 && line.contains(" : ");
+
+            if looks_like_new_field {
+                capturing = false;
+                if let Some(rest) = line.strip_prefix("Depends On") {
+                    if let Some(colon_idx) = rest.find(':') {
+                        let value = rest[colon_idx + 1..].trim();
+                        if value != "None" && !value.is_empty() {
+                            for tok in value.split_whitespace() {
+                                deps.insert(strip_version_operator(tok));
+                            }
+                        }
+                        capturing = true;
+                    }
+                }
+                continue;
+            }
+
+            if capturing && leading_spaces > 0 {
+                for tok in line.trim().split_whitespace() {
+                    deps.insert(strip_version_operator(tok));
+                }
+            } else {
+                capturing = false;
+            }
+        }
+    }
+
+    deps
+}
+
+/// Ask pacman itself which of these atoms are actually unsatisfied right
+/// now. `pacman -T` / `--deptest` is the built-in dependency-test tool —
+/// unlike comparing against `pacman -Qq` by hand, it correctly resolves
+/// provides/virtual packages, so a dep satisfied by a provider isn't
+/// misreported as missing. Prints exactly the unsatisfied subset, one per
+/// line, to stdout.
+fn missing_via_pacman_t(deps: &[String]) -> Vec<String> {
+    if deps.is_empty() {
+        return Vec::new();
+    }
+    let out = Command::new(PACMAN_BIN)
+        .arg("-T")
+        .args(deps)
+        .env("LC_ALL", "C")
+        .output();
+    match out {
+        Ok(o) => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// `@preserved-rebuild`: scan every installed package's declared
+/// dependencies, find the ones that aren't actually satisfied on the
+/// system, and offer to reinstall them (`aura -S`, i.e. official repos —
+/// a dependency that vanished is essentially always a repo package).
+fn preserved_rebuild(pretend: bool, ask: bool) {
+    println!("{} Checking installed packages for missing dependencies...", ">>>".green().bold());
+
+    let qi = match pacman_qi_all() {
+        Some(s) => s,
+        None => {
+            eprintln!(">>> Error: failed to query installed packages (pacman -Qi).");
+            std::process::exit(1);
+        }
+    };
+
+    let all_deps = parse_depends_on_all(&qi);
+    if all_deps.is_empty() {
+        println!(">>> No dependency information found.");
+        return;
+    }
+
+    let mut deps_sorted: Vec<String> = all_deps.into_iter().collect();
+    deps_sorted.sort();
+
+    let missing = missing_via_pacman_t(&deps_sorted);
+
+    if missing.is_empty() {
+        println!();
+        println!(">>> No problems with dependencies were found.");
+        return;
+    }
+
+    println!();
+    for m in &missing {
+        println!("[{} {:<4}] {}", "ebuild".green(), "N".green().bold(), m.green().bold());
+    }
+    println!();
+    println!("{}: {} missing dependenc{}", "Total".bold(), missing.len(), if missing.len() == 1 { "y" } else { "ies" });
+    println!();
+
+    if pretend {
+        return;
+    }
+
+    print!("{} Reinstall the missing dependencies above? [y/N] ", ">>>".yellow().bold());
+    io::stdout().flush().ok();
+    let answer = read_line_raw();
+    let confirmed = answer.trim().eq_ignore_ascii_case("y");
+
+    if !confirmed {
+        println!(">>> Aborted.");
+        return;
+    }
+
+    // Our own y/N above already confirmed the *decision* to reinstall —
+    // but --noconfirm also silently auto-declines any further prompt
+    // pacman itself needs to raise (e.g. file conflicts, package
+    // conflicts). Respect --ask like every other install path in this
+    // tool does, so those prompts actually reach the user instead of
+    // being auto-rejected.
+    let mut args = vec!["-S"];
+    if !ask { args.push("--noconfirm"); }
+    run_cmd(AURA_BIN, &args, &missing);
+}
 
 fn main() {
     reset_sigpipe();
@@ -1724,14 +2004,27 @@ fn main() {
     let has_world = cli.packages.iter()
         .any(|p| p == "@world");
 
-    // Build validated package list (excluding world aliases)
+    // Detect @preserved-rebuild set (Gentoo-flavored trigger for a
+    // dependency-completeness check — see preserved_rebuild()).
+    let has_preserved_rebuild = cli.packages.iter()
+        .any(|p| p == "@preserved-rebuild");
+
+    // Build validated package list (excluding world/preserved-rebuild aliases)
     let target_pkgs: Vec<String> = validate_packages(
         &cli.packages
             .iter()
-            .filter(|p| *p != "@world")
+            .filter(|p| *p != "@world" && *p != "@preserved-rebuild")
             .cloned()
             .collect::<Vec<_>>(),
     );
+
+    // 0. @preserved-rebuild: a standalone action, checked before search/
+    //    install so `emerge @preserved-rebuild` (with no other packages)
+    //    just runs the check-and-offer-to-fix flow.
+    if has_preserved_rebuild {
+        preserved_rebuild(cli.pretend, cli.ask);
+        return;
+    }
 
     // 1. Search (including --searchdesc)
     if cli.search || cli.searchdesc {
