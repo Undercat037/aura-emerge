@@ -1041,7 +1041,12 @@ fn print_system_info() {
         .map(|v| format!("aura {}", v))
         .unwrap_or_else(|| "aura unknown".to_string());
     let pacman_ver = cmd_stdout(PACMAN_BIN, &["--version"])
-        .and_then(|s| s.lines().find(|l| l.to_lowercase().contains("pacman")).map(str::trim).map(str::to_string))
+        .and_then(|s| {
+            s.lines().find_map(|l| {
+                let lower = l.to_lowercase();
+                lower.find("pacman").map(|idx| l[idx..].trim().to_string())
+            })
+        })
         .unwrap_or_else(|| "unknown".to_string());
     let kernel = cmd_stdout(UNAME_BIN, &["-r"]).unwrap_or_else(|| "unknown".to_string());
     let arch = cmd_stdout(UNAME_BIN, &["-m"]).unwrap_or_else(|| "unknown".to_string());
