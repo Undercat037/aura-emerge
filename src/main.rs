@@ -421,17 +421,11 @@ fn probe_official(pkgs: &[String]) -> Option<Vec<PkgInfo>> {
     if infos.is_empty() { None } else { Some(infos) }
 }
 
-/// Probe official repos and split the requested packages into those that were
-/// found (with full PkgInfo) and those that were not.
+/// Probe official repos and split packages into found/not-found.
 ///
-/// aura/pacman's `-Sp` fails (or simply omits a line) for the *whole* batch
-/// query if even a single package name doesn't match anything in the sync
-/// databases. Querying everything in one shot and treating a failure as
-/// "nothing found" would then incorrectly push every package — including the
-/// ones that DO exist officially — over to the AUR. To avoid that, we first
-/// try the fast batch probe; if it doesn't account for every package we asked
-/// about, we fall back to probing the missing ones individually so a single
-/// bad name can't poison the rest.
+/// Batch `-Sp` fails for the whole query if one name doesn't exist, which
+/// would wrongly push everything to AUR. So we batch-probe first, then
+/// fall back to probing individually anything the batch missed.
 fn probe_official_split(pkgs: &[String]) -> (Vec<PkgInfo>, Vec<String>) {
     let bare_of = |p: &str| p.split('/').last().unwrap_or(p).to_string();
 
@@ -497,14 +491,9 @@ fn resolve_aur(pkgs: &[String]) -> Vec<PkgInfo> {
 
 /// Get the repository a package was installed from (e.g. "cachyos-extra-v3", "aur").
 ///
-/// pacman output is locale-dependent ("Repository" / "Сховище" / "Repository" etc.).
-/// We force LC_ALL=C so field names are always English.
-///
-/// Strategy:
-///   1. LC_ALL=C pacman -Qi <pkg> — local DB; knows the exact repo of the
-///      installed package. No "Repository" line → AUR/foreign build.
-///   2. LC_ALL=C pacman -Si <pkg> — sync DB fallback for not-yet-installed
-///      packages (e.g. --select). Takes the first hit (highest-priority repo).
+/// Forces LC_ALL=C since pacman's field names are locale-dependent.
+/// Tries `pacman -Qi` (installed pkg, no "Repository" line = AUR/foreign),
+/// then falls back to `pacman -Si` for not-yet-installed packages.
 fn get_pkg_repo(pkg: &str) -> Option<String> {
     let bare = pkg.split('/').last().unwrap_or(pkg);
 
@@ -661,12 +650,8 @@ fn abs_get_version(pkg: &str) -> String {
     "?".to_string()
 }
 
-/// Build and install packages from ABS (Arch Build System) via asp.
-/// Uses `asp checkout <pkg>` to fetch the official PKGBUILD, then runs makepkg -si.
-/// Extract PGP key IDs/fingerprints listed in a PKGBUILD's
-/// `validpgpkeys=(...)` array. Handles multi-line arrays and either quote
-/// style. Returns uppercased tokens, since gpg is case-insensitive about
-/// key IDs but comparisons here are simpler kept consistent.
+/// Extract PGP key IDs from a PKGBUILD's `validpgpkeys=(...)` array.
+/// Handles multi-line arrays and either quote style; returns uppercased tokens.
 fn parse_validpgpkeys(pkgbuild_text: &str) -> Vec<String> {
     let mut keys = Vec::new();
     let idx = match pkgbuild_text.find("validpgpkeys=") {
@@ -718,15 +703,10 @@ fn gpg_key_present(key: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Parse `validpgpkeys` out of a checked-out PKGBUILD, check which of those
-/// keys are missing from the local keyring, and either import them
-/// automatically (`--autopgp`, from `keyserver.ubuntu.com` — a standard,
-/// widely-trusted keyserver pool, not an arbitrary/attacker-controlled
-/// source) or print the *exact* import command for each missing key so the
-/// user isn't left guessing a key ID from a cryptic makepkg failure.
-///
-/// Runs proactively, before makepkg, so this catches the problem ahead of
-/// time rather than reactively parsing a build failure.
+/// Check `validpgpkeys` against the local keyring; with `--autopgp` import
+/// missing keys from keyserver.ubuntu.com, otherwise print the exact
+/// `gpg --recv-keys` command so the user isn't left guessing. Runs before
+/// makepkg so this is caught ahead of a build failure.
 fn ensure_pgp_keys(pkgbuild_path: &std::path::Path, autopgp: bool) {
     if !std::path::Path::new(GPG_BIN).exists() {
         return; // nothing we can check without gpg present
@@ -783,6 +763,7 @@ fn ensure_pgp_keys(pkgbuild_path: &std::path::Path, autopgp: bool) {
 }
 
 
+/// Build and install packages from ABS via `asp checkout` + `makepkg -si`.
 fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, autopgp: bool) -> bool {
     for bin in &[ASP_BIN, MAKEPKG_BIN] {
         if !std::path::Path::new(bin).exists() {
@@ -1000,11 +981,8 @@ fn portageq_shim(args: &[String]) {
 
 // ── --info ──────────────────────────────────────────────────────────────────
 
-/// Run a command and return trimmed stdout, or None on any failure.
-/// Pull the first bare `X.Y[.Z]` version token out of a string — used to
-/// dig a clean version number out of `aura --version`'s output, which
-/// mixes ASCII-art banner rows in with the text and isn't safe to grab a
-/// whole line from.
+/// Pull the first bare `X.Y[.Z]` version token out of a string — used on
+/// `aura --version` output, which mixes in ASCII-art banner text.
 fn extract_version_token(text: &str) -> Option<String> {
     text.split(|c: char| c.is_whitespace() || c == ',')
         .map(|tok| tok.trim_start_matches('v'))
@@ -1017,6 +995,7 @@ fn extract_version_token(text: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Run a command and return trimmed stdout, or None on any failure.
 fn cmd_stdout(bin: &str, args: &[&str]) -> Option<String> {
     let output = Command::new(bin)
         .args(args)
@@ -1030,13 +1009,9 @@ fn cmd_stdout(bin: &str, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Merge /etc/makepkg.conf with the user-level override exactly the way
-/// makepkg itself resolves precedence: the system file is sourced first,
-/// then (if present) $XDG_CONFIG_HOME/pacman/makepkg.conf — falling back to
-/// ~/.config/pacman/makepkg.conf — then the legacy ~/.makepkg.conf, each
-/// later file able to override values set before it. We let bash do the
-/// actual sourcing (arrays, `$(nproc)`, quoting rules) instead of
-/// hand-parsing shell syntax ourselves, then just read the results back.
+/// Merge /etc/makepkg.conf with user overrides using makepkg's own
+/// precedence order. Sourced via bash so arrays/`$(nproc)`/quoting are
+/// handled correctly instead of hand-parsed.
 fn read_makepkg_vars() -> HashMap<String, String> {
     let watched = [
         "CARCH", "CHOST", "CFLAGS", "CXXFLAGS", "LDFLAGS", "RUSTFLAGS",
@@ -1092,11 +1067,9 @@ fn user_makepkg_conf_path() -> String {
     String::new()
 }
 
-/// Parse /etc/pacman.conf for repository sections in file order — which is
-/// also pacman's own resolution priority: on a name clash between repos,
-/// the one listed first wins. Each repo's Server/Include lines are kept;
-/// Include lines are resolved one level deep (into the mirrorlist) so the
-/// actual mirror is visible instead of just the pointer file.
+/// Parse /etc/pacman.conf repo sections in file order (= pacman's own
+/// priority order). Keeps Server/Include lines, resolving Include one
+/// level deep into the mirrorlist.
 fn parse_pacman_repos() -> Vec<(String, Vec<String>)> {
     let mut repos: Vec<(String, Vec<String>)> = Vec::new();
     let Ok(file) = fs::File::open(PACMAN_CONF) else { return repos; };
@@ -1173,10 +1146,8 @@ fn world_set_stats() -> Option<(usize, u64)> {
 }
 
 /// `emerge --info`: a system/build-environment summary in the spirit of
-/// Gentoo's `emerge --info`, adapted to aura/pacman. Not a literal
-/// impersonation of Portage's output — field names are relabeled where the
-/// underlying concept differs — but the overall shape (uname/mem block,
-/// Repositories block, flag dump, world set) is intentionally familiar.
+/// Gentoo's `emerge --info`, adapted to aura/pacman (relabeled fields,
+/// same overall shape: uname/mem, repos, flags, world set).
 fn print_system_info() {
     let aura_ver = cmd_stdout(AURA_BIN, &["--version"])
         .and_then(|s| extract_version_token(&s))
@@ -1263,23 +1234,18 @@ fn print_system_info() {
 
 // ── AUR PKGBUILD safety scanner ─────────────────────────────────────────────
 //
-// Runs automatically before every AUR install (`aura -A ...`). Fetches each
-// package's raw PKGBUILD from the AUR cgit mirror (no `git clone`, just the
-// plain file) and greps it for a handful of red-flag patterns commonly seen
-// in malicious/compromised PKGBUILDs. This is *not* a substitute for reading
-// the PKGBUILD yourself — it only catches crude, textbook-obvious tricks —
-// but it's a cheap tripwire against copy-pasted or automated garbage.
+// Runs automatically before every AUR install. Fetches each package's raw
+// PKGBUILD from the AUR cgit mirror and greps for common red-flag patterns
+// seen in malicious/compromised PKGBUILDs. Not a substitute for reading it
+// yourself — just a cheap tripwire against obvious tricks.
 //
-// On any hit, the install is blocked and the user must type an explicit "y"
-// to proceed anyway. Anything else (including empty input / EOF) aborts.
+// On any hit, install is blocked until the user types an explicit "y".
 
 const CURL_BIN: &str = "/usr/bin/curl";
 
-/// Download an arbitrary raw file from a package's AUR git tree via the
-/// cgit web UI (e.g. "PKGBUILD" or a referenced "<pkg>.install" hook).
-/// Returns None on any network/parse failure (missing file, no
-/// connectivity, AUR down, etc.) — callers should *not* treat that as a
-/// clean scan, just as "nothing to check".
+/// Download a raw file from a package's AUR git tree via cgit (e.g.
+/// "PKGBUILD" or a referenced ".install" hook). Returns None on any
+/// failure — callers should treat that as "nothing to check", not clean.
 fn fetch_aur_file(pkg: &str, filename: &str) -> Option<String> {
     let url = format!(
         "https://aur.archlinux.org/cgit/aur.git/plain/{}?h={}",
@@ -1306,12 +1272,9 @@ fn fetch_aur_pkgbuild(pkg: &str) -> Option<String> {
     fetch_aur_file(pkg, "PKGBUILD")
 }
 
-/// Extract the `.install` hook script filename referenced by a PKGBUILD's
-/// `install=` variable, if any. That script runs pre/post install/upgrade/
-/// remove — as part of the pacman transaction, i.e. effectively as root —
-/// so it's at least as sensitive an execution point as build()/package(),
-/// and the June 2026 "Atomic Arch" AUR campaign specifically used both
-/// PKGBUILD *and* `.install` hooks to smuggle in its payload.
+/// Extract the `.install` hook filename from a PKGBUILD's `install=`
+/// variable. Runs as root as part of the pacman transaction, so it's a
+/// sensitive execution point (used in the June 2026 "Atomic Arch" campaign).
 fn parse_install_filename(pkgbuild_text: &str) -> Option<String> {
     for line in pkgbuild_text.lines() {
         let l = line.trim();
@@ -1402,17 +1365,13 @@ fn line_of_chmod_777(source: &str) -> Option<usize> {
     source.lines().position(chmod_777_line).map(|i| i + 1)
 }
 
-/// A bare dotted-quad IPv4 literal anywhere in the file — legitimate
-/// PKGBUILDs fetch sources from named domains, not hardcoded IPs. Simple
-/// heuristic: 4 dot-separated 1-3 digit groups, each <= 255, not preceded/
-/// followed by another digit or dot (so it doesn't fire on version strings
-/// buried in longer numbers).
+/// A bare dotted-quad IPv4 literal anywhere in the file — legit PKGBUILDs
+/// fetch from named domains, not hardcoded IPs. Heuristic: 4 dot-separated
+/// 1-3 digit groups <= 255, not adjacent to other digits/dots.
 ///
-/// Known false positive: a 4-component dotted pkgver/version string where
-/// every component happens to be <= 255 (e.g. "1.2.3.4") is indistinguishable
-/// from an IP by pure pattern matching and will also flag. That's an
-/// acceptable trade-off here — this only produces a review prompt, not a
-/// hard failure — but worth knowing if a clean package suddenly needs "y".
+/// Known false positive: a 4-component version string like "1.2.3.4" is
+/// indistinguishable from an IP here. Acceptable since this only prompts
+/// a review, not a hard failure.
 fn line_has_raw_ipv4(source: &str) -> bool {
     let bytes = source.as_bytes();
     let is_boundary = |c: Option<u8>| !matches!(c, Some(b) if b.is_ascii_digit() || b == b'.');
@@ -1478,13 +1437,9 @@ fn line_of_raw_ipv4(source: &str) -> Option<usize> {
 }
 
 /// A run of `\xHH` hex-escape sequences long enough to be an encoded
-/// payload (e.g. shellcode or a binary stuffed into a string literal) fed
-/// to something like `printf`/`echo -e`. Deliberately keyed on the `\x`
-/// escape form specifically, *not* on bare long hex strings — bare hex is
-/// extremely common in legitimate PKGBUILDs (sha256sums/b2sums checksums,
-/// PGP key fingerprints in validpgpkeys, git commit hashes) and flagging
-/// those would be pure noise. `\xHH\xHH...` escape sequences have no such
-/// legitimate use in a PKGBUILD.
+/// payload (e.g. shellcode) fed to `printf`/`echo -e`. Keyed on `\x`
+/// escapes specifically, not bare hex, since bare hex is common in
+/// legit PKGBUILDs (checksums, PGP fingerprints, commit hashes).
 fn hex_escape_payload_line(line: &str) -> bool {
     const THRESHOLD: usize = 8; // consecutive \xHH escapes in one line
     let l = line.trim();
@@ -1520,18 +1475,13 @@ fn line_of_hex_escape_payload(source: &str) -> Option<usize> {
     source.lines().position(hex_escape_payload_line).map(|i| i + 1)
 }
 
-/// Exact indicators from currently-known, still-circulating AUR
-/// supply-chain campaigns. This list *will* go stale as campaigns rotate
-/// package names (already true here: wave 1 used "atomic-lockfile", wave 2
-/// moved to "js-digest"/"lockfile-js") — it's a targeted catch for known
-/// IOCs, not a general defense, but it costs nothing to check and it's a
-/// zero-false-positive, high-confidence hit if it ever fires.
+/// Exact indicators from known, still-circulating AUR supply-chain
+/// campaigns. Will go stale as campaigns rotate names, but it's a
+/// zero-cost, high-confidence check when it does fire.
 ///
 /// Background: the "Atomic Arch" campaign (disclosed June 11-12, 2026)
-/// adopted 400+ orphaned AUR packages and edited their PKGBUILD *or*
-/// `.install` hooks to run `npm install atomic-lockfile` / `bun install
-/// js-digest` / `lockfile-js` during the build, pulling in a Rust
-/// infostealer that loads an eBPF rootkit when it lands as root.
+/// adopted 400+ orphaned AUR packages and edited PKGBUILD/`.install`
+/// hooks to pull in an infostealer via npm/bun during the build.
 const KNOWN_MALICIOUS_PACKAGE_NAMES: &[&str] = &["atomic-lockfile", "js-digest", "lockfile-js"];
 
 #[cfg(test)]
@@ -1550,19 +1500,12 @@ fn line_of_known_malicious_package(source: &str) -> Option<(usize, &'static str)
     None
 }
 
-/// `npm install <pkg>` / `npm i <pkg>` / `bun install <pkg>` / `bun add
-/// <pkg>` / `yarn add <pkg>` / `pip(3) install <pkg>` / `gem install <pkg>`
-/// naming a specific *external* package — as opposed to a bare `npm
-/// install` / `npm ci` with no package argument, which just installs a
-/// project's own declared package.json deps and is extremely common and
-/// legitimate in PKGBUILDs for JS-based projects. Pulling an arbitrary
-/// named package from a registry mid-build (especially one unrelated to
-/// the package actually being built) is exactly the mechanism the Atomic
-/// Arch campaign used. Known trade-off: a PKGBUILD that legitimately
-/// installs a *named* build-time tool this way (e.g. a global CLI via
-/// `npm install -g typescript`) will also flag — that's an acceptable
-/// false positive here, same as the IPv4 heuristic below; this only ever
-/// costs a review prompt, never a hard block.
+/// `npm install <pkg>` / `bun add <pkg>` / `pip install <pkg>` etc. naming
+/// a specific external package — as opposed to a bare `npm ci`, which just
+/// installs a project's own declared deps and is common/legitimate. Pulling
+/// a named package mid-build is exactly the Atomic Arch mechanism. Known
+/// false positive: legit installs of a global CLI tool this way also flag —
+/// acceptable since it only costs a review prompt, never a hard block.
 fn foreign_pkg_manager_install_line(line: &str) -> bool {
     const PATTERNS: &[&str] = &[
         "npm install ", "npm i ", "bun install ", "bun add ",
@@ -1596,14 +1539,11 @@ fn line_of_foreign_pkg_manager_install(source: &str) -> Option<usize> {
     source.lines().position(foreign_pkg_manager_install_line).map(|i| i + 1)
 }
 
-/// How confident a finding is. `Suspicious` covers the generic, crude-but-
-/// common heuristics (curl|sh, base64 -d, chmod 777, a raw IP literal, a
-/// hex-escape payload) — each one is a real reason to look twice, but each
-/// also has plausible false positives on its own. `AtomicArch` is reserved
-/// for an exact IOC hit against a *disclosed, confirmed* campaign — right
-/// now that's only `KNOWN_MALICIOUS_PACKAGE_NAMES` — and gets a louder,
-/// differently-colored alert since there's essentially no false-positive
-/// risk on a literal name match.
+/// How confident a finding is. `Suspicious` covers generic, crude-but-common
+/// heuristics (curl|sh, base64 -d, chmod 777, raw IP, hex-escape payload) —
+/// each a real reason to look twice but each with plausible false positives.
+/// `AtomicArch` is reserved for an exact IOC hit against a confirmed
+/// campaign, with essentially no false-positive risk, so it gets a louder alert.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Severity {
     Suspicious,
@@ -1678,17 +1618,12 @@ fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
     findings
 }
 
-/// Fetch + scan the PKGBUILD — and, if it references one, the `.install`
-/// hook — for every package about to be installed from the AUR. If
-/// anything suspicious turns up in either file for any package, print the
-/// findings and block until the user types an explicit "y". Anything else
-/// aborts the whole install (exits the process), matching the "block and
-/// require explicit y" behavior the user confirmed.
+/// Fetch + scan the PKGBUILD (and any referenced `.install` hook) for
+/// every package about to be installed from the AUR. On any finding,
+/// print it and require an explicit "y" to continue; anything else aborts.
 ///
-/// Files that couldn't be fetched (network hiccup, AUR down, name not
-/// found, split-package headers, no `.install` referenced, etc.) are
-/// silently skipped rather than treated as a hit — this scanner only ever
-/// adds friction on actual findings, never on lookup failures.
+/// Files that couldn't be fetched are silently skipped, not treated as a
+/// hit — this only adds friction on actual findings, never on lookup failures.
 fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) {
     let mut any_findings = false;
     println!("{} Scanning AUR PKGBUILDs and .install hooks for suspicious patterns...", ">>>".green().bold());
@@ -1765,22 +1700,12 @@ fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) {
 
 /// Print one alert block in the emerge-style `>>> ===...` box.
 ///
-/// `is_atomic` selects the color scheme:
-/// - `true` (confirmed Atomic Arch IOC match): on the box header (top bar,
-///   headline, bottom bar) the `>>>` arrows are red and the `===` bars are
-///   orange, with a yellow headline; on the finding/link lines below, the
-///   arrows switch to orange (message text left uncolored). Reserved for a
-///   near-zero-false-positive exact name match against a disclosed
-///   campaign, so it reads louder than the generic block.
-/// - `false` (generic heuristic hit): yellow arrows, bars, and headline
-///   throughout — still worth stopping for, but each individual heuristic
-///   can have legitimate false positives on its own.
+/// `is_atomic` picks the color scheme: `true` (confirmed Atomic Arch IOC
+/// match, near-zero false-positive risk) uses red/orange for a louder
+/// alert; `false` (generic heuristic hit) uses yellow throughout.
 ///
-/// Each finding line names the file and the 1-indexed line it fired on;
-/// the block ends with one direct cgit link per referenced file (PKGBUILD
-/// and/or the `.install` hook), anchored to the first flagged line in that
-/// file, so the user can jump straight to it instead of reading the whole
-/// thing top to bottom.
+/// Each finding line names the file and line it fired on; the block ends
+/// with a direct cgit link per referenced file so the user can jump straight to it.
 fn print_finding_block(pkg: &str, headline: &str, findings: &[&(String, Finding)], is_atomic: bool) {
     let bar = "===================================";
     let arrow_str = ">>>";
@@ -2086,20 +2011,11 @@ build() {
     }
 }
 
-/// Read one line from stdin, byte by byte, via the raw fd — deliberately
-/// bypassing Rust's global `Stdin`, which wraps a shared `BufReader` and
-/// will happily read *more* than one line's worth of bytes from the
-/// underlying fd/pty in a single syscall, stashing the leftover in its own
-/// internal buffer. That's invisible and harmless on its own, but this
-/// tool always follows a "y/N, please confirm" read with spawning a child
-/// process (`aura`/`pacman`) that inherits the same stdin and expects to
-/// do its *own* interactive read right after (e.g. pacman's package-
-/// conflict prompt) — any bytes the parent over-read are gone as far as
-/// the OS and the child are concerned, so the child's read comes back
-/// empty/EOF immediately, and its prompt gets silently declined with no
-/// real chance for the user to answer. Reading strictly one byte at a time
-/// via the raw fd guarantees we never consume more than our own line,
-/// leaving the fd's read position exactly where the child needs it.
+/// Read one line from stdin, byte by byte, via the raw fd — bypassing
+/// Rust's `Stdin`, which over-reads into its own buffer. This tool follows
+/// a "y/N" prompt by spawning a child (aura/pacman) that inherits stdin
+/// and expects its own interactive read right after; any bytes the parent
+/// over-read are lost to the child. Reading one byte at a time avoids that.
 #[cfg(unix)]
 fn read_line_raw() -> String {
     use std::os::unix::io::FromRawFd;
@@ -2130,17 +2046,6 @@ fn read_line_raw() -> String {
 }
 
 /// Reset SIGPIPE to its default disposition (terminate, not panic).
-///
-/// Rust's stdout is fully buffered and treats a write error as fatal via
-/// panic — but on Unix, the *first* symptom of a downstream reader closing
-/// early (e.g. `| head -3`) is normally just a SIGPIPE that kills the
-/// process quietly. Rust masks SIGPIPE by default (SIG_IGN) so that write()
-/// returns EPIPE instead of killing the process, which is convenient for
-/// libraries but means every plain `println!` in this codebase has to
-/// handle that error or it panics — which is exactly what was happening.
-/// Restoring the default disposition here makes `emerge --info | head -3`
-/// behave like every other well-behaved Unix CLI: it just stops silently
-/// when the reader goes away.
 #[cfg(unix)]
 fn reset_sigpipe() {
     extern "C" {
@@ -2158,21 +2063,15 @@ fn reset_sigpipe() {}
 
 // ── @preserved-rebuild ──────────────────────────────────────────────────────
 //
-// There's no Portage-style preserved-libs tracking on Arch, so this doesn't
-// literally port Gentoo's @preserved-rebuild set. What it does instead:
-// collect every dependency every installed package declares (via
-// `pacman -Qi`), hand the whole deduplicated list to `pacman -T` (which
-// correctly understands provides/virtual packages, unlike a naive string
-// diff against `pacman -Qq`), and offer to reinstall whatever comes back
-// unsatisfied — deps that got removed out from under something, e.g. via
-// `pacman -Rdd` or a provider package that stopped providing them.
+// No Portage-style preserved-libs tracking on Arch, so this isn't a literal
+// port. Instead: collect every dependency of every installed package (via
+// `pacman -Qi`), hand the deduplicated list to `pacman -T` (which understands
+// provides/virtual packages, unlike a naive string diff), and offer to
+// reinstall whatever comes back unsatisfied.
 
 /// Run `pacman -Qi` (info for every installed package) forced to the C
-/// locale. Forcing the locale matters: pacman's field labels ("Depends
-/// On", etc.) are gettext-translated, so on a system with e.g. LANG=uk_UA
-/// they would NOT be the English strings this parser looks for. `LC_ALL=C`
-/// guarantees English output regardless of the user's actual locale — the
-/// standard trick for scripts that parse command output.
+/// locale, since pacman's field labels are gettext-translated and this
+/// parser expects English regardless of the user's actual locale.
 fn pacman_qi_all() -> Option<String> {
     let out = Command::new(PACMAN_BIN)
         .arg("-Qi")
@@ -2194,13 +2093,9 @@ fn strip_version_operator(atom: &str) -> String {
     }
 }
 
-/// Parse every "Depends On" field out of a full `pacman -Qi` dump (one
-/// block per installed package, blocks separated by a blank line), stripping
-/// version operators and deduplicating. Handles wrapped/continuation lines:
-/// pacman indents continuation lines to align under the value column, so
-/// any line within a block that starts with several spaces and doesn't
-/// itself look like a new "Label   : value" field is treated as more of the
-/// same field's value.
+/// Parse every "Depends On" field out of a `pacman -Qi` dump (blocks
+/// separated by blank lines), stripping version operators and
+/// deduplicating. Handles pacman's indented continuation lines.
 fn parse_depends_on_all(qi_text: &str) -> HashSet<String> {
     let mut deps = HashSet::new();
 
@@ -2239,12 +2134,9 @@ fn parse_depends_on_all(qi_text: &str) -> HashSet<String> {
     deps
 }
 
-/// Ask pacman itself which of these atoms are actually unsatisfied right
-/// now. `pacman -T` / `--deptest` is the built-in dependency-test tool —
-/// unlike comparing against `pacman -Qq` by hand, it correctly resolves
-/// provides/virtual packages, so a dep satisfied by a provider isn't
-/// misreported as missing. Prints exactly the unsatisfied subset, one per
-/// line, to stdout.
+/// Ask pacman which of these atoms are actually unsatisfied right now.
+/// `pacman -T` correctly resolves provides/virtual packages, unlike
+/// comparing against `pacman -Qq` by hand.
 fn missing_via_pacman_t(deps: &[String]) -> Vec<String> {
     if deps.is_empty() {
         return Vec::new();
