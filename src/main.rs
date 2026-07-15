@@ -1331,54 +1331,75 @@ fn parse_install_filename(pkgbuild_text: &str) -> Option<String> {
 /// `curl ... | sh` / `wget ... | bash` / `... | source` style remote-code-exec
 /// pipelines. Deliberately loose (matches curl/wget followed eventually by a
 /// pipe into a shell) since attackers vary whitespace and flags constantly.
-fn is_curl_pipe_shell(source: &str) -> bool {
-    for line in source.lines() {
-        let l = line.trim();
-        if l.starts_with('#') {
-            continue;
-        }
-        let lower = l.to_lowercase();
-        let has_fetcher = lower.contains("curl ") || lower.contains("curl\t")
-            || lower.contains("wget ") || lower.contains("wget\t");
-        if !has_fetcher || !lower.contains('|') {
-            continue;
-        }
-        let after_pipe = lower.splitn(2, '|').nth(1).unwrap_or("");
-        if ["sh", "bash", "zsh", "source", "."].iter().any(|shell| {
-            after_pipe.split_whitespace().next() == Some(shell)
-        }) {
-            return true;
-        }
+fn curl_pipe_shell_line(line: &str) -> bool {
+    let l = line.trim();
+    if l.starts_with('#') {
+        return false;
     }
-    false
+    let lower = l.to_lowercase();
+    let has_fetcher = lower.contains("curl ") || lower.contains("curl\t")
+        || lower.contains("wget ") || lower.contains("wget\t");
+    if !has_fetcher || !lower.contains('|') {
+        return false;
+    }
+    let after_pipe = lower.splitn(2, '|').nth(1).unwrap_or("");
+    ["sh", "bash", "zsh", "source", "."].iter().any(|shell| {
+        after_pipe.split_whitespace().next() == Some(shell)
+    })
+}
+
+#[cfg(test)]
+fn is_curl_pipe_shell(source: &str) -> bool {
+    source.lines().any(curl_pipe_shell_line)
+}
+
+/// Same check as `is_curl_pipe_shell`, but returns the 1-indexed line
+/// number of the first match instead of a bare bool, so alert output can
+/// point at the exact offending line.
+fn line_of_curl_pipe_shell(source: &str) -> Option<usize> {
+    source.lines().position(curl_pipe_shell_line).map(|i| i + 1)
 }
 
 /// `base64 -d` / `base64 --decode` — near-universal marker of obfuscated
 /// payloads stashed in a PKGBUILD (legit PKGBUILDs essentially never need
 /// this).
+fn base64_decode_line(line: &str) -> bool {
+    let l = line.trim();
+    if l.starts_with('#') {
+        return false;
+    }
+    let lower = l.to_lowercase();
+    lower.contains("base64 -d") || lower.contains("base64 --decode")
+        || lower.contains("base64 -D")
+}
+
+#[cfg(test)]
 fn is_base64_decode(source: &str) -> bool {
-    source.lines().any(|line| {
-        let l = line.trim();
-        if l.starts_with('#') {
-            return false;
-        }
-        let lower = l.to_lowercase();
-        lower.contains("base64 -d") || lower.contains("base64 --decode")
-            || lower.contains("base64 -D")
-    })
+    source.lines().any(base64_decode_line)
+}
+
+fn line_of_base64_decode(source: &str) -> Option<usize> {
+    source.lines().position(base64_decode_line).map(|i| i + 1)
 }
 
 /// `chmod 777` / `chmod -R 777` (and equivalent a+rwx) — overly permissive
 /// perms with no legitimate reason to appear in a build script.
+fn chmod_777_line(line: &str) -> bool {
+    let l = line.trim();
+    if l.starts_with('#') {
+        return false;
+    }
+    let lower = l.to_lowercase();
+    lower.contains("chmod") && (lower.contains("777") || lower.contains("a+rwx"))
+}
+
+#[cfg(test)]
 fn is_chmod_777(source: &str) -> bool {
-    source.lines().any(|line| {
-        let l = line.trim();
-        if l.starts_with('#') {
-            return false;
-        }
-        let lower = l.to_lowercase();
-        lower.contains("chmod") && (lower.contains("777") || lower.contains("a+rwx"))
-    })
+    source.lines().any(chmod_777_line)
+}
+
+fn line_of_chmod_777(source: &str) -> Option<usize> {
+    source.lines().position(chmod_777_line).map(|i| i + 1)
 }
 
 /// A bare dotted-quad IPv4 literal anywhere in the file — legitimate
@@ -1392,7 +1413,7 @@ fn is_chmod_777(source: &str) -> bool {
 /// from an IP by pure pattern matching and will also flag. That's an
 /// acceptable trade-off here — this only produces a review prompt, not a
 /// hard failure — but worth knowing if a clean package suddenly needs "y".
-fn contains_raw_ipv4(source: &str) -> bool {
+fn line_has_raw_ipv4(source: &str) -> bool {
     let bytes = source.as_bytes();
     let is_boundary = |c: Option<u8>| !matches!(c, Some(b) if b.is_ascii_digit() || b == b'.');
 
@@ -1447,6 +1468,15 @@ fn contains_raw_ipv4(source: &str) -> bool {
     false
 }
 
+#[cfg(test)]
+fn contains_raw_ipv4(source: &str) -> bool {
+    source.lines().any(line_has_raw_ipv4)
+}
+
+fn line_of_raw_ipv4(source: &str) -> Option<usize> {
+    source.lines().position(line_has_raw_ipv4).map(|i| i + 1)
+}
+
 /// A run of `\xHH` hex-escape sequences long enough to be an encoded
 /// payload (e.g. shellcode or a binary stuffed into a string literal) fed
 /// to something like `printf`/`echo -e`. Deliberately keyed on the `\x`
@@ -1455,32 +1485,39 @@ fn contains_raw_ipv4(source: &str) -> bool {
 /// PGP key fingerprints in validpgpkeys, git commit hashes) and flagging
 /// those would be pure noise. `\xHH\xHH...` escape sequences have no such
 /// legitimate use in a PKGBUILD.
-fn is_hex_escape_payload(source: &str) -> bool {
+fn hex_escape_payload_line(line: &str) -> bool {
     const THRESHOLD: usize = 8; // consecutive \xHH escapes in one line
-    for line in source.lines() {
-        let l = line.trim();
-        if l.starts_with('#') {
-            continue;
-        }
-        let bytes = l.as_bytes();
-        let mut i = 0;
-        let mut run = 0usize;
-        while i < bytes.len() {
-            if bytes[i] == b'\\' && i + 3 < bytes.len() && (bytes[i + 1] == b'x' || bytes[i + 1] == b'X')
-                && bytes[i + 2].is_ascii_hexdigit() && bytes[i + 3].is_ascii_hexdigit()
-            {
-                run += 1;
-                if run >= THRESHOLD {
-                    return true;
-                }
-                i += 4;
-            } else {
-                run = 0;
-                i += 1;
+    let l = line.trim();
+    if l.starts_with('#') {
+        return false;
+    }
+    let bytes = l.as_bytes();
+    let mut i = 0;
+    let mut run = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 3 < bytes.len() && (bytes[i + 1] == b'x' || bytes[i + 1] == b'X')
+            && bytes[i + 2].is_ascii_hexdigit() && bytes[i + 3].is_ascii_hexdigit()
+        {
+            run += 1;
+            if run >= THRESHOLD {
+                return true;
             }
+            i += 4;
+        } else {
+            run = 0;
+            i += 1;
         }
     }
     false
+}
+
+#[cfg(test)]
+fn is_hex_escape_payload(source: &str) -> bool {
+    source.lines().any(hex_escape_payload_line)
+}
+
+fn line_of_hex_escape_payload(source: &str) -> Option<usize> {
+    source.lines().position(hex_escape_payload_line).map(|i| i + 1)
 }
 
 /// Exact indicators from currently-known, still-circulating AUR
@@ -1497,8 +1534,20 @@ fn is_hex_escape_payload(source: &str) -> bool {
 /// infostealer that loads an eBPF rootkit when it lands as root.
 const KNOWN_MALICIOUS_PACKAGE_NAMES: &[&str] = &["atomic-lockfile", "js-digest", "lockfile-js"];
 
+#[cfg(test)]
 fn contains_known_malicious_package(source: &str) -> Option<&'static str> {
     KNOWN_MALICIOUS_PACKAGE_NAMES.iter().copied().find(|name| source.contains(name))
+}
+
+/// Same check, but returns the 1-indexed line number of the first match
+/// alongside the matched name, so alert output can point at the exact line.
+fn line_of_known_malicious_package(source: &str) -> Option<(usize, &'static str)> {
+    for (i, line) in source.lines().enumerate() {
+        if let Some(name) = KNOWN_MALICIOUS_PACKAGE_NAMES.iter().copied().find(|n| line.contains(n)) {
+            return Some((i + 1, name));
+        }
+    }
+    None
 }
 
 /// `npm install <pkg>` / `npm i <pkg>` / `bun install <pkg>` / `bun add
@@ -1514,25 +1563,23 @@ fn contains_known_malicious_package(source: &str) -> Option<&'static str> {
 /// `npm install -g typescript`) will also flag — that's an acceptable
 /// false positive here, same as the IPv4 heuristic below; this only ever
 /// costs a review prompt, never a hard block.
-fn is_foreign_pkg_manager_install(source: &str) -> bool {
+fn foreign_pkg_manager_install_line(line: &str) -> bool {
     const PATTERNS: &[&str] = &[
         "npm install ", "npm i ", "bun install ", "bun add ",
         "yarn add ", "pip install ", "pip3 install ", "gem install ",
     ];
-    for line in source.lines() {
-        let l = line.trim();
-        if l.starts_with('#') {
-            continue;
-        }
-        let lower = l.to_lowercase();
-        for p in PATTERNS {
-            if let Some(idx) = lower.find(p) {
-                let rest = &l[idx + p.len()..];
-                let first_pkg_tok = rest.split_whitespace().find(|t| !t.starts_with('-'));
-                if let Some(tok) = first_pkg_tok {
-                    if !tok.starts_with('.') && !tok.starts_with('/') {
-                        return true;
-                    }
+    let l = line.trim();
+    if l.starts_with('#') {
+        return false;
+    }
+    let lower = l.to_lowercase();
+    for p in PATTERNS {
+        if let Some(idx) = lower.find(p) {
+            let rest = &l[idx + p.len()..];
+            let first_pkg_tok = rest.split_whitespace().find(|t| !t.starts_with('-'));
+            if let Some(tok) = first_pkg_tok {
+                if !tok.starts_with('.') && !tok.starts_with('/') {
+                    return true;
                 }
             }
         }
@@ -1540,34 +1587,93 @@ fn is_foreign_pkg_manager_install(source: &str) -> bool {
     false
 }
 
+#[cfg(test)]
+fn is_foreign_pkg_manager_install(source: &str) -> bool {
+    source.lines().any(foreign_pkg_manager_install_line)
+}
+
+fn line_of_foreign_pkg_manager_install(source: &str) -> Option<usize> {
+    source.lines().position(foreign_pkg_manager_install_line).map(|i| i + 1)
+}
+
+/// How confident a finding is. `Suspicious` covers the generic, crude-but-
+/// common heuristics (curl|sh, base64 -d, chmod 777, a raw IP literal, a
+/// hex-escape payload) — each one is a real reason to look twice, but each
+/// also has plausible false positives on its own. `AtomicArch` is reserved
+/// for an exact IOC hit against a *disclosed, confirmed* campaign — right
+/// now that's only `KNOWN_MALICIOUS_PACKAGE_NAMES` — and gets a louder,
+/// differently-colored alert since there's essentially no false-positive
+/// risk on a literal name match.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Severity {
+    Suspicious,
+    AtomicArch,
+}
+
+#[derive(Clone, Debug)]
+struct Finding {
+    /// 1-indexed line number the pattern matched on; 0 if not line-specific.
+    line: usize,
+    message: String,
+    severity: Severity,
+}
+
 /// Run all heuristics against one PKGBUILD (or `.install` hook — same
-/// shell-script surface, same heuristics apply), returning human-readable
-/// findings (empty vec = clean).
-fn scan_pkgbuild_source(source: &str) -> Vec<String> {
+/// shell-script surface, same heuristics apply), returning line-numbered,
+/// severity-tagged findings (empty vec = clean).
+fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
     let mut findings = Vec::new();
-    if is_curl_pipe_shell(source) {
-        findings.push("downloads and pipes a remote script straight into a shell (curl/wget | sh)".to_string());
+    if let Some(line) = line_of_curl_pipe_shell(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "downloads and pipes a remote script straight into a shell (curl/wget | sh)".to_string(),
+        });
     }
-    if is_base64_decode(source) {
-        findings.push("decodes a base64 blob (possible obfuscated payload)".to_string());
+    if let Some(line) = line_of_base64_decode(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "decodes a base64 blob (possible obfuscated payload)".to_string(),
+        });
     }
-    if is_chmod_777(source) {
-        findings.push("sets world-writable/executable permissions (chmod 777)".to_string());
+    if let Some(line) = line_of_chmod_777(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "sets world-writable/executable permissions (chmod 777)".to_string(),
+        });
     }
-    if contains_raw_ipv4(source) {
-        findings.push("fetches from or references a hardcoded raw IP address instead of a domain".to_string());
+    if let Some(line) = line_of_raw_ipv4(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "fetches from or references a hardcoded raw IP address instead of a domain".to_string(),
+        });
     }
-    if is_hex_escape_payload(source) {
-        findings.push("contains a long run of \\xHH hex-escape sequences (possible encoded/obfuscated payload)".to_string());
+    if let Some(line) = line_of_hex_escape_payload(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "contains a long run of \\xHH hex-escape sequences (possible encoded/obfuscated payload)".to_string(),
+        });
     }
-    if let Some(name) = contains_known_malicious_package(source) {
-        findings.push(format!(
-            "references '{}' — a known-malicious package name from a documented AUR supply-chain campaign (Atomic Arch, June 2026)",
-            name
-        ));
+    if let Some((line, name)) = line_of_known_malicious_package(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::AtomicArch,
+            message: format!(
+                "references '{}' — a known-malicious package name from a documented AUR supply-chain campaign (Atomic Arch, June 2026)",
+                name
+            ),
+        });
     }
-    if is_foreign_pkg_manager_install(source) {
-        findings.push("installs a named external package via npm/bun/yarn/pip/gem mid-build — the mechanism the Atomic Arch AUR campaign used to smuggle in its payload".to_string());
+    if let Some(line) = line_of_foreign_pkg_manager_install(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "installs a named external package via npm/bun/yarn/pip/gem mid-build — the mechanism the Atomic Arch AUR campaign used to smuggle in its payload".to_string(),
+        });
     }
     findings
 }
@@ -1593,9 +1699,9 @@ fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) {
             None => continue,
         };
 
-        // (file label, finding) pairs across both PKGBUILD and, if present,
+        // (file label, Finding) pairs across both PKGBUILD and, if present,
         // the referenced .install hook.
-        let mut pkg_findings: Vec<(String, String)> = scan_pkgbuild_source(&pkgbuild_src)
+        let mut pkg_findings: Vec<(String, Finding)> = scan_pkgbuild_source(&pkgbuild_src)
             .into_iter()
             .map(|f| ("PKGBUILD".to_string(), f))
             .collect();
@@ -1614,10 +1720,21 @@ fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) {
             continue;
         }
         any_findings = true;
-        eprintln!();
-        eprintln!("{} {} {}", "!!!".red().bold(), "Suspicious AUR package:".red().bold(), pkg.bold());
-        for (file, finding) in &pkg_findings {
-            eprintln!("    [{}] {}", file, finding);
+
+        let atomic: Vec<&(String, Finding)> = pkg_findings.iter()
+            .filter(|(_, f)| f.severity == Severity::AtomicArch)
+            .collect();
+        let suspicious: Vec<&(String, Finding)> = pkg_findings.iter()
+            .filter(|(_, f)| f.severity == Severity::Suspicious)
+            .collect();
+
+        // Highest-confidence alert first: a confirmed IOC match against a
+        // disclosed campaign is more actionable than a generic heuristic.
+        if !atomic.is_empty() {
+            print_finding_block(pkg, "Alert, detected Atomic Arch package", &atomic, true);
+        }
+        if !suspicious.is_empty() {
+            print_finding_block(pkg, "Warning, detected suspicious fragment", &suspicious, false);
         }
     }
 
@@ -1643,6 +1760,66 @@ fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) {
     if !confirmed {
         eprintln!("{} Aborted.", ">>>".red().bold());
         std::process::exit(1);
+    }
+}
+
+/// Print one alert block in the emerge-style `>>> ===...` box.
+///
+/// `is_atomic` selects the color scheme:
+/// - `true` (confirmed Atomic Arch IOC match): on the box header (top bar,
+///   headline, bottom bar) the `>>>` arrows are red and the `===` bars are
+///   orange, with a yellow headline; on the finding/link lines below, the
+///   arrows switch to orange (message text left uncolored). Reserved for a
+///   near-zero-false-positive exact name match against a disclosed
+///   campaign, so it reads louder than the generic block.
+/// - `false` (generic heuristic hit): yellow arrows, bars, and headline
+///   throughout — still worth stopping for, but each individual heuristic
+///   can have legitimate false positives on its own.
+///
+/// Each finding line names the file and the 1-indexed line it fired on;
+/// the block ends with one direct cgit link per referenced file (PKGBUILD
+/// and/or the `.install` hook), anchored to the first flagged line in that
+/// file, so the user can jump straight to it instead of reading the whole
+/// thing top to bottom.
+fn print_finding_block(pkg: &str, headline: &str, findings: &[&(String, Finding)], is_atomic: bool) {
+    let bar = "===================================";
+    let arrow_str = ">>>";
+
+    eprintln!();
+    if is_atomic {
+        eprintln!("{} {}", arrow_str.red().bold(), bar.truecolor(255, 140, 0).bold());
+        eprintln!("{} {}", arrow_str.red().bold(), format!("{} ({})", headline, pkg).yellow().bold());
+        eprintln!("{} {}", arrow_str.red().bold(), bar.truecolor(255, 140, 0).bold());
+    } else {
+        eprintln!("{} {}", arrow_str.yellow().bold(), bar.yellow().bold());
+        eprintln!("{} {}", arrow_str.yellow().bold(), format!("{} ({})", headline, pkg).yellow().bold());
+        eprintln!("{} {}", arrow_str.yellow().bold(), bar.yellow().bold());
+    }
+
+    let arrow = || if is_atomic { arrow_str.truecolor(255, 140, 0).bold() } else { arrow_str.yellow().bold() };
+
+    let mut files_seen: Vec<&str> = Vec::new();
+    for (file, finding) in findings {
+        let loc = if finding.line > 0 {
+            format!("file {} line {}", file, finding.line)
+        } else {
+            format!("file {}", file)
+        };
+        eprintln!("{} {}: {}", arrow(), loc, finding.message);
+        if !files_seen.contains(&file.as_str()) {
+            files_seen.push(file.as_str());
+        }
+    }
+
+    for file in files_seen {
+        let anchor = findings.iter()
+            .find(|(f, fi)| f == file && fi.line > 0)
+            .map(|(_, fi)| format!("#n{}", fi.line))
+            .unwrap_or_default();
+        eprintln!(
+            "{} Read full file: https://aur.archlinux.org/cgit/aur.git/tree/{}?h={}{}",
+            arrow(), file, pkg, anchor
+        );
     }
 }
 
@@ -1872,8 +2049,27 @@ post_install() {
         assert_eq!(parse_install_filename(pkgbuild), Some("totally-legit-tool.install".to_string()));
 
         let install_findings = scan_pkgbuild_source(install_hook);
-        assert!(install_findings.iter().any(|f| f.contains("atomic-lockfile")));
-        assert!(install_findings.iter().any(|f| f.contains("Atomic Arch") || f.contains("npm/bun/yarn")));
+        assert!(install_findings.iter().any(|f| f.message.contains("atomic-lockfile")));
+        assert!(install_findings.iter().any(|f| f.severity == Severity::AtomicArch));
+    }
+
+    #[test]
+    fn findings_carry_correct_line_numbers() {
+        let src = "pkgname=foo\npkgver=1.0\nbuild() {\n  chmod 777 \"$pkgdir\"\n}\n";
+        let findings = scan_pkgbuild_source(src);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].line, 4);
+        assert_eq!(findings[0].severity, Severity::Suspicious);
+    }
+
+    #[test]
+    fn known_malicious_package_is_atomic_arch_severity() {
+        let src = "post_install() {\n  npm install atomic-lockfile\n}\n";
+        let findings = scan_pkgbuild_source(src);
+        // Hits both the exact-IOC check (AtomicArch) and the generic
+        // foreign-package-manager heuristic (Suspicious) on the same line.
+        assert!(findings.iter().any(|f| f.severity == Severity::AtomicArch && f.line == 2));
+        assert!(findings.iter().any(|f| f.severity == Severity::Suspicious && f.line == 2));
     }
 
     #[test]
