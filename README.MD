@@ -1,5 +1,5 @@
 # aura-emerge
-en | [ua](repo-files/UA-README.MD)
+en | [ua](UA-README.MD)
 
 > A Gentoo-style `emerge` wrapper for Arch Linux, built on top of [Aura](https://github.com/fosskers/aura).
 
