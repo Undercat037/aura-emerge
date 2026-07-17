@@ -54,7 +54,7 @@ dependencies = [
 
 [[package]]
 name = "aura-emerge"
-version = "1.24.9"
+version = "1.25.0"
 dependencies = [
  "clap",
  "clap_complete",
