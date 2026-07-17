@@ -8,9 +8,9 @@ url="https://github.com/Undercat037/aura-emerge"
 license=('GPL-3.0')
 depends=('aura')
 optdepends=('asp: for --abs support (build from ABS source)'
-            'gnupg: for PGP verification when building from ABS')
+  'gnupg: for PGP verification when building from ABS')
 makedepends=('rust' 'cargo')
-conflicts=('portageq-shim')
+conflicts=('portage')
 install=aura-emerge.install
 backup=('etc/emerge/world.set')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/Undercat037/aura-emerge/archive/refs/heads/main.tar.gz")
