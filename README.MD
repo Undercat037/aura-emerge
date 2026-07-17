@@ -23,7 +23,7 @@ paru -S aura-emerge
 [Release binary](target/release/)
 
 **Requirements:** `aura` must be installed and in `/usr/bin/aura`.  
-**Optional:** `asp` for `--abs` support (`emerge asp`).
+**Optional:** `asp` for `--abs` support (`emerge asp`), `gpg` for automatic PGP key import (`--autopgp`).
 
 ## Gentoo → Arch: make.conf equivalent
 
@@ -57,11 +57,15 @@ emerge nano --aur            # install from AUR explicitly
 emerge nano --only-repos     # install only from official repos, never touch the AUR
 emerge nano --abs            # build from ABS (Arch Build System) source via asp
 emerge nano --abs --skippgp  # build from ABS, skip PGP signature check
-emerge nano --abs --edit     # build from ABS, with edit PKGBUILD
+emerge nano --abs --autopgp  # build from ABS, auto-import missing PGP keys, no prompt
+emerge nano --abs --edit     # build from ABS, edit PKGBUILD before building ($EDITOR)
+emerge nano --edit           # install from AUR, edit PKGBUILD before building (aura --hotedit)
 emerge -c                    # remove orphans (depclean)
 emerge -C nano               # remove specific package (unmerge)
 emerge -u @world             # update entire system (official + AUR)
+emerge -u @world --refresh   # update, force-refresh databases first (like pacman -Syy)
 emerge --sync                # sync package databases
+emerge --info                # show system info (like Gentoo's emerge --info)
 emerge -s nano               # search in official repos + AUR
 emerge -s nano --only-repos  # search official repos only, skip AUR
 emerge --searchdesc nano     # search by package description
@@ -97,6 +101,18 @@ extra/firefox
 
 Prefixes: official repo name, `aur/` for AUR packages, `abs/` for locally built from ABS, `Err/` if the source cannot be determined.
 
+## Security: PKGBUILD scanning
+
+Before every AUR install (`--aur`, plain fallback-to-AUR installs, and `-u @world`), aura-emerge fetches the raw `PKGBUILD` (and any referenced `.install` hook) from the AUR cgit mirror and greps it for common red-flag patterns before handing off to `aura`:
+
+- `curl | sh` / `wget -qO- | bash` style pipe-to-shell
+- base64-decoded execution, hex-escaped payloads
+- `chmod 777`, raw IPv4 literals in scripts
+- calls out to a foreign package manager (`npm install`, `pip install`, …) from inside the build
+- package names matching known IOCs from disclosed AUR supply-chain campaigns (e.g. the "Atomic Arch" incident)
+
+A hit doesn't block the install outright — it prints the offending file/line plus a direct link to review the source on cgit, and asks `Continue anyway? [y/N]` before proceeding. This is a cheap tripwire, not a substitute for actually reading the PKGBUILD yourself.
+
 ## Flags
 
 | Flag | Description |
@@ -116,8 +132,11 @@ Prefixes: official repo name, `aur/` for AUR packages, `abs/` for locally built 
 | `--only-repos` | Only official repos, never search/install from AUR |
 | `--abs` | Build from ABS source via asp |
 | `--skippgp` | Skip PGP checks when building from ABS |
-| `--edit` | Edit PKGBUILD when building from ABS |
+| `--autopgp` | Auto-import missing PGP keys from a trusted keyserver when building from ABS, without prompting |
+| `--edit` | Edit PKGBUILD before building — opens `$EDITOR` for `--abs`, or passes `--hotedit` to `aura` for AUR |
 | `--sync` | Sync databases |
+| `--refresh` | Force-refresh all databases even if up to date (`pacman -Syy`), used with `--sync` or `-u` |
+| `--info` | Show system info, mirroring Gentoo's `emerge --info` |
 | `--select` | Add to world.set (no install) |
 | `--deselect` | Remove from world.set (no unmerge) |
 | `--prune` | Remove packages not in world.set |
