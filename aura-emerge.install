@@ -1,5 +1,5 @@
 post_install() {
-  ln -sf /usr/local/bin/emerge /usr/local/bin/portageq
+  ln -sf /usr/bin/emerge /usr/bin/portageq
 }
 
 post_upgrade() {
