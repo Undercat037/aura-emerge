@@ -10,11 +10,7 @@
 ```bash
 git clone https://github.com/Undercat037/aura-emerge
 cd aura-emerge
-cargo build --release
-sudo cp target/release/aura-emerge /usr/local/bin/emerge
-sudo ln -sf /usr/local/bin/emerge /usr/local/bin/portageq
-sudo mkdir -p /etc/emerge
-sudo touch /etc/emerge/world.set
+makepkg -si
 ```
 або через AUR:
 ```bash
