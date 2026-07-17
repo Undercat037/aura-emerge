@@ -3,6 +3,7 @@
 //! Split out of main.rs — covers repo-prefix resolution for world.set
 //! entries and the add/remove/regen/write operations on the file itself.
 
+use anyhow::{bail, Context, Result};
 use colored::Colorize;
 use std::fs;
 use std::io::{self, BufRead, Write};
@@ -80,26 +81,22 @@ pub(crate) fn pkg_world_entry(pkg: &str, forced_prefix: Option<&str>) -> String 
 /// Re-resolve repository prefixes for every package in world.set.
 /// Reads current entries, calls get_pkg_repo() for each, rewrites the file.
 /// Useful after locale fixes, repo migrations, or manual edits.
-pub(crate) fn regen_world_set() {
+pub(crate) fn regen_world_set() -> Result<()> {
     println!("{} Regenerating world.set repository prefixes...", ">>>".green().bold());
 
     if !is_safe_path(WORLD_SET_FILE) {
-        eprintln!(">>> Warning: {} is a symlink — refusing to modify", WORLD_SET_FILE);
-        std::process::exit(1);
+        bail!("{} is a symlink — refusing to modify", WORLD_SET_FILE);
     }
 
-    let entries: Vec<String> = match fs::File::open(WORLD_SET_FILE) {
-        Ok(file) => io::BufReader::new(file)
-            .lines()
-            .map_while(Result::ok)
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
-            .collect(),
-        Err(_) => {
-            eprintln!(">>> Error: cannot open {}", WORLD_SET_FILE);
-            std::process::exit(1);
-        }
-    };
+    let file = fs::File::open(WORLD_SET_FILE)
+        .with_context(|| format!("cannot open {}", WORLD_SET_FILE))?;
+
+    let entries: Vec<String> = io::BufReader::new(file)
+        .lines()
+        .map_while(io::Result::ok)
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
 
     let mut updated: Vec<String> = Vec::new();
     let mut changed = 0usize;
@@ -116,20 +113,20 @@ pub(crate) fn regen_world_set() {
 
     if changed == 0 {
         println!("{} world.set is already up to date.", ">>>".green().bold());
-        return;
+        return Ok(());
     }
 
     updated.sort();
-    write_world_set(&updated);
+    write_world_set(&updated)?;
     println!("{} world.set updated ({} entries changed).", ">>>".green().bold(), changed);
+    Ok(())
 }
 
-pub(crate) fn add_to_world_set(packages: &[String], forced_prefix: Option<&str>) {
+pub(crate) fn add_to_world_set(packages: &[String], forced_prefix: Option<&str>) -> Result<()> {
     println!("{} Adding to world.set...", ">>>".green().bold());
 
     if !is_safe_path(WORLD_SET_FILE) {
-        eprintln!(">>> Warning: {} is a symlink — refusing to read", WORLD_SET_FILE);
-        return;
+        bail!("{} is a symlink — refusing to read", WORLD_SET_FILE);
     }
 
     // current_set keyed by bare package name → full "repo/name" or "name" entry
@@ -158,19 +155,18 @@ pub(crate) fn add_to_world_set(packages: &[String], forced_prefix: Option<&str>)
         }
     }
 
-    if !changed { return; }
+    if !changed { return Ok(()); }
 
     let mut sorted: Vec<String> = current_set.into_values().collect();
     sorted.sort();
-    write_world_set(&sorted);
+    write_world_set(&sorted)
 }
 
-pub(crate) fn remove_from_world_set(packages: &[String]) {
+pub(crate) fn remove_from_world_set(packages: &[String]) -> Result<()> {
     println!(">>> Removing from world.set...");
 
     if !is_safe_path(WORLD_SET_FILE) {
-        eprintln!(">>> Warning: {} is a symlink — refusing to read", WORLD_SET_FILE);
-        return;
+        bail!("{} is a symlink — refusing to read", WORLD_SET_FILE);
     }
 
     // key = bare name, value = full entry
@@ -194,22 +190,20 @@ pub(crate) fn remove_from_world_set(packages: &[String]) {
         }
     }
 
-    if !changed { return; }
+    if !changed { return Ok(()); }
 
     let mut sorted: Vec<String> = current_set.into_values().collect();
     sorted.sort();
-    write_world_set(&sorted);
+    write_world_set(&sorted)
 }
 
 
-pub(crate) fn write_world_set(packages: &[String]) {
+pub(crate) fn write_world_set(packages: &[String]) -> Result<()> {
     if !is_safe_path(WORLD_SET_TMP) {
-        eprintln!(">>> Refusing to write: {} is a symlink", WORLD_SET_TMP);
-        return;
+        bail!("Refusing to write: {} is a symlink", WORLD_SET_TMP);
     }
     if !is_safe_path(WORLD_SET_FILE) {
-        eprintln!(">>> Refusing to write: {} is a symlink", WORLD_SET_FILE);
-        return;
+        bail!("Refusing to write: {} is a symlink", WORLD_SET_FILE);
     }
 
     // Remove stale tmp file
@@ -244,14 +238,19 @@ pub(crate) fn write_world_set(packages: &[String]) {
         }
     };
 
-    if !write_ok { return; }
+    if !write_ok {
+        bail!("failed to write {} via sudo tee", WORLD_SET_TMP);
+    }
 
-    match Command::new(SUDO_BIN)
+    let status = Command::new(SUDO_BIN)
         .args([MV_BIN, WORLD_SET_TMP, WORLD_SET_FILE])
         .status()
-    {
-        Ok(s) if s.success() => println!(">>> world.set updated."),
-        Ok(_) => eprintln!(">>> Error: sudo mv failed when finalizing world.set."),
-        Err(e) => eprintln!(">>> Error: sudo mv could not be spawned: {}", e),
+        .context("sudo mv could not be spawned")?;
+
+    if !status.success() {
+        bail!("sudo mv failed when finalizing world.set");
     }
+
+    println!(">>> world.set updated.");
+    Ok(())
 }

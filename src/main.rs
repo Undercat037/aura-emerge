@@ -396,6 +396,13 @@ fn reset_sigpipe() {
 fn reset_sigpipe() {}
 
 fn main() {
+    if let Err(e) = run() {
+        eprintln!("{} {:#}", ">>> Error:".red().bold(), e);
+        std::process::exit(1);
+    }
+}
+
+fn run() -> anyhow::Result<()> {
     reset_sigpipe();
 
     // If invoked as "portageq" (symlink), act as the shim
@@ -406,7 +413,7 @@ fn main() {
         .unwrap_or("");
     if invoked_as == "portageq" {
         portageq_shim(&argv);
-        return;
+        return Ok(());
     }
 
     let cli = Cli::parse();
@@ -417,22 +424,22 @@ fn main() {
     if let Some(shell) = cli.gen_completions {
         let mut cmd = <Cli as clap::CommandFactory>::command();
         clap_complete::generate(shell, &mut cmd, "emerge", &mut io::stdout());
-        return;
+        return Ok(());
     }
 
     if cli.help {
         print_help();
-        return;
+        return Ok(());
     }
 
     if cli.version {
         println!("aura-emerge {}", env!("CARGO_PKG_VERSION"));
-        return;
+        return Ok(());
     }
 
     if cli.info {
         print_system_info();
-        return;
+        return Ok(());
     }
 
     check_binaries();
@@ -465,7 +472,7 @@ fn main() {
     //    just runs the check-and-offer-to-fix flow.
     if has_preserved_rebuild {
         preserved_rebuild(cli.pretend, cli.ask);
-        return;
+        return Ok(());
     }
 
     // 1. Search (including --searchdesc)
@@ -484,7 +491,7 @@ fn main() {
                 println!("{} Searching {} descriptions for '{}'...", ">>>".green().bold(), "AUR".cyan().bold(), target_pkgs.join(" "));
                 run_cmd(AURA_BIN, &["-As"], &target_pkgs);
             }
-            return;
+            return Ok(());
         }
 
         if cli.verbose {
@@ -521,7 +528,7 @@ fn main() {
                 run_cmd(AURA_BIN, &["-As"], &target_pkgs);
             }
         }
-        return;
+        return Ok(());
     }
 
     // 2. Sync — sync DB, then continue to install if packages given
@@ -533,7 +540,7 @@ fn main() {
         );
         run_cmd(AURA_BIN, &[sync_flag], &[]);
         if target_pkgs.is_empty() && !has_world {
-            return;
+            return Ok(());
         }
         // fall through to update or install
     }
@@ -542,13 +549,13 @@ fn main() {
     if cli.regen {
         println!("{} Regenerating package metadata cache...", ">>>".green().bold());
         run_cmd(SUDO_BIN, &[PACMAN_BIN, "-Fy"], &[]);
-        return;
+        return Ok(());
     }
 
     // --regen-world: re-resolve repo prefixes for all entries in world.set
     if cli.regen_world {
-        regen_world_set();
-        return;
+        regen_world_set()?;
+        return Ok(());
     }
 
     // --prune: remove installed packages not in world.set
@@ -588,7 +595,7 @@ fn main() {
                     .collect();
                 if to_remove.is_empty() {
                     println!(">>> Nothing to prune. All explicitly installed packages are in world.set.");
-                    return;
+                    return Ok(());
                 }
                 println!();
                 for p in &to_remove {
@@ -597,27 +604,32 @@ fn main() {
                 println!();
                 println!("Total: {} package(s) to prune", to_remove.len());
                 println!();
-                if cli.pretend { return; }
+                if cli.pretend { return Ok(()); }
                 let mut args = vec![PACMAN_BIN, "-Rns"];
                 if !cli.ask { args.push("--noconfirm"); }
                 run_cmd(SUDO_BIN, &args, &to_remove);
             }
             Err(_) => eprintln!(">>> Error: failed to list installed packages"),
         }
-        return;
+        return Ok(());
     }
 
     // --resume: re-run last interrupted aura/pacman operation
     if cli.resume {
         println!(">>> Attempting to resume last interrupted transaction...");
-        let mut args = vec!["-S", "--needed"];
         if cli.skipfirst {
             // Can't truly replicate portage skipfirst on pacman, so we warn
             println!(">>> Note: --skipfirst is not directly supported; resuming normally.");
         }
-        if !cli.ask { args.push("--noconfirm"); }
-        run_cmd(SUDO_BIN, &[PACMAN_BIN, "--noconfirm", "-Syu"], &[]);
-        return;
+        let mut args = vec![PACMAN_BIN, "-Syu"];
+        if !cli.ask {
+            args.push("--noconfirm");
+        }
+        let success = run_cmd(SUDO_BIN, &args, &[]);
+        if !success {
+            std::process::exit(1);
+        }
+        return Ok(());
     }
 
     // --select: explicitly add packages to world.set without installing
@@ -629,8 +641,8 @@ fn main() {
         for p in &target_pkgs {
             println!(">>> Selecting {} into world.set...", p);
         }
-        add_to_world_set(&target_pkgs, None);
-        return;
+        add_to_world_set(&target_pkgs, None)?;
+        return Ok(());
     }
 
     // --deselect: remove packages from world.set without unmerging
@@ -642,8 +654,8 @@ fn main() {
         for p in &target_pkgs {
             println!(">>> Deselecting {} from world.set (package stays installed)...", p);
         }
-        remove_from_world_set(&target_pkgs);
-        return;
+        remove_from_world_set(&target_pkgs)?;
+        return Ok(());
     }
 
     // 3a. Mixed: specific pkgs + @world (e.g. emerge nano @world)
@@ -669,7 +681,7 @@ fn main() {
 
         println!();
         println!("{} Auto-cleaning packages...", ">>>".green().bold());
-        return;
+        return Ok(());
     }
 
     // 4. Depclean (orphans)
@@ -689,7 +701,7 @@ fn main() {
                 if orphans.is_empty() {
                     println!();
                     println!(">>> No orphaned packages were found on your system.");
-                    return;
+                    return Ok(());
                 }
 
                 println!();
@@ -711,7 +723,7 @@ fn main() {
             }
             Err(_) => eprintln!(">>> Error: Failed to check for orphans."),
         }
-        return;
+        return Ok(());
     }
 
     // 5. Unmerge (remove)
@@ -769,9 +781,11 @@ fn main() {
 
         let success = run_cmd(AURA_BIN, &aura_args, &target_pkgs);
         if success && !cli.pretend {
-            remove_from_world_set(&target_pkgs);
+            if let Err(e) = remove_from_world_set(&target_pkgs) {
+                eprintln!(">>> Warning: package(s) unmerged but world.set was not updated: {:#}", e);
+            }
         }
-        return;
+        return Ok(());
     }
 
     // 6. Install
@@ -795,7 +809,7 @@ fn main() {
         } else if cli.aur {
             let pkg_infos = resolve_aur(&target_pkgs);
             print_emerge_plan(&pkg_infos);
-            if cli.pretend { return; }
+            if cli.pretend { return Ok(()); }
             print_emerge_emerging(&pkg_infos);
             scan_aur_pkgbuilds_or_abort(&target_pkgs);
             let mut aur_args = vec!["-A"];
@@ -812,7 +826,7 @@ fn main() {
             if missing.is_empty() {
                 // Everything found in official repos.
                 print_emerge_plan(&official_infos);
-                if cli.pretend { return; }
+                if cli.pretend { return Ok(()); }
                 print_emerge_emerging(&official_infos);
                 let mut off_args = vec!["-S"];
                 if cli.verbose { off_args.push("--verbose"); }
@@ -869,7 +883,7 @@ fn main() {
                 );
                 let pkg_infos = resolve_aur(&missing);
                 print_emerge_plan(&pkg_infos);
-                if cli.pretend { return; }
+                if cli.pretend { return Ok(()); }
                 print_emerge_emerging(&pkg_infos);
                 scan_aur_pkgbuilds_or_abort(&missing);
                 let mut aur_args = vec!["-A"];
@@ -887,7 +901,7 @@ fn main() {
                 let mut all_infos = official_infos.clone();
                 all_infos.extend(aur_infos.clone());
                 print_emerge_plan(&all_infos);
-                if cli.pretend { return; }
+                if cli.pretend { return Ok(()); }
                 print_emerge_emerging(&all_infos);
 
                 let official_names: Vec<String> =
@@ -924,7 +938,9 @@ fn main() {
                     // build source, no partial-success case to track).
                     if success {
                         println!("{} Auto-cleaning packages...", ">>>".green().bold());
-                        add_to_world_set(&target_pkgs, Some("abs"));
+                        if let Err(e) = add_to_world_set(&target_pkgs, Some("abs")) {
+                            eprintln!(">>> Warning: package(s) built but world.set was not updated: {:#}", e);
+                        }
                     }
                 } else if !installed_infos.is_empty() {
                     println!("{} Auto-cleaning packages...", ">>>".green().bold());
@@ -943,10 +959,14 @@ fn main() {
                         .map(|p| p.name.clone())
                         .collect();
                     if !official_names.is_empty() {
-                        add_to_world_set(&official_names, None);
+                        if let Err(e) = add_to_world_set(&official_names, None) {
+                            eprintln!(">>> Warning: package(s) installed but world.set was not updated: {:#}", e);
+                        }
                     }
                     if !aur_names.is_empty() {
-                        add_to_world_set(&aur_names, Some("aur"));
+                        if let Err(e) = add_to_world_set(&aur_names, Some("aur")) {
+                            eprintln!(">>> Warning: package(s) installed but world.set was not updated: {:#}", e);
+                        }
                     }
                 }
             }
@@ -957,4 +977,6 @@ fn main() {
             }
         }
     }
+
+    Ok(())
 }
