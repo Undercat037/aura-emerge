@@ -720,10 +720,14 @@ fn run() -> anyhow::Result<()> {
                 println!("Total: {} orphaned package(s) to remove", orphans.len());
                 println!();
 
-                let mut pacman_args = vec!["-Rns"];
-                if cli.pretend {
-                    pacman_args.push("--print");
-                }
+                // pacman rejects -n/--nosave together with --print, and
+                // --nosave is meaningless for a dry run anyway (nothing gets
+                // removed, so there's nothing to skip saving configs for).
+                let mut pacman_args = if cli.pretend {
+                    vec!["-Rs", "--print"]
+                } else {
+                    vec!["-Rns"]
+                };
                 if !cli.ask && !cli.pretend {
                     pacman_args.push("--noconfirm");
                 }
