@@ -449,6 +449,14 @@ fn run() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
+    // --abs only means anything for an install (it picks the build source);
+    // search has no ABS-backed lookup, so silently accepting it here would
+    // make it look like the search got filtered when it didn't.
+    if cli.abs && (cli.search || cli.searchdesc) {
+        eprintln!(">>> Error: --abs is not valid with -s/--searchdesc (it only applies to installs).");
+        std::process::exit(1);
+    }
+
     // Detect @world / world in package list
     let has_world = cli.packages.iter()
         .any(|p| p == "@world");
@@ -712,14 +720,25 @@ fn run() -> anyhow::Result<()> {
                 println!("Total: {} orphaned package(s) to remove", orphans.len());
                 println!();
 
-                let mut pacman_args = vec![PACMAN_BIN, "-Rns"];
+                let mut pacman_args = vec!["-Rns"];
                 if cli.pretend {
                     pacman_args.push("--print");
                 }
                 if !cli.ask && !cli.pretend {
                     pacman_args.push("--noconfirm");
                 }
-                run_cmd(SUDO_BIN, &pacman_args, &orphans);
+
+                // --print never touches the system, so it doesn't need root —
+                // running it through sudo anyway just makes `-p` (pretend)
+                // prompt for a password to print a list, which defeats the
+                // point of a dry run.
+                if cli.pretend {
+                    run_cmd(PACMAN_BIN, &pacman_args, &orphans);
+                } else {
+                    let mut sudo_args = vec![PACMAN_BIN];
+                    sudo_args.extend(pacman_args);
+                    run_cmd(SUDO_BIN, &sudo_args, &orphans);
+                }
             }
             Err(_) => eprintln!(">>> Error: Failed to check for orphans."),
         }

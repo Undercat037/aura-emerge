@@ -48,37 +48,44 @@ sudo nvim /etc/makepkg.conf
 ## Використання
 
 ```bash
-emerge nano                  # встановити пакунок (офіційні репо, автоматичний пошук в AUR)
-emerge nano --aur            # встановити виключно з AUR
-emerge nano --only-repos     # встановити лише з офіційних репо, без звернення до AUR
-emerge nano --abs            # зібрати з ABS (Arch Build System) через asp
-emerge nano --abs --skippgp  # зібрати з ABS, пропустити перевірку PGP підпису
-emerge nano --abs --autopgp  # зібрати з ABS, автоімпорт відсутніх PGP-ключів, без запиту
-emerge nano --abs --edit     # зібрати з ABS, редагувати PKGBUILD перед збіркою ($EDITOR)
-emerge nano --edit           # встановити з AUR, редагувати PKGBUILD перед збіркою (aura --hotedit)
-emerge -c                    # видалити сиріт (depclean)
-emerge -C nano               # видалити конкретний пакунок (unmerge)
-emerge -u @world             # оновити всю систему (офіційні + AUR)
-emerge -u @world --refresh   # оновити, примусово освіжити бази перед цим (як pacman -Syy)
-emerge --sync                # синхронізувати бази даних
-emerge --info                # показати інформацію про систему (як Gentoo emerge --info)
-emerge -s nano               # пошук в офіційних репо + AUR
-emerge -s nano --only-repos  # пошук лише в офіційних репо, без AUR
-emerge --searchdesc nano     # пошук за описом пакунка
-emerge -sv nano              # детальна інформація (aura -Si / -Ai)
-emerge -sv nano --aur        # детальна інформація виключно з AUR
-emerge -1 nano               # встановити як залежність (не додається у world.set)
-emerge -n nano               # не перевстановлювати, якщо вже встановлено (--noreplace)
-emerge -p nano               # показати, що буде зроблено (dry run)
-emerge -a nano               # запитати перед встановленням
-emerge --select nano         # додати до world.set без встановлення
-emerge --deselect nano       # прибрати з world.set без видалення
-emerge --prune               # видалити пакунки, яких немає у world.set
-emerge --regen               # оновити кеш метаданих пакунків
-emerge --regen-world         # оновити префікси репозиторіїв у world.set
-emerge --resume              # продовжити перерваний процес
-emerge --resume --skipfirst  # продовжити, пропустивши перший пакунок
+emerge neovim                      # встановити пакунок (офіційні репо, автоматичний пошук в AUR)
+emerge neovim-git --aur            # встановити виключно з AUR
+emerge neovim --only-repos         # встановити лише з офіційних репо, без звернення до AUR
+emerge neovim --abs                # зібрати з ABS (Arch Build System) через asp
+emerge neovim --abs --skippgp      # зібрати з ABS, пропустити перевірку PGP підпису
+emerge neovim --abs --autopgp      # зібрати з ABS, автоімпорт відсутніх PGP-ключів, без запиту
+emerge neovim --abs --edit         # зібрати з ABS, редагувати PKGBUILD перед збіркою ($EDITOR)
+emerge neovim-git --aur --edit     # встановити з AUR, редагувати PKGBUILD перед збіркою (aura --hotedit)
+emerge -c                          # видалити сиріт (depclean)
+emerge -C neovim                   # видалити конкретний пакунок (unmerge)
+emerge -u @world                   # оновити всю систему (офіційні + AUR)
+emerge -u @world --refresh         # оновити, примусово освіжити бази перед цим (як pacman -Syy)
+emerge --sync                      # синхронізувати бази даних
+emerge --info                      # показати інформацію про систему (як Gentoo emerge --info)
+emerge -s neovim                   # пошук в офіційних репо + AUR
+emerge -s neovim --only-repos      # пошук лише в офіційних репо, без AUR
+emerge --searchdesc neovim         # пошук за описом пакунка
+emerge -sv neovim                  # детальна інформація (aura -Si / -Ai)
+emerge -sv neovim-git --aur        # детальна інформація виключно з AUR
+emerge -1 aura                     # встановити як залежність (не додається у world.set)
+emerge -n neovim                   # не перевстановлювати, якщо вже встановлено (--noreplace)
+emerge -p neovim                   # показати, що буде зроблено (dry run)
+emerge -a neovim                   # запитати перед встановленням
+emerge --select neovim             # додати до world.set без встановлення
+emerge --deselect neovim           # прибрати з world.set без видалення
+emerge --prune                     # видалити пакунки, яких немає у world.set
+emerge --regen                     # оновити кеш метаданих пакунків
+emerge --regen-world               # оновити префікси репозиторіїв у world.set
+emerge --resume                    # продовжити перерваний процес
+emerge --resume --skipfirst        # продовжити, пропустивши перший пакунок
+emerge @preserved-rebuild          # перевірити встановлені пакунки на відсутні залежності, запропонувати перевстановити
+emerge @preserved-rebuild -p       # pretend: лише вивести список відсутніх залежностей
+emerge @preserved-rebuild -a       # запитувати перед кожним запитом pacman під час перевстановлення
 ```
+
+## @preserved-rebuild
+
+В Arch немає відстеження preserved-libs, тому `@preserved-rebuild` збирає всі залежності оголошені кожним встановленим пакунком (`pacman -Qi`), передає дедуплікований список у `pacman -T` (який коректно розв'язує provides/віртуальні пакунки), і пропонує перевстановити те, що виявиться незадоволеним, через `aura -S`. 
 
 ## world.set
 
