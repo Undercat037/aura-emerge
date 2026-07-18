@@ -48,37 +48,44 @@ For `CFLAGS`/`CXXFLAGS` reference see [GCC optimization flags](https://gcc.gnu.o
 ## Usage
 
 ```bash
-emerge nano                  # install package (official repos, fallbacks to AUR)
-emerge nano --aur            # install from AUR explicitly
-emerge nano --only-repos     # install only from official repos, never touch the AUR
-emerge nano --abs            # build from ABS (Arch Build System) source via asp
-emerge nano --abs --skippgp  # build from ABS, skip PGP signature check
-emerge nano --abs --autopgp  # build from ABS, auto-import missing PGP keys, no prompt
-emerge nano --abs --edit     # build from ABS, edit PKGBUILD before building ($EDITOR)
-emerge nano --edit           # install from AUR, edit PKGBUILD before building (aura --hotedit)
-emerge -c                    # remove orphans (depclean)
-emerge -C nano               # remove specific package (unmerge)
-emerge -u @world             # update entire system (official + AUR)
-emerge -u @world --refresh   # update, force-refresh databases first (like pacman -Syy)
-emerge --sync                # sync package databases
-emerge --info                # show system info (like Gentoo's emerge --info)
-emerge -s nano               # search in official repos + AUR
-emerge -s nano --only-repos  # search official repos only, skip AUR
-emerge --searchdesc nano     # search by package description
-emerge -sv nano              # detailed info (aura -Si / -Ai)
-emerge -sv nano --aur        # detailed info from AUR only
-emerge -1 nano               # install as dependency (no world.set)
-emerge -n nano               # do not reinstall if already installed (--noreplace)
-emerge -p nano               # pretend (dry run)
-emerge -a nano               # ask before installing
-emerge --select nano         # add to world.set without installing
-emerge --deselect nano       # remove from world.set without unmerging
-emerge --prune               # remove packages not tracked in world.set
-emerge --regen               # regenerate package metadata cache
-emerge --regen-world         # re-resolve repository prefixes in world.set
-emerge --resume              # resume last interrupted transaction
-emerge --resume --skipfirst  # resume, skipping the first package
+emerge neovim                      # install package (official repos, fallbacks to AUR)
+emerge neovim-git --aur            # install from AUR explicitly
+emerge neovim --only-repos         # install only from official repos, never touch the AUR
+emerge neovim --abs                # build from ABS (Arch Build System) source via asp
+emerge neovim --abs --skippgp      # build from ABS, skip PGP signature check
+emerge neovim --abs --autopgp      # build from ABS, auto-import missing PGP keys, no prompt
+emerge neovim --abs --edit         # build from ABS, edit PKGBUILD before building ($EDITOR)
+emerge neovim-git --aur --edit     # install from AUR, edit PKGBUILD before building (aura --hotedit)
+emerge -c                          # remove orphans (depclean)
+emerge -C neovim                   # remove specific package (unmerge)
+emerge -u @world                   # update entire system (official + AUR)
+emerge -u @world --refresh         # update, force-refresh databases first (like pacman -Syy)
+emerge --sync                      # sync package databases
+emerge --info                      # show system info (like Gentoo's emerge --info)
+emerge -s neovim                   # search in official repos + AUR
+emerge -s neovim --only-repos      # search official repos only, skip AUR
+emerge --searchdesc neovim         # search by package description
+emerge -sv neovim                  # detailed info (aura -Si / -Ai)
+emerge -sv neovim-git --aur        # detailed info from AUR only
+emerge -1 aura                     # install as dependency (no world.set)
+emerge -n neovim                   # do not reinstall if already installed (--noreplace)
+emerge -p neovim                   # pretend (dry run)
+emerge -a neovim                   # ask before installing
+emerge --select neovim             # add to world.set without installing
+emerge --deselect neovim           # remove from world.set without unmerging
+emerge --prune                     # remove packages not tracked in world.set
+emerge --regen                     # regenerate package metadata cache
+emerge --regen-world               # re-resolve repository prefixes in world.set
+emerge --resume                    # resume last interrupted transaction
+emerge --resume --skipfirst        # resume, skipping the first package
+emerge @preserved-rebuild          # check installed packages for missing deps, offer to reinstall
+emerge @preserved-rebuild -p       # pretend: just list missing dependencies
+emerge @preserved-rebuild -a       # ask before each pacman prompt during reinstall
 ```
+
+## @preserved-rebuild
+
+There is no preserved-libs tracking in Arch, so `@preserved-rebuild` collects all dependencies declared by each installed package (`pacman -Qi`), passes the deduplicated list to `pacman -T` (which correctly resolves provides/virtual packages), and offers to reinstall any that are found to be unsatisfied via `aura -S`.
 
 ## world.set
 
