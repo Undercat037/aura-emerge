@@ -58,9 +58,13 @@ emerge neovim --abs --edit         # build from ABS, edit PKGBUILD before buildi
 emerge neovim-git --aur --edit     # install from AUR, edit PKGBUILD before building (aura --hotedit)
 emerge -c                          # remove orphans (depclean)
 emerge -C neovim                   # remove specific package (unmerge)
-emerge -u @world                   # update entire system (official + AUR)
-emerge -u @world --refresh         # update, force-refresh databases first (like pacman -Syy)
+emerge @world                      # provision: install what's missing from world.set (new machine, etc.)
+emerge -u @world                   # full system update (official + AUR) — does not read world.set
+emerge -u @world --refresh         # full system update, force-refresh databases first (like pacman -Syy)
 emerge --sync                      # sync package databases
+emerge @game-kit                   # install a custom set from /etc/emerge/sets.d/game-kit.set
+emerge @game-kit neovim            # sets and plain packages can be mixed
+emerge --list-sets                 # list @world, @preserved-rebuild, and every custom set
 emerge --info                      # show system info (like Gentoo's emerge --info)
 emerge -s neovim                   # search in official repos + AUR
 emerge -s neovim --only-repos      # search official repos only, skip AUR
@@ -104,9 +108,37 @@ extra/firefox
 
 Prefixes: official repo name, `aur/` for AUR packages, `abs/` for locally built from ABS, `Err/` if the source cannot be determined.
 
+### `@world` has two distinct meanings
+
+This is the Gentoo behavior that matters most, so it's worth spelling out:
+
+- **`emerge @world` (bare, no `-u`)** — *provision*. Reads `world.set` and installs whatever it lists that isn't already on this system. Nothing already installed is touched — not upgraded, not reinstalled. Each entry's prefix decides how it's fetched (official repo via `aura -S --needed`, `aur/` via `aura -A --needed` with the usual PKGBUILD scan, `abs/` and unresolved entries are listed but skipped — those need `emerge <pkg> --abs` or a plain `emerge <pkg>` by hand). This is the "set up a new machine from a tracked world.set" operation — commit `world.set` to your dotfiles, clone it onto a fresh install, run `emerge @world`, and get the whole package set back in one shot (official + AUR alike). If you also name packages, e.g. `emerge nano @world`, those install first and the rest of `world.set` is provisioned afterward.
+- **`emerge -u @world`** (or plain **`emerge -u`**) — *upgrade*. The literal Gentoo `emerge -u @world`: upgrades everything already installed via `aura -Syu` + `aura -Au`. Does not read `world.set` at all.
+- **`emerge --sync`** — just refreshes the databases (`-Sy`, or `-Syy` with `--refresh`), independent of the above.
+
+## Custom sets
+
+Beyond `@world` and `@preserved-rebuild`, you can define your own sets under `/etc/emerge/sets.d/`. A file `/etc/emerge/sets.d/game-kit.set` is invoked as `@game-kit`:
+
+```
+# /etc/emerge/sets.d/game-kit.set
+steam
+lutris
+gamemode
+aur/protonup-qt
+```
+
+One atom per line, blank lines and `#` comments ignored. Sets can be combined with each other and with plain package names in the same command:
+
+```bash
+emerge @game-kit @dev-tools neovim
+```
+
+`emerge --list-sets` prints every set currently available (`@world`, `@preserved-rebuild`, plus one line per `sets.d/*.set` file) — this is also what shell completion calls behind the scenes, so `emerge @<TAB>` offers real set names.
+
 ## Security: PKGBUILD scanning
 
-Before every AUR install (`--aur`, plain fallback-to-AUR installs, and `-u @world`), aura-emerge fetches the raw `PKGBUILD` (and any referenced `.install` hook) from the AUR cgit mirror and greps it for common red-flag patterns before handing off to `aura`:
+Before every AUR install (`--aur`, plain fallback-to-AUR installs, and `@world` provisioning), aura-emerge fetches the raw `PKGBUILD` (and any referenced `.install` hook) from the AUR cgit mirror and greps it for common red-flag patterns before handing off to `aura`:
 
 - `curl | sh` / `wget -qO- | bash` style pipe-to-shell
 - base64-decoded execution, hex-escaped payloads
@@ -123,7 +155,7 @@ A hit doesn't block the install outright — it prints the offending file/line p
 | `-s` | Search packages |
 | `--searchdesc` | Search by description |
 | `-sv` | Detailed package info |
-| `-u` | Update system (@world) |
+| `-u` | Full system update (does not read world.set; see `world.set` section) |
 | `-C` | Remove specific packages (unmerge) |
 | `-c` | Remove orphans (depclean) |
 | `-p` | Pretend (dry run) |
@@ -147,10 +179,13 @@ A hit doesn't block the install outright — it prints the offending file/line p
 | `--regen-world` | Re-resolve repo prefixes in world.set |
 | `--resume` | Resume interrupted transaction |
 | `--skipfirst` | Skip first pkg when resuming |
+| `--list-sets` | List available `@world` / `@preserved-rebuild` / custom sets |
 | `--with-bdeps` | Pull in build-time deps (compat) |
 | `--verbose-conflicts` | Verbose slot conflicts (compat) |
 | `-h` / `--help` | Show help |
 | `-V` / `--version` | Show version |
+
+A man page is installed as `emerge(1)` — `man emerge` for the full reference.
 
 ## Demo
 

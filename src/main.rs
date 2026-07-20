@@ -45,6 +45,9 @@ pub(crate) const ABS_GITLAB_BASE: &str = "https://gitlab.archlinux.org/archlinux
 // ── Files ─────────────────────────────────────────────────────────────────────
 
 pub(crate) const WORLD_SET_FILE:  &str = "/etc/emerge/world.set";
+/// Directory for custom package sets: /etc/emerge/sets.d/<name>.set,
+/// invoked on the command line as `@<name>` (e.g. `@game-kit`).
+pub(crate) const SETS_DIR: &str = "/etc/emerge/sets.d";
 pub(crate) const ABS_BUILD_BASE:  &str = "/tmp/aura-emerge-abs";
 pub(crate) const WORLD_SET_TMP:  &str = "/etc/emerge/world.set.tmp";
 pub(crate) const RESUME_FILE: &str = "/etc/emerge/resume.state";
@@ -199,10 +202,15 @@ struct Cli {
     #[arg(long = "verbose-conflicts")]
     verbose_conflicts: bool,
 
+    /// List available @sets: @world, @preserved-rebuild, and every
+    /// /etc/emerge/sets.d/*.set file (as @<name>). Also used by shell
+    /// completion to offer set names after '@'.
+    #[arg(long = "list-sets")]
+    list_sets: bool,
+
     // ── Gentoo compat flags (accepted silently, no-op) ──────────────────────
 
     // Actions
-    #[arg(long = "list-sets")]              list_sets: bool,
     #[arg(long = "metadata")]               metadata: bool,
     #[arg(long = "check-news")]             check_news: bool,
     #[arg(long = "clean")]                  clean: bool,
@@ -258,7 +266,8 @@ struct Cli {
     #[arg(long = "info")]
     info: bool,
 
-    /// Packages to install or '@world'
+    /// Packages to install, '@world', '@preserved-rebuild', or a custom
+    /// set '@<name>' (read from /etc/emerge/sets.d/<name>.set)
     packages: Vec<String>,
 }
 
@@ -267,7 +276,7 @@ fn print_help() {
     println!("Usage:");
     println!("   emerge [ options ] [ action ] [ package | @set ] [ ... ]");
     println!("   emerge [ options ] [ action ] < @world >");
-    println!("   emerge < --sync | --info >");
+    println!("   emerge < --sync | --info | --list-sets >");
     println!("   emerge --resume [ --pretend | --ask | --skipfirst ]");
     println!("   emerge --help");
     println!("Options: -[1aCcDehNnpsuVv]");
@@ -283,13 +292,79 @@ fn print_help() {
     println!("          [ --resume    | --search   | --select     | --searchdesc  ]");
     println!("          [ --sync      | --unmerge  | --update     | --regen-world ]");
     println!("          [ --version   | --info     | --regen-world-from-explicit  ]");
+    println!("          [ --list-sets                                            ]");
+    println!();
+    println!("   @world (no -u): install whatever's listed in /etc/emerge/world.set");
+    println!("   and missing from this system — declarative provisioning, e.g. for a");
+    println!("   freshly installed machine. Nothing already installed is touched.");
+    println!();
+    println!("   -u @world (or -u alone): full system upgrade (repos + AUR), the");
+    println!("   Gentoo `emerge -u @world` equivalent. For a plain metadata refresh");
+    println!("   use --sync; --refresh forces it even if already current.");
+    println!();
+    println!("   @<name>: a custom set from /etc/emerge/sets.d/<name>.set, one");
+    println!("   package per line (# comments allowed). Use --list-sets to see");
+    println!("   what's available.");
     println!();
     println!("   For more help consult the README: https://github.com/Undercat037/aura-emerge");
     println!();
     println!("Author: Undercat037");
 }
 
-// ── Validation ────────────────────────────────────────────────────────────────
+// ── Shell completion: dynamic @set support ─────────────────────────────────────
+//
+// clap_complete's generated script only knows the flags declared at build
+// time — it has no idea what's in /etc/emerge/sets.d/ on the machine it
+// ends up installed on. This appends a small, shell-specific snippet after
+// the generated script that shells out to `emerge --list-sets` (world,
+// preserved-rebuild, and every sets.d/*.set) whenever the word being
+// completed starts with '@', so `emerge @<TAB>` offers real set names.
+
+fn print_set_completion_glue(shell: Shell) {
+    match shell {
+        Shell::Bash => {
+            println!("{}", r#"
+# aura-emerge: dynamic @<set> completion (world, preserved-rebuild, sets.d/*)
+_emerge_with_sets() {
+    _emerge
+    local cur="${COMP_WORDS[COMP_CWORD]}"
+    if [[ "$cur" == @* ]]; then
+        local sets
+        sets=$(emerge --list-sets 2>/dev/null)
+        COMPREPLY=( $(compgen -W "$sets" -- "$cur") )
+    fi
+}
+complete -o bashdefault -o default -F _emerge_with_sets emerge 2>/dev/null \
+    || complete -F _emerge_with_sets emerge
+"#);
+        }
+        Shell::Zsh => {
+            println!("{}", r#"
+# aura-emerge: dynamic @<set> completion (world, preserved-rebuild, sets.d/*)
+_emerge_with_sets() {
+    _emerge "$@"
+    if [[ "$PREFIX" == @* ]]; then
+        local -a sets
+        sets=(${(f)"$(emerge --list-sets 2>/dev/null)"})
+        compadd -a sets
+    fi
+}
+compdef _emerge_with_sets emerge
+"#);
+        }
+        Shell::Fish => {
+            println!("{}", r#"
+# aura-emerge: dynamic @<set> completion (world, preserved-rebuild, sets.d/*)
+complete -c emerge -f -n 'string match -q "@*" -- (commandline -ct)' -a '(emerge --list-sets 2>/dev/null)'
+"#);
+        }
+        _ => {
+            // Elvish/PowerShell: no glue, static flag completion only.
+        }
+    }
+}
+
+
 
 fn validate_pkg(pkg: &str) -> bool {
     if pkg.starts_with('-') || pkg.contains("..") || pkg.contains("//") {
@@ -457,6 +532,7 @@ fn run() -> anyhow::Result<()> {
     if let Some(shell) = cli.gen_completions {
         let mut cmd = <Cli as clap::CommandFactory>::command();
         clap_complete::generate(shell, &mut cmd, "emerge", &mut io::stdout());
+        print_set_completion_glue(shell);
         return Ok(());
     }
 
@@ -472,6 +548,17 @@ fn run() -> anyhow::Result<()> {
 
     if cli.info {
         print_system_info();
+        return Ok(());
+    }
+
+    // --list-sets: no aura/pacman needed — just enumerates what's on disk.
+    // Also what shell completion shells out to for '@' completion.
+    if cli.list_sets {
+        println!("@world");
+        println!("@preserved-rebuild");
+        for name in list_custom_sets() {
+            println!("@{}", name);
+        }
         return Ok(());
     }
 
@@ -499,14 +586,44 @@ fn run() -> anyhow::Result<()> {
     let has_preserved_rebuild = cli.packages.iter()
         .any(|p| p == "@preserved-rebuild");
 
-    // Build validated package list (excluding world/preserved-rebuild aliases)
-    let target_pkgs: Vec<String> = validate_packages(
+    // Any other "@name" token is a custom set — resolve it against
+    // /etc/emerge/sets.d/<name>.set (one package atom per line, '#'
+    // comments allowed) and fold its contents into the package list, same
+    // as if the user had typed every package in the file by hand.
+    let mut custom_set_pkgs: Vec<String> = Vec::new();
+    for tok in &cli.packages {
+        if let Some(name) = tok.strip_prefix('@') {
+            if name == "world" || name == "preserved-rebuild" {
+                continue;
+            }
+            if !valid_set_name(name) {
+                eprintln!(">>> Error: invalid set name: @{}", name);
+                std::process::exit(1);
+            }
+            match read_custom_set(name) {
+                Ok(pkgs) => {
+                    if pkgs.is_empty() {
+                        eprintln!(">>> Warning: set @{} is empty ({}/{}.set)", name, SETS_DIR, name);
+                    }
+                    custom_set_pkgs.extend(pkgs);
+                }
+                Err(e) => {
+                    eprintln!(">>> Error: {:#}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
+
+    // Build validated package list (excluding world/preserved-rebuild/custom-set tokens)
+    let mut target_pkgs: Vec<String> = validate_packages(
         &cli.packages
             .iter()
-            .filter(|p| *p != "@world" && *p != "@preserved-rebuild")
+            .filter(|p| *p != "@world" && *p != "@preserved-rebuild" && !p.starts_with('@'))
             .cloned()
             .collect::<Vec<_>>(),
     );
+    target_pkgs.extend(custom_set_pkgs);
 
     // 0. @preserved-rebuild: a standalone action, checked before search/
     //    install so `emerge @preserved-rebuild` (with no other packages)
@@ -769,15 +886,46 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // 3a. Mixed: specific pkgs + @world (e.g. emerge nano @world)
-    //     Install the named packages first, then fall through to world update
-    if has_world && !target_pkgs.is_empty() && !cli.update {
-        println!("{} Installing specified packages before @world update...", ">>>".green().bold());
-        // will fall through to install block below, then world update happens separately
+    // 3a. Mixed: specific pkgs + @world, no -u (e.g. `emerge nano @world`)
+    //     Install the named packages first (falls through to the normal
+    //     install block below); once that finishes, provision anything
+    //     else still missing from world.set. See `provision_after_install`.
+    let provision_after_install = has_world && !target_pkgs.is_empty() && !cli.update;
+    if provision_after_install {
+        println!(
+            "{} Installing specified packages, then provisioning the rest of world.set...",
+            ">>>".green().bold()
+        );
     }
 
-    // 3. Update @world — triggered by -u or bare @world/world
-    if cli.update || has_world {
+    // 3b. Bare `@world`, no other packages, no -u: declarative
+    // provisioning — install whatever world.set lists that isn't already
+    // on this system, and touch nothing that already is. This is the
+    // "move world.set to a new machine and get everything back"
+    // operation (or "make sure this machine matches what I asked for").
+    // For a full system upgrade use `-u @world` / `-u` (below); for just
+    // refreshing the databases, `--sync`.
+    if has_world && target_pkgs.is_empty() && !cli.update {
+        if !cli.pretend {
+            save_resume_state(&build_resume_args(&cli, &[], true));
+        }
+        let ok = provision_from_world_set(cli.pretend, cli.ask, cli.verbose)?;
+        if !cli.pretend {
+            if ok {
+                clear_resume_state();
+            } else {
+                eprintln!(">>> Warning: not everything installed successfully.");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
+    // 3. Full system upgrade — triggered by -u, with or without @world.
+    // Equivalent to Gentoo's `emerge -u @world`: upgrades everything
+    // already installed (official repos + AUR), it does not consult
+    // world.set at all. For -Syy use `--sync --refresh`.
+    if cli.update {
         if !cli.pretend {
             save_resume_state(&build_resume_args(&cli, &target_pkgs, has_world));
         }
@@ -1152,6 +1300,16 @@ fn run() -> anyhow::Result<()> {
             } else {
                 clear_resume_state();
             }
+        }
+    }
+
+    // `emerge <pkg> @world` (no -u): named packages are installed above;
+    // now provision anything else world.set still lists as missing.
+    if provision_after_install && !cli.pretend {
+        println!();
+        if !provision_from_world_set(cli.pretend, cli.ask, cli.verbose)? {
+            eprintln!(">>> Warning: not everything from world.set installed successfully.");
+            std::process::exit(1);
         }
     }
 
