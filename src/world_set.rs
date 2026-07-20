@@ -1,10 +1,13 @@
 //! Handling of /etc/emerge/world.set: the explicit-install tracking file.
 //!
 //! Split out of main.rs — covers repo-prefix resolution for world.set
-//! entries and the add/remove/regen/write operations on the file itself.
+//! entries, the add/remove/regen/write operations on the file itself,
+//! custom package sets under /etc/emerge/sets.d/, and declarative
+//! provisioning from world.set (bare `emerge @world`, no -u).
 
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::process::{Command, Stdio};
@@ -75,6 +78,232 @@ pub(crate) fn pkg_world_entry(pkg: &str, forced_prefix: Option<&str>) -> String 
         None => bare.to_string(),
     }
 }
+
+// ── custom sets (/etc/emerge/sets.d/<name>.set, invoked as @<name>) ────────────
+
+/// Is `name` (the part after '@') safe to use as a set filename?
+/// Deliberately conservative — this becomes part of a filesystem path.
+pub(crate) fn valid_set_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "world"
+        && name != "preserved-rebuild"
+        && name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+}
+
+/// Read /etc/emerge/sets.d/<name>.set: one package atom per line, blank
+/// lines and '#' comments ignored. Entries are passed through the same
+/// validate_pkg() every other package name is, so a malformed set file
+/// can't smuggle a flag-looking token into an aura/pacman invocation.
+pub(crate) fn read_custom_set(name: &str) -> Result<Vec<String>> {
+    let path = format!("{}/{}.set", SETS_DIR, name);
+
+    if !is_safe_path(&path) {
+        bail!("{} is a symlink — refusing to read", path);
+    }
+
+    let file = fs::File::open(&path)
+        .with_context(|| format!("no such set: @{} (expected {})", name, path))?;
+
+    let pkgs: Vec<String> = io::BufReader::new(file)
+        .lines()
+        .map_while(io::Result::ok)
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter(|l| {
+            if validate_pkg(l) {
+                true
+            } else {
+                eprintln!(">>> Warning: invalid entry in @{} (skipped): {}", name, l);
+                false
+            }
+        })
+        .collect();
+
+    Ok(pkgs)
+}
+
+/// List every custom set under SETS_DIR (bare names, no ".set", no '@'),
+/// sorted. Used by `--list-sets` and by shell completion for `@<TAB>`.
+pub(crate) fn list_custom_sets() -> Vec<String> {
+    let mut names = Vec::new();
+    if let Ok(entries) = fs::read_dir(SETS_DIR) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("set") {
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    names.push(stem.to_string());
+                }
+            }
+        }
+    }
+    names.sort();
+    names
+}
+
+// ── declarative provisioning from world.set (bare `emerge @world`) ─────────────
+
+/// `emerge @world` with no `-u`: install whatever world.set lists that
+/// isn't already on this system. Unlike the `-u @world` full upgrade,
+/// this never touches a package that's already installed and never
+/// consults the sync databases on its own — it's meant for "this machine
+/// is missing packages world.set says it should have" (a fresh install,
+/// or one that fell behind a dotfiles-tracked world.set), not for
+/// upgrading what's already there.
+///
+/// Each entry's recorded repo prefix decides how it gets installed:
+/// official-repo entries go through `aura -S`, `aur/` entries through
+/// `aura -A` (with the usual PKGBUILD scan first). `abs/` entries were
+/// locally built from ABS and can't be reproduced unattended, so they're
+/// listed and skipped — same for entries with no resolvable prefix
+/// (`Err/` or bare names) — the person running this decides how to
+/// handle those themselves (`emerge <pkg> --abs`, or a plain `emerge
+/// <pkg>` once the source is known).
+///
+/// Returns Ok(true) if everything resolvable installed cleanly (or this
+/// was a --pretend run), Ok(false) if something failed.
+pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool) -> Result<bool> {
+    println!("{} Provisioning system from world.set...", ">>>".green().bold());
+
+    if !is_safe_path(WORLD_SET_FILE) {
+        bail!("{} is a symlink — refusing to read", WORLD_SET_FILE);
+    }
+
+    let entries: Vec<String> = match fs::File::open(WORLD_SET_FILE) {
+        Ok(file) => io::BufReader::new(file)
+            .lines()
+            .map_while(io::Result::ok)
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect(),
+        Err(_) => {
+            println!(">>> world.set not found — nothing to provision.");
+            return Ok(true);
+        }
+    };
+
+    if entries.is_empty() {
+        println!(">>> world.set is empty — nothing to provision.");
+        return Ok(true);
+    }
+
+    // Packages already on this system are left alone entirely.
+    let installed: HashSet<String> = Command::new(PACMAN_BIN)
+        .arg("-Qq")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut official_missing: Vec<String> = Vec::new();
+    let mut aur_missing: Vec<String> = Vec::new();
+    let mut abs_missing: Vec<String> = Vec::new();
+    let mut unresolved_missing: Vec<String> = Vec::new();
+
+    for entry in &entries {
+        let mut parts = entry.splitn(2, '/');
+        let first = parts.next().unwrap_or("");
+        let rest = parts.next();
+        let (prefix, bare) = match rest {
+            Some(name) => (Some(first), name.to_string()),
+            None => (None, first.to_string()),
+        };
+
+        if installed.contains(&bare) {
+            continue;
+        }
+
+        match prefix {
+            Some("aur") => aur_missing.push(bare),
+            Some("abs") => abs_missing.push(bare),
+            Some("Err") | None => unresolved_missing.push(bare),
+            Some(_official_repo) => official_missing.push(bare),
+        }
+    }
+
+    let total = official_missing.len() + aur_missing.len() + abs_missing.len() + unresolved_missing.len();
+    if total == 0 {
+        println!("{} Nothing to do — every world.set package is already installed.", ">>>".green().bold());
+        return Ok(true);
+    }
+
+    println!();
+    println!("{}", "These are the packages that would be merged, in order:".green().bold());
+    println!();
+    println!("Calculating dependencies... done!");
+    println!();
+    for p in official_missing.iter().chain(aur_missing.iter()) {
+        println!("[{} {:<4}] {}", "ebuild".green(), "N".green().bold(), p.green().bold());
+    }
+    for p in &abs_missing {
+        println!("[{} {:<4}] {} (built from ABS — needs `emerge {} --abs`)", "ebuild".green(), "N".yellow().bold(), p.yellow().bold(), p);
+    }
+    for p in &unresolved_missing {
+        println!("[{} {:<4}] {} (source unknown — install manually)", "ebuild".green(), "N".red().bold(), p.red().bold());
+    }
+    println!();
+    println!("{}: {} package(s)", "Total".bold(), total);
+    println!();
+
+    if pretend {
+        return Ok(true);
+    }
+
+    let mut overall_ok = true;
+
+    if !official_missing.is_empty() {
+        println!("{} Installing {} package(s) from official repos...", ">>>".green().bold(), official_missing.len());
+        let mut args = vec!["-S", "--needed"];
+        if verbose { args.push("--verbose"); }
+        if !ask { args.push("--noconfirm"); }
+        if !run_cmd(AURA_BIN, &args, &official_missing) {
+            overall_ok = false;
+            eprintln!(">>> Warning: some official-repo package(s) failed to install.");
+        }
+    }
+
+    if !aur_missing.is_empty() {
+        println!("{} Installing {} AUR package(s)...", ">>>".green().bold(), aur_missing.len());
+        scan_aur_pkgbuilds_or_abort(&aur_missing);
+        let mut args = vec!["-A", "--needed"];
+        if !ask { args.push("--noconfirm"); }
+        if run_cmd(AURA_BIN, &args, &aur_missing) {
+            // aura -A doesn't always leave the explicit bit set the way
+            // `pacman -S` does — force it so world.set and pacman's own
+            // bookkeeping stay in agreement.
+            mark_asexplicit(&aur_missing);
+        } else {
+            overall_ok = false;
+            eprintln!(">>> Warning: some AUR package(s) failed to install.");
+        }
+    }
+
+    if !abs_missing.is_empty() {
+        eprintln!(
+            "{} {} package(s) were built from ABS and can't be reproduced unattended — \
+            install them yourself: `emerge <pkg> --abs`",
+            " *".yellow().bold(), abs_missing.len()
+        );
+        for p in &abs_missing { eprintln!("     {}", p); }
+    }
+    if !unresolved_missing.is_empty() {
+        eprintln!(
+            "{} {} package(s) have no recorded source — install manually: `emerge <pkg>`",
+            " *".yellow().bold(), unresolved_missing.len()
+        );
+        for p in &unresolved_missing { eprintln!("     {}", p); }
+    }
+
+    Ok(overall_ok)
+}
+
 
 // ── world.set ─────────────────────────────────────────────────────────────────
 

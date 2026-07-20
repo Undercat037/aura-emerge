@@ -1,0 +1,317 @@
+.TH EMERGE 1 "2026" "aura-emerge 1.27.0" "User Commands"
+.SH NAME
+emerge \- Portage-like command-line interface to Arch Linux, built on Aura
+.SH SYNOPSIS
+.B emerge
+[\fIoptions\fR] [\fIaction\fR] [\fIpackage\fR | \fI@set\fR] [...]
+.br
+.B emerge
+[\fIoptions\fR] [\fIaction\fR] \fB@world\fR
+.br
+.B emerge
+\fB\-\-sync\fR | \fB\-\-info\fR | \fB\-\-list\-sets\fR
+.br
+.B emerge \-\-resume
+[\fB\-\-pretend\fR | \fB\-\-ask\fR | \fB\-\-skipfirst\fR]
+.br
+.B emerge \-\-help
+.SH DESCRIPTION
+.B aura-emerge
+is a Gentoo\-style
+.BR emerge (1)
+wrapper for Arch Linux, built on top of
+.BR aura (8).
+It tracks every explicitly requested package in a single file,
+.IR /etc/emerge/world.set ,
+so the set of "things I actually asked for" survives independently of
+whatever pacman's own dependency graph currently looks like.
+.PP
+Unlike a bare
+.B pacman \-Syu
+or
+.BR "aura \-Syu \-Au" ,
+.B emerge
+distinguishes between three different operations that Gentoo users
+expect to be different things:
+.RS
+.IP \(bu 2
+refreshing the package databases (\fB\-\-sync\fR),
+.IP \(bu 2
+upgrading everything already installed (\fB\-u\fR / \fB\-u @world\fR),
+.IP \(bu 2
+and making sure a machine actually \fIhas\fR everything it's supposed
+to have (bare \fB@world\fR) \(em the operation this version introduces,
+described in detail below.
+.RE
+.SH "PACKAGE ATOMS AND @world"
+Every package
+.B emerge
+installs through the normal install path is recorded in
+.I world.set
+as
+.IR repo/name ,
+e.g.
+.IR extra/firefox ", " aur/ayugram\-desktop\-bin ", or " abs/nano\-custom .
+The prefix records where the package came from, so it can be
+reinstalled from the same place later without guessing.
+.SS "Bare @world (no \-u): declarative provisioning"
+.B emerge @world
+reads
+.I world.set
+and installs whatever it lists that isn't already on this system.
+Packages already installed are left completely alone \(em nothing is
+upgraded, nothing is reinstalled, nothing is removed. Each entry's
+recorded prefix decides how it's installed:
+.RS
+.IP \(bu 2
+official-repo entries are installed via
+.BR "aura \-S \-\-needed" ;
+.IP \(bu 2
+.I aur/
+entries via
+.BR "aura \-A \-\-needed" ,
+after the usual PKGBUILD/.install scan;
+.IP \(bu 2
+.I abs/
+entries (locally built from ABS) cannot be reproduced unattended and
+are listed with a pointer to run
+.B emerge <pkg> \-\-abs
+yourself;
+.IP \(bu 2
+entries with no resolvable source
+.RI ( Err/
+or a bare name) are listed as needing manual attention.
+.RE
+.PP
+This is the "move to a new machine and get everything back" operation:
+copy (or symlink, or dotfiles-track)
+.I /etc/emerge/world.set
+onto a freshly installed system and run
+.B emerge @world
+to pull in the whole package set in one shot, official repos and AUR
+alike \(em roughly what a NixOS user gets from applying their
+configuration on a new host.
+.PP
+If named packages are given alongside
+.BR @world ,
+e.g.
+.BR "emerge nano @world" ,
+those packages are installed first (and added to
+.IR world.set ,
+as usual), and the remainder of
+.I world.set
+is then provisioned the same way as the bare form.
+.SS "\-u @world / \-u: full system upgrade"
+.B emerge \-u @world
+(or plain
+.BR "emerge \-u" )
+is the Gentoo
+.B emerge \-u @world
+equivalent: it upgrades everything already installed \(em official
+repos via
+.BR "aura \-Syu" ,
+then AUR packages via
+.BR "aura \-Au" .
+It does not consult
+.I world.set
+at all; this is a pure "bring the currently installed set up to date"
+operation, independent of what's tracked as explicitly wanted.
+.SS "\-\-sync: database refresh"
+.B emerge \-\-sync
+runs
+.B aura \-Sy
+(or
+.B \-Syy
+with
+.BR \-\-refresh ),
+refreshing the package databases without installing or upgrading
+anything, unless packages or
+.B @world
+are also given, in which case it falls through to the matching
+install/upgrade/provision step afterward.
+.SH "CUSTOM SETS"
+Beyond
+.B @world
+and
+.BR @preserved\-rebuild ,
+.B emerge
+supports arbitrary named sets: a file
+.IB /etc/emerge/sets.d/ name .set
+is invoked on the command line as
+.BI @ name
+(e.g.
+.I /etc/emerge/sets.d/game\-kit.set
+as
+.BR @game\-kit ).
+.PP
+A set file holds one package atom per line; blank lines and lines
+starting with
+.B #
+are ignored. A set can be combined with other sets and with plain
+package names in the same invocation, e.g.:
+.PP
+.RS
+.nf
+emerge @game\-kit @dev\-tools neovim
+.fi
+.RE
+.PP
+.B \-\-list\-sets
+prints every set currently available (\fB@world\fR,
+\fB@preserved\-rebuild\fR, and one line per
+.I sets.d/*.set
+file) \(em this is also what shell completion calls behind the scenes
+so that
+.B "emerge @<TAB>"
+offers real set names instead of just the two built-in ones.
+.SH OPTIONS
+.SS Actions
+.TP
+.BR \-s ", " \-\-search
+Search for packages (official repos + AUR).
+.TP
+.B \-\-searchdesc
+Search package descriptions.
+.TP
+.B \-sv
+Detailed package info (\fBaura \-Si\fR / \fB\-Ai\fR).
+.TP
+.BR \-u ", " \-\-update
+Full system upgrade; see "\-u @world / \-u" above.
+.TP
+.BR \-C ", " \-\-unmerge
+Remove specific packages and drop them from world.set.
+.TP
+.BR \-c ", " \-\-depclean
+Remove orphaned packages (skips anything tracked in world.set).
+.TP
+.BR \-p ", " \-\-pretend
+Dry run \(em show what would happen without doing it.
+.TP
+.BR \-a ", " \-\-ask
+Ask for confirmation before applying changes.
+.TP
+.BR \-1 ", " \-\-oneshot
+Install as a dependency; does not touch world.set.
+.TP
+.B \-\-sync
+Sync package databases; see "\-\-sync" above.
+.TP
+.B \-\-refresh
+Force\-refresh databases even if already current (\fBpacman \-Syy\fR);
+used with \fB\-\-sync\fR or \fB\-u\fR.
+.TP
+.B \-\-info
+Show system info, mirroring Gentoo's \fBemerge \-\-info\fR.
+.TP
+.B \-\-select
+Add packages to world.set without installing them.
+.TP
+.B \-\-deselect
+Remove packages from world.set without unmerging them.
+.TP
+.B \-\-prune
+Remove installed packages that are not tracked in world.set.
+.TP
+.B \-\-regen
+Regenerate pacman's file-list metadata cache (\fBpacman \-Fy\fR).
+.TP
+.B \-\-regen\-world
+Re\-resolve repository prefixes for every entry in world.set.
+.TP
+.B \-\-regen\-world\-from\-explicit
+One\-time migration: seed world.set from every currently
+explicitly\-installed package (\fBpacman \-Qeq\fR).
+.TP
+.B \-\-resume
+Resume the last interrupted install/\fB@world\fR operation.
+.TP
+.B \-\-skipfirst
+Used with \fB\-\-resume\fR: skip the first package in the resumed list.
+.TP
+.B \-\-list\-sets
+List available \fB@\fR sets; see "CUSTOM SETS" above.
+.SS "Install source selection"
+.TP
+.B \-\-aur
+Force installation from the AUR only.
+.TP
+.B \-\-only\-repos
+Only use official repos; never search or install from the AUR.
+.TP
+.B \-\-abs
+Build from ABS (Arch Build System) source via
+.BR asp (1).
+.TP
+.B \-\-skippgp
+Skip PGP signature checks when building from ABS.
+.TP
+.B \-\-autopgp
+Automatically import missing PGP keys (from \fBvalidpgpkeys\fR) from a
+trusted keyserver when building with \fB\-\-abs\fR, without prompting.
+.TP
+.B \-\-edit
+Edit the PKGBUILD before building \(em opens \fB$EDITOR\fR for
+\fB\-\-abs\fR, or passes \fBaura\fR's own \fB\-\-hotedit\fR for AUR builds.
+.SS "Other"
+.TP
+.BR \-v ", " \-\-verbose
+Verbose output / detailed info in search mode.
+.TP
+.BR \-n ", " \-\-noreplace
+Do not reinstall if already installed (\fBpacman \-\-needed\fR).
+.TP
+.BR \-h ", " \-\-help
+Show a brief usage summary.
+.TP
+.BR \-V ", " \-\-version
+Show the version.
+.PP
+A number of Gentoo/Portage-compatibility flags
+.RI ( "\-\-deep, \-\-newuse, \-\-emptytree, \-\-with\-bdeps, \-\-verbose\-conflicts" ,
+etc.) are accepted for muscle-memory compatibility and are otherwise
+no-ops.
+.SH FILES
+.TP
+.I /etc/emerge/world.set
+Every explicitly\-installed package, one
+.I repo/name
+atom per line. Edit it by hand if you like \(em it's just a text file.
+.TP
+.I /etc/emerge/sets.d/*.set
+Custom package sets; see "CUSTOM SETS" above.
+.TP
+.I /etc/emerge/resume.state
+Saved argv\-equivalent of the last interrupted install/\fB@world\fR
+operation, consumed by \fB\-\-resume\fR.
+.SH EXAMPLES
+.TP
+.B emerge neovim
+Install neovim (official repos, falls back to AUR).
+.TP
+.B emerge neovim\-git \-\-aur
+Install explicitly from the AUR.
+.TP
+.B emerge @world
+On a freshly installed machine with a populated
+.IR world.set ,
+install everything it lists that's still missing.
+.TP
+.B emerge \-u @world
+Upgrade the whole system, official repos and AUR alike.
+.TP
+.B emerge @game\-kit
+Install every package listed in
+.IR /etc/emerge/sets.d/game\-kit.set .
+.TP
+.B emerge \-\-prune
+Remove anything installed that isn't tracked in
+.IR world.set .
+.SH "SEE ALSO"
+.BR aura (8),
+.BR pacman (8),
+.BR makepkg (8)
+.SH AUTHOR
+Undercat037 \(em
+.UR https://github.com/Undercat037/aura\-emerge
+.UE
