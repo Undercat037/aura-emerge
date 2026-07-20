@@ -73,6 +73,54 @@ pub(crate) fn status_colored(status: &str) -> String {
     }
 }
 
+// ── Explicit / dependency flag helpers ──────────────────────────────────────
+
+/// Force the given packages to be flagged as explicitly installed via
+/// `pacman -D --asexplicit`. Used after AUR/ABS installs (where the
+/// install path — aura/makepkg — doesn't always leave the explicit bit
+/// set the way a plain `pacman -S` would) and by `--select`, so world.set
+/// membership and pacman's own bookkeeping never disagree.
+///
+/// Best-effort: silently no-ops for names that aren't actually installed
+/// (e.g. `--select` on a package not yet pulled in) — that's an expected,
+/// non-error case, not something worth warning about.
+pub(crate) fn mark_asexplicit(pkgs: &[String]) {
+    let bare: Vec<String> = pkgs.iter()
+        .map(|p| p.split('/').last().unwrap_or(p).to_string())
+        .collect();
+    if bare.is_empty() { return; }
+
+    let mut args: Vec<&str> = vec![PACMAN_BIN, "-D", "--asexplicit"];
+    args.extend(bare.iter().map(String::as_str));
+    let _ = Command::new(SUDO_BIN)
+        .args(&args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+/// Opposite of mark_asexplicit(): flags the given packages as
+/// installed-as-dependency via `pacman -D --asdeps`. Used by `--deselect`
+/// so a package dropped from world.set is no longer treated as something
+/// the user explicitly wants — it becomes eligible for `--depclean` /
+/// `pacman -Qtdq` orphan cleanup like any other transitive dependency.
+///
+/// Same best-effort semantics as mark_asexplicit().
+pub(crate) fn mark_asdeps(pkgs: &[String]) {
+    let bare: Vec<String> = pkgs.iter()
+        .map(|p| p.split('/').last().unwrap_or(p).to_string())
+        .collect();
+    if bare.is_empty() { return; }
+
+    let mut args: Vec<&str> = vec![PACMAN_BIN, "-D", "--asdeps"];
+    args.extend(bare.iter().map(String::as_str));
+    let _ = Command::new(SUDO_BIN)
+        .args(&args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
 /// Probe official repos in a single call using --print-format.
 /// Returns Some(infos) if packages are found, None otherwise.
 pub(crate) fn probe_official(pkgs: &[String]) -> Option<Vec<PkgInfo>> {
