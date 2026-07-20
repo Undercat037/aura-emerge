@@ -650,6 +650,9 @@ fn run() -> anyhow::Result<()> {
             println!(">>> Selecting {} into world.set...", p);
         }
         add_to_world_set(&target_pkgs, None)?;
+        // world.set now says these are explicitly wanted — mirror that onto
+        // pacman's own bookkeeping (no-ops for anything not yet installed).
+        mark_asexplicit(&target_pkgs);
         return Ok(());
     }
 
@@ -663,6 +666,10 @@ fn run() -> anyhow::Result<()> {
             println!(">>> Deselecting {} from world.set (package stays installed)...", p);
         }
         remove_from_world_set(&target_pkgs)?;
+        // Opposite of --select: no longer wanted by world.set, so demote to
+        // a dependency in pacman's bookkeeping — makes it eligible for
+        // --depclean like any other transitive dependency.
+        mark_asdeps(&target_pkgs);
         return Ok(());
     }
 
@@ -692,59 +699,99 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // 4. Depclean (orphans)
+    // 4. Depclean — true leaf orphans (pacman -Qtdq) PLUS anything
+    //    explicitly installed but no longer tracked in world.set (drifted
+    //    in via a raw `pacman -S`, or left behind by --deselect). This
+    //    mirrors real Portage's --depclean, which removes anything that's
+    //    neither in @world nor required by something that is, rather than
+    //    only pacman's own "unreferenced leaf" notion of an orphan.
     if cli.depclean {
         println!(">>> Calculating dependencies... done!");
-        println!(">>> Checking for orphaned packages...");
+        println!(">>> Checking for orphaned and untracked packages...");
 
-        match Command::new(PACMAN_BIN).arg("-Qtdq").output() {
-            Ok(out) => {
-                let orphans_str = String::from_utf8_lossy(&out.stdout);
-                let orphans: Vec<String> = orphans_str
-                    .lines()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-
-                if orphans.is_empty() {
-                    println!();
-                    println!(">>> No orphaned packages were found on your system.");
-                    return Ok(());
-                }
-
-                println!();
-                for o in &orphans {
-                    println!("[{}] {}", "unmerge".red().bold(), o);
-                }
-                println!();
-                println!("Total: {} orphaned package(s) to remove", orphans.len());
-                println!();
-
-                // pacman rejects -n/--nosave together with --print, and
-                // --nosave is meaningless for a dry run anyway (nothing gets
-                // removed, so there's nothing to skip saving configs for).
-                let mut pacman_args = if cli.pretend {
-                    vec!["-Rs", "--print"]
-                } else {
-                    vec!["-Rns"]
-                };
-                if !cli.ask && !cli.pretend {
-                    pacman_args.push("--noconfirm");
-                }
-
-                // --print never touches the system, so it doesn't need root —
-                // running it through sudo anyway just makes `-p` (pretend)
-                // prompt for a password to print a list, which defeats the
-                // point of a dry run.
-                if cli.pretend {
-                    run_cmd(PACMAN_BIN, &pacman_args, &orphans);
-                } else {
-                    let mut sudo_args = vec![PACMAN_BIN];
-                    sudo_args.extend(pacman_args);
-                    run_cmd(SUDO_BIN, &sudo_args, &orphans);
-                }
+        let true_orphans: Vec<String> = match Command::new(PACMAN_BIN).arg("-Qtdq").output() {
+            Ok(out) => String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
+            Err(_) => {
+                eprintln!(">>> Error: Failed to check for orphans.");
+                Vec::new()
             }
-            Err(_) => eprintln!(">>> Error: Failed to check for orphans."),
+        };
+
+        // Explicitly-installed packages that world.set no longer lists.
+        let mut untracked: Vec<String> = Vec::new();
+        if !is_safe_path(WORLD_SET_FILE) {
+            eprintln!(">>> Warning: {} is a symlink — skipping world.set cross-check", WORLD_SET_FILE);
+        } else if let Ok(file) = fs::File::open(WORLD_SET_FILE) {
+            let world_bare: HashSet<String> = io::BufReader::new(file)
+                .lines()
+                .map_while(Result::ok)
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| l.trim().split('/').last().unwrap_or("").to_string())
+                .collect();
+
+            match Command::new(PACMAN_BIN).arg("-Qeq").output() {
+                Ok(out) => {
+                    untracked = String::from_utf8_lossy(&out.stdout)
+                        .lines()
+                        .map(|l| l.trim().to_string())
+                        .filter(|l| !l.is_empty() && !world_bare.contains(l))
+                        .collect();
+                }
+                Err(_) => eprintln!(">>> Warning: failed to list explicitly installed packages"),
+            }
+        } else {
+            eprintln!(">>> Warning: cannot open {} — skipping world.set cross-check", WORLD_SET_FILE);
+        }
+
+        let mut candidates: Vec<String> = true_orphans;
+        for p in untracked {
+            if !candidates.contains(&p) {
+                candidates.push(p);
+            }
+        }
+        candidates.sort();
+        candidates.dedup();
+
+        if candidates.is_empty() {
+            println!();
+            println!(">>> No orphaned or untracked packages were found on your system.");
+            return Ok(());
+        }
+
+        println!();
+        for o in &candidates {
+            println!("[{}] {}", "unmerge".red().bold(), o);
+        }
+        println!();
+        println!("Total: {} package(s) to remove", candidates.len());
+        println!();
+
+        // pacman rejects -n/--nosave together with --print, and
+        // --nosave is meaningless for a dry run anyway (nothing gets
+        // removed, so there's nothing to skip saving configs for).
+        let mut pacman_args = if cli.pretend {
+            vec!["-Rs", "--print"]
+        } else {
+            vec!["-Rns"]
+        };
+        if !cli.ask && !cli.pretend {
+            pacman_args.push("--noconfirm");
+        }
+
+        // --print never touches the system, so it doesn't need root —
+        // running it through sudo anyway just makes `-p` (pretend)
+        // prompt for a password to print a list, which defeats the
+        // point of a dry run.
+        if cli.pretend {
+            run_cmd(PACMAN_BIN, &pacman_args, &candidates);
+        } else {
+            let mut sudo_args = vec![PACMAN_BIN];
+            sudo_args.extend(pacman_args);
+            run_cmd(SUDO_BIN, &sudo_args, &candidates);
         }
         return Ok(());
     }
@@ -961,6 +1008,11 @@ fn run() -> anyhow::Result<()> {
                     // build source, no partial-success case to track).
                     if success {
                         println!("{} Auto-cleaning packages...", ">>>".green().bold());
+                        // makepkg -si marks explicit correctly on its own
+                        // *unless* the package was already installed as a
+                        // dependency beforehand — force it so world.set
+                        // membership and pacman's bookkeeping always agree.
+                        mark_asexplicit(&target_pkgs);
                         if let Err(e) = add_to_world_set(&target_pkgs, Some("abs")) {
                             eprintln!(">>> Warning: package(s) built but world.set was not updated: {:#}", e);
                         }
@@ -987,6 +1039,10 @@ fn run() -> anyhow::Result<()> {
                         }
                     }
                     if !aur_names.is_empty() {
+                        // aura -A doesn't always leave the explicit bit set
+                        // the way `pacman -S` does — force it so world.set
+                        // and pacman's bookkeeping always agree.
+                        mark_asexplicit(&aur_names);
                         if let Err(e) = add_to_world_set(&aur_names, Some("aur")) {
                             eprintln!(">>> Warning: package(s) installed but world.set was not updated: {:#}", e);
                         }
