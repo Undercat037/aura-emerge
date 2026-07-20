@@ -175,6 +175,12 @@ struct Cli {
     #[arg(long = "regen-world")]
     regen_world: bool,
 
+    /// One-time migration: seed world.set from every currently
+    /// explicitly-installed package (pacman -Qeq), for systems that
+    /// predate world.set tracking
+    #[arg(long = "regen-world-from-explicit")]
+    regen_world_from_explicit: bool,
+
     /// Search package descriptions (--searchdesc)
     #[arg(long = "searchdesc")]
     searchdesc: bool,
@@ -274,7 +280,7 @@ fn print_help() {
     println!("Actions:  [ --depclean  | --deselect | --prune      | --regen       ]");
     println!("          [ --resume    | --search   | --select     | --searchdesc  ]");
     println!("          [ --sync      | --unmerge  | --update     | --regen-world ]");
-    println!("          [ --version   | --info                                    ]");
+    println!("          [ --version   | --info     | --regen-world-from-explicit  ]");
     println!();
     println!("   For more help consult the README: https://github.com/Undercat037/aura-emerge");
     println!();
@@ -566,6 +572,34 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // --regen-world-from-explicit: seed world.set from every currently
+    // explicitly-installed package (pacman -Qeq). Meant as a one-time
+    // migration step on a system that predates world.set tracking — run
+    // it once, and `-c`'s world.set protection (below) and `--prune`
+    // start seeing the whole system instead of just what was installed
+    // through `emerge` since world.set existed.
+    if cli.regen_world_from_explicit {
+        println!("{} Seeding world.set from explicitly installed packages...", ">>>".green().bold());
+        let explicit: Vec<String> = match Command::new(PACMAN_BIN).arg("-Qeq").output() {
+            Ok(out) => String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
+            Err(_) => {
+                eprintln!(">>> Error: failed to list explicitly installed packages");
+                std::process::exit(1);
+            }
+        };
+        if explicit.is_empty() {
+            println!(">>> No explicitly installed packages found.");
+            return Ok(());
+        }
+        println!(">>> Found {} explicitly installed package(s). Resolving repo prefixes...", explicit.len());
+        add_to_world_set(&explicit, None)?;
+        return Ok(());
+    }
+
     // --prune: remove installed packages not in world.set
     if cli.prune {
         println!("{} Pruning packages not in world.set...", ">>>".green().bold());
@@ -699,99 +733,83 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // 4. Depclean — true leaf orphans (pacman -Qtdq) PLUS anything
-    //    explicitly installed but no longer tracked in world.set (drifted
-    //    in via a raw `pacman -S`, or left behind by --deselect). This
-    //    mirrors real Portage's --depclean, which removes anything that's
-    //    neither in @world nor required by something that is, rather than
-    //    only pacman's own "unreferenced leaf" notion of an orphan.
+    // 4. Depclean (orphans) — pacman's own leaf-orphan detection
+    //    (`pacman -Qtdq`), with one guard: anything the user has
+    //    explicitly asked for via world.set is protected even if pacman's
+    //    dependency graph currently also sees it as a dependency of
+    //    something else (e.g. another package happens to also depend on
+    //    it). world.set is the source of truth for "wanted"; depclean
+    //    should never silently rip out something that's in it.
     if cli.depclean {
         println!(">>> Calculating dependencies... done!");
-        println!(">>> Checking for orphaned and untracked packages...");
+        println!(">>> Checking for orphaned packages...");
 
-        let true_orphans: Vec<String> = match Command::new(PACMAN_BIN).arg("-Qtdq").output() {
-            Ok(out) => String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect(),
-            Err(_) => {
-                eprintln!(">>> Error: Failed to check for orphans.");
-                Vec::new()
-            }
-        };
+        match Command::new(PACMAN_BIN).arg("-Qtdq").output() {
+            Ok(out) => {
+                let orphans_str = String::from_utf8_lossy(&out.stdout);
+                let mut orphans: Vec<String> = orphans_str
+                    .lines()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
 
-        // Explicitly-installed packages that world.set no longer lists.
-        let mut untracked: Vec<String> = Vec::new();
-        if !is_safe_path(WORLD_SET_FILE) {
-            eprintln!(">>> Warning: {} is a symlink — skipping world.set cross-check", WORLD_SET_FILE);
-        } else if let Ok(file) = fs::File::open(WORLD_SET_FILE) {
-            let world_bare: HashSet<String> = io::BufReader::new(file)
-                .lines()
-                .map_while(Result::ok)
-                .filter(|l| !l.trim().is_empty())
-                .map(|l| l.trim().split('/').last().unwrap_or("").to_string())
-                .collect();
-
-            match Command::new(PACMAN_BIN).arg("-Qeq").output() {
-                Ok(out) => {
-                    untracked = String::from_utf8_lossy(&out.stdout)
-                        .lines()
-                        .map(|l| l.trim().to_string())
-                        .filter(|l| !l.is_empty() && !world_bare.contains(l))
-                        .collect();
+                // Filter out anything tracked in world.set.
+                if is_safe_path(WORLD_SET_FILE) {
+                    if let Ok(file) = fs::File::open(WORLD_SET_FILE) {
+                        let world_bare: HashSet<String> = io::BufReader::new(file)
+                            .lines()
+                            .map_while(Result::ok)
+                            .filter(|l| !l.trim().is_empty())
+                            .map(|l| l.trim().split('/').last().unwrap_or("").to_string())
+                            .collect();
+                        let before = orphans.len();
+                        orphans.retain(|p| !world_bare.contains(p));
+                        let protected = before - orphans.len();
+                        if protected > 0 {
+                            println!(">>> {} package(s) skipped (tracked in world.set).", protected);
+                        }
+                    }
                 }
-                Err(_) => eprintln!(">>> Warning: failed to list explicitly installed packages"),
+
+                if orphans.is_empty() {
+                    println!();
+                    println!(">>> No orphaned packages were found on your system.");
+                    return Ok(());
+                }
+
+                println!();
+                for o in &orphans {
+                    println!("[{}] {}", "unmerge".red().bold(), o);
+                }
+                println!();
+                println!("Total: {} orphaned package(s) to remove", orphans.len());
+                println!();
+
+                // pacman rejects -n/--nosave together with --print, and
+                // --nosave is meaningless for a dry run anyway (nothing gets
+                // removed, so there's nothing to skip saving configs for).
+                let mut pacman_args = if cli.pretend {
+                    vec!["-Rs", "--print"]
+                } else {
+                    vec!["-Rns"]
+                };
+                if !cli.ask && !cli.pretend {
+                    pacman_args.push("--noconfirm");
+                }
+
+                // --print never touches the system, so it doesn't need root —
+                // running it through sudo anyway just makes `-p` (pretend)
+                // prompt for a password to print a list, which defeats the
+                // point of a dry run.
+                if cli.pretend {
+                    run_cmd(PACMAN_BIN, &pacman_args, &orphans);
+                } else {
+                    let mut sudo_args = vec![PACMAN_BIN];
+                    sudo_args.extend(pacman_args);
+                    run_cmd(SUDO_BIN, &sudo_args, &orphans);
+                }
             }
-        } else {
-            eprintln!(">>> Warning: cannot open {} — skipping world.set cross-check", WORLD_SET_FILE);
-        }
-
-        let mut candidates: Vec<String> = true_orphans;
-        for p in untracked {
-            if !candidates.contains(&p) {
-                candidates.push(p);
-            }
-        }
-        candidates.sort();
-        candidates.dedup();
-
-        if candidates.is_empty() {
-            println!();
-            println!(">>> No orphaned or untracked packages were found on your system.");
-            return Ok(());
-        }
-
-        println!();
-        for o in &candidates {
-            println!("[{}] {}", "unmerge".red().bold(), o);
-        }
-        println!();
-        println!("Total: {} package(s) to remove", candidates.len());
-        println!();
-
-        // pacman rejects -n/--nosave together with --print, and
-        // --nosave is meaningless for a dry run anyway (nothing gets
-        // removed, so there's nothing to skip saving configs for).
-        let mut pacman_args = if cli.pretend {
-            vec!["-Rs", "--print"]
-        } else {
-            vec!["-Rns"]
-        };
-        if !cli.ask && !cli.pretend {
-            pacman_args.push("--noconfirm");
-        }
-
-        // --print never touches the system, so it doesn't need root —
-        // running it through sudo anyway just makes `-p` (pretend)
-        // prompt for a password to print a list, which defeats the
-        // point of a dry run.
-        if cli.pretend {
-            run_cmd(PACMAN_BIN, &pacman_args, &candidates);
-        } else {
-            let mut sudo_args = vec![PACMAN_BIN];
-            sudo_args.extend(pacman_args);
-            run_cmd(SUDO_BIN, &sudo_args, &candidates);
+            Err(_) => eprintln!(">>> Error: Failed to check for orphans."),
         }
         return Ok(());
     }
