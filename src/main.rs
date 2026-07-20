@@ -47,6 +47,8 @@ pub(crate) const ABS_GITLAB_BASE: &str = "https://gitlab.archlinux.org/archlinux
 pub(crate) const WORLD_SET_FILE:  &str = "/etc/emerge/world.set";
 pub(crate) const ABS_BUILD_BASE:  &str = "/tmp/aura-emerge-abs";
 pub(crate) const WORLD_SET_TMP:  &str = "/etc/emerge/world.set.tmp";
+pub(crate) const RESUME_FILE: &str = "/etc/emerge/resume.state";
+pub(crate) const RESUME_TMP:  &str = "/etc/emerge/resume.state.tmp";
 pub(crate) const PACMAN_CONF: &str = "/etc/pacman.conf";
 pub(crate) const MAKEPKG_CONF_SYSTEM: &str = "/etc/makepkg.conf";
 pub(crate) const BASH_BIN: &str = "/usr/bin/bash";
@@ -310,6 +312,31 @@ fn validate_packages(packages: &[String]) -> Vec<String> {
         })
         .cloned()
         .collect()
+}
+
+/// Reconstruct the argv-equivalent of the current invocation, for
+/// persisting as resumable state (see save_resume_state / --resume).
+/// Only includes flags that actually affect an install/@world update;
+/// --pretend/--ask/--resume/--skipfirst are deliberately excluded since
+/// they describe how to run the saved operation, not what it is.
+fn build_resume_args(cli: &Cli, target_pkgs: &[String], has_world: bool) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    if cli.update       { args.push("--update".to_string()); }
+    if cli.aur          { args.push("--aur".to_string()); }
+    if cli.only_repos   { args.push("--only-repos".to_string()); }
+    if cli.abs          { args.push("--abs".to_string()); }
+    if cli.skippgp      { args.push("--skippgp".to_string()); }
+    if cli.autopgp      { args.push("--autopgp".to_string()); }
+    if cli.edit         { args.push("--edit".to_string()); }
+    if cli.oneshot      { args.push("--oneshot".to_string()); }
+    if cli.noreplace    { args.push("--noreplace".to_string()); }
+    if cli.verbose      { args.push("--verbose".to_string()); }
+    if cli.refresh      { args.push("--refresh".to_string()); }
+    if has_world {
+        args.push("@world".to_string());
+    }
+    args.extend(target_pkgs.iter().cloned());
+    args
 }
 
 // ── Binary existence check ────────────────────────────────────────────────────
@@ -656,20 +683,55 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // --resume: re-run last interrupted aura/pacman operation
+    // --resume: re-run the last interrupted install/@world operation,
+    // exactly as it was invoked (same flags, same packages). Falls back to
+    // a plain full-system upgrade if nothing was saved (e.g. first run
+    // after upgrading aura-emerge, or the last operation already finished).
     if cli.resume {
         println!(">>> Attempting to resume last interrupted transaction...");
-        if cli.skipfirst {
-            // Can't truly replicate portage skipfirst on pacman, so we warn
-            println!(">>> Note: --skipfirst is not directly supported; resuming normally.");
-        }
-        let mut args = vec![PACMAN_BIN, "-Syu"];
-        if !cli.ask {
-            args.push("--noconfirm");
-        }
-        let success = run_cmd(SUDO_BIN, &args, &[]);
-        if !success {
-            std::process::exit(1);
+        match load_resume_state() {
+            Some(mut args) => {
+                if cli.skipfirst {
+                    // Package names can never start with '-' (validate_pkg
+                    // rejects that), and "@world" is never a real package,
+                    // so the first token matching neither is unambiguously
+                    // the first package in the resumed list.
+                    if let Some(pos) = args.iter().position(|a| !a.starts_with('-') && a != "@world") {
+                        println!(">>> Skipping first package in resume list: {}", args[pos]);
+                        args.remove(pos);
+                    }
+                }
+                if cli.pretend && !args.iter().any(|a| a == "--pretend" || a == "-p") {
+                    args.push("--pretend".to_string());
+                }
+                if cli.ask && !args.iter().any(|a| a == "--ask" || a == "-a") {
+                    args.push("--ask".to_string());
+                }
+                println!("{} emerge {}", ">>> Resuming:".green().bold(), args.join(" "));
+
+                let exe = std::env::current_exe()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("/usr/bin/emerge"));
+                match Command::new(exe).args(&args).status() {
+                    Ok(s) if s.success() => {}
+                    Ok(_) => std::process::exit(1),
+                    Err(e) => {
+                        eprintln!(">>> Error: failed to re-invoke emerge for resume: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            None => {
+                println!(">>> No saved transaction to resume.");
+                println!(">>> Falling back to a full system upgrade instead.");
+                let mut args = vec![PACMAN_BIN, "-Syu"];
+                if !cli.ask {
+                    args.push("--noconfirm");
+                }
+                let success = run_cmd(SUDO_BIN, &args, &[]);
+                if !success {
+                    std::process::exit(1);
+                }
+            }
         }
         return Ok(());
     }
@@ -716,6 +778,10 @@ fn run() -> anyhow::Result<()> {
 
     // 3. Update @world — triggered by -u or bare @world/world
     if cli.update || has_world {
+        if !cli.pretend {
+            save_resume_state(&build_resume_args(&cli, &target_pkgs, has_world));
+        }
+
         println!(">>> Calculating dependencies... done!");
         println!();
         println!(">>> Upgrading system (official repos)...");
@@ -723,13 +789,21 @@ fn run() -> anyhow::Result<()> {
         if cli.verbose {
             s_args.push("--verbose");
         }
-        run_cmd(AURA_BIN, &s_args, &[]);
+        let ok1 = run_cmd(AURA_BIN, &s_args, &[]);
 
         println!(">>> Upgrading AUR packages...");
-        run_cmd(AURA_BIN, &["-Au"], &[]);
+        let ok2 = run_cmd(AURA_BIN, &["-Au"], &[]);
 
         println!();
         println!("{} Auto-cleaning packages...", ">>>".green().bold());
+
+        if !cli.pretend {
+            if ok1 && ok2 {
+                clear_resume_state();
+            } else {
+                eprintln!(">>> Warning: not everything upgraded cleanly — state kept for `emerge --resume`.");
+            }
+        }
         return Ok(());
     }
 
@@ -878,6 +952,10 @@ fn run() -> anyhow::Result<()> {
 
     // 6. Install
     if !target_pkgs.is_empty() {
+        if !cli.pretend {
+            save_resume_state(&build_resume_args(&cli, &target_pkgs, has_world));
+        }
+
         let mut base_args: Vec<&str> = Vec::new();
         if !cli.ask && !cli.pretend {
             base_args.push("--noconfirm");
@@ -1071,6 +1149,8 @@ fn run() -> anyhow::Result<()> {
             if !success {
                 eprintln!(">>> Warning: not all requested packages were installed successfully.");
                 std::process::exit(1);
+            } else {
+                clear_resume_state();
             }
         }
     }

@@ -198,6 +198,74 @@ pub(crate) fn remove_from_world_set(packages: &[String]) -> Result<()> {
 }
 
 
+// ── --resume state ───────────────────────────────────────────────────────────
+//
+// Persists the exact argv-equivalent (flags + resolved package list) of the
+// last non-pretend install/@world update, so `emerge --resume` can literally
+// replay it rather than just running a blind `pacman -Syu`. Cleared on
+// success; left in place on failure/interruption so the next --resume picks
+// up where things left off.
+
+/// Save the given argv-style tokens as the resumable state. Best-effort —
+/// a failure here shouldn't abort the (already in-progress) real operation.
+pub(crate) fn save_resume_state(args: &[String]) {
+    if !is_safe_path(RESUME_TMP) || !is_safe_path(RESUME_FILE) {
+        eprintln!(">>> Warning: refusing to save resume state — symlink detected");
+        return;
+    }
+
+    let _ = Command::new(SUDO_BIN).args([RM_BIN, "-f", RESUME_TMP]).status();
+
+    let child_proc = Command::new(SUDO_BIN)
+        .arg(TEE_BIN)
+        .arg(RESUME_TMP)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn();
+
+    let write_ok = match child_proc {
+        Ok(mut child) => {
+            if let Some(mut stdin) = child.stdin.take() {
+                for a in args {
+                    let _ = writeln!(stdin, "{}", a);
+                }
+            }
+            child.wait().map(|s| s.success()).unwrap_or(false)
+        }
+        Err(_) => false,
+    };
+
+    if !write_ok {
+        eprintln!(">>> Warning: failed to save resume state");
+        return;
+    }
+
+    let _ = Command::new(SUDO_BIN)
+        .args([MV_BIN, RESUME_TMP, RESUME_FILE])
+        .status();
+}
+
+/// Drop the saved resume state — call after a fully successful operation.
+pub(crate) fn clear_resume_state() {
+    let _ = Command::new(SUDO_BIN).args([RM_BIN, "-f", RESUME_FILE]).status();
+}
+
+/// Load the saved resume state, if any. Returns None if there's nothing to
+/// resume (file missing, empty, or a symlink we refuse to follow).
+pub(crate) fn load_resume_state() -> Option<Vec<String>> {
+    if !is_safe_path(RESUME_FILE) {
+        return None;
+    }
+    let file = fs::File::open(RESUME_FILE).ok()?;
+    let lines: Vec<String> = io::BufReader::new(file)
+        .lines()
+        .map_while(io::Result::ok)
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.is_empty() { None } else { Some(lines) }
+}
+
 pub(crate) fn write_world_set(packages: &[String]) -> Result<()> {
     if !is_safe_path(WORLD_SET_TMP) {
         bail!("Refusing to write: {} is a symlink", WORLD_SET_TMP);
