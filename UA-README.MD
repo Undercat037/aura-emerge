@@ -19,7 +19,7 @@ paru -S aura-emerge
 [Релізний бінарник](target/release/)
 
 **Вимоги:** `aura` має бути встановлена та доступна в `/usr/bin/aura`.  
-**Опційно:** `asp` для підтримки `--abs` (`emerge asp`), `gpg` для автоматичного імпорту PGP-ключів (`--autopgp`).
+**Опційно:** `devtools` для підтримки `--abs` (`emerge devtools`, надає `pkgctl`), `gpg` для автоматичного імпорту PGP-ключів (`--autopgp`).
 
 ## Gentoo → Arch: аналог make.conf
 
@@ -51,7 +51,7 @@ sudo nvim /etc/makepkg.conf
 emerge neovim                      # встановити пакунок (офіційні репо, автоматичний пошук в AUR)
 emerge neovim-git --aur            # встановити виключно з AUR
 emerge neovim --only-repos         # встановити лише з офіційних репо, без звернення до AUR
-emerge neovim --abs                # зібрати з ABS (Arch Build System) через asp
+emerge neovim --abs                # зібрати з ABS (Arch Build System) через pkgctl
 emerge neovim --abs --skippgp      # зібрати з ABS, пропустити перевірку PGP підпису
 emerge neovim --abs --autopgp      # зібрати з ABS, автоімпорт відсутніх PGP-ключів, без запиту
 emerge neovim --abs --edit         # зібрати з ABS, редагувати PKGBUILD перед збіркою ($EDITOR)
@@ -165,7 +165,7 @@ emerge @game-kit @dev-tools neovim
 | `-n` | Не перевстановлювати (noreplace) |
 | `--aur` | Примусово використати AUR |
 | `--only-repos` | Лише офіційні репо, без пошуку/встановлення з AUR |
-| `--abs` | Зібрати з ABS через asp |
+| `--abs` | Зібрати з ABS через pkgctl |
 | `--skippgp` | Пропустити перевірку PGP при збірці з ABS |
 | `--autopgp` | Автоматично імпортувати відсутні PGP-ключі з довіреного keyserver при збірці з ABS, без запиту |
 | `--edit` | Редагування PKGBUILD перед збіркою — відкриває `$EDITOR` для `--abs`, або передає `--hotedit` в `aura` для AUR |
