@@ -92,7 +92,21 @@ CUSTOM SETS
     A file /etc/emerge/sets.d/<name>.set (one package atom per line, '#'
     comments allowed) is invoked as @<name>, and can be combined with other
     sets and plain package names in the same command. --list-sets prints
-    every set currently available.
+    every set currently available. --regen-sets @<name> re-resolves and
+    rewrites the repository prefix on every entry in that set file (same
+    idea as --regen-world, but for a custom set instead of world.set).
+
+UNRESOLVED (Err/) PACKAGES AND --err-inst
+    An entry can end up in world.set (or get written back by --regen-world
+    / --regen-sets) as Err/<name> when it's installed locally but its
+    source repo couldn't be determined, or as a bare <name> with no prefix
+    at all when it isn't installed and no repo could be found for it
+    either. During provisioning (emerge @world / emerge @<name>), a bare
+    <name> entry is always resolved the normal way (official repos first,
+    AUR on a miss) since there's nothing to lose by trying. An Err/<name>
+    entry is more suspect -- it was already installed from *somewhere*
+    unknown -- so by default it's only listed, not touched. Pass --err-inst
+    to have those installed the normal way too.
 
 EXAMPLES
     emerge neovim                  Install (official repos, falls back to AUR)
@@ -233,6 +247,19 @@ struct Cli {
     #[arg(long = "regen-world")]
     regen_world: bool,
 
+    /// Re-resolve repository prefixes for all packages in a custom set,
+    /// e.g. `--regen-sets @game-kit` or `--regen-sets game-kit`
+    #[arg(long = "regen-sets", value_name = "SET")]
+    regen_sets: Option<String>,
+
+    /// When provisioning from world.set / a custom set, packages recorded
+    /// with an unresolved "Err/" prefix (installed locally, source unknown)
+    /// are normally just listed and skipped. With this flag they're instead
+    /// installed through the normal procedure (official repos first, AUR
+    /// on a miss), same as a plain `emerge <pkg>`.
+    #[arg(long = "err-inst")]
+    err_inst: bool,
+
     /// One-time migration: seed world.set from every currently
     /// explicitly-installed package (pacman -Qeq), for systems that
     /// predate world.set tracking
@@ -348,11 +375,12 @@ fn print_help() {
     println!("          [ --noreplace                  ] [ --oneshot    ]");
     println!("          [ --pretend                    ] [ --skipfirst  ]");
     println!("          [ --verbose-conflicts          ] [ --with-bdeps ]");
+    println!("          [ --err-inst                                             ]");
     println!("Actions:  [ --depclean  | --deselect | --prune      | --regen       ]");
     println!("          [ --resume    | --search   | --select     | --searchdesc  ]");
     println!("          [ --sync      | --unmerge  | --update     | --regen-world ]");
     println!("          [ --version   | --info     | --regen-world-from-explicit  ]");
-    println!("          [ --list-sets                                            ]");
+    println!("          [ --list-sets | --regen-sets @<name>                      ]");
     println!();
     println!("   @world (no -u): install whatever's listed in /etc/emerge/world.set");
     println!("   and missing from this system — declarative provisioning, e.g. for a");
@@ -467,6 +495,7 @@ fn build_resume_args(cli: &Cli, target_pkgs: &[String], has_world: bool) -> Vec<
     if cli.noreplace    { args.push("--noreplace".to_string()); }
     if cli.verbose      { args.push("--verbose".to_string()); }
     if cli.refresh      { args.push("--refresh".to_string()); }
+    if cli.err_inst     { args.push("--err-inst".to_string()); }
     if has_world {
         args.push("@world".to_string());
     }
@@ -788,6 +817,19 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // --regen-sets @<name>: same idea as --regen-world, but for one custom
+    // set under /etc/emerge/sets.d/<name>.set. Accepts either "@name" or
+    // bare "name".
+    if let Some(set_arg) = &cli.regen_sets {
+        let name = set_arg.strip_prefix('@').unwrap_or(set_arg);
+        if !valid_set_name(name) {
+            eprintln!(">>> Error: invalid set name: @{}", name);
+            std::process::exit(1);
+        }
+        regen_set(name)?;
+        return Ok(());
+    }
+
     // --regen-world-from-explicit: seed world.set from every currently
     // explicitly-installed package (pacman -Qeq). Meant as a one-time
     // migration step on a system that predates world.set tracking — run
@@ -981,7 +1023,7 @@ fn run() -> anyhow::Result<()> {
         if !cli.pretend {
             save_resume_state(&build_resume_args(&cli, &[], true));
         }
-        let ok = provision_from_world_set(cli.pretend, cli.ask, cli.verbose)?;
+        let ok = provision_from_world_set(cli.pretend, cli.ask, cli.verbose, cli.err_inst)?;
         if !cli.pretend {
             if ok {
                 clear_resume_state();
@@ -1379,7 +1421,7 @@ fn run() -> anyhow::Result<()> {
     // now provision anything else world.set still lists as missing.
     if provision_after_install && !cli.pretend {
         println!();
-        if !provision_from_world_set(cli.pretend, cli.ask, cli.verbose)? {
+        if !provision_from_world_set(cli.pretend, cli.ask, cli.verbose, cli.err_inst)? {
             eprintln!(">>> Warning: not everything from world.set installed successfully.");
             std::process::exit(1);
         }
