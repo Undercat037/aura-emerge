@@ -421,13 +421,13 @@ pub(crate) fn ensure_pgp_keys(pkgbuild_path: &std::path::Path, autopgp: bool) {
 }
 
 
-/// Build and install packages from ABS via `asp checkout` + `makepkg -si`.
+/// Build and install packages from ABS via `pkgctl repo clone` + `makepkg -si`.
 pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, autopgp: bool) -> bool {
-    for bin in &[ASP_BIN, MAKEPKG_BIN] {
+    for bin in &[PKGCTL_BIN, MAKEPKG_BIN] {
         if !std::path::Path::new(bin).exists() {
             eprintln!(">>> Fatal: required binary not found: {}", bin);
-            if *bin == ASP_BIN {
-                eprintln!(">>> Hint: install asp with: emerge asp");
+            if *bin == PKGCTL_BIN {
+                eprintln!(">>> Hint: install devtools with: emerge devtools");
             }
             return false;
         }
@@ -499,24 +499,25 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
         }
         let _ = std::fs::create_dir_all(&build_base);
 
-        println!("{} Fetching {} from ABS via asp...", ">>>".green().bold(), info.name.green().bold());
-        let checkout_ok = Command::new(ASP_BIN)
-            .args(["checkout", &info.name])
+        println!("{} Fetching {} from ABS via pkgctl...", ">>>".green().bold(), info.name.green().bold());
+        let checkout_ok = Command::new(PKGCTL_BIN)
+            .args(["repo", "clone", "--protocol=https", &info.name])
             .current_dir(&build_base)
             .status()
             .map(|s| s.success())
             .unwrap_or(false);
 
         if !checkout_ok {
-            eprintln!("{} asp checkout failed for '{}'", ">>> Error:".red().bold(), info.name);
-            eprintln!("{} package may not exist in ABS. Try without --abs or use --aur.", ">>> Note:".yellow().bold());
+            eprintln!("{} pkgctl repo clone failed for '{}'", ">>> Error:".red().bold(), info.name);
+            eprintln!("{} package may not exist in ABS (it must be a pkgbase, not a split-package output name). Try without --abs or use --aur.", ">>> Note:".yellow().bold());
             all_ok = false;
             continue;
         }
 
-        // asp creates <pkg>/trunk/ — that's where PKGBUILD lives
-        let trunk_dir = pkg_dir.join("trunk");
-        let build_dir = if trunk_dir.exists() { trunk_dir } else { pkg_dir.clone() };
+        // pkgctl clones straight into <build_base>/<pkg>/ with PKGBUILD at
+        // the top level — unlike the old asp/svntogit layout, there's no
+        // trunk/ subdirectory to descend into.
+        let build_dir = pkg_dir.clone();
 
         // Open PKGBUILD in $EDITOR before building if --edit is set
         if edit {
@@ -1038,12 +1039,6 @@ pub(crate) fn preserved_rebuild(pretend: bool, ask: bool) {
         return;
     }
 
-    // Our own y/N above already confirmed the *decision* to reinstall —
-    // but --noconfirm also silently auto-declines any further prompt
-    // pacman itself needs to raise (e.g. file conflicts, package
-    // conflicts). Respect --ask like every other install path in this
-    // tool does, so those prompts actually reach the user instead of
-    // being auto-rejected.
     let mut args = vec!["-S"];
     if !ask { args.push("--noconfirm"); }
     run_cmd(AURA_BIN, &args, &missing);

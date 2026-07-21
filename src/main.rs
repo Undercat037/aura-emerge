@@ -33,7 +33,7 @@ pub(crate) const TEE_BIN:    &str = "/usr/bin/tee";
 pub(crate) const MV_BIN:     &str = "/usr/bin/mv";
 pub(crate) const RM_BIN:     &str = "/usr/bin/rm";
 pub(crate) const MAKEPKG_BIN: &str = "/usr/bin/makepkg";
-pub(crate) const ASP_BIN: &str = "/usr/bin/asp";
+pub(crate) const PKGCTL_BIN: &str = "/usr/bin/pkgctl";
 pub(crate) const GPG_BIN: &str = "/usr/bin/gpg";
 /// Keyserver used for automatic/suggested PGP key imports (--abs). Same
 /// SKS-successor pool most distro tooling defaults to.

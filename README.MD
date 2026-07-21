@@ -19,7 +19,7 @@ paru -S aura-emerge
 [Release binary](target/release/)
 
 **Requirements:** `aura` must be installed and in `/usr/bin/aura`.  
-**Optional:** `asp` for `--abs` support (`emerge asp`), `gpg` for automatic PGP key import (`--autopgp`).
+**Optional:** `devtools` for `--abs` support (`emerge devtools`, provides `pkgctl`), `gpg` for automatic PGP key import (`--autopgp`).
 
 ## Gentoo → Arch: make.conf equivalent
 
@@ -51,7 +51,7 @@ For `CFLAGS`/`CXXFLAGS` reference see [GCC optimization flags](https://gcc.gnu.o
 emerge neovim                      # install package (official repos, fallbacks to AUR)
 emerge neovim-git --aur            # install from AUR explicitly
 emerge neovim --only-repos         # install only from official repos, never touch the AUR
-emerge neovim --abs                # build from ABS (Arch Build System) source via asp
+emerge neovim --abs                # build from ABS (Arch Build System) source via pkgctl
 emerge neovim --abs --skippgp      # build from ABS, skip PGP signature check
 emerge neovim --abs --autopgp      # build from ABS, auto-import missing PGP keys, no prompt
 emerge neovim --abs --edit         # build from ABS, edit PKGBUILD before building ($EDITOR)
@@ -165,7 +165,7 @@ A hit doesn't block the install outright — it prints the offending file/line p
 | `-n` | Do not reinstall (noreplace) |
 | `--aur` | Force AUR |
 | `--only-repos` | Only official repos, never search/install from AUR |
-| `--abs` | Build from ABS source via asp |
+| `--abs` | Build from ABS source via pkgctl |
 | `--skippgp` | Skip PGP checks when building from ABS |
 | `--autopgp` | Auto-import missing PGP keys from a trusted keyserver when building from ABS, without prompting |
 | `--edit` | Edit PKGBUILD before building — opens `$EDITOR` for `--abs`, or passes `--hotedit` to `aura` for AUR |
