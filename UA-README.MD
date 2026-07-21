@@ -185,7 +185,7 @@ emerge @game-kit @dev-tools neovim
 | `-h` / `--help` | Показати довідку |
 | `-V` / `--version` | Показати версію |
 
-Встановлюється man-сторінка `emerge(1)` — `man emerge` для повного довідника.
+Встановлюється man-сторінка `emerge(1)` — `man emerge` для повного довідника. Вона генерується безпосередньо з визначення CLI через [`clap_mangen`](https://github.com/clap-rs/clap/tree/master/clap_mangen) під час пакування (`emerge --gen-manpage`, за тим самим принципом, що й `--gen-completions`), тож не може розійтися з `--help`.
 
 ## Демонстрація
 
