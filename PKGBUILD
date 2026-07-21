@@ -26,18 +26,19 @@ build() {
 }
 
 package() {
-  cd "aura-emerge-main"
+  cd "$pkgname"
+  local bin="target/release/aura-emerge"
+
   install -Dm755 target/release/aura-emerge "$pkgdir/usr/bin/emerge"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 README.MD "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -Dm644 UA-README.MD "$pkgdir/usr/share/doc/$pkgname/UA-README.md"
-  install -Dm644 aura-emerge.1 "$pkgdir/usr/share/man/man1/emerge.1"
+  install -Dm644 <("$bin" --gen-manpage) "$pkgdir/usr/share/man/man1/emerge.1"
 
   install -dm755 "$pkgdir/etc/emerge"
   install -dm755 "$pkgdir/etc/emerge/sets.d"
   install -Dm644 /dev/null "$pkgdir/etc/emerge/world.set"
 
-  local bin="target/release/aura-emerge"
   install -Dm644 <("$bin" --gen-completions bash) \
     "$pkgdir/usr/share/bash-completion/completions/emerge"
   install -Dm644 <("$bin" --gen-completions zsh) \

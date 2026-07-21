@@ -185,7 +185,7 @@ A hit doesn't block the install outright — it prints the offending file/line p
 | `-h` / `--help` | Show help |
 | `-V` / `--version` | Show version |
 
-A man page is installed as `emerge(1)` — `man emerge` for the full reference.
+A man page is installed as `emerge(1)` — `man emerge` for the full reference. It's generated straight from the CLI definition via [`clap_mangen`](https://github.com/clap-rs/clap/tree/master/clap_mangen) at package time (`emerge --gen-manpage`, same idea as `--gen-completions`), so it can't drift out of sync with `--help`.
 
 ## Demo
 

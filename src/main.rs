@@ -17,7 +17,7 @@ use clap_complete::Shell;
 use colored::Colorize;
 use std::collections::HashSet;
 use std::fs;
-use std::io::{self, BufRead};
+use std::io::{self, BufRead, Write};
 use std::process::{Command, Stdio};
 
 use world_set::*;
@@ -59,6 +59,57 @@ pub(crate) const UNAME_BIN: &str = "/usr/bin/uname";
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
+/// Longer DESCRIPTION section for the man page (clap_mangen) — the plain
+/// `///` doc comment on `Cli` below is used for the one-line NAME/about.
+const LONG_ABOUT: &str = "\
+aura-emerge is a Gentoo-style emerge wrapper for Arch Linux, built on top of Aura. \
+It tracks every explicitly requested package in /etc/emerge/world.set, independent \
+of whatever pacman's own dependency graph currently looks like.\n\n\
+Three operations that look similar are kept deliberately distinct: refreshing the \
+package databases (--sync), upgrading everything already installed (-u / -u @world), \
+and making sure this machine actually has everything world.set says it should \
+(bare @world).";
+
+/// EXTRA section appended after OPTIONS in the man page — worked examples and
+/// the @world / custom-sets explanation that doesn't fit as a single flag's help.
+const AFTER_HELP: &str = "\
+WORLD.SET AND @world
+    Every package installed through the normal install path is recorded in
+    world.set as repo/name (e.g. extra/firefox, aur/ayugram-desktop-bin,
+    abs/nano-custom). @world has two distinct meanings:
+
+    emerge @world (bare, no -u) -- provision. Installs whatever world.set
+    lists that isn't already on this system; nothing already installed is
+    touched. Point world.set at a synced dotfiles repo and run this on a
+    freshly installed machine to pull in the whole package set in one shot.
+
+    emerge -u @world (or plain emerge -u) -- upgrade. Upgrades everything
+    already installed (official repos + AUR). Does not read world.set.
+
+    emerge --sync -- just refreshes the databases, independent of the above.
+
+CUSTOM SETS
+    A file /etc/emerge/sets.d/<name>.set (one package atom per line, '#'
+    comments allowed) is invoked as @<name>, and can be combined with other
+    sets and plain package names in the same command. --list-sets prints
+    every set currently available.
+
+EXAMPLES
+    emerge neovim                  Install (official repos, falls back to AUR)
+    emerge neovim-git --aur        Install explicitly from the AUR
+    emerge @world                  Provision this machine from world.set
+    emerge -u @world                Upgrade the whole system
+    emerge @game-kit                Install a custom set
+    emerge --prune                  Remove anything not tracked in world.set
+
+FILES
+    /etc/emerge/world.set          Explicitly-installed packages
+    /etc/emerge/sets.d/*.set       Custom package sets
+    /etc/emerge/resume.state       Saved state for --resume
+
+AUTHOR
+    Undercat037 <https://github.com/Undercat037/aura-emerge>";
+
 /// Portage-like wrapper for Arch Linux using Aura
 #[derive(Parser, Debug)]
 #[command(
@@ -67,6 +118,8 @@ pub(crate) const UNAME_BIN: &str = "/usr/bin/uname";
     version = concat!(env!("CARGO_PKG_VERSION"), " (aura-emerge)"),
     disable_help_flag = true,
     disable_version_flag = true,
+    long_about = LONG_ABOUT,
+    after_long_help = AFTER_HELP,
 )]
 struct Cli {
     /// Show help information
@@ -261,6 +314,13 @@ struct Cli {
     /// for interactive use, hence hidden from --help.
     #[arg(long = "gen-completions", hide = true, value_name = "SHELL")]
     gen_completions: Option<Shell>,
+
+    /// Generate the man page (troff/ROFF) via clap_mangen and print it to
+    /// stdout. Used by packaging (PKGBUILD) to install `emerge(1)` — this
+    /// way the man page can never drift from --help, since both are
+    /// generated from the same Cli definition. Hidden from --help.
+    #[arg(long = "gen-manpage", hide = true)]
+    gen_manpage: bool,
 
     /// Display info about the system, mirroring `emerge --info`
     #[arg(long = "info")]
@@ -533,6 +593,18 @@ fn run() -> anyhow::Result<()> {
         let mut cmd = <Cli as clap::CommandFactory>::command();
         clap_complete::generate(shell, &mut cmd, "emerge", &mut io::stdout());
         print_set_completion_glue(shell);
+        return Ok(());
+    }
+
+    // Man page generation: same idea as --gen-completions, but for
+    // emerge(1) — rendered straight from the Cli definition via
+    // clap_mangen, so it can't drift out of sync with --help.
+    if cli.gen_manpage {
+        let cmd = <Cli as clap::CommandFactory>::command();
+        let man = clap_mangen::Man::new(cmd);
+        let mut buffer: Vec<u8> = Vec::new();
+        man.render(&mut buffer)?;
+        io::stdout().write_all(&buffer)?;
         return Ok(());
     }
 
