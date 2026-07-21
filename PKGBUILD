@@ -10,6 +10,7 @@ depends=('aura')
 optdepends=('asp: for --abs support' 'gnupg: for PGP verification')
 makedepends=('rust' 'cargo')
 conflicts=('portage' 'portage-git')
+provides=('portageq')
 install=aura-emerge.install
 backup=('etc/emerge/world.set')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/Undercat037/aura-emerge/archive/refs/heads/main.tar.gz")
