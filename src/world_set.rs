@@ -154,14 +154,27 @@ pub(crate) fn list_custom_sets() -> Vec<String> {
 /// official-repo entries go through `aura -S`, `aur/` entries through
 /// `aura -A` (with the usual PKGBUILD scan first). `abs/` entries were
 /// locally built from ABS and can't be reproduced unattended, so they're
-/// listed and skipped — same for entries with no resolvable prefix
-/// (`Err/` or bare names) — the person running this decides how to
-/// handle those themselves (`emerge <pkg> --abs`, or a plain `emerge
-/// <pkg>` once the source is known).
+/// always listed and skipped (needs `emerge <pkg> --abs` by hand).
+///
+/// Entries with no resolvable prefix come in two flavors, handled
+/// differently:
+/// - A bare entry with *no* prefix at all means nothing could be
+///   determined about it when it was written (not installed, not in any
+///   sync DB at the time) — there's nothing to lose by just trying the
+///   normal install path (official repos first, AUR on a miss), so this
+///   always happens.
+/// - An `Err/` entry means the package *is* installed, just from a
+///   source pacman/aura couldn't identify (e.g. built by hand outside
+///   aura-emerge). That's a bit more suspect, so by default these are
+///   only listed; pass `err_inst` (the CLI's `--err-inst`) to have them
+///   go through the same normal-resolution path instead.
+///
+/// Whatever gets installed this way has its world.set entry corrected to
+/// the real resolved prefix, since `Err/`/bare was never accurate.
 ///
 /// Returns Ok(true) if everything resolvable installed cleanly (or this
 /// was a --pretend run), Ok(false) if something failed.
-pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool) -> Result<bool> {
+pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, err_inst: bool) -> Result<bool> {
     println!("{} Provisioning system from world.set...", ">>>".green().bold());
 
     if !is_safe_path(WORLD_SET_FILE) {
@@ -205,7 +218,10 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool) 
     let mut official_missing: Vec<String> = Vec::new();
     let mut aur_missing: Vec<String> = Vec::new();
     let mut abs_missing: Vec<String> = Vec::new();
-    let mut unresolved_missing: Vec<String> = Vec::new();
+    // Installed from somewhere unidentifiable (Err/) — only listed unless --err-inst.
+    let mut err_missing: Vec<String> = Vec::new();
+    // No prefix at all (not installed, no repo found when written) — always retried.
+    let mut bare_missing: Vec<String> = Vec::new();
 
     for entry in &entries {
         let mut parts = entry.splitn(2, '/');
@@ -223,12 +239,35 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool) 
         match prefix {
             Some("aur") => aur_missing.push(bare),
             Some("abs") => abs_missing.push(bare),
-            Some("Err") | None => unresolved_missing.push(bare),
+            Some("Err") => err_missing.push(bare),
+            None => bare_missing.push(bare),
             Some(_official_repo) => official_missing.push(bare),
         }
     }
 
-    let total = official_missing.len() + aur_missing.len() + abs_missing.len() + unresolved_missing.len();
+    // Bare entries always get a normal-resolution attempt; Err/ entries
+    // only join in when --err-inst is passed.
+    let mut to_resolve: Vec<String> = bare_missing.clone();
+    if err_inst {
+        to_resolve.extend(err_missing.iter().cloned());
+    }
+
+    // Resolve up front (official repos vs. AUR) so the plan below reflects
+    // where each package will actually come from, instead of a generic
+    // "unknown" bucket.
+    let mut resolved_official: Vec<String> = Vec::new();
+    let mut resolved_aur: Vec<String> = Vec::new();
+    if !to_resolve.is_empty() {
+        let (found, missing) = probe_official_split(&to_resolve);
+        resolved_official = found.into_iter().map(|p| p.name).collect();
+        resolved_aur = missing;
+    }
+
+    // Err/ entries left un-attempted this run (only relevant without --err-inst).
+    let unresolved_listed: Vec<String> = if err_inst { Vec::new() } else { err_missing.clone() };
+
+    let total = official_missing.len() + aur_missing.len() + abs_missing.len()
+        + unresolved_listed.len() + resolved_official.len() + resolved_aur.len();
     if total == 0 {
         println!("{} Nothing to do — every world.set package is already installed.", ">>>".green().bold());
         return Ok(true);
@@ -242,11 +281,17 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool) 
     for p in official_missing.iter().chain(aur_missing.iter()) {
         println!("[{} {:<4}] {}", "ebuild".green(), "N".green().bold(), p.green().bold());
     }
+    for p in &resolved_official {
+        println!("[{} {:<4}] {} (source was unresolved — found in official repos)", "ebuild".green(), "N".green().bold(), p.green().bold());
+    }
+    for p in &resolved_aur {
+        println!("[{} {:<4}] {} (source was unresolved — will try the AUR)", "ebuild".green(), "N".cyan().bold(), p.cyan().bold());
+    }
     for p in &abs_missing {
         println!("[{} {:<4}] {} (built from ABS — needs `emerge {} --abs`)", "ebuild".green(), "N".yellow().bold(), p.yellow().bold(), p);
     }
-    for p in &unresolved_missing {
-        println!("[{} {:<4}] {} (source unknown — install manually)", "ebuild".green(), "N".red().bold(), p.red().bold());
+    for p in &unresolved_listed {
+        println!("[{} {:<4}] {} (installed from an unknown source — retry with --err-inst, or install manually)", "ebuild".green(), "N".red().bold(), p.red().bold());
     }
     println!();
     println!("{}: {} package(s)", "Total".bold(), total);
@@ -285,6 +330,48 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool) 
         }
     }
 
+    if !resolved_official.is_empty() {
+        println!(
+            "{} Installing {} previously-unresolved package(s) from official repos...",
+            ">>>".green().bold(), resolved_official.len()
+        );
+        let mut args = vec!["-S", "--needed"];
+        if verbose { args.push("--verbose"); }
+        if !ask { args.push("--noconfirm"); }
+        if run_cmd(AURA_BIN, &args, &resolved_official) {
+            // Now that the real repo is known, fix the world.set entry
+            // (it was previously Err/<name> or a bare <name>).
+            if let Err(e) = add_to_world_set(&resolved_official, None) {
+                eprintln!(">>> Warning: package(s) installed but world.set was not updated: {:#}", e);
+            }
+        } else {
+            overall_ok = false;
+            eprintln!(">>> Warning: some previously-unresolved package(s) failed to install from official repos.");
+        }
+    }
+
+    if !resolved_aur.is_empty() {
+        println!(
+            "{} Installing {} previously-unresolved package(s) via the AUR...",
+            ">>>".green().bold(), resolved_aur.len()
+        );
+        scan_aur_pkgbuilds_or_abort(&resolved_aur);
+        let mut args = vec!["-A", "--needed"];
+        if !ask { args.push("--noconfirm"); }
+        if run_cmd(AURA_BIN, &args, &resolved_aur) {
+            mark_asexplicit(&resolved_aur);
+            if let Err(e) = add_to_world_set(&resolved_aur, Some("aur")) {
+                eprintln!(">>> Warning: package(s) installed but world.set was not updated: {:#}", e);
+            }
+        } else {
+            overall_ok = false;
+            eprintln!(
+                ">>> Warning: some previously-unresolved package(s) were not found anywhere \
+                (neither official repos nor AUR) or failed to install."
+            );
+        }
+    }
+
     if !abs_missing.is_empty() {
         eprintln!(
             "{} {} package(s) were built from ABS and can't be reproduced unattended — \
@@ -293,12 +380,13 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool) 
         );
         for p in &abs_missing { eprintln!("     {}", p); }
     }
-    if !unresolved_missing.is_empty() {
+    if !unresolved_listed.is_empty() {
         eprintln!(
-            "{} {} package(s) have no recorded source — install manually: `emerge <pkg>`",
-            " *".yellow().bold(), unresolved_missing.len()
+            "{} {} package(s) are installed from an unknown source — retry with \
+            `--err-inst` to attempt the normal official/AUR install path, or install manually.",
+            " *".yellow().bold(), unresolved_listed.len()
         );
-        for p in &unresolved_missing { eprintln!("     {}", p); }
+        for p in &unresolved_listed { eprintln!("     {}", p); }
     }
 
     Ok(overall_ok)
@@ -348,6 +436,89 @@ pub(crate) fn regen_world_set() -> Result<()> {
     updated.sort();
     write_world_set(&updated)?;
     println!("{} world.set updated ({} entries changed).", ">>>".green().bold(), changed);
+    Ok(())
+}
+
+/// Re-resolve repository prefixes for every entry in a custom set file
+/// (`/etc/emerge/sets.d/<name>.set`), the same idea as `regen_world_set()`
+/// but for a set instead of world.set.
+///
+/// Note: like world.set, the rewritten file is one atom per line — any
+/// `#` comments or blank-line formatting in the original set file are not
+/// preserved across a regen.
+pub(crate) fn regen_set(name: &str) -> Result<()> {
+    println!("{} Regenerating prefixes for @{}...", ">>>".green().bold(), name);
+
+    let path = format!("{}/{}.set", SETS_DIR, name);
+    if !is_safe_path(&path) {
+        bail!("{} is a symlink — refusing to modify", path);
+    }
+
+    let entries = read_custom_set(name)?;
+    if entries.is_empty() {
+        println!(">>> @{} is empty or does not exist ({}) — nothing to regenerate.", name, path);
+        return Ok(());
+    }
+
+    let mut updated: Vec<String> = Vec::new();
+    let mut changed = 0usize;
+
+    for entry in &entries {
+        let bare = entry.split('/').last().unwrap_or(entry);
+        let new_entry = pkg_world_entry(bare, None);
+        if &new_entry != entry {
+            println!("  {} -> {}", entry, new_entry);
+            changed += 1;
+        }
+        updated.push(new_entry);
+    }
+
+    if changed == 0 {
+        println!("{} @{} is already up to date.", ">>>".green().bold(), name);
+        return Ok(());
+    }
+
+    updated.sort();
+    updated.dedup();
+
+    let tmp = format!("{}.tmp", path);
+    if !is_safe_path(&tmp) {
+        bail!("{} is a symlink — refusing to write", tmp);
+    }
+    let _ = Command::new(SUDO_BIN).args([RM_BIN, "-f", &tmp]).status();
+
+    let write_ok = {
+        let child_proc = Command::new(SUDO_BIN)
+            .arg(TEE_BIN)
+            .arg(&tmp)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn();
+        match child_proc {
+            Ok(mut child) => {
+                if let Some(mut stdin) = child.stdin.take() {
+                    for pkg in &updated {
+                        let _ = writeln!(stdin, "{}", pkg);
+                    }
+                }
+                child.wait().map(|s| s.success()).unwrap_or(false)
+            }
+            Err(_) => false,
+        }
+    };
+    if !write_ok {
+        bail!("failed to write {} via sudo tee", tmp);
+    }
+
+    let status = Command::new(SUDO_BIN)
+        .args([MV_BIN, &tmp, &path])
+        .status()
+        .context("sudo mv could not be spawned")?;
+    if !status.success() {
+        bail!("sudo mv failed when finalizing {}", path);
+    }
+
+    println!("{} @{} updated ({} entries changed).", ">>>".green().bold(), name, changed);
     Ok(())
 }
 
