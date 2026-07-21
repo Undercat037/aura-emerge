@@ -9,7 +9,7 @@ license=('GPL-3.0')
 depends=('aura')
 optdepends=('asp: for --abs support' 'gnupg: for PGP verification')
 makedepends=('rust' 'cargo')
-conflicts=('portage')
+conflicts=('portage' 'portage-git')
 install=aura-emerge.install
 backup=('etc/emerge/world.set')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/Undercat037/aura-emerge/archive/refs/heads/main.tar.gz")
@@ -25,14 +25,14 @@ build() {
   cargo build --release
 }
 
-
 package() {
   cd "aura-emerge-main"
   local bin="target/release/aura-emerge"
 
   _gen_or_die() {
-    local out="$1"; shift
-    if ! "$bin" "$@" > "$out" || [ ! -s "$out" ]; then
+    local out="$1"
+    shift
+    if ! "$bin" "$@" >"$out" || [ ! -s "$out" ]; then
       error "\"$bin $*\" produced no output — refusing to package an empty file"
       return 1
     fi
