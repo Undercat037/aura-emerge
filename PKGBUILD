@@ -26,7 +26,7 @@ build() {
 }
 
 package() {
-  cd "$pkgname"
+  cd "aura-emerge-main"
   local bin="target/release/aura-emerge"
 
   install -Dm755 target/release/aura-emerge "$pkgdir/usr/bin/emerge"
