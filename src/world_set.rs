@@ -446,10 +446,14 @@ pub(crate) fn regen_world_set() -> Result<()> {
 /// (`/etc/emerge/sets.d/<name>.set`), the same idea as `regen_world_set()`
 /// but for a set instead of world.set.
 ///
-/// Note: like world.set, the rewritten file is one atom per line — any
-/// `#` comments or blank-line formatting in the original set file are not
-/// preserved across a regen.
-pub(crate) fn regen_set(name: &str) -> Result<()> {
+/// By default (`sort == false`) this preserves the file exactly as
+/// written: line order, `#` comments, and blank-line grouping all survive
+/// — each package line just has its repo prefix re-resolved in place.
+/// Pass `sort == true` (the `--regen-sort` flag) to instead collapse the
+/// file down to a flat, deduplicated, alphabetically sorted list of
+/// entries — which, unavoidably, drops the comments and blank-line
+/// grouping, since there's nothing sensible to sort them relative to.
+pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
     println!("{} Regenerating prefixes for @{}...", ">>>".green().bold(), name);
 
     let path = format!("{}/{}.set", SETS_DIR, name);
@@ -457,38 +461,73 @@ pub(crate) fn regen_set(name: &str) -> Result<()> {
         bail!("{} is a symlink — refusing to modify", path);
     }
 
-    let entries = read_custom_set(name)?;
-    if entries.is_empty() {
+    let file = fs::File::open(&path)
+        .with_context(|| format!("no such set: @{} (expected {})", name, path))?;
+
+    let raw_lines: Vec<String> = io::BufReader::new(file)
+        .lines()
+        .map_while(io::Result::ok)
+        .collect();
+
+    if raw_lines.iter().all(|l| l.trim().is_empty()) {
         println!(">>> @{} is empty or does not exist ({}) — nothing to regenerate.", name, path);
         return Ok(());
     }
 
-    let mut updated: Vec<String> = Vec::new();
     let mut changed = 0usize;
+    // Line-for-line rewrite used when `sort == false`: comments and blank
+    // lines are copied through untouched, package lines get their prefix
+    // patched in place.
+    let mut rewritten: Vec<String> = Vec::new();
+    // Package entries only (post re-resolution, in original order), used
+    // as the input to `--regen-sort`.
+    let mut pkg_entries: Vec<String> = Vec::new();
 
-    for entry in &entries {
-        let bare = entry.split('/').last().unwrap_or(entry);
+    for raw in &raw_lines {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            rewritten.push(raw.clone());
+            continue;
+        }
+        if !validate_pkg(trimmed) {
+            eprintln!(">>> Warning: invalid entry in @{} (left as-is): {}", name, trimmed);
+            rewritten.push(raw.clone());
+            continue;
+        }
+
+        let bare = trimmed.split('/').last().unwrap_or(trimmed);
         // Preserve an existing abs/aur prefix as a fallback if
         // re-resolution can't find a live repo — otherwise a regen
         // collapses a known-origin entry down to a generic, henceforth
         // indistinguishable "Err/<name>". See regen_world_set() for the
         // same fix on world.set proper.
-        let old_prefix = entry.split('/').next().filter(|p| *p == "abs" || *p == "aur");
+        let old_prefix = trimmed.split('/').next().filter(|p| *p == "abs" || *p == "aur");
         let new_entry = pkg_world_entry(bare, old_prefix);
-        if &new_entry != entry {
-            println!("  {} -> {}", entry, new_entry);
+        if new_entry != trimmed {
+            println!("  {} -> {}", trimmed, new_entry);
             changed += 1;
         }
-        updated.push(new_entry);
+        pkg_entries.push(new_entry.clone());
+        rewritten.push(new_entry);
     }
 
-    if changed == 0 {
-        println!("{} @{} is already up to date.", ">>>".green().bold(), name);
-        return Ok(());
-    }
-
-    updated.sort();
-    updated.dedup();
+    let out_lines: Vec<String> = if sort {
+        let mut sorted = pkg_entries.clone();
+        sorted.sort();
+        sorted.dedup();
+        let order_changed = sorted != pkg_entries;
+        if changed == 0 && !order_changed {
+            println!("{} @{} is already up to date (sorted).", ">>>".green().bold(), name);
+            return Ok(());
+        }
+        sorted
+    } else {
+        if changed == 0 {
+            println!("{} @{} is already up to date.", ">>>".green().bold(), name);
+            return Ok(());
+        }
+        rewritten
+    };
 
     let tmp = format!("{}.tmp", path);
     if !is_safe_path(&tmp) {
@@ -506,8 +545,8 @@ pub(crate) fn regen_set(name: &str) -> Result<()> {
         match child_proc {
             Ok(mut child) => {
                 if let Some(mut stdin) = child.stdin.take() {
-                    for pkg in &updated {
-                        let _ = writeln!(stdin, "{}", pkg);
+                    for line in &out_lines {
+                        let _ = writeln!(stdin, "{}", line);
                     }
                 }
                 child.wait().map(|s| s.success()).unwrap_or(false)
@@ -527,7 +566,11 @@ pub(crate) fn regen_set(name: &str) -> Result<()> {
         bail!("sudo mv failed when finalizing {}", path);
     }
 
-    println!("{} @{} updated ({} entries changed).", ">>>".green().bold(), name, changed);
+    if sort {
+        println!("{} @{} updated ({} entries changed, re-sorted).", ">>>".green().bold(), name, changed);
+    } else {
+        println!("{} @{} updated ({} entries changed).", ">>>".green().bold(), name, changed);
+    }
     Ok(())
 }
 
