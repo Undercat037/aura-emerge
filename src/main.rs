@@ -52,6 +52,8 @@ pub(crate) const ABS_BUILD_BASE:  &str = "/tmp/aura-emerge-abs";
 pub(crate) const WORLD_SET_TMP:  &str = "/etc/emerge/world.set.tmp";
 pub(crate) const RESUME_FILE: &str = "/etc/emerge/resume.state";
 pub(crate) const RESUME_TMP:  &str = "/etc/emerge/resume.state.tmp";
+pub(crate) const LASTACTION_FILE: &str = "/etc/emerge/lastaction.state";
+pub(crate) const LASTACTION_TMP:  &str = "/etc/emerge/lastaction.state.tmp";
 pub(crate) const PACMAN_CONF: &str = "/etc/pacman.conf";
 pub(crate) const MAKEPKG_CONF_SYSTEM: &str = "/etc/makepkg.conf";
 pub(crate) const BASH_BIN: &str = "/usr/bin/bash";
@@ -234,6 +236,18 @@ struct Cli {
     /// Skip the first package in the resume list
     #[arg(long = "skipfirst")]
     skipfirst: bool,
+
+    /// Undo the last successful install, unmerge, or full-system upgrade
+    /// (-u) performed by emerge. An install is reversed by removing only
+    /// the packages that were brand new (upgrades/reinstalls in the same
+    /// batch are left alone); an unmerge is reversed by reinstalling the
+    /// removed packages; a full-system upgrade is reversed via aura's own
+    /// snapshot system (`aura -Br`), since individual package versions
+    /// aren't tracked here. Only one step of history is kept —
+    /// best-effort, and install/unmerge undo can't restore an exact prior
+    /// version once it's no longer current in the repo/AUR.
+    #[arg(long = "undo")]
+    undo: bool,
 
     /// Remove packages not in world.set (prune)
     #[arg(long = "prune")]
@@ -967,6 +981,126 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // --undo: reverse the last successful install or unmerge. Deliberately
+    // narrow — see the flag's help text for exactly what is and isn't
+    // covered.
+    if cli.undo {
+        match load_last_action() {
+            Some((kind, _atoms)) if kind == "update" => {
+                // Full-system upgrades aren't reversible package-by-package
+                // (no record of prior versions) — hand off to aura's own
+                // snapshot system instead, which does track that. `-Br` is
+                // interactive (prompts a snapshot picker), so this just
+                // shells straight out to it.
+                println!(">>> Undoing last full-system upgrade via aura's snapshot restore...");
+                if cli.pretend {
+                    println!(">>> (pretend) would run: aura -Br");
+                    return Ok(());
+                }
+                if run_cmd(AURA_BIN, &["-Br"], &[]) {
+                    clear_last_action();
+                } else {
+                    eprintln!(">>> Warning: aura -Br did not complete — saved state left in place.");
+                    std::process::exit(1);
+                }
+            }
+            Some((kind, atoms)) if kind == "install" => {
+                println!(">>> Undoing last install — removing: {}", atoms.join(", "));
+                let bare: Vec<String> = atoms.iter()
+                    .map(|a| a.split('/').last().unwrap_or(a).to_string())
+                    .collect();
+                if cli.pretend {
+                    return Ok(());
+                }
+                let mut aura_args = vec!["-R"];
+                if !cli.ask { aura_args.push("--noconfirm"); }
+                let success = run_cmd(AURA_BIN, &aura_args, &bare);
+                if success {
+                    if let Err(e) = remove_from_world_set(&bare) {
+                        eprintln!(">>> Warning: package(s) removed but world.set was not updated: {:#}", e);
+                    }
+                    clear_last_action();
+                } else {
+                    eprintln!(">>> Warning: undo did not fully succeed — saved state left in place.");
+                    std::process::exit(1);
+                }
+            }
+            Some((kind, atoms)) if kind == "unmerge" => {
+                println!(">>> Undoing last unmerge — reinstalling: {}", atoms.join(", "));
+                if cli.pretend {
+                    return Ok(());
+                }
+                let mut all_ok = true;
+
+                let official: Vec<String> = atoms.iter()
+                    .filter(|a| !a.starts_with("aur/") && !a.starts_with("abs/") && !a.starts_with("Err/"))
+                    .cloned().collect();
+                let aur: Vec<String> = atoms.iter()
+                    .filter(|a| a.starts_with("aur/"))
+                    .cloned().collect();
+                let unresolved: Vec<String> = atoms.iter()
+                    .filter(|a| a.starts_with("abs/") || a.starts_with("Err/"))
+                    .cloned().collect();
+
+                if !official.is_empty() {
+                    let names: Vec<String> = official.iter()
+                        .map(|a| a.split('/').last().unwrap_or(a).to_string())
+                        .collect();
+                    let mut args = vec!["-S"];
+                    if !cli.ask { args.push("--noconfirm"); }
+                    if run_cmd(AURA_BIN, &args, &names) {
+                        mark_asexplicit(&names);
+                        if let Err(e) = add_to_world_set(&names, None) {
+                            eprintln!(">>> Warning: package(s) reinstalled but world.set was not updated: {:#}", e);
+                        }
+                    } else {
+                        all_ok = false;
+                    }
+                }
+                if !aur.is_empty() {
+                    let names: Vec<String> = aur.iter()
+                        .map(|a| a.split('/').last().unwrap_or(a).to_string())
+                        .collect();
+                    scan_aur_pkgbuilds_or_abort(&names);
+                    let mut args = vec!["-A"];
+                    if !cli.ask { args.push("--noconfirm"); }
+                    if run_cmd(AURA_BIN, &args, &names) {
+                        mark_asexplicit(&names);
+                        if let Err(e) = add_to_world_set(&names, Some("aur")) {
+                            eprintln!(">>> Warning: package(s) reinstalled but world.set was not updated: {:#}", e);
+                        }
+                    } else {
+                        all_ok = false;
+                    }
+                }
+                if !unresolved.is_empty() {
+                    eprintln!(
+                        ">>> Warning: the following package(s) had no known source (abs/Err) and \
+                        were not auto-reinstalled — reinstall them manually if needed:"
+                    );
+                    for u in &unresolved {
+                        eprintln!("    {}", u);
+                    }
+                }
+
+                if all_ok {
+                    clear_last_action();
+                } else {
+                    eprintln!(">>> Warning: undo did not fully succeed — saved state left in place.");
+                    std::process::exit(1);
+                }
+            }
+            Some((kind, _)) => {
+                eprintln!(">>> Error: unrecognized saved undo state ({})", kind);
+                std::process::exit(1);
+            }
+            None => {
+                println!(">>> Nothing to undo — no saved action found.");
+            }
+        }
+        return Ok(());
+    }
+
     // --select: explicitly add packages to world.set without installing
     if cli.select {
         if target_pkgs.is_empty() {
@@ -1042,6 +1176,20 @@ fn run() -> anyhow::Result<()> {
     if cli.update {
         if !cli.pretend {
             save_resume_state(&build_resume_args(&cli, &target_pkgs, has_world));
+        }
+
+        // Snapshot the current package set before touching anything, via
+        // aura's own -B state-save. aura -Au does this automatically for
+        // itself, but -Syu (plain pacman-side upgrade) isn't guaranteed
+        // to — take it explicitly so `emerge --undo` always has something
+        // to restore to. Best-effort: a failed snapshot is a warning, not
+        // a reason to abort an upgrade the user asked for.
+        if !cli.pretend {
+            if !run_cmd(AURA_BIN, &["-B"], &[]) {
+                eprintln!(">>> Warning: failed to save an aura snapshot before upgrading — `--undo` may have nothing to restore.");
+            } else {
+                save_last_action(LastAction::Update, &["system".to_string()]);
+            }
         }
 
         println!(">>> Calculating dependencies... done!");
@@ -1163,6 +1311,10 @@ fn run() -> anyhow::Result<()> {
         println!();
         println!("{} These are the packages that would be unmerged:", ">>>".green().bold());
         println!();
+        // Full repo/name atoms, captured while we still have the repo info
+        // (it's gone once the package is actually removed) — used to
+        // record this unmerge for `emerge --undo`.
+        let mut unmerge_atoms: Vec<String> = Vec::new();
         for p in &target_pkgs {
             let bare = p.split('/').last().unwrap_or(p);
             let ver = {
@@ -1181,6 +1333,7 @@ fn run() -> anyhow::Result<()> {
             };
             let repo = get_pkg_repo(bare).unwrap_or_default();
             let atom = if repo.is_empty() { bare.to_string() } else { format!("{}/{}", repo, bare) };
+            unmerge_atoms.push(atom.clone());
             println!(" {}", atom);
             println!("    selected: {}", ver);
             println!("   protected: none");
@@ -1208,6 +1361,7 @@ fn run() -> anyhow::Result<()> {
             if let Err(e) = remove_from_world_set(&target_pkgs) {
                 eprintln!(">>> Warning: package(s) unmerged but world.set was not updated: {:#}", e);
             }
+            save_last_action(LastAction::Unmerge, &unmerge_atoms);
         }
         return Ok(());
     }
@@ -1231,19 +1385,34 @@ fn run() -> anyhow::Result<()> {
 
         let mut success: bool;
         let mut installed_infos: Vec<PkgInfo> = Vec::new();
+        // Names that turned out not to exist anywhere (official repos nor
+        // AUR). Collected across whichever branch below runs, then
+        // reported once at the end — a batch install must still land
+        // everything that *does* resolve instead of failing outright
+        // because one name in the middle was a typo or got pulled.
+        let mut not_found: Vec<String> = Vec::new();
 
         if cli.abs {
             success = abs_install(&target_pkgs, cli.pretend, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.autopgp);
         } else if cli.aur {
-            let pkg_infos = resolve_aur(&target_pkgs);
+            let (pkg_infos, missing_aur) = resolve_aur_split(&target_pkgs);
+            not_found = missing_aur;
+            if pkg_infos.is_empty() {
+                eprintln!(">>> Error: none of the requested package(s) were found in the AUR:");
+                for m in &not_found {
+                    eprintln!("    {}", m);
+                }
+                std::process::exit(1);
+            }
             print_emerge_plan(&pkg_infos);
             if cli.pretend { return Ok(()); }
             print_emerge_emerging(&pkg_infos);
-            scan_aur_pkgbuilds_or_abort(&target_pkgs);
+            let found_names: Vec<String> = pkg_infos.iter().map(|p| p.name.clone()).collect();
+            scan_aur_pkgbuilds_or_abort(&found_names);
             let mut aur_args = vec!["-A"];
             aur_args.extend(&base_args);
             if cli.edit { aur_args.push("--hotedit"); }
-            success = run_cmd(AURA_BIN, &aur_args, &target_pkgs);
+            success = run_cmd(AURA_BIN, &aur_args, &found_names);
             if success { installed_infos = pkg_infos; }
         } else {
             // Probe official repos in a way that's safe against partial matches:
@@ -1309,15 +1478,24 @@ fn run() -> anyhow::Result<()> {
                     ">>> Not found in official repos. Searching AUR for '{}'...",
                     missing.join(", ")
                 );
-                let pkg_infos = resolve_aur(&missing);
+                let (pkg_infos, missing_aur) = resolve_aur_split(&missing);
+                not_found = missing_aur;
+                if pkg_infos.is_empty() {
+                    eprintln!(">>> Error: none of the requested package(s) were found in official repos or the AUR:");
+                    for m in &not_found {
+                        eprintln!("    {}", m);
+                    }
+                    std::process::exit(1);
+                }
                 print_emerge_plan(&pkg_infos);
                 if cli.pretend { return Ok(()); }
                 print_emerge_emerging(&pkg_infos);
-                scan_aur_pkgbuilds_or_abort(&missing);
+                let found_names: Vec<String> = pkg_infos.iter().map(|p| p.name.clone()).collect();
+                scan_aur_pkgbuilds_or_abort(&found_names);
                 let mut aur_args = vec!["-A"];
                 aur_args.extend(&base_args);
                 if cli.edit { aur_args.push("--hotedit"); }
-                success = run_cmd(AURA_BIN, &aur_args, &missing);
+                success = run_cmd(AURA_BIN, &aur_args, &found_names);
                 if success { installed_infos = pkg_infos; }
             } else {
                 // Mixed case: some packages are official, some need the AUR.
@@ -1325,9 +1503,17 @@ fn run() -> anyhow::Result<()> {
                     ">>> Not found in official repos: '{}'. Searching AUR...",
                     missing.join(", ")
                 );
-                let aur_infos = resolve_aur(&missing);
+                let (aur_infos, missing_aur) = resolve_aur_split(&missing);
+                not_found = missing_aur;
                 let mut all_infos = official_infos.clone();
                 all_infos.extend(aur_infos.clone());
+                if all_infos.is_empty() {
+                    eprintln!(">>> Error: none of the requested package(s) were found in official repos or the AUR:");
+                    for m in &not_found {
+                        eprintln!("    {}", m);
+                    }
+                    std::process::exit(1);
+                }
                 print_emerge_plan(&all_infos);
                 if cli.pretend { return Ok(()); }
                 print_emerge_emerging(&all_infos);
@@ -1342,17 +1528,29 @@ fn run() -> anyhow::Result<()> {
                     installed_infos.extend(official_infos);
                 }
 
-                scan_aur_pkgbuilds_or_abort(&missing);
-                let mut aur_args = vec!["-A"];
-                aur_args.extend(&base_args);
-                if cli.edit { aur_args.push("--hotedit"); }
-                let aur_success = run_cmd(AURA_BIN, &aur_args, &missing);
-                if aur_success {
-                    installed_infos.extend(aur_infos);
-                } else {
-                    success = false;
+                if !aur_infos.is_empty() {
+                    let aur_found_names: Vec<String> = aur_infos.iter().map(|p| p.name.clone()).collect();
+                    scan_aur_pkgbuilds_or_abort(&aur_found_names);
+                    let mut aur_args = vec!["-A"];
+                    aur_args.extend(&base_args);
+                    if cli.edit { aur_args.push("--hotedit"); }
+                    let aur_success = run_cmd(AURA_BIN, &aur_args, &aur_found_names);
+                    if aur_success {
+                        installed_infos.extend(aur_infos);
+                    } else {
+                        success = false;
+                    }
                 }
             }
+        }
+
+        if !not_found.is_empty() {
+            eprintln!();
+            eprintln!(">>> Warning: the following package(s) were not found anywhere (official repos or AUR) and were skipped:");
+            for m in &not_found {
+                eprintln!("    {}", m);
+            }
+            success = false;
         }
 
         if !cli.pretend {
@@ -1413,6 +1611,18 @@ fn run() -> anyhow::Result<()> {
                 std::process::exit(1);
             } else {
                 clear_resume_state();
+                // Record only genuinely-new installs for --undo — never an
+                // upgrade/reinstall (status U/D/R), since "undo" removing a
+                // package that already existed before this run would be
+                // destructive rather than a rollback. --abs installs aren't
+                // tracked here yet (no per-package status to check).
+                let new_names: Vec<String> = installed_infos.iter()
+                    .filter(|p| p.status == "N")
+                    .map(|p| p.name.clone())
+                    .collect();
+                if !new_names.is_empty() && !cli.oneshot {
+                    save_last_action(LastAction::Install, &new_names);
+                }
             }
         }
     }

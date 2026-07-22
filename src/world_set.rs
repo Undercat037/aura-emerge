@@ -420,7 +420,10 @@ pub(crate) fn regen_world_set() -> Result<()> {
 
     for entry in &entries {
         let bare = entry.split('/').last().unwrap_or(entry);
-        let new_entry = pkg_world_entry(bare, None);
+        // See regen_set() below for why we pass the existing abs/aur
+        // prefix through as a fallback instead of None.
+        let old_prefix = entry.split('/').next().filter(|p| *p == "abs" || *p == "aur");
+        let new_entry = pkg_world_entry(bare, old_prefix);
         if &new_entry != entry {
             println!("  {} -> {}", entry, new_entry);
             changed += 1;
@@ -465,7 +468,13 @@ pub(crate) fn regen_set(name: &str) -> Result<()> {
 
     for entry in &entries {
         let bare = entry.split('/').last().unwrap_or(entry);
-        let new_entry = pkg_world_entry(bare, None);
+        // Preserve an existing abs/aur prefix as a fallback if
+        // re-resolution can't find a live repo — otherwise a regen
+        // collapses a known-origin entry down to a generic, henceforth
+        // indistinguishable "Err/<name>". See regen_world_set() for the
+        // same fix on world.set proper.
+        let old_prefix = entry.split('/').next().filter(|p| *p == "abs" || *p == "aur");
+        let new_entry = pkg_world_entry(bare, old_prefix);
         if &new_entry != entry {
             println!("  {} -> {}", entry, new_entry);
             changed += 1;
@@ -664,6 +673,95 @@ pub(crate) fn load_resume_state() -> Option<Vec<String>> {
         .filter(|l| !l.is_empty())
         .collect();
     if lines.is_empty() { None } else { Some(lines) }
+}
+
+// ── --undo (last action) state ─────────────────────────────────────────────
+//
+// Remembers the most recent successful install or unmerge so `emerge --undo`
+// can reverse it. Deliberately narrow in scope: install-undo only ever
+// covers packages recorded as brand new (never an upgrade/reinstall), and
+// unmerge-undo just reinstalls the removed atoms via the normal path — it
+// can't restore an exact prior version if that's no longer current in the
+// repo/AUR. Only one step of history is kept, same as --resume.
+
+pub(crate) enum LastAction {
+    Install,
+    Unmerge,
+    Update,
+}
+
+impl LastAction {
+    fn tag(&self) -> &'static str {
+        match self {
+            LastAction::Install => "install",
+            LastAction::Unmerge => "unmerge",
+            LastAction::Update => "update",
+        }
+    }
+}
+
+/// Save the kind of action plus the affected atoms as the undoable state.
+/// Best-effort — a failure here shouldn't abort the (already completed)
+/// real operation, it just means `--undo` won't have anything to work with.
+pub(crate) fn save_last_action(kind: LastAction, atoms: &[String]) {
+    if atoms.is_empty() { return; }
+    if !is_safe_path(LASTACTION_TMP) || !is_safe_path(LASTACTION_FILE) {
+        eprintln!(">>> Warning: refusing to save undo state — symlink detected");
+        return;
+    }
+
+    let _ = Command::new(SUDO_BIN).args([RM_BIN, "-f", LASTACTION_TMP]).status();
+
+    let child_proc = Command::new(SUDO_BIN)
+        .arg(TEE_BIN)
+        .arg(LASTACTION_TMP)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn();
+
+    let write_ok = match child_proc {
+        Ok(mut child) => {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = writeln!(stdin, "{}", kind.tag());
+                for a in atoms {
+                    let _ = writeln!(stdin, "{}", a);
+                }
+            }
+            child.wait().map(|s| s.success()).unwrap_or(false)
+        }
+        Err(_) => false,
+    };
+
+    if !write_ok {
+        eprintln!(">>> Warning: failed to save undo state");
+        return;
+    }
+
+    let _ = Command::new(SUDO_BIN)
+        .args([MV_BIN, LASTACTION_TMP, LASTACTION_FILE])
+        .status();
+}
+
+/// Drop the saved undo state — call once `--undo` has acted on it, so the
+/// same action can't be replayed a second time.
+pub(crate) fn clear_last_action() {
+    let _ = Command::new(SUDO_BIN).args([RM_BIN, "-f", LASTACTION_FILE]).status();
+}
+
+/// Load the saved undo state, if any: (kind tag, affected atoms).
+pub(crate) fn load_last_action() -> Option<(String, Vec<String>)> {
+    if !is_safe_path(LASTACTION_FILE) {
+        return None;
+    }
+    let file = fs::File::open(LASTACTION_FILE).ok()?;
+    let mut lines = io::BufReader::new(file)
+        .lines()
+        .map_while(io::Result::ok)
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty());
+    let kind = lines.next()?;
+    let atoms: Vec<String> = lines.collect();
+    if atoms.is_empty() { None } else { Some((kind, atoms)) }
 }
 
 pub(crate) fn write_world_set(packages: &[String]) -> Result<()> {

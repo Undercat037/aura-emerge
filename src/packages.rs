@@ -196,9 +196,25 @@ pub(crate) fn probe_official_split(pkgs: &[String]) -> (Vec<PkgInfo>, Vec<String
     (found, missing)
 }
 
-/// Fetch AUR package info via -Ai output parsing.
-pub(crate) fn resolve_aur(pkgs: &[String]) -> Vec<PkgInfo> {
+/// Fetch AUR package info via -Ai output parsing, split into resolved
+/// hits and names AUR genuinely doesn't have.
+///
+/// `aura -Ai <pkg>` exits successfully with empty stdout for a name AUR
+/// doesn't know about — it does not fail the command. The previous
+/// resolve_aur() didn't check for that, so a single bogus/typo'd/pulled-
+/// from-AUR name silently produced a fake PkgInfo{name: pkg, version: "?"}
+/// entry that *looked* resolved. That fake entry then got handed to
+/// `aura -A` alongside everything else, and one nonexistent target fails
+/// aura's entire transaction — so a batch install of 10 packages where
+/// just one no longer existed installed zero of them.
+///
+/// This returns a PkgInfo only for names -Ai actually described (a "Name"
+/// line was present in its output); everything else comes back in the
+/// second Vec so the caller can drop it from the install args and report
+/// it instead of silently failing the whole batch.
+pub(crate) fn resolve_aur_split(pkgs: &[String]) -> (Vec<PkgInfo>, Vec<String>) {
     let mut result = Vec::new();
+    let mut missing = Vec::new();
     for pkg in pkgs {
         let output = Command::new(AURA_BIN)
             .args(["-Ai", pkg])
@@ -206,26 +222,34 @@ pub(crate) fn resolve_aur(pkgs: &[String]) -> Vec<PkgInfo> {
             .stderr(Stdio::null())
             .output();
 
-        if let Ok(out) = output {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            let mut name = pkg.clone();
-            let mut version = String::from("?");
-            for line in stdout.lines() {
-                if line.starts_with("Name") {
-                    if let Some(v) = line.split(':').nth(1) {
-                        name = v.trim().to_string();
-                    }
-                } else if line.starts_with("Version") {
-                    if let Some(v) = line.split(':').nth(1) {
-                        version = v.trim().to_string();
-                    }
+        let stdout = match &output {
+            Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
+            Err(_) => String::new(),
+        };
+
+        let mut name: Option<String> = None;
+        let mut version = String::from("?");
+        for line in stdout.lines() {
+            if line.starts_with("Name") {
+                if let Some(v) = line.split(':').nth(1) {
+                    name = Some(v.trim().to_string());
+                }
+            } else if line.starts_with("Version") {
+                if let Some(v) = line.split(':').nth(1) {
+                    version = v.trim().to_string();
                 }
             }
-            let status = pkg_status(&name, &version);
-            result.push(PkgInfo { name, version, repo: "aur".to_string(), status });
+        }
+
+        match name {
+            Some(name) => {
+                let status = pkg_status(&name, &version);
+                result.push(PkgInfo { name, version, repo: "aur".to_string(), status });
+            }
+            None => missing.push(pkg.clone()),
         }
     }
-    result
+    (result, missing)
 }
 
 
@@ -1039,7 +1063,9 @@ pub(crate) fn preserved_rebuild(pretend: bool, ask: bool) {
         return;
     }
 
-    let mut args = vec!["-S"];
+    let mut args = vec!["-S", "--asdeps"];
     if !ask { args.push("--noconfirm"); }
-    run_cmd(AURA_BIN, &args, &missing);
+    if run_cmd(AURA_BIN, &args, &missing) {
+        mark_asdeps(&missing);
+    }
 }
