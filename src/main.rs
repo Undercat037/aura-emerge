@@ -97,6 +97,12 @@ CUSTOM SETS
     every set currently available. --regen-sets @<name> re-resolves and
     rewrites the repository prefix on every entry in that set file (same
     idea as --regen-world, but for a custom set instead of world.set).
+    By default this only patches prefixes in place -- line order, '#'
+    comments, and blank-line grouping are all preserved. Add --regen-sort
+    to also alphabetically re-sort the file (this drops comments and
+    blank-line grouping, since a sorted flat list can't keep them
+    meaningfully attached to anything). --regen-sort is a modifier, not a
+    standalone action -- it only does something alongside --regen-sets.
 
 UNRESOLVED (Err/) PACKAGES AND --err-inst
     An entry can end up in world.set (or get written back by --regen-world
@@ -265,6 +271,15 @@ struct Cli {
     /// e.g. `--regen-sets @game-kit` or `--regen-sets game-kit`
     #[arg(long = "regen-sets", value_name = "SET")]
     regen_sets: Option<String>,
+
+    /// Modifier for --regen-sets: also alphabetically re-sort the set file
+    /// (dropping '#' comments and blank-line grouping in the process). By
+    /// itself --regen-sets only patches repository prefixes in place and
+    /// leaves line order, comments, and blank lines untouched. This flag
+    /// is an addition to --regen-sets, not an alternative — it has no
+    /// effect on its own.
+    #[arg(long = "regen-sort", requires = "regen_sets")]
+    regen_sort: bool,
 
     /// When provisioning from world.set / a custom set, packages recorded
     /// with an unresolved "Err/" prefix (installed locally, source unknown)
@@ -840,7 +855,7 @@ fn run() -> anyhow::Result<()> {
             eprintln!(">>> Error: invalid set name: @{}", name);
             std::process::exit(1);
         }
-        regen_set(name)?;
+        regen_set(name, cli.regen_sort)?;
         return Ok(());
     }
 
