@@ -59,6 +59,7 @@ emerge neovim-git --aur --edit     # install from AUR, edit PKGBUILD before buil
 emerge -c                          # remove orphans (depclean)
 emerge -C neovim                   # remove specific package (unmerge)
 emerge @world                      # provision: install what's missing from world.set (new machine, etc.)
+emerge @world --err-inst           # provision, also retrying Err/ (unresolved-source) entries via the normal install path
 emerge -u @world                   # full system update (official + AUR) — does not read world.set
 emerge -u @world --refresh         # full system update, force-refresh databases first (like pacman -Syy)
 emerge --sync                      # sync package databases
@@ -80,8 +81,11 @@ emerge --deselect neovim           # remove from world.set without unmerging
 emerge --prune                     # remove packages not tracked in world.set
 emerge --regen                     # regenerate package metadata cache
 emerge --regen-world               # re-resolve repository prefixes in world.set
+emerge --regen-sets @game-kit      # re-resolve repository prefixes for one custom set
+emerge --regen-world-from-explicit # one-time migration: seed world.set from every explicitly-installed package
 emerge --resume                    # resume last interrupted transaction
 emerge --resume --skipfirst        # resume, skipping the first package
+emerge --undo                      # undo the last install, unmerge, or -u full-system upgrade
 emerge @preserved-rebuild          # check installed packages for missing deps, offer to reinstall
 emerge @preserved-rebuild -p       # pretend: just list missing dependencies
 emerge @preserved-rebuild -a       # ask before each pacman prompt during reinstall
@@ -89,7 +93,7 @@ emerge @preserved-rebuild -a       # ask before each pacman prompt during reinst
 
 ## @preserved-rebuild
 
-There is no preserved-libs tracking in Arch, so `@preserved-rebuild` collects all dependencies declared by each installed package (`pacman -Qi`), passes the deduplicated list to `pacman -T` (which correctly resolves provides/virtual packages), and offers to reinstall any that are found to be unsatisfied via `aura -S`.
+There is no preserved-libs tracking in Arch, so `@preserved-rebuild` collects all dependencies declared by each installed package (`pacman -Qi`), passes the deduplicated list to `pacman -T` (which correctly resolves provides/virtual packages), and offers to reinstall any that are found to be unsatisfied via `aura -S --asdeps`. The `--asdeps` matters: these are dependencies, not something you asked for by name, so reinstalling them keeps pacman's explicit/dependency bookkeeping honest — otherwise they'd silently look "explicit" and could get vacuumed into world.set by a later `--regen-world-from-explicit`.
 
 ## world.set
 
@@ -107,6 +111,10 @@ extra/firefox
 ```
 
 Prefixes: official repo name, `aur/` for AUR packages, `abs/` for locally built from ABS, `Err/` if the source cannot be determined.
+
+> **Note on `Err/`:** it's used both for a genuinely locally-built package with no traceable origin and for an `abs/`/`aur/` package that later became unresolvable (e.g. removed from AUR) — once collapsed to `Err/`, that distinction is gone for good. `--regen-world`/`--regen-sets` now preserve a known `abs/`/`aur/` prefix across a regen instead of downgrading it to `Err/` on the first re-resolution miss, so this only bites entries that were already `Err/` before that fix.
+
+Installing several packages at once no longer aborts the whole batch if one of them can't be found anywhere (typo, removed from AUR, etc.) — the rest still install, and the missing name(s) are listed at the end with a non-zero exit code.
 
 ### `@world` has two distinct meanings
 
@@ -136,6 +144,18 @@ emerge @game-kit @dev-tools neovim
 
 `emerge --list-sets` prints every set currently available (`@world`, `@preserved-rebuild`, plus one line per `sets.d/*.set` file) — this is also what shell completion calls behind the scenes, so `emerge @<TAB>` offers real set names.
 
+## --undo
+
+Reverses the last successful install, unmerge, or `-u` full-system upgrade. Deliberately narrow in scope — only one step of history is kept, and it's best-effort:
+
+- **After an install:** removes only the packages that were brand new in that run (`aura -R` + drops them from world.set). Upgrades/reinstalls in the same batch are never touched, so `--undo` can't turn into an accidental system rollback.
+- **After an unmerge:** reinstalls the removed packages using the repo/AUR/ABS prefix that was recorded for each atom (`Err/`/`abs/` entries can't be auto-reinstalled — they're listed instead). Can't restore the exact prior version if it's no longer current.
+- **After `-u`:** full-system upgrades aren't reversible package-by-package (no record of prior versions here), so this hands off to Aura's own snapshot system instead — `emerge -u` takes an `aura -B` snapshot first, and `--undo` runs `aura -Br`, which brings up Aura's own interactive snapshot picker.
+
+```bash
+emerge --undo
+```
+
 ## Security: PKGBUILD scanning
 
 Before every AUR install (`--aur`, plain fallback-to-AUR installs, and `@world` provisioning), aura-emerge fetches the raw `PKGBUILD` (and any referenced `.install` hook) from the AUR cgit mirror and greps it for common red-flag patterns before handing off to `aura`:
@@ -144,7 +164,8 @@ Before every AUR install (`--aur`, plain fallback-to-AUR installs, and `@world` 
 - base64-decoded execution, hex-escaped payloads
 - `chmod 777`, raw IPv4 literals in scripts
 - calls out to a foreign package manager (`npm install`, `pip install`, …) from inside the build
-- package names matching known IOCs from disclosed AUR supply-chain campaigns (e.g. the "Atomic Arch" incident)
+- fetches from a paste-dump site (Pastebin, Hastebin, dpaste, ix.io, …) — the delivery mechanism of the 2018 acroread/balz/minergate AUR takeover
+- package/file names matching known IOCs from disclosed AUR supply-chain campaigns (e.g. "Atomic Arch", June 2026; the 2018 `compromised.txt` marker)
 
 A hit doesn't block the install outright — it prints the offending file/line plus a direct link to review the source on cgit, and asks `Continue anyway? [y/N]` before proceeding. This is a cheap tripwire, not a substitute for actually reading the PKGBUILD yourself.
 
@@ -177,8 +198,12 @@ A hit doesn't block the install outright — it prints the offending file/line p
 | `--prune` | Remove packages not in world.set |
 | `--regen` | Regenerate metadata cache |
 | `--regen-world` | Re-resolve repo prefixes in world.set |
+| `--regen-sets <SET>` | Re-resolve repo prefixes for one custom set |
+| `--regen-world-from-explicit` | One-time migration: seed world.set from every explicitly-installed package |
+| `--err-inst` | With `@world` provisioning, also retry `Err/` (unresolved-source) entries via the normal install path |
 | `--resume` | Resume interrupted transaction |
 | `--skipfirst` | Skip first pkg when resuming |
+| `--undo` | Undo the last install, unmerge, or `-u` full-system upgrade |
 | `--list-sets` | List available `@world` / `@preserved-rebuild` / custom sets |
 | `--with-bdeps` | Pull in build-time deps (compat) |
 | `--verbose-conflicts` | Verbose slot conflicts (compat) |

@@ -992,9 +992,9 @@ fn run() -> anyhow::Result<()> {
                 // snapshot system instead, which does track that. `-Br` is
                 // interactive (prompts a snapshot picker), so this just
                 // shells straight out to it.
-                println!(">>> Undoing last full-system upgrade via aura's snapshot restore...");
+                println!("{} Undoing last full-system upgrade via aura's snapshot restore...", ">>>".green().bold());
                 if cli.pretend {
-                    println!(">>> (pretend) would run: aura -Br");
+                    println!("{} (pretend) would run: aura -Br", ">>>".green().bold());
                     return Ok(());
                 }
                 if run_cmd(AURA_BIN, &["-Br"], &[]) {
@@ -1005,7 +1005,7 @@ fn run() -> anyhow::Result<()> {
                 }
             }
             Some((kind, atoms)) if kind == "install" => {
-                println!(">>> Undoing last install — removing: {}", atoms.join(", "));
+                println!("{} Undoing last install — removing: {}", ">>>".green().bold(), atoms.join(", "));
                 let bare: Vec<String> = atoms.iter()
                     .map(|a| a.split('/').last().unwrap_or(a).to_string())
                     .collect();
@@ -1026,7 +1026,7 @@ fn run() -> anyhow::Result<()> {
                 }
             }
             Some((kind, atoms)) if kind == "unmerge" => {
-                println!(">>> Undoing last unmerge — reinstalling: {}", atoms.join(", "));
+                println!("{} Undoing last unmerge — reinstalling: {}", ">>>".green().bold(), atoms.join(", "));
                 if cli.pretend {
                     return Ok(());
                 }
@@ -1095,7 +1095,7 @@ fn run() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
             None => {
-                println!(">>> Nothing to undo — no saved action found.");
+                println!("{} Nothing to undo — no saved action found.", ">>>".green().bold());
             }
         }
         return Ok(());
@@ -1575,12 +1575,7 @@ fn run() -> anyhow::Result<()> {
                     }
                 } else if !installed_infos.is_empty() {
                     println!("{} Auto-cleaning packages...", ">>>".green().bold());
-                    // Record only what actually got installed, with the
-                    // correct repo prefix per package. This matters for a
-                    // mixed official+AUR install where one half can succeed
-                    // while the other fails — we must not lose track of the
-                    // half that worked, and must not force an "aur" prefix
-                    // onto an official package or vice versa.
+                    // Split the installed packages into official vs AUR, so they can be
                     let official_names: Vec<String> = installed_infos.iter()
                         .filter(|p| p.repo != "aur")
                         .map(|p| p.name.clone())
@@ -1611,11 +1606,7 @@ fn run() -> anyhow::Result<()> {
                 std::process::exit(1);
             } else {
                 clear_resume_state();
-                // Record only genuinely-new installs for --undo — never an
-                // upgrade/reinstall (status U/D/R), since "undo" removing a
-                // package that already existed before this run would be
-                // destructive rather than a rollback. --abs installs aren't
-                // tracked here yet (no per-package status to check).
+                // Record only what actually got installed, not what was skipped
                 let new_names: Vec<String> = installed_infos.iter()
                     .filter(|p| p.status == "N")
                     .map(|p| p.name.clone())
