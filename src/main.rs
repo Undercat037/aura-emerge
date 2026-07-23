@@ -1233,17 +1233,27 @@ fn run() -> anyhow::Result<()> {
     }
 
     // 4. Depclean (orphans) — pacman's own leaf-orphan detection
-    //    (`pacman -Qtdq`), with one guard: anything the user has
+    //    (`pacman -Qttdq`), with one guard: anything the user has
     //    explicitly asked for via world.set is protected even if pacman's
     //    dependency graph currently also sees it as a dependency of
     //    something else (e.g. another package happens to also depend on
     //    it). world.set is the source of truth for "wanted"; depclean
     //    should never silently rip out something that's in it.
+    //
+    //    Single -t ("unrequired") is conservative: it excludes anything
+    //    that's merely an *optional* dependency of another installed
+    //    package (e.g. exo would be skipped here just because xdg-utils
+    //    optionally uses it, even with zero hard reverse-dependencies).
+    //    Doubling it (-tt / here as part of -Qttdq) makes pacman ignore
+    //    optional-for relationships too — the world.set filter right
+    //    below is what actually keeps this safe, the same way Gentoo's
+    //    own --depclean doesn't spare a package just because *something*
+    //    could optionally use it, only because it's in world.
     if cli.depclean {
         println!(">>> Calculating dependencies... done!");
         println!(">>> Checking for orphaned packages...");
 
-        match Command::new(PACMAN_BIN).arg("-Qtdq").output() {
+        match Command::new(PACMAN_BIN).arg("-Qttdq").output() {
             Ok(out) => {
                 let orphans_str = String::from_utf8_lossy(&out.stdout);
                 let mut orphans: Vec<String> = orphans_str
@@ -1629,6 +1639,29 @@ fn run() -> anyhow::Result<()> {
                         if let Err(e) = add_to_world_set(&aur_names, Some("aur")) {
                             eprintln!(">>> Warning: package(s) installed but world.set was not updated: {:#}", e);
                         }
+                    }
+
+                    // The other side of the same coin: anything in
+                    // installed_infos that *isn't* in target_bare was
+                    // pulled in purely as a dependency and was excluded
+                    // from world.set above. `--depclean`/`-c` (see the
+                    // `pacman -Qttdq` block below) only proposes a package
+                    // for removal if pacman's own install-reason says
+                    // "dependency" — a package aura leaves (or that
+                    // already was) marked "explicit" is invisible to it
+                    // regardless of world.set. Force the reason here too,
+                    // so a package that's excluded from world.set is also
+                    // depclean-eligible once nothing else needs it —
+                    // otherwise the two bookkeeping systems can disagree
+                    // silently, the way `-c` finding "no orphaned
+                    // packages" for freshly-pulled deps that were never
+                    // requested by name would suggest.
+                    let dep_only_names: Vec<String> = installed_infos.iter()
+                        .filter(|p| !target_bare.contains(&p.name))
+                        .map(|p| p.name.clone())
+                        .collect();
+                    if !dep_only_names.is_empty() {
+                        mark_asdeps(&dep_only_names);
                     }
                 }
             }
