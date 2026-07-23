@@ -1590,12 +1590,29 @@ fn run() -> anyhow::Result<()> {
                     }
                 } else if !installed_infos.is_empty() {
                     println!("{} Auto-cleaning packages...", ">>>".green().bold());
+                    // `probe_official`/`probe_official_split` read the full
+                    // `aura -Sp --print-format` transaction, which includes
+                    // every dependency pacman needs to pull in alongside
+                    // the named target(s) — not just what was actually
+                    // requested. `installed_infos` inherits that, so it's
+                    // fine for display (print_emerge_completed above wants
+                    // to show everything that got installed), but wrong
+                    // for world.set: only what the user actually asked
+                    // for (`target_pkgs`, i.e. explicit packages and @set
+                    // members) belongs there, same as Portage's world file
+                    // never gaining an entry for a pulled-in dependency.
+                    let target_bare: HashSet<String> = target_pkgs.iter()
+                        .map(|p| p.split('/').last().unwrap_or(p).to_string())
+                        .collect();
+                    let explicit_infos: Vec<&PkgInfo> = installed_infos.iter()
+                        .filter(|p| target_bare.contains(&p.name))
+                        .collect();
                     // Split the installed packages into official vs AUR, so they can be
-                    let official_names: Vec<String> = installed_infos.iter()
+                    let official_names: Vec<String> = explicit_infos.iter()
                         .filter(|p| p.repo != "aur")
                         .map(|p| p.name.clone())
                         .collect();
-                    let aur_names: Vec<String> = installed_infos.iter()
+                    let aur_names: Vec<String> = explicit_infos.iter()
                         .filter(|p| p.repo == "aur")
                         .map(|p| p.name.clone())
                         .collect();
