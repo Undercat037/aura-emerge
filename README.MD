@@ -67,6 +67,9 @@ emerge @game-kit                   # install a custom set from /etc/emerge/sets.
 emerge @game-kit neovim            # sets and plain packages can be mixed
 emerge --list-sets                 # list @world, @preserved-rebuild, and every custom set
 emerge --info                      # show system info (like Gentoo's emerge --info)
+emerge --news                      # list Arch Linux news, newest first, flags unread ones
+emerge --news 3                    # read news item 3 in full, marks it read
+emerge --news all                  # dismiss all news notifications
 emerge -s neovim                   # search in official repos + AUR
 emerge -s neovim --only-repos      # search official repos only, skip AUR
 emerge --searchdesc neovim         # search by package description
@@ -156,6 +159,16 @@ Reverses the last successful install, unmerge, or `-u` full-system upgrade. Deli
 emerge --undo
 ```
 
+## News
+
+`emerge --news` fetches the official [Arch Linux news feed](https://archlinux.org/feeds/news/) and lists the most recent items, newest first, flagging unread ones with `[N]` — the same idea as Gentoo's `eselect news`, since Arch has no `Sync` step where breaking-change news would otherwise surface. Read/unread state is kept per-user in `~/.cache/aura-emerge/news.state`, so it never needs root.
+
+```bash
+emerge --news        # list recent items, flag unread ones
+emerge --news 3      # show item 3 in full, mark it read
+emerge --news all    # dismiss every currently listed item
+```
+
 ## Security: PKGBUILD scanning
 
 Before every AUR install (`--aur`, plain fallback-to-AUR installs, and `@world` provisioning), aura-emerge fetches the raw `PKGBUILD` (and any referenced `.install` hook) from the AUR cgit mirror and greps it for common red-flag patterns before handing off to `aura`:
@@ -193,6 +206,8 @@ A hit doesn't block the install outright — it prints the offending file/line p
 | `--sync` | Sync databases |
 | `--refresh` | Force-refresh all databases even if up to date (`pacman -Syy`), used with `--sync` or `-u` |
 | `--info` | Show system info, mirroring Gentoo's `emerge --info` |
+| `--news [N\|all]` | List Arch Linux news (bare), read item N in full, or `all` to dismiss everything |
+| `--check-news [N\|all]` | Full alias for `--news` |
 | `--select` | Add to world.set (no install) |
 | `--deselect` | Remove from world.set (no unmerge) |
 | `--prune` | Remove packages not in world.set |

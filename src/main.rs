@@ -11,6 +11,7 @@ aura-emerge: A gentoo-like wrapper for the aura AUR helper.
 mod world_set;
 mod packages;
 mod security;
+mod news;
 
 use clap::Parser;
 use clap_complete::Shell;
@@ -116,6 +117,13 @@ UNRESOLVED (Err/) PACKAGES AND --err-inst
     unknown -- so by default it's only listed, not touched. Pass --err-inst
     to have those installed the normal way too.
 
+NEWS
+    emerge --news fetches https://archlinux.org/feeds/news/ and lists the
+    most recent items, marking unread ones. emerge --news <N> shows item N
+    in full and marks it read; emerge --news all dismisses everything
+    currently listed. Read/unread state lives in
+    ~/.cache/aura-emerge/news.state (per-user, no root required).
+
 EXAMPLES
     emerge neovim                  Install (official repos, falls back to AUR)
     emerge neovim-git --aur        Install explicitly from the AUR
@@ -123,6 +131,9 @@ EXAMPLES
     emerge -u @world                Upgrade the whole system
     emerge @game-kit                Install a custom set
     emerge --prune                  Remove anything not tracked in world.set
+    emerge --news                   List Arch Linux news, newest first
+    emerge --news 3                 Read news item 3 in full
+    emerge --news all               Dismiss all news notifications
 
 FILES
     /etc/emerge/world.set          Explicitly-installed packages
@@ -321,7 +332,6 @@ struct Cli {
 
     // Actions
     #[arg(long = "metadata")]               metadata: bool,
-    #[arg(long = "check-news")]             check_news: bool,
     #[arg(long = "clean")]                  clean: bool,
     #[arg(long = "config")]                 config: bool,
 
@@ -382,6 +392,24 @@ struct Cli {
     #[arg(long = "info")]
     info: bool,
 
+    /// Show Arch Linux news (https://archlinux.org/feeds/news/), Gentoo
+    /// `eselect news`-style. Bare `--news` lists the most recent items,
+    /// flagging unread ones; `--news <N>` shows the full text of item N
+    /// and marks it read; `--news all` marks every listed item as read
+    /// without displaying anything. Read/unread state is kept per-user in
+    /// ~/.cache/aura-emerge/news.state, so this never needs root.
+    #[arg(long = "news", value_name = "N|all", num_args = 0..=1, default_missing_value = "")]
+    news: Option<String>,
+
+    /// Full alias for `--news` — same `[N|all]` argument, same list, same
+    /// read/unread tracking. Kept for Gentoo command-line muscle memory
+    /// (`emerge --check-news` isn't a real Gentoo action either — the
+    /// actual news notification there fires automatically after
+    /// `--sync` — but the flag name is common enough to be worth wiring
+    /// up properly rather than leaving as a silent no-op).
+    #[arg(long = "check-news", value_name = "N|all", num_args = 0..=1, default_missing_value = "")]
+    check_news: Option<String>,
+
     /// Packages to install, '@world', '@preserved-rebuild', or a custom
     /// set '@<name>' (read from /etc/emerge/sets.d/<name>.set)
     packages: Vec<String>,
@@ -409,7 +437,7 @@ fn print_help() {
     println!("          [ --resume    | --search   | --select     | --searchdesc  ]");
     println!("          [ --sync      | --unmerge  | --update     | --regen-world ]");
     println!("          [ --version   | --info     | --regen-world-from-explicit  ]");
-    println!("          [ --list-sets | --regen-sets @<name>                      ]");
+    println!("          [ --list-sets | --regen-sets @<name>  | --news [N|all]    ]");
     println!();
     println!("   @world (no -u): install whatever's listed in /etc/emerge/world.set");
     println!("   and missing from this system — declarative provisioning, e.g. for a");
@@ -678,6 +706,14 @@ fn run() -> anyhow::Result<()> {
 
     if cli.info {
         print_system_info();
+        return Ok(());
+    }
+
+    // --news / --check-news (full alias, same [N|all] argument): no
+    // aura/pacman/sudo needed (read state lives under ~/.cache, not
+    // /etc/emerge), so this runs before check_binaries().
+    if let Some(arg) = cli.news.as_deref().or(cli.check_news.as_deref()) {
+        news::run_news(arg);
         return Ok(());
     }
 
