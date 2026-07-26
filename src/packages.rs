@@ -291,6 +291,41 @@ pub(crate) fn print_emerge_emerging(pkgs: &[PkgInfo]) {
     println!();
 }
 
+/// Re-query the version pacman actually has on disk for each package,
+/// in place.
+///
+/// `installed_infos` is built from `resolve_aur_split`/`probe_official`
+/// *before* the real install runs — for AUR targets specifically, that's
+/// before `aura -A` does its git pull, so if upstream pushes a new
+/// PKGBUILD version between resolution and build (exactly what happens
+/// on a fast-moving -git-style package, or just unlucky timing), the
+/// version aura-emerge planned against is already stale by the time the
+/// build finishes. pacman/aura install whatever the freshly-pulled
+/// PKGBUILD says regardless, so the display should catch up to that,
+/// not the other way around. Called right after a successful install,
+/// before `print_emerge_completed` — best-effort: a `pacman -Q` miss
+/// just leaves the planned version in place rather than erroring out.
+pub(crate) fn refresh_installed_versions(pkgs: &mut [PkgInfo]) {
+    for p in pkgs.iter_mut() {
+        let out = Command::new(PACMAN_BIN)
+            .args(["-Q", &p.name])
+            .env("LC_ALL", "C")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output();
+        if let Ok(o) = out {
+            if o.status.success() {
+                let s = String::from_utf8_lossy(&o.stdout).into_owned();
+                if let Some(ver) = s.split_whitespace().nth(1) {
+                    if !ver.is_empty() {
+                        p.version = ver.to_string();
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn print_emerge_completed(pkgs: &[PkgInfo]) {
     let total = pkgs.len();
     let pfx = ">>>".green().bold();
