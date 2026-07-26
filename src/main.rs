@@ -1225,6 +1225,17 @@ fn run() -> anyhow::Result<()> {
     // already installed (official repos + AUR), it does not consult
     // world.set at all. For -Syy use `--sync --refresh`.
     if cli.update {
+        if let Some(n) = news::unread_count_quiet() {
+            if n > 0 {
+                println!(
+                    "{} {} unread Arch news item(s) — run `emerge --news` before continuing.",
+                    ">>>".yellow().bold(),
+                    n
+                );
+                println!();
+            }
+        }
+
         if !cli.pretend {
             save_resume_state(&build_resume_args(&cli, &target_pkgs, has_world));
         }
@@ -1246,14 +1257,30 @@ fn run() -> anyhow::Result<()> {
         println!(">>> Calculating dependencies... done!");
         println!();
         println!(">>> Upgrading system (official repos)...");
-        let mut s_args = vec!["-Syu"];
+        // `-Sy` (refresh) writes to the local sync db and needs root
+        // regardless of `--print` — that's what tripped this up, not
+        // aura being stricter than pacman about it. `-Su --print`
+        // (upgrade-only, no refresh) reads the already-synced db instead
+        // and needs no privilege escalation at all, matching how
+        // `--pretend` behaves everywhere else in this tool (never asks
+        // for sudo). Real runs still refresh via `-Syu` as before; if the
+        // synced db is stale, run `--sync` first for an accurate preview.
+        let mut s_args: Vec<&str> = if cli.pretend {
+            vec!["-Su", "--print"]
+        } else {
+            vec!["-Syu"]
+        };
         if cli.verbose {
             s_args.push("--verbose");
         }
         let ok1 = run_cmd(AURA_BIN, &s_args, &[]);
 
         println!(">>> Upgrading AUR packages...");
-        let ok2 = run_cmd(AURA_BIN, &["-Au"], &[]);
+        let mut au_args = vec!["-Au"];
+        if cli.pretend {
+            au_args.push("--dryrun");
+        }
+        let ok2 = run_cmd(AURA_BIN, &au_args, &[]);
 
         println!();
         println!("{} Auto-cleaning packages...", ">>>".green().bold());
@@ -1616,6 +1643,10 @@ fn run() -> anyhow::Result<()> {
 
         if !cli.pretend {
             if !installed_infos.is_empty() {
+                // installed_infos was resolved before the real install ran
+                // (before aura -A's git pull, for AUR targets) — catch up
+                // to whatever actually landed on disk before displaying it.
+                refresh_installed_versions(&mut installed_infos);
                 print_emerge_completed(&installed_infos);
             }
 

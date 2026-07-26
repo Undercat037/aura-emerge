@@ -174,6 +174,27 @@ fn save_read_guids(guids: &std::collections::HashSet<String>) {
     }
 }
 
+/// Best-effort unread-item count, for a heads-up before `-u` runs — the
+/// actual point of a Gentoo-style news system: catching a breaking-change
+/// notice (kernel scheme change, driver package rename, manual-intervention
+/// migration, ...) *before* the user blindly upgrades past it, not just
+/// having it sit there for whenever they happen to remember `--news`.
+///
+/// Deliberately quiet on any failure (network hiccup, feed format hiccup,
+/// no $HOME, ...) — returns `None` rather than erroring, since a missed
+/// warning here should never be the thing that blocks an upgrade the user
+/// asked for. Read-state is only ever consulted, never written, so this is
+/// side-effect free and safe to call on every `-u` regardless of pretend.
+pub(crate) fn unread_count_quiet() -> Option<usize> {
+    let xml = fetch_feed()?;
+    let mut items = parse_news(&xml);
+    if items.len() > LIST_LIMIT {
+        items.truncate(LIST_LIMIT);
+    }
+    let read = load_read_guids();
+    Some(items.iter().filter(|it| !read.contains(&it.guid)).count())
+}
+
 // ── Command entry point ─────────────────────────────────────────────────────
 
 /// `arg` is the raw value of `--news`: "" for bare `--news`, "all" to
