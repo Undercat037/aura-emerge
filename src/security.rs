@@ -5,6 +5,15 @@
 //! seen in malicious/compromised PKGBUILDs. Not a substitute for reading it
 //! yourself — just a cheap tripwire against obvious tricks. On any hit,
 //! install is blocked until the user types an explicit "y".
+//!
+//! Covers two disclosed 2026 AUR supply-chain campaigns specifically (in
+//! addition to the generic curl|sh/base64/chmod-777/raw-IP/paste-site
+//! heuristics): "Atomic Arch" (June 11-12, adopted 400+ orphaned packages,
+//! npm/bun-delivered infostealer) and the openconnect-sso-anchored wave
+//! (late July-early August, at least 89 named packages, a `validator`
+//! binary run via `sudo` mid-build, reused Tor-backed second-stage
+//! delivery) — see `sudo_escalation_line`, `onion_address_line`, and
+//! `KNOWN_MALICIOUS_SHA256` below.
 
 use colored::Colorize;
 use std::io::{self, Write};
@@ -317,7 +326,43 @@ pub(crate) fn line_of_compromised_marker(source: &str) -> Option<usize> {
 /// Background: the "Atomic Arch" campaign (disclosed June 11-12, 2026)
 /// adopted 400+ orphaned AUR packages and edited PKGBUILD/`.install`
 /// hooks to pull in an infostealer via npm/bun during the build.
+///
+/// A second, distinct wave hit the AUR in late July/early August 2026,
+/// anchored by a compromised `openconnect-sso` package (report: 30 Jul
+/// 2026) and at least 89 other publicly-corroborated package names —
+/// Arch disabled AUR package adoption and then all pushes while handling
+/// it. That wave's reported mechanism (a binary named `validator` run via
+/// `sudo` mid-build) is covered by `sudo_escalation_line` above rather
+/// than by name here, since the payload binary name isn't itself a
+/// package name to match against.
 const KNOWN_MALICIOUS_PACKAGE_NAMES: &[&str] = &["atomic-lockfile", "js-digest", "lockfile-js"];
+
+/// Published sha256 hashes of stage-1/stage-2 payloads from the Jul/Aug
+/// 2026 openconnect-sso-anchored wave (reused tradecraft from the June
+/// 2026 Atomic Arch campaign). A PKGBUILD's `sha256sums=()` matching one
+/// of these exactly means the source it's pinning to is the known-bad
+/// payload, not just "looks suspicious".
+const KNOWN_MALICIOUS_SHA256: &[&str] = &[
+    "e73a35b3e75e94746428d1a207703d6335933deadee7d1d9c9d0328df7b9df77",
+    "2d25d2ea313767fae5808164224cf6ad610ab09546d1e5a6f033eedbfd98a281",
+    "06c857c8ca798d50c765b4de39e6c4f272ecb57bc8316a8ed4c0fdf02fb59502",
+];
+
+#[cfg(test)]
+pub(crate) fn contains_known_malicious_hash(source: &str) -> Option<&'static str> {
+    KNOWN_MALICIOUS_SHA256.iter().copied().find(|h| source.contains(h))
+}
+
+/// Same check, but returns the 1-indexed line number of the first match
+/// alongside the matched hash, so alert output can point at the exact line.
+pub(crate) fn line_of_known_malicious_hash(source: &str) -> Option<(usize, &'static str)> {
+    for (i, line) in source.lines().enumerate() {
+        if let Some(h) = KNOWN_MALICIOUS_SHA256.iter().copied().find(|h| line.contains(h)) {
+            return Some((i + 1, h));
+        }
+    }
+    None
+}
 
 #[cfg(test)]
 pub(crate) fn contains_known_malicious_package(source: &str) -> Option<&'static str> {
@@ -372,6 +417,55 @@ pub(crate) fn is_foreign_pkg_manager_install(source: &str) -> bool {
 
 pub(crate) fn line_of_foreign_pkg_manager_install(source: &str) -> Option<usize> {
     source.lines().position(foreign_pkg_manager_install_line).map(|i| i + 1)
+}
+
+/// `sudo`/`pkexec`/`doas` invoked from inside a PKGBUILD/.install script.
+/// `makepkg` deliberately builds as an unprivileged user so a malicious
+/// `build()`/`package()` can't touch the system directly — a script that
+/// escalates privileges itself is a structural red flag, not just a crude
+/// pattern. This is exactly the mechanism reported in the late-July/early-
+/// August 2026 AUR wave anchored by the compromised `openconnect-sso`
+/// package: the malicious update added a binary named `validator` and ran
+/// it via `sudo` during packaging, crossing from build-time execution into
+/// privileged execution.
+pub(crate) fn sudo_escalation_line(line: &str) -> bool {
+    let l = line.trim();
+    if l.starts_with('#') {
+        return false;
+    }
+    let lower = l.to_lowercase();
+    ["sudo ", "sudo\t", "pkexec ", "doas "].iter().any(|p| lower.contains(p))
+}
+
+#[cfg(test)]
+pub(crate) fn is_sudo_escalation(source: &str) -> bool {
+    source.lines().any(sudo_escalation_line)
+}
+
+pub(crate) fn line_of_sudo_escalation(source: &str) -> Option<usize> {
+    source.lines().position(sudo_escalation_line).map(|i| i + 1)
+}
+
+/// A `.onion` address referenced directly in a PKGBUILD/.install script.
+/// Legitimate PKGBUILDs essentially never hardcode a Tor hidden-service
+/// address; the June 2026 Atomic Arch campaign's second-stage delivery was
+/// Tor-backed, and the same onion infrastructure was reused in the late-
+/// July/early-August 2026 wave.
+pub(crate) fn onion_address_line(line: &str) -> bool {
+    let l = line.trim();
+    if l.starts_with('#') {
+        return false;
+    }
+    l.to_lowercase().contains(".onion")
+}
+
+#[cfg(test)]
+pub(crate) fn is_onion_address(source: &str) -> bool {
+    source.lines().any(onion_address_line)
+}
+
+pub(crate) fn line_of_onion_address(source: &str) -> Option<usize> {
+    source.lines().position(onion_address_line).map(|i| i + 1)
 }
 
 /// How confident a finding is. `Suspicious` covers generic, crude-but-common
@@ -460,11 +554,35 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
             ),
         });
     }
+    if let Some((line, hash)) = line_of_known_malicious_hash(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::ConfirmedIoc,
+            message: format!(
+                "sha256 '{}' matches a published payload hash from the openconnect-sso-anchored AUR wave (Jul/Aug 2026)",
+                hash
+            ),
+        });
+    }
     if let Some(line) = line_of_foreign_pkg_manager_install(source) {
         findings.push(Finding {
             line,
             severity: Severity::Suspicious,
             message: "installs a named external package via npm/bun/yarn/pip/gem mid-build — the mechanism the Atomic Arch AUR campaign used to smuggle in its payload".to_string(),
+        });
+    }
+    if let Some(line) = line_of_sudo_escalation(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "invokes sudo/pkexec/doas from inside the build script — makepkg builds unprivileged on purpose, so this escalates privilege mid-build; the exact mechanism reported in the openconnect-sso-anchored AUR wave (Jul/Aug 2026)".to_string(),
+        });
+    }
+    if let Some(line) = line_of_onion_address(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "references a .onion address — legitimate PKGBUILDs don't hardcode Tor hidden-service addresses; matches the Tor-backed second-stage delivery reused across the June 2026 and Jul/Aug 2026 AUR campaigns".to_string(),
         });
     }
     findings
@@ -912,5 +1030,72 @@ build() {
             && f.message.contains("compromised.txt")));
         assert!(findings.iter().any(|f| f.message.contains("paste-dump site")));
         assert!(findings.iter().any(|f| f.message.contains("curl/wget | sh")));
+    }
+
+    // ── Jul/Aug 2026 openconnect-sso-anchored wave ──────────────────────
+    //
+    // Reported mechanism: a compromised package's build path added a
+    // binary named `validator` and executed it with `sudo` during
+    // packaging, reusing Tor-backed second-stage delivery from the June
+    // 2026 Atomic Arch campaign.
+
+    #[test]
+    fn sudo_escalation_detected() {
+        assert!(is_sudo_escalation("sudo ./validator --init"));
+        assert!(is_sudo_escalation("pkexec /tmp/helper"));
+        assert!(is_sudo_escalation("doas sh -c 'id'"));
+        // Declaring sudo as a dependency, not invoking it, must not flag.
+        assert!(!is_sudo_escalation("makedepends=('sudo')"));
+        assert!(!is_sudo_escalation("depends=('sudo' 'other')"));
+        assert!(!is_sudo_escalation("# sudo ./validator (just a comment)"));
+        assert!(!is_sudo_escalation("build() {\n  make\n}"));
+    }
+
+    #[test]
+    fn onion_address_detected() {
+        assert!(is_onion_address(
+            "source=(\"http://p4ayykxcrxfyzrgfbbkazernntjbz43hgclrheguylzd7kijmtce6zqd.onion/stage2\")"
+        ));
+        assert!(is_onion_address("C2=abc123def456.onion"));
+        assert!(!is_onion_address("# see the project's .onion mirror in the wiki (comment only)"));
+        assert!(!is_onion_address("source=(\"https://github.com/foo/bar/archive/v1.tar.gz\")"));
+    }
+
+    #[test]
+    fn known_malicious_hash_detected() {
+        assert_eq!(
+            contains_known_malicious_hash(
+                "sha256sums=('e73a35b3e75e94746428d1a207703d6335933deadee7d1d9c9d0328df7b9df77')"
+            ),
+            Some("e73a35b3e75e94746428d1a207703d6335933deadee7d1d9c9d0328df7b9df77")
+        );
+        assert_eq!(
+            contains_known_malicious_hash("sha256sums=('deadbeefcafebabe0011223344556677889900112233445566778899aabbcc')"),
+            None
+        );
+    }
+
+    #[test]
+    fn openconnect_sso_style_pkgbuild_flagged() {
+        // Reconstructed shape of the reported incident: an adopted
+        // package's build() gains a bundled `validator` binary and runs
+        // it with sudo. Should trip the sudo-escalation heuristic
+        // (Suspicious) — no ConfirmedIoc here since the binary name alone
+        // isn't a matchable exact indicator, only the behavior is.
+        let pkgbuild = r#"
+pkgname=openconnect-sso
+pkgver=0.13.0
+pkgrel=2
+source=("https://github.com/vlaci/openconnect-sso/archive/v$pkgver.tar.gz"
+        "validator")
+build() {
+  cd "$pkgname-$pkgver"
+  sudo ./validator --setup
+  make
+}
+"#;
+        let findings = scan_pkgbuild_source(pkgbuild);
+        assert!(findings.iter().any(|f| f.severity == Severity::Suspicious
+            && f.message.contains("sudo/pkexec/doas")));
     }
 }

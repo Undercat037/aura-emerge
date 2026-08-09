@@ -185,7 +185,9 @@ Before every AUR install (`--aur`, plain fallback-to-AUR installs, and `@world` 
 - `chmod 777`, raw IPv4 literals in scripts
 - calls out to a foreign package manager (`npm install`, `pip install`, …) from inside the build
 - fetches from a paste-dump site (Pastebin, Hastebin, dpaste, ix.io, …) — the delivery mechanism of the 2018 acroread/balz/minergate AUR takeover
-- package/file names matching known IOCs from disclosed AUR supply-chain campaigns (e.g. "Atomic Arch", June 2026; the 2018 `compromised.txt` marker)
+- `sudo`/`pkexec`/`doas` invoked from inside the build script — `makepkg` builds unprivileged on purpose, so this is a privilege escalation mid-build, the mechanism reported in the openconnect-sso-anchored wave (Jul/Aug 2026)
+- `.onion` addresses referenced directly in the script — Tor-backed second-stage delivery, reused across the June and Jul/Aug 2026 waves
+- package/file names and payload hashes matching known IOCs from disclosed AUR supply-chain campaigns (e.g. "Atomic Arch", June 2026; the openconnect-sso-anchored wave, Jul/Aug 2026; the 2018 `compromised.txt` marker)
 
 A hit doesn't block the install outright — it prints the offending file/line plus a direct link to review the source on cgit, and asks `Continue anyway? [y/N]` before proceeding. This is a cheap tripwire, not a substitute for actually reading the PKGBUILD yourself.
 
