@@ -1,6 +1,6 @@
 [package]
 name = "aura-emerge"
-version = "1.33.0"
+version = "1.33.1"
 edition = "2021"
 license = "GPL-3.0-or-later"
 
@@ -10,4 +10,3 @@ clap_complete = "4.4"
 clap_mangen = "0.2"
 colored = "2"
 anyhow = "1"
-
