@@ -427,7 +427,7 @@ fn print_help() {
     println!("          [ --abs                        ] [ --aur        ]");
     println!("          [ --only-repos                 ] [ --skippgp    ]");
     println!("          [ --autopgp                    ] [ --edit       ]");
-    println!("          [ --deep                       ] [ --deep       ]");
+    println!("          [ --deep                       ] [              ]");
     println!("          [ --emptytree                  ] [ --newuse     ]");
     println!("          [ --noreplace                  ] [ --oneshot    ]");
     println!("          [ --pretend                    ] [ --skipfirst  ]");

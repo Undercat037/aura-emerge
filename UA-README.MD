@@ -16,7 +16,15 @@ makepkg -si
 ```bash
 paru -S aura-emerge 
 ```
-[Релізний бінарник](target/release/)
+
+Ручна збірка:
+
+```bash
+git clone https://github.com/Undercat037/aura-emerge
+cd aura-emerge
+cargo build --release && sudo cp -r target/release/aura-emerge /usr/bin/emerge
+ln -s /usr/bin/emerge /usr/bin/portageq
+```
 
 **Вимоги:** `aura` має бути встановлена та доступна в `/usr/bin/aura`.  
 **Опційно:** `devtools` для підтримки `--abs` (`emerge devtools`, надає `pkgctl`), `gpg` для автоматичного імпорту PGP-ключів (`--autopgp`).

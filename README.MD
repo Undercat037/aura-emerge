@@ -14,9 +14,16 @@ makepkg -si
 ```
 or via AUR:
 ```bash
-paru -S aura-emerge 
+paru -S aura-emerge
 ```
-[Release binary](target/release/)
+Manual:
+
+```bash
+git clone https://github.com/Undercat037/aura-emerge
+cd aura-emerge
+cargo build --release && sudo cp -r target/release/aura-emerge /usr/bin/emerge
+ln -s /usr/bin/emerge /usr/bin/portageq
+```
 
 **Requirements:** `aura` must be installed and in `/usr/bin/aura`.  
 **Optional:** `devtools` for `--abs` support (`emerge devtools`, provides `pkgctl`), `gpg` for automatic PGP key import (`--autopgp`).
