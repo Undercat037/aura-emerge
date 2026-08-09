@@ -12,6 +12,7 @@ mod world_set;
 mod packages;
 mod security;
 mod news;
+mod bash_ast;
 
 use clap::Parser;
 use clap_complete::Shell;
