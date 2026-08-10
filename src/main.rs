@@ -37,6 +37,7 @@ pub(crate) const MV_BIN:     &str = "/usr/bin/mv";
 pub(crate) const RM_BIN:     &str = "/usr/bin/rm";
 pub(crate) const MAKEPKG_BIN: &str = "/usr/bin/makepkg";
 pub(crate) const PKGCTL_BIN: &str = "/usr/bin/pkgctl";
+pub(crate) const VERCMP_BIN: &str = "/usr/bin/vercmp";
 pub(crate) const GPG_BIN: &str = "/usr/bin/gpg";
 /// Keyserver used for automatic/suggested PGP key imports (--abs). Same
 /// SKS-successor pool most distro tooling defaults to.
@@ -68,7 +69,7 @@ pub(crate) const UNAME_BIN: &str = "/usr/bin/uname";
 /// `///` doc comment on `Cli` below is used for the one-line NAME/about.
 const LONG_ABOUT: &str = "\
 aura-emerge is a Gentoo-style emerge wrapper for Arch Linux, driving pacman \
-directly and the AUR (git clone + pkgctl build/bwrap) itself. \
+directly and the AUR (git clone + bwrap-sandboxed build) itself. \
 It tracks every explicitly requested package in /etc/emerge/world.set, independent \
 of whatever pacman's own dependency graph currently looks like.\n\n\
 Three operations that look similar are kept deliberately distinct: refreshing the \
@@ -237,7 +238,7 @@ struct Cli {
     /// Open PKGBUILD for editing before building. Currently only wired up
     /// for --abs (opens in $EDITOR before the build). AUR builds no longer
     /// go through `aura -A --hotedit` since the AUR path was moved to a
-    /// direct git-clone + pkgctl-build flow (see aur.rs) -- --edit is a
+    /// direct git-clone + bwrap-build flow (see aur.rs) -- --edit is a
     /// no-op there for now; pass it through to aur_install() if/when that
     /// gets its own editor-before-build support.
     #[arg(long = "edit")]
@@ -573,6 +574,7 @@ fn build_resume_args(cli: &Cli, target_pkgs: &[String], has_world: bool) -> Vec<
     if cli.verbose      { args.push("--verbose".to_string()); }
     if cli.refresh      { args.push("--refresh".to_string()); }
     if cli.err_inst     { args.push("--err-inst".to_string()); }
+    if cli.no_sandbox   { args.push("--no-sandbox".to_string()); }
     if has_world {
         args.push("@world".to_string());
     }

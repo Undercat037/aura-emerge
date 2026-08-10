@@ -225,8 +225,10 @@ pub(crate) fn python_inline_exec(source: &str) -> Option<usize> {
 const DEP_ARRAY_NAMES: &[&str] = &["depends", "makedepends", "checkdepends"];
 
 /// Statically resolves `depends=(...)`, `makedepends=(...)`, and
-/// `checkdepends=(...)` array literals to a flat, deduplicated list of
-/// bare package names for handing straight to `pacman -S` (used by the
+/// `checkdepends=(...)` array literals -- both the bare name and its
+/// `_<current_arch>`-suffixed variant (e.g. `depends_x86_64` when
+/// `current_arch` is `"x86_64"`) -- to a flat, deduplicated list of bare
+/// package names for handing straight to `pacman -S` (used by the
 /// sandboxed build path in `packages::build_with_sandbox` to install
 /// dependencies *before* any PKGBUILD-authored code runs, and entirely
 /// outside the sandbox, since that step is just pacman resolving package
@@ -238,22 +240,24 @@ const DEP_ARRAY_NAMES: &[&str] = &["depends", "makedepends", "checkdepends"];
 ///
 /// Returns `None` -- "don't trust this, caller should fall back to the
 /// unsandboxed path" -- if the file doesn't parse, or if any dependency
-/// array is assigned from something that isn't a plain array literal
-/// (`depends=$deps`, `depends="$foo"`), or if any element inside an
-/// array depends on something dynamic (`$var`, `$(cmd)`). A partially
-/// resolved dependency list is worse than an honest "can't tell", since
-/// a build that's missing a dependency the scanner silently skipped can
-/// fail in confusing ways well after the sandboxed step already ran.
+/// array (bare or arch-suffixed-for-this-machine) is assigned from
+/// something that isn't a plain array literal (`depends=$deps`,
+/// `depends="$foo"`), or if any element inside one depends on something
+/// dynamic (`$var`, `$(cmd)`). A partially resolved dependency list is
+/// worse than an honest "can't tell", since a build that's missing a
+/// dependency the scanner silently skipped can fail in confusing ways
+/// well after the sandboxed step already ran.
 ///
-/// Arch-specific arrays (`depends_x86_64=(...)`) are intentionally not
-/// matched -- they're rare enough in practice that treating a PKGBUILD
-/// using them as "can't statically resolve" (i.e. falling back) is the
-/// safer default over guessing which suffix applies on this machine.
-pub(crate) fn pkgbuild_dependencies(source: &str) -> Option<Vec<String>> {
+/// A *different* arch's suffixed array (e.g. `depends_aarch64` while
+/// running on `x86_64`) is simply not this machine's concern and is
+/// skipped entirely -- it neither contributes entries nor forces a bail.
+pub(crate) fn pkgbuild_dependencies(source: &str, current_arch: &str) -> Option<Vec<String>> {
     let tree = parse(source)?;
     let src = source.as_bytes();
     let mut assignments = Vec::new();
     find_descendants(tree.root_node(), "variable_assignment", &mut assignments);
+
+    let arch_suffixed: Vec<String> = DEP_ARRAY_NAMES.iter().map(|n| format!("{n}_{current_arch}")).collect();
 
     let mut found_any_array = false;
     let mut out = Vec::new();
@@ -262,7 +266,7 @@ pub(crate) fn pkgbuild_dependencies(source: &str) -> Option<Vec<String>> {
         let children: Vec<Node> = assign.children(&mut cursor).collect();
         let Some(name_node) = children.iter().find(|c| c.kind() == "variable_name") else { continue };
         let Ok(name) = name_node.utf8_text(src) else { continue };
-        if !DEP_ARRAY_NAMES.contains(&name) {
+        if !DEP_ARRAY_NAMES.contains(&name) && !arch_suffixed.iter().any(|a| a == name) {
             continue;
         }
         let Some(array_node) = children.iter().find(|c| c.kind() == "array") else {
@@ -400,15 +404,28 @@ depends=('glibc>=2.38' "openssl" 'zlib=1:1.3-1')
 makedepends=(cmake ninja)
 checkdepends=()
 "#;
-        let mut deps = pkgbuild_dependencies(pkgbuild).unwrap();
+        let mut deps = pkgbuild_dependencies(pkgbuild, "x86_64").unwrap();
         deps.sort();
         assert_eq!(deps, vec!["cmake", "glibc", "ninja", "openssl", "zlib"]);
     }
 
     #[test]
+    fn pkgbuild_dependencies_includes_current_arch_suffixed_array() {
+        let pkgbuild = r#"
+pkgname=foo
+depends=('glibc')
+depends_x86_64=('lib32-glibc')
+depends_aarch64=('some-aarch64-only-lib')
+"#;
+        let mut deps = pkgbuild_dependencies(pkgbuild, "x86_64").unwrap();
+        deps.sort();
+        assert_eq!(deps, vec!["glibc", "lib32-glibc"]);
+    }
+
+    #[test]
     fn pkgbuild_dependencies_none_when_no_arrays_present_is_empty_not_none() {
         let pkgbuild = "pkgname=foo\npkgver=1.0\nbuild() { make }\n";
-        assert_eq!(pkgbuild_dependencies(pkgbuild), Some(Vec::new()));
+        assert_eq!(pkgbuild_dependencies(pkgbuild, "x86_64"), Some(Vec::new()));
     }
 
     #[test]
@@ -416,7 +433,7 @@ checkdepends=()
         let pkgbuild = r#"
 depends=('glibc' "$optional_dep")
 "#;
-        assert_eq!(pkgbuild_dependencies(pkgbuild), None);
+        assert_eq!(pkgbuild_dependencies(pkgbuild, "x86_64"), None);
     }
 
     #[test]
@@ -425,6 +442,6 @@ depends=('glibc' "$optional_dep")
 _deplist="glibc openssl"
 depends=$_deplist
 "#;
-        assert_eq!(pkgbuild_dependencies(pkgbuild), None);
+        assert_eq!(pkgbuild_dependencies(pkgbuild, "x86_64"), None);
     }
 }

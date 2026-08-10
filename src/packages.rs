@@ -42,7 +42,7 @@ pub(crate) fn pkg_status(name: &str, new_ver: &str) -> String {
     if installed == new_ver  { return "R".to_string(); }
     // Compare: if installed > new_ver it's a downgrade
     // Use pacman vercmp
-    let cmp: i32 = std::process::Command::new("vercmp")
+    let cmp: i32 = std::process::Command::new(VERCMP_BIN)
         .args([&installed, new_ver])
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().parse().unwrap_or(0))
@@ -467,17 +467,19 @@ pub(crate) fn ensure_pgp_keys(pkgbuild_path: &std::path::Path, autopgp: bool) {
 
 
 /// Which isolation mechanism is available for the untrusted part of a
-/// build (`pkgver()/prepare()/build()/check()/package()`), strongest
-/// first. Not three independent layers stacked together -- a
-/// degradation ladder: `pkgctl build` (devtools' systemd-nspawn chroot,
-/// a genuinely separate throwaway root filesystem) is strictly stronger
-/// than `bwrap` (which only makes the *real* root read-only -- the host
-/// filesystem is still visible, just not writable), so it's tried
-/// first, with `bwrap` as the fallback when `devtools` isn't installed,
-/// and the old unsandboxed path as the last resort.
+/// build (`pkgver()/prepare()/build()/check()/package()`). `pkgctl
+/// build`'s own systemd-nspawn chroot used to be tried first here, but
+/// it syncs/bootstraps a whole fresh root filesystem per invocation --
+/// a single corrupted mirror download during that bootstrap is enough
+/// to fail an otherwise-unrelated single-package build. That cost isn't
+/// worth what it buys over `bwrap` (which reuses the real, already-live
+/// filesystem read-only instead of rebuilding one), so `bwrap` is now
+/// the primary sandbox and `pkgctl` is only ever invoked for `pkgctl
+/// repo clone` (see `abs_install`), never `pkgctl build`. `None` (no
+/// isolation at all) remains the last-resort fallback when bubblewrap
+/// isn't installed, or when `--no-sandbox` is passed explicitly.
 #[derive(Clone, Copy, PartialEq)]
 enum BuildIsolation {
-    Pkgctl,
     Bwrap,
     None,
 }
@@ -486,100 +488,18 @@ fn choose_build_isolation(no_sandbox: bool) -> BuildIsolation {
     if no_sandbox {
         return BuildIsolation::None;
     }
-    if std::path::Path::new(PKGCTL_BIN).exists() {
-        return BuildIsolation::Pkgctl;
-    }
     if crate::sandbox::bwrap_available() {
-        eprintln!(
-            "{} devtools (pkgctl) not found -- falling back to the weaker bwrap sandbox.",
-            ">>> Warning:".yellow().bold()
-        );
-        eprintln!(
-            "{} install devtools for full chroot isolation (emerge devtools).",
-            ">>> Hint:".yellow().bold()
-        );
         return BuildIsolation::Bwrap;
     }
     eprintln!(
-        "{} neither devtools (pkgctl) nor bubblewrap (bwrap) found -- building without isolation.",
+        "{} bubblewrap (bwrap) not found -- building without isolation.",
         ">>> Warning:".yellow().bold()
     );
     eprintln!(
-        "{} install devtools (preferred, full chroot) or bubblewrap (lighter fallback), or pass --no-sandbox to silence this warning.",
+        "{} install bubblewrap (emerge bubblewrap), or pass --no-sandbox to silence this warning.",
         ">>> Hint:".yellow().bold()
     );
     BuildIsolation::None
-}
-
-/// Runs the build inside `pkgctl build`'s own throwaway chroot -- a
-/// genuinely separate root filesystem, not just a read-only view of the
-/// real one. Unlike the `bwrap` path, dependency installation does NOT
-/// need to happen separately beforehand: `pkgctl build` syncs its own
-/// chroot's pacman database and installs `depends`/`makedepends` itself
-/// from the official repos, the same way `devtools`/`makechrootpkg`
-/// always has (confirmed via `pkgctl build --help`: `-I`/
-/// `--install-to-chroot` only exists to inject a *locally-built AUR*
-/// tarball that isn't in any official repo -- official deps are handled
-/// automatically). `aur_dep_tarballs` is for exactly that AUR case (pass
-/// `&[]` for a plain ABS build with no local AUR dependencies).
-///
-/// `pkgctl build` refuses to run as root (it invokes `makepkg` inside
-/// the chroot, which must run unprivileged), so this is expected to run
-/// as the normal invoking user -- same assumption the rest of this file
-/// already makes for `makepkg`.
-///
-/// Returns the built tarball paths (rather than a bare success bool) --
-/// needed by `resolve_and_build_aur` so a recursively-built AUR-only
-/// dependency's tarball(s) can be injected into its *parent's*
-/// `pkgctl build -I`.
-///
-/// `mark_asdeps` controls whether the final host install is
-/// `--asdeps` -- `true` for anything that's a dependency of something
-/// else (recursively resolved AUR deps), the `oneshot` flag's value for
-/// a directly user-requested package.
-fn build_with_pkgctl(build_dir: &std::path::Path, pkgbase: &str, ask: bool, skippgp: bool, mark_asdeps: bool, aur_dep_tarballs: &[String]) -> Option<Vec<String>> {
-    let mut cmd = Command::new(PKGCTL_BIN);
-    cmd.arg("build");
-    for tarball in aur_dep_tarballs {
-        cmd.arg("-I").arg(tarball);
-    }
-    if skippgp {
-        // pkgctl build has no direct --skippgpcheck passthrough flag of
-        // its own; PGP checking inside the chroot is controlled by the
-        // PKGBUILD/makepkg.conf it copies in, so this is a no-op today.
-        // Left as an explicit branch (rather than silently ignoring
-        // `skippgp`) so it's obvious this needs revisiting if `pkgctl
-        // build` ever grows a real flag for it.
-    }
-    let _ = ask; // pkgctl build has no --noconfirm-style flag; it isn't interactive the way makepkg -si is.
-
-    let build_ok = cmd
-        .current_dir(build_dir)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if !build_ok {
-        eprintln!("{} pkgctl build failed for '{}'", ">>> Error:".red().bold(), pkgbase);
-        return None;
-    }
-
-    let pkg_files = find_built_packages(build_dir);
-    if pkg_files.is_empty() {
-        eprintln!("{} pkgctl build for '{}' produced no package file", ">>> Error:".red().bold(), pkgbase);
-        return None;
-    }
-    let mut args: Vec<&str> = vec![PACMAN_BIN, "-U"];
-    if !ask { args.push("--noconfirm"); }
-    if mark_asdeps { args.push("--asdeps"); }
-    let pkg_refs: Vec<&str> = pkg_files.iter().map(String::as_str).collect();
-    let install_ok = Command::new(SUDO_BIN)
-        .args(&args)
-        .args(&pkg_refs)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-
-    install_ok.then_some(pkg_files)
 }
 
 /// Checks whether a bare package name is satisfiable without touching
@@ -601,8 +521,9 @@ fn is_satisfiable_without_aur(name: &str) -> bool {
 /// packages) first. `building` guards against dependency cycles;
 /// `built` caches already-built pkgbases so a dependency shared by more
 /// than one package in the same run isn't built twice. Returns the
-/// tarball path(s) built for `pkg` itself (so a *parent* call can inject
-/// them via `pkgctl build -I`), or `None` on any failure -- a missing
+/// tarball path(s) built for `pkg` itself (so a *parent* call can
+/// install them via `pacman -U` before its own bwrap build -- see
+/// `install_local_tarballs`), or `None` on any failure -- a missing
 /// dependency is a hard stop, never a guess.
 ///
 /// Each resolved pkgbase is run through the same PKGBUILD scanner
@@ -632,7 +553,8 @@ fn resolve_and_build_aur(
         return None;
     }
 
-    crate::security::scan_aur_pkgbuilds_or_abort(&[pkgbase.clone()]);
+    let fetched = crate::security::scan_aur_pkgbuilds_or_abort(&[pkgbase.clone()]);
+    crate::security::verify_local_clone_or_rescan(&pkgbase, &dir, fetched.get(&pkgbase));
 
     let srcinfo_path = dir.join(".SRCINFO");
 
@@ -652,9 +574,9 @@ fn resolve_and_build_aur(
         }
     }
 
-    let deps = crate::aur::srcinfo_dependencies(&srcinfo_path).unwrap_or_else(|| {
+    let deps = crate::aur::srcinfo_dependencies(&srcinfo_path, &current_arch()).unwrap_or_else(|| {
         eprintln!(
-            "{} '{}' has no readable .SRCINFO -- proceeding without a dependency list (pkgctl build/makepkg will still catch a genuinely missing dependency, just later and less clearly).",
+            "{} '{}' has no readable .SRCINFO -- proceeding without a dependency list (the bwrap/makepkg build will still catch a genuinely missing dependency, just later and less clearly).",
             ">>> Warning:".yellow().bold(),
             pkgbase
         );
@@ -682,9 +604,15 @@ fn resolve_and_build_aur(
     }
 
     let result = match isolation {
-        BuildIsolation::Pkgctl => build_with_pkgctl(&dir, &pkgbase, ask, skippgp, mark_asdeps, &aur_dep_tarballs),
-        BuildIsolation::Bwrap => build_with_sandbox(&dir, &pkgbase, ask, mark_asdeps, skippgp).then(|| find_built_packages(&dir)),
-        BuildIsolation::None => legacy_makepkg_si(&dir, ask, mark_asdeps, skippgp).then(|| find_built_packages(&dir)),
+        BuildIsolation::Bwrap => build_with_sandbox(&dir, &pkgbase, ask, mark_asdeps, skippgp, &aur_dep_tarballs).then(|| find_built_packages(&dir)),
+        BuildIsolation::None => {
+            if !install_local_tarballs(&aur_dep_tarballs, ask, true) {
+                eprintln!("{} failed to install locally-built AUR dependencies for '{}'", ">>> Error:".red().bold(), pkgbase);
+                building.remove(&pkgbase);
+                return None;
+            }
+            legacy_makepkg_si(&dir, ask, mark_asdeps, skippgp).then(|| find_built_packages(&dir))
+        }
     };
 
     building.remove(&pkgbase);
@@ -699,8 +627,9 @@ pub(crate) const AUR_BUILD_BASE: &str = "/tmp/aura-emerge-aur";
 
 /// Install packages from the AUR by cloning their git repos directly and
 /// building through the same isolation ladder as `--abs`
-/// (`pkgctl build` -> `bwrap` -> unsandboxed `makepkg -si`, see
-/// `choose_build_isolation`) instead of shelling out to `aura -A`.
+/// (`bwrap` -> unsandboxed `makepkg -si`, see `choose_build_isolation`)
+/// instead of shelling out to `aura -A`. `pkgctl` is not involved here
+/// at all -- only `--abs` ever calls it, and only for `repo clone`.
 pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, no_sandbox: bool) -> bool {
     if !std::path::Path::new("/usr/bin/git").exists() {
         eprintln!("{} required binary not found: /usr/bin/git", ">>> Fatal:".red().bold());
@@ -771,7 +700,7 @@ pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
 ///
 /// `pretend` prints the would-upgrade list and returns without touching
 /// anything (mirrors `aura -Au --dryrun`). Real runs delegate the actual
-/// build+install to `aur_install()` -- the same pkgctl/bwrap-sandboxed
+/// build+install to `aur_install()` -- the same bwrap-sandboxed
 /// path used for a fresh AUR install, so an upgrade gets exactly the same
 /// isolation and PKGBUILD scanning as `emerge --aur <pkg>` does.
 pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbox: bool) -> bool {
@@ -814,7 +743,7 @@ pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbo
     for (name, installed_ver) in &installed {
         match latest_by_name.get(name.as_str()) {
             Some(info) => {
-                let cmp: i32 = Command::new("vercmp")
+                let cmp: i32 = Command::new(VERCMP_BIN)
                     .args([installed_ver.as_str(), info.version.as_str()])
                     .output()
                     .map(|o| String::from_utf8_lossy(&o.stdout).trim().parse().unwrap_or(0))
@@ -858,18 +787,49 @@ pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbo
     aur_install(&upgrade_names, false, ask, false, skippgp, no_sandbox)
 }
 
+/// Installs already-built `*.pkg.tar.*` files directly via `pacman -U`
+/// -- used for AUR-only dependencies that a recursive
+/// `resolve_and_build_aur()` call already produced and that therefore
+/// can never be reached by `pacman -S` (they're not in any sync repo).
+/// This is bwrap's equivalent of what `pkgctl build -I` used to inject
+/// into its chroot. No-op success on an empty slice.
+fn install_local_tarballs(tarballs: &[String], ask: bool, mark_asdeps: bool) -> bool {
+    if tarballs.is_empty() {
+        return true;
+    }
+    println!("{} Installing {} locally-built AUR dependency(ies)...", ">>>".green().bold(), tarballs.len());
+    let mut args: Vec<&str> = vec![PACMAN_BIN, "-U", "--needed"];
+    if mark_asdeps { args.push("--asdeps"); }
+    if !ask { args.push("--noconfirm"); }
+    let tar_refs: Vec<&str> = tarballs.iter().map(String::as_str).collect();
+    Command::new(SUDO_BIN)
+        .args(&args)
+        .args(&tar_refs)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 /// Runs the untrusted PKGBUILD-defined functions (`pkgver`/`prepare`/
 /// `build`/`check`/`package`) for the package rooted at `build_dir`
 /// through the bwrap sandbox in `sandbox.rs`, then installs the result
 /// the normal, trusted way. See that module's doc comment for why the
 /// three steps below are split the way they are.
 ///
-/// Returns `false` on any failure. If the PKGBUILD's dependency arrays
-/// can't be statically resolved (dynamic elements, non-literal
-/// assignment, ...), falls back to the plain unsandboxed `makepkg -si`
-/// path for this one package rather than guessing at a partial
-/// dependency list.
-fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, oneshot: bool, skippgp: bool) -> bool {
+/// `aur_dep_tarballs` are already-built AUR-only dependencies (from a
+/// recursive `resolve_and_build_aur()` call on this pkg's own
+/// `.SRCINFO`) -- installed straight from disk via `pacman -U` before
+/// anything else, since `pacman -S` below has no way to find them.
+/// Pass `&[]` for a plain ABS build with no local AUR dependencies.
+///
+/// Returns `false` on any failure. Dependency resolution prefers
+/// `.SRCINFO` when the checkout has one (see step 1a below); only when
+/// that's absent and the PKGBUILD's dependency arrays can't be
+/// statically resolved either (dynamic elements, non-literal
+/// assignment, ...) does this fall back to the plain unsandboxed
+/// `makepkg -si` path for this one package rather than guessing at a
+/// partial dependency list.
+fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, oneshot: bool, skippgp: bool, aur_dep_tarballs: &[String]) -> bool {
     let pkgbuild_src = match fs::read_to_string(build_dir.join("PKGBUILD")) {
         Ok(s) => s,
         Err(e) => {
@@ -878,10 +838,44 @@ fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, one
         }
     };
 
-    // 1. Dependencies, outside the sandbox: plain `pacman -S`, no
-    //    PKGBUILD code involved at all, so this is exactly as trustworthy
-    //    as any other pacman install.
-    match crate::bash_ast::pkgbuild_dependencies(&pkgbuild_src) {
+    // 1a. Figure out which of this package's declared dependencies are
+    //     reachable via the official repos at all -- computed *before*
+    //     step 0 installs anything below, since once an AUR-only dep is
+    //     installed from its tarball it would also pass a plain
+    //     "is it already installed?" check, and we specifically need to
+    //     keep it OUT of the `pacman -S` list in that case: `-S` (even
+    //     with `--needed`) still resolves its target against the sync
+    //     databases first and fails with "target not found" for a name
+    //     that isn't in any of them, already-installed or not.
+    //
+    //     `.SRCINFO` is tried first when present (always true for an AUR
+    //     clone, sometimes true for --abs) -- it's a static, checked-in,
+    //     generated file that already flattens arch-specific arrays
+    //     correctly, so reading it is both safer (no PKGBUILD parsing
+    //     needed at all) and more complete than the AST fallback below.
+    //     `pkgbuild_dependencies` (tree-sitter over the actual PKGBUILD)
+    //     only kicks in when there's no `.SRCINFO` to read.
+    let arch = current_arch();
+    let srcinfo_path = build_dir.join(".SRCINFO");
+    let all_deps: Option<Vec<String>> = if srcinfo_path.exists() {
+        crate::aur::srcinfo_dependencies(&srcinfo_path, &arch)
+    } else {
+        crate::bash_ast::pkgbuild_dependencies(&pkgbuild_src, &arch)
+    };
+    let repo_deps: Option<Vec<String>> = all_deps.map(|deps| {
+        deps.into_iter().filter(|d| is_satisfiable_without_aur(d)).collect()
+    });
+
+    // 0. Locally-built AUR-only dependencies -- see doc comment above.
+    if !install_local_tarballs(aur_dep_tarballs, ask, true) {
+        eprintln!("{} failed to install locally-built AUR dependencies for '{}'", ">>> Error:".red().bold(), pkgbase);
+        return false;
+    }
+
+    // 1b. The rest, outside the sandbox: plain `pacman -S`, no
+    //     PKGBUILD code involved at all, so this is exactly as
+    //     trustworthy as any other pacman install.
+    match repo_deps {
         Some(deps) if !deps.is_empty() => {
             println!("{} Installing {} declared dependency(ies) via pacman...", ">>>".green().bold(), deps.len());
             let mut args: Vec<&str> = vec![PACMAN_BIN, "-S", "--needed", "--asdeps"];
@@ -901,7 +895,7 @@ fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, one
         Some(_) => {} // no declared dependencies, nothing to do
         None => {
             eprintln!(
-                "{} could not statically resolve every dependency for '{}' (dynamic array entry, or depends/makedepends isn't a plain array) -- building without the sandbox for this package.",
+                "{} could not statically resolve every dependency for '{}' (no .SRCINFO, and the PKGBUILD has a dynamic array entry or depends/makedepends isn't a plain array) -- building without the sandbox for this package.",
                 ">>> Warning:".yellow().bold(),
                 pkgbase
             );
@@ -1114,8 +1108,7 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
         }
 
         let build_ok = match isolation {
-            BuildIsolation::Pkgctl => build_with_pkgctl(&build_dir, &info.name, ask, skippgp, oneshot, &[]).is_some(),
-            BuildIsolation::Bwrap => build_with_sandbox(&build_dir, &info.name, ask, oneshot, skippgp),
+            BuildIsolation::Bwrap => build_with_sandbox(&build_dir, &info.name, ask, oneshot, skippgp, &[]),
             BuildIsolation::None => legacy_makepkg_si(&build_dir, ask, oneshot, skippgp),
         };
 
@@ -1228,6 +1221,15 @@ pub(crate) fn cmd_stdout(bin: &str, args: &[&str]) -> Option<String> {
         return None;
     }
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// This machine's pacman/makepkg arch (`CARCH` in makepkg terms) -- used
+/// to pick out `depends_<arch>=(...)`-style arrays alongside the plain
+/// `depends=(...)` ones. Falls back to the arch this binary itself was
+/// compiled for if `uname -m` can't be run, which is a reasonable
+/// default -- aura-emerge only ever ships/runs on the arch it's built for.
+pub(crate) fn current_arch() -> String {
+    cmd_stdout(UNAME_BIN, &["-m"]).unwrap_or_else(|| std::env::consts::ARCH.to_string())
 }
 
 /// Merge /etc/makepkg.conf with user overrides using makepkg's own

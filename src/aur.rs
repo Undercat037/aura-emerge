@@ -145,15 +145,20 @@ pub(crate) fn clone_or_resolve(pkg: &str, dest_root: &Path) -> Option<(PathBuf, 
 }
 
 /// Minimal `.SRCINFO` reader: sums `depends`/`makedepends`/`checkdepends`
-/// (including `_<arch>`-suffixed variants) across every section in the
-/// file, strips version constraints (`foo>=1.2` -> `foo`), and dedupes.
+/// -- both the bare key and its `_<current_arch>`-suffixed variant (e.g.
+/// `depends_x86_64` when `current_arch` is `"x86_64"`) -- across every
+/// section in the file, strips version constraints (`foo>=1.2` -> `foo`),
+/// and dedupes. A different arch's suffix (`depends_aarch64` on an
+/// x86_64 machine) is deliberately excluded -- summing every arch
+/// unconditionally would hand `pacman -S` package names that don't even
+/// exist for this machine.
 ///
 /// `.SRCINFO` is a static, checked-in, generated file (`makepkg
 /// --printsrcinfo`) -- reading it never executes anything, unlike parsing
 /// `PKGBUILD` itself. Returns `None` only if the file can't be read at
 /// all (missing `.SRCINFO` is rare but not unheard of in a malformed/very
 /// old AUR repo) -- an empty-but-present file correctly yields `Some(vec![])`.
-pub(crate) fn srcinfo_dependencies(path: &Path) -> Option<Vec<String>> {
+pub(crate) fn srcinfo_dependencies(path: &Path, current_arch: &str) -> Option<Vec<String>> {
     let text = std::fs::read_to_string(path).ok()?;
     let mut out = Vec::new();
     for line in text.lines() {
@@ -162,6 +167,12 @@ pub(crate) fn srcinfo_dependencies(path: &Path) -> Option<Vec<String>> {
         let value = value.trim();
         let base_key = key.split('_').next().unwrap_or(key);
         if !matches!(base_key, "depends" | "makedepends" | "checkdepends") {
+            continue;
+        }
+        // Either the bare key, or arch-suffixed for exactly this machine's
+        // arch -- e.g. accept "depends" and "depends_x86_64" when
+        // current_arch == "x86_64", but skip "depends_aarch64".
+        if key != base_key && key != format!("{base_key}_{current_arch}") {
             continue;
         }
         let bare = value.split(['<', '>', '=']).next().unwrap_or(value).trim();
