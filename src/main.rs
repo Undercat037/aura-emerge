@@ -355,6 +355,17 @@ struct Cli {
     #[arg(long = "list-sets")]
     list_sets: bool,
 
+    /// Delete aura-emerge's persistent source cache (see
+    /// `packages::source_cache_dir`) and exit. This is where AUR/ABS
+    /// builds cache VCS sources (-git/-hg/-svn packages) across runs so
+    /// they're fetched incrementally instead of re-cloned from scratch
+    /// every time -- it grows without bound as more -git packages get
+    /// built, so this is here for reclaiming that space. No pacman/sudo
+    /// needed; just removes a directory under $XDG_CACHE_HOME (or
+    /// ~/.cache).
+    #[arg(long = "clean-source-cache")]
+    clean_source_cache: bool,
+
     // ── Gentoo compat flags (accepted silently, no-op) ──────────────────────
 
     // Actions
@@ -804,6 +815,27 @@ fn run() -> anyhow::Result<()> {
         println!("@preserved-rebuild");
         for name in list_custom_sets() {
             println!("@{}", name);
+        }
+        return Ok(());
+    }
+
+    // --clean-source-cache: same idea, no pacman/sudo needed — just
+    // removes a directory under $HOME.
+    if cli.clean_source_cache {
+        match source_cache_dir() {
+            Some(dir) if dir.exists() => {
+                if std::fs::remove_dir_all(&dir).is_ok() {
+                    println!("{} removed source cache at {}", ">>>".green().bold(), dir.display());
+                } else {
+                    eprintln!("{} could not remove {}", ">>> Error:".red().bold(), dir.display());
+                    std::process::exit(1);
+                }
+            }
+            Some(dir) => println!("{} no source cache to remove ({} doesn't exist).", ">>>".green().bold(), dir.display()),
+            None => {
+                eprintln!("{} could not determine $HOME", ">>> Error:".red().bold());
+                std::process::exit(1);
+            }
         }
         return Ok(());
     }

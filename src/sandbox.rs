@@ -45,9 +45,11 @@ pub(crate) fn bwrap_available() -> bool {
 ///
 /// `extra_dest_dirs` covers the case where the user's own makepkg.conf
 /// (`PKGDEST`/`SRCDEST`/`SRCPKGDEST`/`BUILDDIR`) points *outside*
-/// `build_dir` -- see `packages::extra_makepkg_dest_dirs`, which computes
-/// this list against the real, unsandboxed makepkg.conf resolution
-/// (system + user config, real `$HOME`). Each `(var, path)` pair gets
+/// `build_dir`, plus aura-emerge's own default persistent `SRCDEST`
+/// source cache when the user hasn't set one -- see
+/// `packages::resolve_dest_dirs`/`packages::source_cache_dir`, which
+/// compute this list against the real, unsandboxed makepkg.conf
+/// resolution (system + user config, real `$HOME`). Each `(var, path)` pair gets
 /// its own writable bind at that same absolute path inside the jail, so
 /// the write the user actually configured still lands where they
 /// expect, plus a matching `--setenv` so the sandboxed makepkg -- whose
