@@ -402,9 +402,24 @@ mod tests {
             "pkgbase = foo\n\tpkgver = 1.0\n\tmakedepends = cmake\n\tdepends = glibc>=2.38\n\npkgname = foo\n\tdepends = zlib\n\tdepends = glibc\n",
         )
         .unwrap();
-        let deps = srcinfo_dependencies(&path).unwrap();
+        let deps = srcinfo_dependencies(&path, "x86_64").unwrap();
         assert_eq!(deps, vec!["cmake", "glibc", "zlib"]);
         assert_eq!(srcinfo_pkgbase(&path), Some("foo".to_string()));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn srcinfo_dependencies_includes_current_arch_suffix_only() {
+        let dir = std::env::temp_dir().join(format!("aur-srcinfo-arch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".SRCINFO");
+        std::fs::write(
+            &path,
+            "pkgbase = foo\n\tdepends = glibc\n\tdepends_x86_64 = lib32-glibc\n\tdepends_aarch64 = some-aarch64-only-lib\n",
+        )
+        .unwrap();
+        let deps = srcinfo_dependencies(&path, "x86_64").unwrap();
+        assert_eq!(deps, vec!["glibc", "lib32-glibc"]);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -414,14 +429,14 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(".SRCINFO");
         std::fs::write(&path, "pkgbase = bare\n\tpkgver = 1.0\n").unwrap();
-        assert_eq!(srcinfo_dependencies(&path), Some(Vec::new()));
+        assert_eq!(srcinfo_dependencies(&path, "x86_64"), Some(Vec::new()));
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn srcinfo_dependencies_missing_file_is_none() {
         let path = Path::new("/nonexistent/definitely/.SRCINFO");
-        assert_eq!(srcinfo_dependencies(path), None);
+        assert_eq!(srcinfo_dependencies(path, "x86_64"), None);
     }
 
     #[test]

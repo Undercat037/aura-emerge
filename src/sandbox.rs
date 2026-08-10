@@ -43,6 +43,28 @@ pub(crate) fn bwrap_available() -> bool {
 /// $srcdir/$pkgdir (both subdirectories of it by default) are writable
 /// for free without needing their own bind rules.
 ///
+/// `extra_dest_dirs` covers the case where the user's own makepkg.conf
+/// (`PKGDEST`/`SRCDEST`/`SRCPKGDEST`/`BUILDDIR`) points *outside*
+/// `build_dir` -- see `packages::extra_makepkg_dest_dirs`, which computes
+/// this list against the real, unsandboxed makepkg.conf resolution
+/// (system + user config, real `$HOME`). Each `(var, path)` pair gets
+/// its own writable bind at that same absolute path inside the jail, so
+/// the write the user actually configured still lands where they
+/// expect, plus a matching `--setenv` so the sandboxed makepkg -- whose
+/// own config resolution runs against the fake `$HOME` below, which
+/// hides any *user-level* makepkg.conf that set it in the first place --
+/// picks up the same value rather than silently falling back to
+/// makepkg's own default (`build_dir`).
+///
+/// Known gap: if `/etc/makepkg.conf` itself (visible inside the jail,
+/// unlike user-level config) *also* sets one of these to something
+/// different from what was resolved outside, its `source`d assignment
+/// runs after this function's `--setenv` and wins. Rare in practice --
+/// Arch ships these commented out by default in `/etc/makepkg.conf`,
+/// and a machine actively relying on *both* a system-wide and a
+/// diverging user-level override for the same variable would be an
+/// unusual setup on its own.
+///
 /// Network stays shared (`--share-net`) since source downloads still
 /// need it; everything else (`--unshare-all`: user, ipc, pid, net, uts,
 /// cgroup -- net is then re-added by --share-net) is torn down.
@@ -54,6 +76,7 @@ pub(crate) fn sandboxed_makepkg(
     build_dir: &Path,
     caller_args: &[&str],
     real_gnupg_home: Option<&Path>,
+    extra_dest_dirs: &[(&str, PathBuf)],
 ) -> Command {
     let build_dir_s = build_dir.to_string_lossy().to_string();
     let fake_home = PathBuf::from(SANDBOX_HOME);
@@ -75,6 +98,16 @@ pub(crate) fn sandboxed_makepkg(
     cmd.args(["--ro-bind", "/", "/"]);
     // The one writable exception: the build's own directory.
     cmd.args(["--bind", &build_dir_s, &build_dir_s]);
+    // Any configured PKGDEST/SRCDEST/SRCPKGDEST/BUILDDIR that lives
+    // outside build_dir gets its own writable bind + matching env var,
+    // best-effort-created first since a fresh destination directory
+    // (e.g. a PKGDEST nobody's built into yet) may not exist yet.
+    for (var, path) in extra_dest_dirs {
+        let _ = std::fs::create_dir_all(path);
+        let path_s = path.to_string_lossy().to_string();
+        cmd.args(["--bind", &path_s, &path_s]);
+        cmd.args(["--setenv", *var, &path_s]);
+    }
     // Isolated, empty $HOME -- overrides whatever the "/" ro-bind above
     // would otherwise expose at this path.
     cmd.args(["--tmpfs", &fake_home_s]);
