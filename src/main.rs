@@ -234,8 +234,12 @@ struct Cli {
     #[arg(long = "no-sandbox")]
     no_sandbox: bool,
 
-    /// Open PKGBUILD for editing before building (ABS: opens in $EDITOR;
-    /// AUR: passes aura's own --hotedit, since aura owns that build flow)
+    /// Open PKGBUILD for editing before building. Currently only wired up
+    /// for --abs (opens in $EDITOR before the build). AUR builds no longer
+    /// go through `aura -A --hotedit` since the AUR path was moved to a
+    /// direct git-clone + pkgctl-build flow (see aur.rs) -- --edit is a
+    /// no-op there for now; pass it through to aur_install() if/when that
+    /// gets its own editor-before-build support.
     #[arg(long = "edit")]
     edit: bool,
 
@@ -1511,10 +1515,7 @@ fn run() -> anyhow::Result<()> {
             print_emerge_emerging(&pkg_infos);
             let found_names: Vec<String> = pkg_infos.iter().map(|p| p.name.clone()).collect();
             scan_aur_pkgbuilds_or_abort(&found_names);
-            let mut aur_args = vec!["-A"];
-            aur_args.extend(&base_args);
-            if cli.edit { aur_args.push("--hotedit"); }
-            success = run_cmd(AURA_BIN, &aur_args, &found_names);
+            success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.no_sandbox);
             if success { installed_infos = pkg_infos; }
         } else {
             // Probe official repos in a way that's safe against partial matches:
@@ -1594,10 +1595,7 @@ fn run() -> anyhow::Result<()> {
                 print_emerge_emerging(&pkg_infos);
                 let found_names: Vec<String> = pkg_infos.iter().map(|p| p.name.clone()).collect();
                 scan_aur_pkgbuilds_or_abort(&found_names);
-                let mut aur_args = vec!["-A"];
-                aur_args.extend(&base_args);
-                if cli.edit { aur_args.push("--hotedit"); }
-                success = run_cmd(AURA_BIN, &aur_args, &found_names);
+                success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.no_sandbox);
                 if success { installed_infos = pkg_infos; }
             } else {
                 // Mixed case: some packages are official, some need the AUR.
@@ -1633,10 +1631,7 @@ fn run() -> anyhow::Result<()> {
                 if !aur_infos.is_empty() {
                     let aur_found_names: Vec<String> = aur_infos.iter().map(|p| p.name.clone()).collect();
                     scan_aur_pkgbuilds_or_abort(&aur_found_names);
-                    let mut aur_args = vec!["-A"];
-                    aur_args.extend(&base_args);
-                    if cli.edit { aur_args.push("--hotedit"); }
-                    let aur_success = run_cmd(AURA_BIN, &aur_args, &aur_found_names);
+                    let aur_success = aur_install(&aur_found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.no_sandbox);
                     if aur_success {
                         installed_infos.extend(aur_infos);
                     } else {
@@ -1658,8 +1653,8 @@ fn run() -> anyhow::Result<()> {
         if !cli.pretend {
             if !installed_infos.is_empty() {
                 // installed_infos was resolved before the real install ran
-                // (before aura -A's git pull, for AUR targets) — catch up
-                // to whatever actually landed on disk before displaying it.
+                // (before the AUR git clone/build, for AUR targets) — catch
+                // up to whatever actually landed on disk before displaying it.
                 refresh_installed_versions(&mut installed_infos);
                 print_emerge_completed(&installed_infos);
             }

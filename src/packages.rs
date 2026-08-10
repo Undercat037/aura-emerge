@@ -649,6 +649,23 @@ fn resolve_and_build_aur(
     crate::security::scan_aur_pkgbuilds_or_abort(&[pkgbase.clone()]);
 
     let srcinfo_path = dir.join(".SRCINFO");
+
+    // Cheap integrity check: the `.SRCINFO` a package's own repo ships
+    // should declare itself as the same pkgbase we cloned by. A mismatch
+    // doesn't necessarily mean anything malicious (stale/uncommitted
+    // `.SRCINFO` is a known AUR foot-gun maintainers hit on their own
+    // packages), but it's cheap to catch and worth a heads-up either way.
+    if let Some(declared) = crate::aur::srcinfo_pkgbase(&srcinfo_path) {
+        if declared != pkgbase {
+            eprintln!(
+                "{} '{}' clone's .SRCINFO declares pkgbase '{}', which doesn't match -- the repo may be stale or the AUR git branch mismatched.",
+                ">>> Warning:".yellow().bold(),
+                pkgbase,
+                declared
+            );
+        }
+    }
+
     let deps = crate::aur::srcinfo_dependencies(&srcinfo_path).unwrap_or_else(|| {
         eprintln!(
             "{} '{}' has no readable .SRCINFO -- proceeding without a dependency list (pkgctl build/makepkg will still catch a genuinely missing dependency, just later and less clearly).",
