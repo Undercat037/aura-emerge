@@ -720,6 +720,13 @@ pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
 
     let isolation = choose_build_isolation(no_sandbox);
 
+    // Wiped unconditionally on every run: this only ever holds the AUR
+    // metadata clones (PKGBUILD/.SRCINFO/etc, small, fast to re-clone)
+    // plus whatever makepkg builds into $srcdir/$pkgdir by default. The
+    // actual expensive-to-redownload VCS sources for -git/-hg/-svn
+    // packages live outside this tree entirely now -- see
+    // `source_cache_dir` -- so this wipe doesn't cost a re-download of
+    // those on the next run.
     let build_base = std::path::PathBuf::from(AUR_BUILD_BASE);
     if build_base.exists() {
         let _ = std::fs::remove_dir_all(&build_base);
@@ -972,14 +979,25 @@ fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, one
     if skippgp { makepkg_args.push("--skippgpcheck"); }
 
     let real_gnupg = std::env::var("HOME").ok().map(|h| std::path::PathBuf::from(h).join(".gnupg"));
-    let extra_dest_dirs = extra_makepkg_dest_dirs(build_dir);
-    if !extra_dest_dirs.is_empty() {
-        let var_names: Vec<&str> = extra_dest_dirs.iter().map(|(v, _)| *v).collect();
+    let (extra_dest_dirs, default_source_cache) = resolve_dest_dirs(build_dir);
+    let user_configured: Vec<&str> = extra_dest_dirs
+        .iter()
+        .filter(|(name, _)| !(*name == "SRCDEST" && default_source_cache.is_some()))
+        .map(|(v, _)| *v)
+        .collect();
+    if !user_configured.is_empty() {
         println!(
             "{} makepkg.conf sets {} outside the build directory -- binding {} into the sandbox so this build can still write there.",
             ">>>".green().bold(),
-            var_names.join(", "),
-            if extra_dest_dirs.len() == 1 { "it" } else { "them" }
+            user_configured.join(", "),
+            if user_configured.len() == 1 { "it" } else { "them" }
+        );
+    }
+    if let Some(cache) = &default_source_cache {
+        println!(
+            "{} caching sources under {} -- VCS sources (-git/-hg/-svn) fetch incrementally on rebuild instead of re-cloning; pass SRCDEST in makepkg.conf to change this.",
+            ">>>".green().bold(),
+            cache.display()
         );
     }
     let build_ok = crate::sandbox::sandboxed_makepkg(MAKEPKG_BIN, build_dir, &makepkg_args, real_gnupg.as_deref(), &extra_dest_dirs)
@@ -1040,12 +1058,23 @@ fn legacy_makepkg_si(build_dir: &std::path::Path, ask: bool, oneshot: bool, skip
     if oneshot { makepkg_args.push("--asdeps"); }
     if skippgp { makepkg_args.push("--skippgpcheck"); }
 
-    Command::new(MAKEPKG_BIN)
-        .args(&makepkg_args)
-        .current_dir(build_dir)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    let mut cmd = Command::new(MAKEPKG_BIN);
+    cmd.args(&makepkg_args).current_dir(build_dir);
+
+    // This path runs unsandboxed with the real $HOME, so makepkg
+    // resolves the rest of makepkg.conf on its own -- the only thing
+    // that needs an explicit override here is aura-emerge's own default
+    // SRCDEST (when the user hasn't set one), for the same reason
+    // `build_with_sandbox` needs it: see `source_cache_dir`'s doc
+    // comment. Re-setting a var the user *did* configure to the same
+    // value it would already resolve to is harmless, so no need to
+    // filter those out here.
+    for (var, path) in resolve_dest_dirs(build_dir).0 {
+        let _ = fs::create_dir_all(&path);
+        cmd.env(var, &path);
+    }
+
+    cmd.status().map(|s| s.success()).unwrap_or(false)
 }
 
 /// Build and install packages from ABS via `pkgctl repo clone` + `makepkg -si`
@@ -1099,7 +1128,10 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
 
     if pretend { return true; }
 
-    // Clean up any stale build dir from interrupted previous run
+    // Clean up any stale build dir from interrupted previous run. Same
+    // as AUR_BUILD_BASE's cleanup in aur_install(): the persistent
+    // source cache (source_cache_dir) lives outside this tree, so
+    // wiping it doesn't force a VCS re-clone on the next run.
     let build_base = std::path::PathBuf::from(ABS_BUILD_BASE);
     if build_base.exists() {
         let _ = std::fs::remove_dir_all(&build_base);
@@ -1310,6 +1342,12 @@ pub(crate) fn current_arch() -> String {
 /// once the build actually finishes -- see `sandbox::sandboxed_makepkg`'s
 /// doc comment for how each pair returned here gets bound+exported into
 /// the jail.
+///
+/// Deliberately doesn't inject the default source-cache SRCDEST itself
+/// (see `source_cache_dir`/`resolve_dest_dirs` below) -- this function's
+/// job is strictly "what did the *user* configure", which
+/// `build_with_sandbox`'s log message relies on to only mention
+/// makepkg.conf when makepkg.conf is actually why a dir is being bound.
 pub(crate) fn extra_makepkg_dest_dirs(build_dir: &std::path::Path) -> Vec<(&'static str, std::path::PathBuf)> {
     let vars = read_makepkg_vars();
     ["PKGDEST", "SRCDEST", "SRCPKGDEST", "BUILDDIR"]
@@ -1326,6 +1364,63 @@ pub(crate) fn extra_makepkg_dest_dirs(build_dir: &std::path::Path) -> Vec<(&'sta
             Some((name, path))
         })
         .collect()
+}
+
+/// Persistent home for `SRCDEST` when the user hasn't configured their
+/// own in makepkg.conf (the common case -- Arch ships it commented out).
+/// `None` only if `$HOME` can't be determined at all.
+///
+/// Why this exists: without an explicit, *stable* SRCDEST, makepkg
+/// downloads VCS sources (`git+`/`hg+`/`svn+`/`bzr+` entries, i.e. every
+/// `-git`/`-hg`/`-svn` AUR package) straight into `$srcdir` under
+/// `build_dir` -- which both `aur_install` and `abs_install` `rm -rf`
+/// at the start of every run (see `AUR_BUILD_BASE`/`ABS_BUILD_BASE`
+/// cleanup). That means a package with large upstream repos gets
+/// re-cloned from scratch on every single run, including a bare retry
+/// after a build failure that happened *after* the clone already
+/// finished (a two-repo, 700+ MiB `-git` package whose `prepare()` died
+/// is exactly what prompted adding this).
+///
+/// Pointing SRCDEST here instead fixes that for free: makepkg's own VCS
+/// handling already keeps a local mirror clone under `$SRCDEST/<dir>`
+/// and does an incremental `git fetch`/`hg pull`/etc. against it on
+/// every subsequent build instead of a fresh clone, as long as SRCDEST
+/// resolves to the same path every time -- which it now does, since
+/// this is intentionally outside `build_dir`/`AUR_BUILD_BASE`/
+/// `ABS_BUILD_BASE` and therefore survives their wipes.
+///
+/// Non-VCS sources (plain tarball/file `source=()` entries) benefit
+/// less -- makepkg already checksums those against `sha256sums`/etc.
+/// and skips re-downloading an unchanged file it finds here, so this is
+/// mostly free reuse for those too, just not the main motivation.
+pub(crate) fn source_cache_dir() -> Option<std::path::PathBuf> {
+    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
+        if !xdg.is_empty() {
+            return Some(std::path::PathBuf::from(xdg).join("aura-emerge/sources"));
+        }
+    }
+    let home = std::env::var("HOME").ok()?;
+    Some(std::path::PathBuf::from(home).join(".cache/aura-emerge/sources"))
+}
+
+/// What actually gets bound into the sandbox / exported as env for a
+/// build: `extra_makepkg_dest_dirs` (user's own config) plus, only when
+/// the user hasn't set SRCDEST themselves, aura-emerge's own default
+/// source cache. The second element of the tuple is that default cache
+/// path, `Some` only when it was actually added here -- callers use it
+/// to log the source-cache case separately from "your makepkg.conf
+/// points somewhere unusual", since those mean different things to the
+/// user.
+pub(crate) fn resolve_dest_dirs(build_dir: &std::path::Path) -> (Vec<(&'static str, std::path::PathBuf)>, Option<std::path::PathBuf>) {
+    let mut dirs = extra_makepkg_dest_dirs(build_dir);
+    let mut default_cache = None;
+    if !dirs.iter().any(|(name, _)| *name == "SRCDEST") {
+        if let Some(cache) = source_cache_dir() {
+            dirs.push(("SRCDEST", cache.clone()));
+            default_cache = Some(cache);
+        }
+    }
+    (dirs, default_cache)
 }
 
 /// Merge /etc/makepkg.conf with user overrides using makepkg's own
