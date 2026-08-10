@@ -652,6 +652,30 @@ pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
         return true;
     }
 
+    // Refresh the sync databases before resolving anything below --
+    // `pacman -S`/`-Si` (used both for the declared-dependency install in
+    // build_with_sandbox and for every is_satisfiable_without_aur() check
+    // during AUR-dependency resolution) only ever sees whatever the last
+    // `-Sy` left behind; a stale db is the easy way to get a spurious
+    // "target not found" for a package that's actually available.
+    // `pkgctl build` used to cover this on its own (it synced its own
+    // chroot's db every run) -- now that bwrap is the primary sandbox and
+    // doesn't have its own separate db, this has to happen explicitly.
+    //
+    // Deliberately plain `-Sy`, not `-Syu`: this is meant to freshen
+    // dependency resolution for the AUR package(s) requested here, not to
+    // opportunistically upgrade the whole system as a side effect of
+    // installing one AUR package -- that's `--update`'s job. This does
+    // still carry the usual `-Sy`-without-`-u` partial-upgrade caveat
+    // (a newly-synced dependency pulled in below could need a newer
+    // library than what's on the rest of the system), which only a real
+    // `-Syu` fully avoids.
+    println!("{} Synchronizing package databases...", ">>>".green().bold());
+    if !Command::new(SUDO_BIN).args([PACMAN_BIN, "-Sy"]).status().map(|s| s.success()).unwrap_or(false) {
+        eprintln!("{} failed to synchronize pacman databases", ">>> Error:".red().bold());
+        return false;
+    }
+
     // Pre-check by the requested name(s) before doing any work at all --
     // the authoritative per-pkgbase scan still happens inside
     // resolve_and_build_aur() once the real pkgbase is known (matters
@@ -913,7 +937,17 @@ fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, one
     if skippgp { makepkg_args.push("--skippgpcheck"); }
 
     let real_gnupg = std::env::var("HOME").ok().map(|h| std::path::PathBuf::from(h).join(".gnupg"));
-    let build_ok = crate::sandbox::sandboxed_makepkg(MAKEPKG_BIN, build_dir, &makepkg_args, real_gnupg.as_deref())
+    let extra_dest_dirs = extra_makepkg_dest_dirs(build_dir);
+    if !extra_dest_dirs.is_empty() {
+        let var_names: Vec<&str> = extra_dest_dirs.iter().map(|(v, _)| *v).collect();
+        println!(
+            "{} makepkg.conf sets {} outside the build directory -- binding {} into the sandbox so this build can still write there.",
+            ">>>".green().bold(),
+            var_names.join(", "),
+            if extra_dest_dirs.len() == 1 { "it" } else { "them" }
+        );
+    }
+    let build_ok = crate::sandbox::sandboxed_makepkg(MAKEPKG_BIN, build_dir, &makepkg_args, real_gnupg.as_deref(), &extra_dest_dirs)
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
@@ -1232,6 +1266,33 @@ pub(crate) fn current_arch() -> String {
     cmd_stdout(UNAME_BIN, &["-m"]).unwrap_or_else(|| std::env::consts::ARCH.to_string())
 }
 
+/// makepkg destination-directory overrides (`PKGDEST`/`SRCDEST`/
+/// `SRCPKGDEST`/`BUILDDIR`) that resolve to somewhere *outside*
+/// `build_dir` -- `sandboxed_makepkg`'s base `--bind build_dir build_dir`
+/// only makes `build_dir` itself writable inside the jail, so a
+/// configured destination elsewhere (a `~/.makepkg.conf` with e.g.
+/// `PKGDEST=$HOME/pkgs`, a common setup) would otherwise fail to write
+/// once the build actually finishes -- see `sandbox::sandboxed_makepkg`'s
+/// doc comment for how each pair returned here gets bound+exported into
+/// the jail.
+pub(crate) fn extra_makepkg_dest_dirs(build_dir: &std::path::Path) -> Vec<(&'static str, std::path::PathBuf)> {
+    let vars = read_makepkg_vars();
+    ["PKGDEST", "SRCDEST", "SRCPKGDEST", "BUILDDIR"]
+        .into_iter()
+        .filter_map(|name| {
+            let raw = vars.get(name)?;
+            if raw.is_empty() {
+                return None;
+            }
+            let path = std::path::PathBuf::from(raw);
+            if !path.is_absolute() || path.starts_with(build_dir) {
+                return None; // relative (resolves inside build_dir's cwd anyway) or already covered
+            }
+            Some((name, path))
+        })
+        .collect()
+}
+
 /// Merge /etc/makepkg.conf with user overrides using makepkg's own
 /// precedence order. Sourced via bash so arrays/`$(nproc)`/quoting are
 /// handled correctly instead of hand-parsed.
@@ -1239,6 +1300,7 @@ pub(crate) fn read_makepkg_vars() -> HashMap<String, String> {
     let watched = [
         "CARCH", "CHOST", "CFLAGS", "CXXFLAGS", "LDFLAGS", "RUSTFLAGS",
         "MAKEFLAGS", "OPTIONS", "BUILDENV", "PKGEXT",
+        "PKGDEST", "SRCDEST", "SRCPKGDEST", "BUILDDIR",
     ];
     let mut dump = String::new();
     for v in &watched {
