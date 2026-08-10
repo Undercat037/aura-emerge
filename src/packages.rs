@@ -530,12 +530,19 @@ fn is_satisfiable_without_aur(name: &str) -> bool {
 /// (`security::scan_aur_pkgbuilds_or_abort`) used for top-level targets
 /// before its build starts -- recursively-pulled-in dependencies get
 /// exactly the same scrutiny as something the user typed directly.
+///
+/// `edit`/`is_top_level`: opens `$EDITOR` on this clone's PKGBUILD
+/// before building, but only when both are true -- i.e. never for a
+/// recursively-resolved dependency (`is_top_level` is hardcoded `false`
+/// on the recursive call below), regardless of what `edit` is.
 fn resolve_and_build_aur(
     pkg: &str,
     build_root: &std::path::Path,
     ask: bool,
     skippgp: bool,
     mark_asdeps: bool,
+    edit: bool,
+    is_top_level: bool,
     isolation: BuildIsolation,
     building: &mut HashSet<String>,
     built: &mut HashMap<String, Vec<String>>,
@@ -555,6 +562,34 @@ fn resolve_and_build_aur(
 
     let fetched = crate::security::scan_aur_pkgbuilds_or_abort(&[pkgbase.clone()]);
     crate::security::verify_local_clone_or_rescan(&pkgbase, &dir, fetched.get(&pkgbase));
+
+    // Open PKGBUILD in $EDITOR before building, same as --edit does for
+    // --abs -- only for a directly-requested package, never for a
+    // recursively-pulled-in dependency (nobody wants an editor popping
+    // up for every AUR-only transitive dep of the one thing they asked
+    // for). Re-verifying against the *same* pre-edit `fetched` baseline
+    // afterward means an actual edit (content now differs from what was
+    // scanned above) gets scanned again automatically, same as any other
+    // clone/cgit mismatch -- see `verify_local_clone_or_rescan`.
+    if edit && is_top_level {
+        let editor = std::env::var("EDITOR")
+            .or_else(|_| std::env::var("VISUAL"))
+            .unwrap_or_else(|_| "nano".to_string());
+        let pkgbuild = dir.join("PKGBUILD");
+        println!("{} Opening {} in {}...", ">>>".green().bold(), "PKGBUILD".bold(), editor.green().bold());
+        println!("{} Save and close the editor to continue building.", ">>>".yellow().bold());
+        Command::new(&editor).arg(&pkgbuild).status().ok();
+        eprintln!(
+            "{} if you changed depends/makedepends/checkdepends, note this doesn't regenerate .SRCINFO -- \
+            aura-emerge deliberately never re-executes an edited PKGBUILD to do that automatically (see \
+            bash_ast.rs's doc comment for why), so dependency resolution below still reflects the \
+            pre-edit .SRCINFO. Run `makepkg --printsrcinfo > .SRCINFO` in {} yourself first if you need \
+            the new dependencies picked up.",
+            ">>> Note:".yellow().bold(),
+            dir.display()
+        );
+        crate::security::verify_local_clone_or_rescan(&pkgbase, &dir, fetched.get(&pkgbase));
+    }
 
     let srcinfo_path = dir.join(".SRCINFO");
 
@@ -588,7 +623,7 @@ fn resolve_and_build_aur(
         if is_satisfiable_without_aur(dep) {
             continue;
         }
-        match resolve_and_build_aur(dep, build_root, ask, skippgp, true, isolation, building, built) {
+        match resolve_and_build_aur(dep, build_root, ask, skippgp, true, false, false, isolation, building, built) {
             Some(mut tars) => aur_dep_tarballs.append(&mut tars),
             None => {
                 eprintln!(
@@ -630,7 +665,7 @@ pub(crate) const AUR_BUILD_BASE: &str = "/tmp/aura-emerge-aur";
 /// (`bwrap` -> unsandboxed `makepkg -si`, see `choose_build_isolation`)
 /// instead of shelling out to `aura -A`. `pkgctl` is not involved here
 /// at all -- only `--abs` ever calls it, and only for `repo clone`.
-pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, no_sandbox: bool) -> bool {
+pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, no_sandbox: bool) -> bool {
     if !std::path::Path::new("/usr/bin/git").exists() {
         eprintln!("{} required binary not found: /usr/bin/git", ">>> Fatal:".red().bold());
         return false;
@@ -707,7 +742,7 @@ pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
             pkg.green().bold()
         );
         println!();
-        if resolve_and_build_aur(pkg, &build_base, ask, skippgp, oneshot, isolation, &mut building, &mut built).is_none() {
+        if resolve_and_build_aur(pkg, &build_base, ask, skippgp, oneshot, edit, true, isolation, &mut building, &mut built).is_none() {
             all_ok = false;
         }
     }
@@ -808,7 +843,7 @@ pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbo
     }
 
     let upgrade_names: Vec<String> = to_upgrade.iter().map(|(n, _, _)| n.clone()).collect();
-    aur_install(&upgrade_names, false, ask, false, skippgp, no_sandbox)
+    aur_install(&upgrade_names, false, ask, false, skippgp, false, no_sandbox)
 }
 
 /// Installs already-built `*.pkg.tar.*` files directly via `pacman -U`

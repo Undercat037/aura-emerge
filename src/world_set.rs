@@ -321,7 +321,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
         // (see packages.rs) and, unlike the old `aura -A`, always leaves
         // the explicit bit set on success — no separate mark_asexplicit()
         // call needed here the way the old `aura -A` path required.
-        if !aur_install(&aur_missing, false, ask, false, false, no_sandbox) {
+        if !aur_install(&aur_missing, false, ask, false, false, false, no_sandbox) {
             overall_ok = false;
             eprintln!(">>> Warning: some AUR package(s) failed to install.");
         }
@@ -353,7 +353,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
             ">>>".green().bold(), resolved_aur.len()
         );
         scan_aur_pkgbuilds_or_abort(&resolved_aur);
-        if aur_install(&resolved_aur, false, ask, false, false, no_sandbox) {
+        if aur_install(&resolved_aur, false, ask, false, false, false, no_sandbox) {
             if let Err(e) = add_to_world_set(&resolved_aur, Some("aur")) {
                 eprintln!(">>> Warning: package(s) installed but world.set was not updated: {:#}", e);
             }

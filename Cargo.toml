@@ -1,6 +1,6 @@
 [package]
 name = "aura-emerge"
-version = "1.34.11"
+version = "1.34.13"
 edition = "2021"
 license = "GPL-3.0-or-later"
 
@@ -10,5 +10,5 @@ clap_complete = "4.4"
 clap_mangen = "0.2"
 colored = "2"
 anyhow = "1"
-tree-sitter = "0.20"
-tree-sitter-bash = "0.20"
+tree-sitter = "0.25"
+tree-sitter-bash = "0.25"

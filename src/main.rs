@@ -235,12 +235,18 @@ struct Cli {
     #[arg(long = "no-sandbox")]
     no_sandbox: bool,
 
-    /// Open PKGBUILD for editing before building. Currently only wired up
-    /// for --abs (opens in $EDITOR before the build). AUR builds no longer
-    /// go through `aura -A --hotedit` since the AUR path was moved to a
-    /// direct git-clone + bwrap-build flow (see aur.rs) -- --edit is a
-    /// no-op there for now; pass it through to aur_install() if/when that
-    /// gets its own editor-before-build support.
+    /// Open PKGBUILD for editing before building. Opens $EDITOR on the
+    /// checkout that will actually be built -- the ABS `pkgctl repo
+    /// clone` checkout for --abs, or the AUR git clone for --aur/plain
+    /// installs (see `resolve_and_build_aur`'s `edit`/`is_top_level`
+    /// handling) -- never a separately-fetched copy. Only applies to a
+    /// directly-requested package, not to a recursively-pulled-in AUR
+    /// dependency, and not to batch paths (--update's @world provisioning,
+    /// --aur -u). Editing a PKGBUILD does NOT regenerate its `.SRCINFO`
+    /// (see bash_ast.rs's doc comment for why aura-emerge won't
+    /// re-execute an edited PKGBUILD to do that automatically) -- a
+    /// dependency-array edit needs a manual `makepkg --printsrcinfo` in
+    /// the checkout to actually take effect.
     #[arg(long = "edit")]
     edit: bool,
 
@@ -1194,7 +1200,7 @@ fn run() -> anyhow::Result<()> {
                     // aur_install() always leaves the explicit bit set on
                     // success (see its doc comment) — no separate
                     // mark_asexplicit() call needed the way `aura -A` required.
-                    if aur_install(&names, false, cli.ask, false, cli.skippgp, cli.no_sandbox) {
+                    if aur_install(&names, false, cli.ask, false, cli.skippgp, cli.edit, cli.no_sandbox) {
                         if let Err(e) = add_to_world_set(&names, Some("aur")) {
                             eprintln!(">>> Warning: package(s) reinstalled but world.set was not updated: {:#}", e);
                         }
@@ -1580,7 +1586,7 @@ fn run() -> anyhow::Result<()> {
             print_emerge_emerging(&pkg_infos);
             let found_names: Vec<String> = pkg_infos.iter().map(|p| p.name.clone()).collect();
             scan_aur_pkgbuilds_or_abort(&found_names);
-            success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.no_sandbox);
+            success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox);
             if success { installed_infos = pkg_infos; }
         } else {
             // Probe official repos in a way that's safe against partial matches:
@@ -1660,7 +1666,7 @@ fn run() -> anyhow::Result<()> {
                 print_emerge_emerging(&pkg_infos);
                 let found_names: Vec<String> = pkg_infos.iter().map(|p| p.name.clone()).collect();
                 scan_aur_pkgbuilds_or_abort(&found_names);
-                success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.no_sandbox);
+                success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox);
                 if success { installed_infos = pkg_infos; }
             } else {
                 // Mixed case: some packages are official, some need the AUR.
@@ -1696,7 +1702,7 @@ fn run() -> anyhow::Result<()> {
                 if !aur_infos.is_empty() {
                     let aur_found_names: Vec<String> = aur_infos.iter().map(|p| p.name.clone()).collect();
                     scan_aur_pkgbuilds_or_abort(&aur_found_names);
-                    let aur_success = aur_install(&aur_found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.no_sandbox);
+                    let aur_success = aur_install(&aur_found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox);
                     if aur_success {
                         installed_infos.extend(aur_infos);
                     } else {
