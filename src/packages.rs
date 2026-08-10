@@ -123,12 +123,16 @@ pub(crate) fn mark_asdeps(pkgs: &[String]) {
 
 /// Probe official repos in a single call using --print-format.
 /// Returns Some(infos) if packages are found, None otherwise.
+///
+/// `-Sp --print-format` is a plain pacman feature (aura just forwarded it
+/// unchanged) -- calling pacman directly here needs no privilege
+/// escalation, same as when this went through aura.
 pub(crate) fn probe_official(pkgs: &[String]) -> Option<Vec<PkgInfo>> {
     let mut args = vec!["-Sp", "--print-format", "%n %v", "--color", "never"];
     let pkg_refs: Vec<&str> = pkgs.iter().map(String::as_str).collect();
     args.extend_from_slice(&pkg_refs);
 
-    let output = Command::new(AURA_BIN)
+    let output = Command::new(PACMAN_BIN)
         .args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -196,55 +200,37 @@ pub(crate) fn probe_official_split(pkgs: &[String]) -> (Vec<PkgInfo>, Vec<String
     (found, missing)
 }
 
-/// Fetch AUR package info via -Ai output parsing, split into resolved
+/// Fetch AUR package info via the official AUR RPC, split into resolved
 /// hits and names AUR genuinely doesn't have.
 ///
-/// `aura -Ai <pkg>` exits successfully with empty stdout for a name AUR
-/// doesn't know about — it does not fail the command. The previous
-/// resolve_aur() didn't check for that, so a single bogus/typo'd/pulled-
-/// from-AUR name silently produced a fake PkgInfo{name: pkg, version: "?"}
-/// entry that *looked* resolved. That fake entry then got handed to
-/// `aura -A` alongside everything else, and one nonexistent target fails
-/// aura's entire transaction — so a batch install of 10 packages where
-/// just one no longer existed installed zero of them.
-///
-/// This returns a PkgInfo only for names -Ai actually described (a "Name"
-/// line was present in its output); everything else comes back in the
-/// second Vec so the caller can drop it from the install args and report
-/// it instead of silently failing the whole batch.
+/// A single batched `aur::rpc_info()` call replaces what used to be one
+/// `aura -Ai <pkg>` subprocess per name -- `aura -Ai` exited successfully
+/// with empty stdout for a name AUR doesn't know about (it never failed
+/// the command), so the split here works the same way: a name missing
+/// from the RPC result set is "not found", not an error. This returns a
+/// PkgInfo only for names the RPC actually described; everything else
+/// comes back in the second Vec so the caller can drop it from the
+/// install args and report it instead of silently failing the whole
+/// batch (a batch install of 10 packages where one no longer exists
+/// should still install the other 9).
 pub(crate) fn resolve_aur_split(pkgs: &[String]) -> (Vec<PkgInfo>, Vec<String>) {
+    let infos = crate::aur::rpc_info(pkgs);
+    let by_name: HashMap<&str, &crate::aur::AurPkgInfo> =
+        infos.iter().map(|i| (i.name.as_str(), i)).collect();
+
     let mut result = Vec::new();
     let mut missing = Vec::new();
     for pkg in pkgs {
-        let output = Command::new(AURA_BIN)
-            .args(["-Ai", pkg])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .output();
-
-        let stdout = match &output {
-            Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
-            Err(_) => String::new(),
-        };
-
-        let mut name: Option<String> = None;
-        let mut version = String::from("?");
-        for line in stdout.lines() {
-            if line.starts_with("Name") {
-                if let Some(v) = line.split(':').nth(1) {
-                    name = Some(v.trim().to_string());
-                }
-            } else if line.starts_with("Version") {
-                if let Some(v) = line.split(':').nth(1) {
-                    version = v.trim().to_string();
-                }
-            }
-        }
-
-        match name {
-            Some(name) => {
-                let status = pkg_status(&name, &version);
-                result.push(PkgInfo { name, version, repo: "aur".to_string(), status });
+        let bare = pkg.split('/').last().unwrap_or(pkg);
+        match by_name.get(bare) {
+            Some(info) => {
+                let status = pkg_status(&info.name, &info.version);
+                result.push(PkgInfo {
+                    name: info.name.clone(),
+                    version: info.version.clone(),
+                    repo: "aur".to_string(),
+                    status,
+                });
             }
             None => missing.push(pkg.clone()),
         }
@@ -776,6 +762,102 @@ pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
     all_ok
 }
 
+/// Upgrades every foreign (AUR-or-local) installed package that's newer
+/// in the AUR than what's installed -- replaces `aura -Au`. "Foreign"
+/// here means `pacman -Qm` (installed but not in a synced official repo),
+/// which is also what `aura -Au` itself worked from; a package installed
+/// from ABS shows up here too and is silently skipped once the AUR RPC
+/// doesn't know its name (no separate ABS-upgrade path exists yet).
+///
+/// `pretend` prints the would-upgrade list and returns without touching
+/// anything (mirrors `aura -Au --dryrun`). Real runs delegate the actual
+/// build+install to `aur_install()` -- the same pkgctl/bwrap-sandboxed
+/// path used for a fresh AUR install, so an upgrade gets exactly the same
+/// isolation and PKGBUILD scanning as `emerge --aur <pkg>` does.
+pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbox: bool) -> bool {
+    let foreign = match Command::new(PACMAN_BIN)
+        .args(["-Qm"])
+        .env("LC_ALL", "C")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+    {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).into_owned(),
+        _ => {
+            eprintln!("{} failed to list foreign (AUR/local) packages (pacman -Qm)", ">>> Error:".red().bold());
+            return false;
+        }
+    };
+
+    let installed: Vec<(String, String)> = foreign
+        .lines()
+        .filter_map(|l| {
+            let mut parts = l.split_whitespace();
+            let name = parts.next()?.to_string();
+            let ver = parts.next()?.to_string();
+            Some((name, ver))
+        })
+        .collect();
+
+    if installed.is_empty() {
+        println!(">>> No foreign (AUR/local) packages installed — nothing to upgrade.");
+        return true;
+    }
+
+    let names: Vec<String> = installed.iter().map(|(n, _)| n.clone()).collect();
+    let latest = crate::aur::rpc_info(&names);
+    let latest_by_name: HashMap<&str, &crate::aur::AurPkgInfo> =
+        latest.iter().map(|i| (i.name.as_str(), i)).collect();
+
+    let mut to_upgrade: Vec<(String, String, String)> = Vec::new(); // (name, old, new)
+    let mut not_in_aur: Vec<String> = Vec::new();
+    for (name, installed_ver) in &installed {
+        match latest_by_name.get(name.as_str()) {
+            Some(info) => {
+                let cmp: i32 = Command::new("vercmp")
+                    .args([installed_ver.as_str(), info.version.as_str()])
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().parse().unwrap_or(0))
+                    .unwrap_or(0);
+                if cmp < 0 {
+                    to_upgrade.push((name.clone(), installed_ver.clone(), info.version.clone()));
+                }
+            }
+            None => not_in_aur.push(name.clone()),
+        }
+    }
+
+    if !not_in_aur.is_empty() {
+        // Expected/routine for anything installed via --abs (ABS builds
+        // aren't in the AUR at all) — a quiet note, not a warning.
+        println!(
+            ">>> {} foreign package(s) not found in the AUR (likely --abs-built) — skipped: {}",
+            not_in_aur.len(),
+            not_in_aur.join(", ")
+        );
+    }
+
+    if to_upgrade.is_empty() {
+        println!(">>> No AUR packages out of date.");
+        return true;
+    }
+
+    println!();
+    for (name, old, new) in &to_upgrade {
+        println!("[{} {:<4}] {} [{} -> {}]", "ebuild".green(), "U".yellow().bold(), name.yellow().bold(), old, new);
+    }
+    println!();
+    println!("{}: {} AUR package(s) to upgrade", "Total".bold(), to_upgrade.len());
+    println!();
+
+    if pretend {
+        return true;
+    }
+
+    let upgrade_names: Vec<String> = to_upgrade.iter().map(|(n, _, _)| n.clone()).collect();
+    aur_install(&upgrade_names, false, ask, false, skippgp, no_sandbox)
+}
+
 /// Runs the untrusted PKGBUILD-defined functions (`pkgver`/`prepare`/
 /// `build`/`check`/`package`) for the package rooted at `build_dir`
 /// through the bwrap sandbox in `sandbox.rs`, then installs the result
@@ -1117,8 +1199,11 @@ pub(crate) fn portageq_shim(args: &[String]) {
 
 // ── --info ──────────────────────────────────────────────────────────────────
 
-/// Pull the first bare `X.Y[.Z]` version token out of a string — used on
-/// `aura --version` output, which mixes in ASCII-art banner text.
+/// Pull the first bare `X.Y[.Z]` version token out of a string. No longer
+/// called now that `print_system_info()` doesn't shell out to `aura
+/// --version`, but kept (small, generically useful for any "banner text
+/// + version" stdout) rather than deleted along with its one call site.
+#[allow(dead_code)]
 pub(crate) fn extract_version_token(text: &str) -> Option<String> {
     text.split(|c: char| c.is_whitespace() || c == ',')
         .map(|tok| tok.trim_start_matches('v'))
@@ -1285,10 +1370,6 @@ pub(crate) fn world_set_stats() -> Option<(usize, u64)> {
 /// Gentoo's `emerge --info`, adapted to aura/pacman (relabeled fields,
 /// same overall shape: uname/mem, repos, flags, world set).
 pub(crate) fn print_system_info() {
-    let aura_ver = cmd_stdout(AURA_BIN, &["--version"])
-        .and_then(|s| extract_version_token(&s))
-        .map(|v| format!("aura {}", v))
-        .unwrap_or_else(|| "aura unknown".to_string());
     let pacman_ver = cmd_stdout(PACMAN_BIN, &["--version"])
         .and_then(|s| {
             s.lines().find_map(|l| {
@@ -1310,10 +1391,9 @@ pub(crate) fn print_system_info() {
         .unwrap_or_else(|| "unknown".to_string());
 
     println!(
-        "{} {} ({}, {}, linux {}, {})",
+        "{} {} ({}, linux {}, {})",
         "aura-emerge".bold(),
         env!("CARGO_PKG_VERSION"),
-        aura_ver,
         pacman_ver,
         kernel,
         arch
@@ -1518,9 +1598,11 @@ pub(crate) fn preserved_rebuild(pretend: bool, ask: bool) {
         return;
     }
 
-    let mut args = vec!["-S", "--asdeps"];
+    // These are all official-repo dependencies (surfaced via `pacman -T`),
+    // so this is a plain pacman install -- no AUR resolution involved.
+    let mut args: Vec<&str> = vec![PACMAN_BIN, "-S", "--asdeps"];
     if !ask { args.push("--noconfirm"); }
-    if run_cmd(AURA_BIN, &args, &missing) {
+    if run_cmd(SUDO_BIN, &args, &missing) {
         mark_asdeps(&missing);
     }
 }

@@ -174,7 +174,7 @@ pub(crate) fn list_custom_sets() -> Vec<String> {
 ///
 /// Returns Ok(true) if everything resolvable installed cleanly (or this
 /// was a --pretend run), Ok(false) if something failed.
-pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, err_inst: bool) -> Result<bool> {
+pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, err_inst: bool, no_sandbox: bool) -> Result<bool> {
     println!("{} Provisioning system from world.set...", ">>>".green().bold());
 
     if !is_safe_path(WORLD_SET_FILE) {
@@ -305,10 +305,10 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
 
     if !official_missing.is_empty() {
         println!("{} Installing {} package(s) from official repos...", ">>>".green().bold(), official_missing.len());
-        let mut args = vec!["-S", "--needed"];
+        let mut args: Vec<&str> = vec![PACMAN_BIN, "-S", "--needed"];
         if verbose { args.push("--verbose"); }
         if !ask { args.push("--noconfirm"); }
-        if !run_cmd(AURA_BIN, &args, &official_missing) {
+        if !run_cmd(SUDO_BIN, &args, &official_missing) {
             overall_ok = false;
             eprintln!(">>> Warning: some official-repo package(s) failed to install.");
         }
@@ -317,14 +317,11 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
     if !aur_missing.is_empty() {
         println!("{} Installing {} AUR package(s)...", ">>>".green().bold(), aur_missing.len());
         scan_aur_pkgbuilds_or_abort(&aur_missing);
-        let mut args = vec!["-A", "--needed"];
-        if !ask { args.push("--noconfirm"); }
-        if run_cmd(AURA_BIN, &args, &aur_missing) {
-            // aura -A doesn't always leave the explicit bit set the way
-            // `pacman -S` does — force it so world.set and pacman's own
-            // bookkeeping stay in agreement.
-            mark_asexplicit(&aur_missing);
-        } else {
+        // aur_install() builds+installs via the pkgctl/bwrap-isolated path
+        // (see packages.rs) and, unlike the old `aura -A`, always leaves
+        // the explicit bit set on success — no separate mark_asexplicit()
+        // call needed here the way the old `aura -A` path required.
+        if !aur_install(&aur_missing, false, ask, false, false, no_sandbox) {
             overall_ok = false;
             eprintln!(">>> Warning: some AUR package(s) failed to install.");
         }
@@ -335,10 +332,10 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
             "{} Installing {} previously-unresolved package(s) from official repos...",
             ">>>".green().bold(), resolved_official.len()
         );
-        let mut args = vec!["-S", "--needed"];
+        let mut args: Vec<&str> = vec![PACMAN_BIN, "-S", "--needed"];
         if verbose { args.push("--verbose"); }
         if !ask { args.push("--noconfirm"); }
-        if run_cmd(AURA_BIN, &args, &resolved_official) {
+        if run_cmd(SUDO_BIN, &args, &resolved_official) {
             // Now that the real repo is known, fix the world.set entry
             // (it was previously Err/<name> or a bare <name>).
             if let Err(e) = add_to_world_set(&resolved_official, None) {
@@ -356,10 +353,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
             ">>>".green().bold(), resolved_aur.len()
         );
         scan_aur_pkgbuilds_or_abort(&resolved_aur);
-        let mut args = vec!["-A", "--needed"];
-        if !ask { args.push("--noconfirm"); }
-        if run_cmd(AURA_BIN, &args, &resolved_aur) {
-            mark_asexplicit(&resolved_aur);
+        if aur_install(&resolved_aur, false, ask, false, false, no_sandbox) {
             if let Err(e) = add_to_world_set(&resolved_aur, Some("aur")) {
                 eprintln!(">>> Warning: package(s) installed but world.set was not updated: {:#}", e);
             }
