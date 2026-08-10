@@ -14,6 +14,7 @@ mod security;
 mod news;
 mod bash_ast;
 mod sandbox;
+mod aur;
 
 use clap::Parser;
 use clap_complete::Shell;
