@@ -90,12 +90,17 @@ pub(crate) fn sandboxed_makepkg(
         "--share-net",
         "--proc", "/proc",
         "--dev", "/dev",
-        "--tmpfs", "/tmp",
     ]);
     // Whole real filesystem, read-only: build() still needs to see
     // /usr, /etc/makepkg.conf, toolchains, etc. -- it just can't touch
     // any of it.
     cmd.args(["--ro-bind", "/", "/"]);
+    // Isolated, writable /tmp -- must come AFTER the ro-bind above, not
+    // before: bwrap applies bind rules in argument order, so an earlier
+    // "--tmpfs /tmp" gets clobbered by the later "--ro-bind / /" and
+    // /tmp ends up read-only again (breaking the mkdir bwrap needs to do
+    // for the fake $HOME mount point under it, further down).
+    cmd.args(["--tmpfs", "/tmp"]);
     // The one writable exception: the build's own directory.
     cmd.args(["--bind", &build_dir_s, &build_dir_s]);
     // Any configured PKGDEST/SRCDEST/SRCPKGDEST/BUILDDIR that lives
