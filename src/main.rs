@@ -13,6 +13,7 @@ mod packages;
 mod security;
 mod news;
 mod bash_ast;
+mod sandbox;
 
 use clap::Parser;
 use clap_complete::Shell;
@@ -220,6 +221,17 @@ struct Cli {
     /// trusted keyserver before building with --abs, without prompting
     #[arg(long = "autopgp")]
     autopgp: bool,
+
+    /// Disable the bwrap sandbox for --abs builds and fall back to
+    /// plain `makepkg -si`, unisolated from the rest of the system.
+    /// By default (with bubblewrap installed), the PKGBUILD-defined
+    /// build functions run inside a bwrap namespace that can't see the
+    /// real $HOME or write anywhere outside its own build directory --
+    /// dependency installation and the final package install still run
+    /// normally, outside the sandbox, since neither one executes any
+    /// PKGBUILD-authored code.
+    #[arg(long = "no-sandbox")]
+    no_sandbox: bool,
 
     /// Open PKGBUILD for editing before building (ABS: opens in $EDITOR;
     /// AUR: passes aura's own --hotedit, since aura owns that build flow)
@@ -1482,7 +1494,7 @@ fn run() -> anyhow::Result<()> {
         let mut not_found: Vec<String> = Vec::new();
 
         if cli.abs {
-            success = abs_install(&target_pkgs, cli.pretend, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.autopgp);
+            success = abs_install(&target_pkgs, cli.pretend, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.autopgp, cli.no_sandbox);
         } else if cli.aur {
             let (pkg_infos, missing_aur) = resolve_aur_split(&target_pkgs);
             not_found = missing_aur;
