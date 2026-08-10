@@ -756,8 +756,15 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
 ///
 /// Files that couldn't be fetched are silently skipped, not treated as a
 /// hit — this only adds friction on actual findings, never on lookup failures.
-pub(crate) fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) {
+///
+/// Returns what was actually fetched per pkgbase (only for entries where
+/// the PKGBUILD fetch succeeded), so a caller that's about to build from
+/// a fresh `git clone` of the same pkgbase can diff the clone against
+/// what was scanned here instead of re-fetching and re-scanning
+/// unconditionally -- see `verify_local_clone_or_rescan`.
+pub(crate) fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) -> std::collections::HashMap<String, FetchedSource> {
     let mut any_findings = false;
+    let mut fetched: std::collections::HashMap<String, FetchedSource> = std::collections::HashMap::new();
     println!("{} Scanning AUR PKGBUILDs and .install hooks for suspicious patterns...", ">>>".green().bold());
 
     for pkg in pkgs {
@@ -766,6 +773,9 @@ pub(crate) fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) {
             None => continue,
         };
 
+        let install = resolve_install_filename(&pkgbuild_src)
+            .and_then(|name| fetch_aur_file(pkg, &name).map(|src| (name, src)));
+
         // (file label, Finding) pairs across both PKGBUILD and, if present,
         // the referenced .install hook.
         let mut pkg_findings: Vec<(String, Finding)> = scan_pkgbuild_source(&pkgbuild_src)
@@ -773,15 +783,15 @@ pub(crate) fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) {
             .map(|f| ("PKGBUILD".to_string(), f))
             .collect();
 
-        if let Some(install_name) = resolve_install_filename(&pkgbuild_src) {
-            if let Some(install_src) = fetch_aur_file(pkg, &install_name) {
-                pkg_findings.extend(
-                    scan_pkgbuild_source(&install_src)
-                        .into_iter()
-                        .map(|f| (install_name.clone(), f)),
-                );
-            }
+        if let Some((install_name, install_src)) = &install {
+            pkg_findings.extend(
+                scan_pkgbuild_source(install_src)
+                    .into_iter()
+                    .map(|f| (install_name.clone(), f)),
+            );
         }
+
+        fetched.insert(pkg.clone(), FetchedSource { pkgbuild: pkgbuild_src, install });
 
         if pkg_findings.is_empty() {
             continue;
@@ -799,15 +809,15 @@ pub(crate) fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) {
         // disclosed campaign is more actionable than a generic heuristic.
         // The specific campaign is named in each finding's own message.
         if !atomic.is_empty() {
-            print_finding_block(pkg, "Alert, matched a known-malicious IOC", &atomic, true);
+            print_finding_block(pkg, "Alert, matched a known-malicious IOC", &atomic, true, SourceOrigin::Cgit);
         }
         if !suspicious.is_empty() {
-            print_finding_block(pkg, "Warning, detected suspicious fragment", &suspicious, false);
+            print_finding_block(pkg, "Warning, detected suspicious fragment", &suspicious, false, SourceOrigin::Cgit);
         }
     }
 
     if !any_findings {
-        return;
+        return fetched;
     }
 
     eprintln!();
@@ -829,6 +839,116 @@ pub(crate) fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) {
         eprintln!("{} Aborted.", ">>>".red().bold());
         std::process::exit(1);
     }
+
+    fetched
+}
+
+/// A package's PKGBUILD (and, if referenced, `.install` hook) text as
+/// fetched from cgit during `scan_aur_pkgbuilds_or_abort`.
+pub(crate) struct FetchedSource {
+    pub pkgbuild: String,
+    pub install: Option<(String, String)>,
+}
+
+/// Re-checks the *actual* git checkout that's about to be built against
+/// whatever was already scanned in `scan_aur_pkgbuilds_or_abort`.
+///
+/// The cgit scan and the `git clone` are two separate fetches of what's
+/// supposed to be the same content -- normally identical, but nothing
+/// guarantees that: a maintainer (or a hijacked account) can push a
+/// change to the AUR repo in the window between them, and cgit's cache
+/// can lag behind the git remote too. Comparing byte-for-byte against
+/// what `prefetched` holds (when available) means the common case costs
+/// nothing extra, while an actual mismatch gets the exact same
+/// finding/prompt treatment as the pre-clone scan -- just against the
+/// clone that will really be built, with a note that it differs from
+/// what was already reviewed.
+///
+/// `prefetched: None` (fetch failed earlier, or this pkgbase was never
+/// pre-scanned at all, e.g. resolved via a split-package alias) always
+/// forces a full local scan rather than assuming "no finding" by default.
+pub(crate) fn verify_local_clone_or_rescan(pkgbase: &str, dir: &std::path::Path, prefetched: Option<&FetchedSource>) {
+    let Ok(local_pkgbuild) = std::fs::read_to_string(dir.join("PKGBUILD")) else {
+        // Can't read what was just cloned -- the build step right after
+        // this will fail loudly on the same thing, nothing useful to add.
+        return;
+    };
+    let local_install = resolve_install_filename(&local_pkgbuild)
+        .and_then(|name| std::fs::read_to_string(dir.join(&name)).ok().map(|src| (name, src)));
+
+    if let Some(pre) = prefetched {
+        let install_matches = match (&local_install, &pre.install) {
+            (None, None) => true,
+            (Some((ln, ls)), Some((pn, ps))) => ln == pn && ls == ps,
+            _ => false,
+        };
+        if local_pkgbuild == pre.pkgbuild && install_matches {
+            return; // identical to what was already scanned -- nothing to redo
+        }
+        println!(
+            "{} '{}' clone differs from the copy already scanned via cgit -- verifying the clone directly...",
+            ">>>".yellow().bold(),
+            pkgbase
+        );
+    } else {
+        println!(
+            "{} '{}' wasn't scanned before cloning (cgit fetch failed or this pkgbase was only resolved after cloning) -- scanning the clone directly...",
+            ">>>".yellow().bold(),
+            pkgbase
+        );
+    }
+
+    let mut pkg_findings: Vec<(String, Finding)> = scan_pkgbuild_source(&local_pkgbuild)
+        .into_iter()
+        .map(|f| ("PKGBUILD".to_string(), f))
+        .collect();
+    if let Some((name, src)) = &local_install {
+        pkg_findings.extend(scan_pkgbuild_source(src).into_iter().map(|f| (name.clone(), f)));
+    }
+
+    if pkg_findings.is_empty() {
+        return;
+    }
+
+    let atomic: Vec<&(String, Finding)> = pkg_findings.iter()
+        .filter(|(_, f)| f.severity == Severity::ConfirmedIoc)
+        .collect();
+    let suspicious: Vec<&(String, Finding)> = pkg_findings.iter()
+        .filter(|(_, f)| f.severity == Severity::Suspicious)
+        .collect();
+
+    if !atomic.is_empty() {
+        print_finding_block(pkgbase, "Alert, matched a known-malicious IOC", &atomic, true, SourceOrigin::LocalClone(dir));
+    }
+    if !suspicious.is_empty() {
+        print_finding_block(pkgbase, "Warning, detected suspicious fragment", &suspicious, false, SourceOrigin::LocalClone(dir));
+    }
+
+    eprintln!();
+    eprintln!(
+        "{} '{}''s cloned PKGBUILD/.install content (which differs from what was pre-scanned) \
+        matches known-suspicious patterns. Review it yourself before proceeding:",
+        ">>>".red().bold(),
+        pkgbase
+    );
+    eprintln!("    {}", dir.display());
+    eprint!("{} Continue anyway? [y/N] ", ">>>".yellow().bold());
+    io::stderr().flush().ok();
+
+    let answer = read_line_raw();
+    if !answer.trim().eq_ignore_ascii_case("y") {
+        eprintln!("{} Aborted.", ">>>".red().bold());
+        std::process::exit(1);
+    }
+}
+
+/// Where the scanned source text came from -- controls only the trailing
+/// "go read the full file yourself" link/path in `print_finding_block`.
+pub(crate) enum SourceOrigin<'a> {
+    /// Fetched via cgit, before any `git clone` happened.
+    Cgit,
+    /// Read straight from an on-disk clone at this directory.
+    LocalClone(&'a std::path::Path),
 }
 
 /// Print one alert block in the emerge-style `>>> ===...` box.
@@ -839,8 +959,9 @@ pub(crate) fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) {
 /// yellow throughout.
 ///
 /// Each finding line names the file and line it fired on; the block ends
-/// with a direct cgit link per referenced file so the user can jump straight to it.
-pub(crate) fn print_finding_block(pkg: &str, headline: &str, findings: &[&(String, Finding)], is_atomic: bool) {
+/// with a way to go read each referenced file in full -- a cgit link for
+/// `SourceOrigin::Cgit`, or the on-disk path for `SourceOrigin::LocalClone`.
+pub(crate) fn print_finding_block(pkg: &str, headline: &str, findings: &[&(String, Finding)], is_atomic: bool, origin: SourceOrigin) {
     let bar = "===================================";
     let arrow_str = ">>>";
 
@@ -875,10 +996,16 @@ pub(crate) fn print_finding_block(pkg: &str, headline: &str, findings: &[&(Strin
             .find(|(f, fi)| f == file && fi.line > 0)
             .map(|(_, fi)| format!("#n{}", fi.line))
             .unwrap_or_default();
-        eprintln!(
-            "{} Read full file: https://aur.archlinux.org/cgit/aur.git/tree/{}?h={}{}",
-            arrow(), file, pkg, anchor
-        );
+        match &origin {
+            SourceOrigin::Cgit => eprintln!(
+                "{} Read full file: https://aur.archlinux.org/cgit/aur.git/tree/{}?h={}{}",
+                arrow(), file, pkg, anchor
+            ),
+            SourceOrigin::LocalClone(dir) => eprintln!(
+                "{} Read full file: {}",
+                arrow(), dir.join(file).display()
+            ),
+        }
     }
 }
 

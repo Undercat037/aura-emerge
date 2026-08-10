@@ -317,7 +317,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
     if !aur_missing.is_empty() {
         println!("{} Installing {} AUR package(s)...", ">>>".green().bold(), aur_missing.len());
         scan_aur_pkgbuilds_or_abort(&aur_missing);
-        // aur_install() builds+installs via the pkgctl/bwrap-isolated path
+        // aur_install() builds+installs via the bwrap-isolated path
         // (see packages.rs) and, unlike the old `aura -A`, always leaves
         // the explicit bit set on success — no separate mark_asexplicit()
         // call needed here the way the old `aura -A` path required.
