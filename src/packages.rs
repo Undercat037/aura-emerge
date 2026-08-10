@@ -480,8 +480,136 @@ pub(crate) fn ensure_pgp_keys(pkgbuild_path: &std::path::Path, autopgp: bool) {
 }
 
 
-/// Build and install packages from ABS via `pkgctl repo clone` + `makepkg -si`.
-pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, autopgp: bool) -> bool {
+/// Runs the untrusted PKGBUILD-defined functions (`pkgver`/`prepare`/
+/// `build`/`check`/`package`) for the package rooted at `build_dir`
+/// through the bwrap sandbox in `sandbox.rs`, then installs the result
+/// the normal, trusted way. See that module's doc comment for why the
+/// three steps below are split the way they are.
+///
+/// Returns `false` on any failure. If the PKGBUILD's dependency arrays
+/// can't be statically resolved (dynamic elements, non-literal
+/// assignment, ...), falls back to the plain unsandboxed `makepkg -si`
+/// path for this one package rather than guessing at a partial
+/// dependency list.
+fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, oneshot: bool, skippgp: bool) -> bool {
+    let pkgbuild_src = match fs::read_to_string(build_dir.join("PKGBUILD")) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{} could not read PKGBUILD for '{}': {}", ">>> Error:".red().bold(), pkgbase, e);
+            return false;
+        }
+    };
+
+    // 1. Dependencies, outside the sandbox: plain `pacman -S`, no
+    //    PKGBUILD code involved at all, so this is exactly as trustworthy
+    //    as any other pacman install.
+    match crate::bash_ast::pkgbuild_dependencies(&pkgbuild_src) {
+        Some(deps) if !deps.is_empty() => {
+            println!("{} Installing {} declared dependency(ies) via pacman...", ">>>".green().bold(), deps.len());
+            let mut args: Vec<&str> = vec![PACMAN_BIN, "-S", "--needed", "--asdeps"];
+            if !ask { args.push("--noconfirm"); }
+            let dep_refs: Vec<&str> = deps.iter().map(String::as_str).collect();
+            let ok = Command::new(SUDO_BIN)
+                .args(&args)
+                .args(&dep_refs)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !ok {
+                eprintln!("{} failed to install dependencies for '{}'", ">>> Error:".red().bold(), pkgbase);
+                return false;
+            }
+        }
+        Some(_) => {} // no declared dependencies, nothing to do
+        None => {
+            eprintln!(
+                "{} could not statically resolve every dependency for '{}' (dynamic array entry, or depends/makedepends isn't a plain array) -- building without the sandbox for this package.",
+                ">>> Warning:".yellow().bold(),
+                pkgbase
+            );
+            return legacy_makepkg_si(build_dir, ask, oneshot, skippgp);
+        }
+    }
+
+    // 2. The untrusted part, inside bwrap. Deliberately no `-s`
+    //    (dependencies are already handled above) and no `-i`
+    //    (installation happens separately in step 3) -- see
+    //    sandbox.rs's doc comment for why those two specifically stay
+    //    outside the jail.
+    let mut makepkg_args: Vec<&str> = Vec::new();
+    if !ask { makepkg_args.push("--noconfirm"); }
+    if skippgp { makepkg_args.push("--skippgpcheck"); }
+
+    let real_gnupg = std::env::var("HOME").ok().map(|h| std::path::PathBuf::from(h).join(".gnupg"));
+    let build_ok = crate::sandbox::sandboxed_makepkg(MAKEPKG_BIN, build_dir, &makepkg_args, real_gnupg.as_deref())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !build_ok {
+        eprintln!("{} sandboxed build failed for '{}'", ">>> Error:".red().bold(), pkgbase);
+        return false;
+    }
+
+    // 3. Install the built package(s), outside the sandbox: another
+    //    plain pacman operation, no PKGBUILD code involved.
+    let pkg_files = find_built_packages(build_dir);
+    if pkg_files.is_empty() {
+        eprintln!("{} sandboxed build for '{}' produced no package file", ">>> Error:".red().bold(), pkgbase);
+        return false;
+    }
+    let mut args: Vec<&str> = vec![PACMAN_BIN, "-U"];
+    if !ask { args.push("--noconfirm"); }
+    if oneshot { args.push("--asdeps"); }
+    let pkg_refs: Vec<&str> = pkg_files.iter().map(String::as_str).collect();
+    Command::new(SUDO_BIN)
+        .args(&args)
+        .args(&pkg_refs)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Every `*.pkg.tar.*` file sitting directly in `build_dir` after a
+/// build -- `build_dir` is a freshly-cloned checkout each run (see the
+/// stale-dir cleanup in `abs_install`), so there's nothing stale left
+/// over from a previous build to accidentally pick up here.
+fn find_built_packages(build_dir: &std::path::Path) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Ok(entries) = fs::read_dir(build_dir) {
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.is_file() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.contains(".pkg.tar") {
+                        out.push(path.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The original, unsandboxed `makepkg -si` path -- used when `--no-sandbox`
+/// is passed, when bwrap isn't installed, or as the fallback for a
+/// PKGBUILD whose dependencies couldn't be statically resolved.
+fn legacy_makepkg_si(build_dir: &std::path::Path, ask: bool, oneshot: bool, skippgp: bool) -> bool {
+    let mut makepkg_args = vec!["-si"];
+    if !ask    { makepkg_args.push("--noconfirm"); }
+    if oneshot { makepkg_args.push("--asdeps"); }
+    if skippgp { makepkg_args.push("--skippgpcheck"); }
+
+    Command::new(MAKEPKG_BIN)
+        .args(&makepkg_args)
+        .current_dir(build_dir)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Build and install packages from ABS via `pkgctl repo clone` + `makepkg -si`
+/// (or, by default, the bwrap-sandboxed equivalent -- see `build_with_sandbox`).
+pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, autopgp: bool, no_sandbox: bool) -> bool {
     for bin in &[PKGCTL_BIN, MAKEPKG_BIN] {
         if !std::path::Path::new(bin).exists() {
             eprintln!(">>> Fatal: required binary not found: {}", bin);
@@ -505,6 +633,22 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
     }).collect();
 
     if pkg_infos.is_empty() { return false; }
+
+    let sandbox_enabled = if no_sandbox {
+        false
+    } else if crate::sandbox::bwrap_available() {
+        true
+    } else {
+        eprintln!(
+            "{} bubblewrap (bwrap) not found -- building without sandbox isolation.",
+            ">>> Warning:".yellow().bold()
+        );
+        eprintln!(
+            "{} install bubblewrap for sandboxed builds (emerge bubblewrap), or pass --no-sandbox to silence this warning.",
+            ">>> Hint:".yellow().bold()
+        );
+        false
+    };
 
     println!();
     println!("{}", "These are the packages that would be merged, in order:".green().bold());
@@ -605,17 +749,11 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
             ensure_pgp_keys(&build_dir.join("PKGBUILD"), autopgp);
         }
 
-        let mut makepkg_args = vec!["-si"];
-        if !ask    { makepkg_args.push("--noconfirm"); }
-        if oneshot { makepkg_args.push("--asdeps"); }
-        if skippgp { makepkg_args.push("--skippgpcheck"); }
-
-        let build_ok = Command::new(MAKEPKG_BIN)
-            .args(&makepkg_args)
-            .current_dir(&build_dir)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
+        let build_ok = if sandbox_enabled {
+            build_with_sandbox(&build_dir, &info.name, ask, oneshot, skippgp)
+        } else {
+            legacy_makepkg_si(&build_dir, ask, oneshot, skippgp)
+        };
 
         if !build_ok {
             eprintln!("{} makepkg failed for '{}'", ">>> Error:".red().bold(), info.name);

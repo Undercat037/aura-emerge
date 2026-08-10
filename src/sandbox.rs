@@ -1,0 +1,104 @@
+//! Bubblewrap (bwrap) sandbox for the untrusted parts of a build:
+//! `pkgver()` / `prepare()` / `build()` / `check()` / `package()` as
+//! defined in an AUR/ABS `PKGBUILD`.
+//!
+//! The static scanner in security.rs/bash_ast.rs is a blocklist: it
+//! catches known-bad patterns *before* anything runs, but a PKGBUILD it
+//! doesn't flag still gets to execute arbitrary shell as the build user.
+//! This module is the second, independent layer for that case: whatever
+//! the scanner missed only ever runs inside a namespace that can't see
+//! the real $HOME (no ssh keys, no gpg secret keyring, no browser
+//! profile, no other projects on disk) and can't write anywhere outside
+//! its own throwaway build directory.
+//!
+//! Deliberately NOT covered here: dependency installation and the final
+//! `pacman -U`. Both need real root and a real view of the live system,
+//! and neither one runs a single line of PKGBUILD-authored code (it's
+//! just pacman resolving/installing package names) -- so both stay
+//! outside the jail and run the normal, trusted way. Only the shell
+//! functions the PKGBUILD itself defines run inside bwrap. See
+//! `packages::build_with_sandbox` for how the three steps are wired
+//! together.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+pub(crate) const BWRAP_BIN: &str = "/usr/bin/bwrap";
+
+/// Scratch $HOME handed to the sandboxed build. Not the real one -- a
+/// malicious `prepare()`/`build()` should find nothing here worth
+/// stealing or tampering with.
+const SANDBOX_HOME: &str = "/tmp/aura-emerge-sandbox-home";
+
+pub(crate) fn bwrap_available() -> bool {
+    Path::new(BWRAP_BIN).exists()
+}
+
+/// Builds the `bwrap ... -- makepkg ...` command that runs the
+/// build-time PKGBUILD functions in an isolated user/mount/pid/ipc/uts
+/// namespace.
+///
+/// `build_dir` is the *only* path inside the jail that's writable --
+/// it's where the AUR/ABS checkout already lives, so makepkg's own
+/// $srcdir/$pkgdir (both subdirectories of it by default) are writable
+/// for free without needing their own bind rules.
+///
+/// Network stays shared (`--share-net`) since source downloads still
+/// need it; everything else (`--unshare-all`: user, ipc, pid, net, uts,
+/// cgroup -- net is then re-added by --share-net) is torn down.
+///
+/// `caller_args` should NOT include `-s`/`--syncdeps` or `-i`/`--install`
+/// -- see the module doc for why those two stay outside the sandbox.
+pub(crate) fn sandboxed_makepkg(
+    makepkg_bin: &str,
+    build_dir: &Path,
+    caller_args: &[&str],
+    real_gnupg_home: Option<&Path>,
+) -> Command {
+    let build_dir_s = build_dir.to_string_lossy().to_string();
+    let fake_home = PathBuf::from(SANDBOX_HOME);
+    let fake_home_s = fake_home.to_string_lossy().to_string();
+
+    let mut cmd = Command::new(BWRAP_BIN);
+    cmd.args([
+        "--die-with-parent",
+        "--new-session",
+        "--unshare-all",
+        "--share-net",
+        "--proc", "/proc",
+        "--dev", "/dev",
+        "--tmpfs", "/tmp",
+    ]);
+    // Whole real filesystem, read-only: build() still needs to see
+    // /usr, /etc/makepkg.conf, toolchains, etc. -- it just can't touch
+    // any of it.
+    cmd.args(["--ro-bind", "/", "/"]);
+    // The one writable exception: the build's own directory.
+    cmd.args(["--bind", &build_dir_s, &build_dir_s]);
+    // Isolated, empty $HOME -- overrides whatever the "/" ro-bind above
+    // would otherwise expose at this path.
+    cmd.args(["--tmpfs", &fake_home_s]);
+    cmd.args(["--setenv", "HOME", &fake_home_s]);
+    cmd.args(["--unsetenv", "XDG_CONFIG_HOME"]);
+    cmd.args(["--unsetenv", "XDG_CACHE_HOME"]);
+
+    // Read-only PGP public keyring so source-signature verification
+    // (already primed by ensure_pgp_keys() outside the sandbox, before
+    // this runs) keeps working. Read-only means a compromised build
+    // script can see imported public keys but can't plant a trusted key
+    // of its own or touch anything under the real ~/.gnupg.
+    if let Some(gnupg) = real_gnupg_home {
+        if gnupg.exists() {
+            let dest = fake_home.join(".gnupg");
+            let dest_s = dest.to_string_lossy().to_string();
+            let src_s = gnupg.to_string_lossy().to_string();
+            cmd.args(["--ro-bind", &src_s, &dest_s]);
+        }
+    }
+
+    cmd.args(["--chdir", &build_dir_s]);
+    cmd.arg("--");
+    cmd.arg(makepkg_bin);
+    cmd.args(caller_args);
+    cmd
+}
