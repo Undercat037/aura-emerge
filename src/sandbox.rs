@@ -88,18 +88,23 @@ pub(crate) fn sandboxed_makepkg(
         "--new-session",
         "--unshare-all",
         "--share-net",
-        "--proc", "/proc",
-        "--dev", "/dev",
     ]);
     // Whole real filesystem, read-only: build() still needs to see
     // /usr, /etc/makepkg.conf, toolchains, etc. -- it just can't touch
     // any of it.
     cmd.args(["--ro-bind", "/", "/"]);
-    // Isolated, writable /tmp -- must come AFTER the ro-bind above, not
-    // before: bwrap applies bind rules in argument order, so an earlier
-    // "--tmpfs /tmp" gets clobbered by the later "--ro-bind / /" and
-    // /tmp ends up read-only again (breaking the mkdir bwrap needs to do
-    // for the fake $HOME mount point under it, further down).
+    // Everything below MUST come AFTER the ro-bind above, not before:
+    // bwrap applies bind rules in argument order, so a rule issued
+    // earlier for a path under "/" gets silently clobbered by the later
+    // "--ro-bind / /" once that runs. That bit us twice already:
+    //   - "--proc /proc" / "--dev /dev" issued before the ro-bind meant
+    //     the sandbox's /proc and /dev were actually the host's real
+    //     ones, read-only -- hence "/dev/null: Permission denied".
+    //   - "--tmpfs /tmp" issued before the ro-bind meant /tmp was
+    //     read-only too, breaking the mkdir for the fake $HOME mount
+    //     point under it, further down.
+    cmd.args(["--proc", "/proc"]);
+    cmd.args(["--dev", "/dev"]);
     cmd.args(["--tmpfs", "/tmp"]);
     // The one writable exception: the build's own directory.
     cmd.args(["--bind", &build_dir_s, &build_dir_s]);
