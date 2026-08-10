@@ -5,7 +5,7 @@ it under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
 
-aura-emerge: A gentoo-like wrapper for the aura AUR helper.
+aura-emerge: A Gentoo-like wrapper for pacman + the AUR, for Arch Linux.
 */
 
 mod world_set;
@@ -30,7 +30,6 @@ use security::*;
 
 // ── Binary paths ───────────────────────────────────────────────────────
 
-pub(crate) const AURA_BIN:   &str = "/usr/bin/aura";
 pub(crate) const PACMAN_BIN: &str = "/usr/bin/pacman";
 pub(crate) const SUDO_BIN:   &str = "/usr/bin/sudo";
 pub(crate) const TEE_BIN:    &str = "/usr/bin/tee";
@@ -68,7 +67,8 @@ pub(crate) const UNAME_BIN: &str = "/usr/bin/uname";
 /// Longer DESCRIPTION section for the man page (clap_mangen) — the plain
 /// `///` doc comment on `Cli` below is used for the one-line NAME/about.
 const LONG_ABOUT: &str = "\
-aura-emerge is a Gentoo-style emerge wrapper for Arch Linux, built on top of Aura. \
+aura-emerge is a Gentoo-style emerge wrapper for Arch Linux, driving pacman \
+directly and the AUR (git clone + pkgctl build/bwrap) itself. \
 It tracks every explicitly requested package in /etc/emerge/world.set, independent \
 of whatever pacman's own dependency graph currently looks like.\n\n\
 Three operations that look similar are kept deliberately distinct: refreshing the \
@@ -146,7 +146,7 @@ FILES
 AUTHOR
     Undercat037 <https://github.com/Undercat037/aura-emerge>";
 
-/// Portage-like wrapper for Arch Linux using Aura
+/// Portage-like wrapper for Arch Linux, driving pacman and the AUR directly
 #[derive(Parser, Debug)]
 #[command(
     name = "emerge",
@@ -243,7 +243,7 @@ struct Cli {
     #[arg(long = "edit")]
     edit: bool,
 
-    /// Verbose output / detailed info in search mode (-sv = aura -Si/-Ai)
+    /// Verbose output / detailed info in search mode (-sv = pacman -Si / AUR info)
     #[arg(short = 'v', long = "verbose")]
     verbose: bool,
 
@@ -276,11 +276,13 @@ struct Cli {
     /// (-u) performed by emerge. An install is reversed by removing only
     /// the packages that were brand new (upgrades/reinstalls in the same
     /// batch are left alone); an unmerge is reversed by reinstalling the
-    /// removed packages; a full-system upgrade is reversed via aura's own
-    /// snapshot system (`aura -Br`), since individual package versions
-    /// aren't tracked here. Only one step of history is kept —
-    /// best-effort, and install/unmerge undo can't restore an exact prior
-    /// version once it's no longer current in the repo/AUR.
+    /// removed packages. A full-system upgrade is NOT reversible here —
+    /// this tool doesn't take a pre-upgrade snapshot (that was aura's own
+    /// `-B`/`-Br`, dropped along with the rest of aura); use pacman's own
+    /// log/cache to downgrade specific packages manually if needed. Only
+    /// one step of history is kept — best-effort, and install/unmerge
+    /// undo can't restore an exact prior version once it's no longer
+    /// current in the repo/AUR.
     #[arg(long = "undo")]
     undo: bool,
 
@@ -582,7 +584,11 @@ fn build_resume_args(cli: &Cli, target_pkgs: &[String], has_world: bool) -> Vec<
 
 /// Abort early if required binaries are missing.
 fn check_binaries() {
-    for bin in &[AURA_BIN, PACMAN_BIN, SUDO_BIN, TEE_BIN, MV_BIN, RM_BIN] {
+    // git/curl are load-bearing now that AUR interaction (clone + RPC
+    // info/search) goes straight through aur.rs instead of shelling out
+    // to aura — check for them up front like every other required binary,
+    // instead of only discovering they're missing mid-operation.
+    for bin in &[PACMAN_BIN, SUDO_BIN, TEE_BIN, MV_BIN, RM_BIN, aur::GIT_BIN, aur::CURL_BIN] {
         if !std::path::Path::new(bin).exists() {
             eprintln!(">>> Fatal: required binary not found: {}", bin);
             std::process::exit(1);
@@ -597,6 +603,54 @@ fn is_safe_path(path: &str) -> bool {
     match fs::symlink_metadata(path) {
         Ok(meta) => !meta.file_type().is_symlink(),
         Err(_) => true,
+    }
+}
+
+// ── AUR search/info output ──────────────────────────────────────────────────
+
+/// `pacman -Ss`-style two-line-per-result listing, for AUR RPC `search`
+/// results — replaces parsing/forwarding `aura -As`/`aura --searchdesc`
+/// (AUR half) output.
+fn print_aur_search_results(results: &[aur::AurPkgInfo]) {
+    if results.is_empty() {
+        println!(">>> No AUR results found.");
+        return;
+    }
+    for r in results {
+        let ood = if r.out_of_date { " [out of date]".red().bold().to_string() } else { String::new() };
+        println!(
+            "{}/{} {}{} ({} votes, {:.2} popularity)",
+            "aur".magenta().bold(),
+            r.name.bold(),
+            r.version.green(),
+            ood,
+            r.num_votes,
+            r.popularity
+        );
+        if !r.description.is_empty() {
+            println!("    {}", r.description);
+        }
+    }
+}
+
+/// `pacman -Si`-style field listing, for AUR RPC `info` results —
+/// replaces `aura -Ai` output.
+fn print_aur_info_results(results: &[aur::AurPkgInfo]) {
+    if results.is_empty() {
+        println!(">>> No AUR results found.");
+        return;
+    }
+    for r in results {
+        println!("{:<15}: {}", "Repository", "aur".magenta().bold());
+        println!("{:<15}: {}", "Name", r.name.bold());
+        println!("{:<15}: {}", "Package Base", r.pkgbase);
+        println!("{:<15}: {}", "Version", r.version.green());
+        println!("{:<15}: {}", "Maintainer", r.maintainer.as_deref().unwrap_or("(orphan)"));
+        println!("{:<15}: {}", "Votes", r.num_votes);
+        println!("{:<15}: {:.2}", "Popularity", r.popularity);
+        println!("{:<15}: {}", "Out of Date", if r.out_of_date { "Yes".red().bold().to_string() } else { "No".to_string() });
+        println!("{:<15}: {}", "Description", r.description);
+        println!();
     }
 }
 
@@ -619,7 +673,7 @@ fn run_cmd(prog: &str, args: &[&str], packages: &[String]) -> bool {
 
 /// Read one line from stdin, byte by byte, via the raw fd — bypassing
 /// Rust's `Stdin`, which over-reads into its own buffer. This tool follows
-/// a "y/N" prompt by spawning a child (aura/pacman) that inherits stdin
+/// a "y/N" prompt by spawning a child (pacman) that inherits stdin
 /// and expects its own interactive read right after; any bytes the parent
 /// over-read are lost to the child. Reading one byte at a time avoids that.
 #[cfg(unix)]
@@ -690,7 +744,7 @@ fn run() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    // Shell completion generation: no aura/pacman needed, no world.set
+    // Shell completion generation: no pacman needed, no world.set
     // touched — this just prints a script to stdout. Handled before
     // check_binaries() so it also works in a clean chroot/build environment.
     if let Some(shell) = cli.gen_completions {
@@ -735,7 +789,7 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // --list-sets: no aura/pacman needed — just enumerates what's on disk.
+    // --list-sets: no pacman needed — just enumerates what's on disk.
     // Also what shell completion shells out to for '@' completion.
     if cli.list_sets {
         println!("@world");
@@ -824,50 +878,54 @@ fn run() -> anyhow::Result<()> {
             std::process::exit(1);
         }
 
+        let term = target_pkgs.join(" ");
+
         if cli.searchdesc {
-            // Search descriptions: pacman -Ss for official, aura -As for AUR
-            println!("{} Searching descriptions for '{}'...", ">>>".green().bold(), target_pkgs.join(" "));
-            run_cmd(AURA_BIN, &["-Ss"], &target_pkgs);
+            // Search descriptions: pacman -Ss for official, AUR RPC
+            // (by=name-desc) for AUR — both used to go through aura, which
+            // just forwarded to pacman for the official half anyway.
+            println!("{} Searching descriptions for '{}'...", ">>>".green().bold(), term);
+            run_cmd(PACMAN_BIN, &["-Ss"], &target_pkgs);
             if !cli.only_repos {
                 println!();
-                println!("{} Searching {} descriptions for '{}'...", ">>>".green().bold(), "AUR".cyan().bold(), target_pkgs.join(" "));
-                run_cmd(AURA_BIN, &["-As"], &target_pkgs);
+                println!("{} Searching {} descriptions for '{}'...", ">>>".green().bold(), "AUR".cyan().bold(), term);
+                print_aur_search_results(&aur::rpc_search(&term, true));
             }
             return Ok(());
         }
 
         if cli.verbose {
             if cli.aur {
-                println!("{} Searching in {} for '{}'...", ">>>".green().bold(), "AUR".cyan().bold(), target_pkgs.join(" "));
-                run_cmd(AURA_BIN, &["-Ai"], &target_pkgs);
+                println!("{} Searching in {} for '{}'...", ">>>".green().bold(), "AUR".cyan().bold(), term);
+                print_aur_info_results(&aur::rpc_info(&target_pkgs));
             } else {
                 let found = probe_official(&target_pkgs).is_some();
                 if found {
-                    println!("{} Searching for '{}'...", ">>>".green().bold(), target_pkgs.join(" "));
-                    run_cmd(AURA_BIN, &["-Si"], &target_pkgs);
+                    println!("{} Searching for '{}'...", ">>>".green().bold(), term);
+                    run_cmd(PACMAN_BIN, &["-Si"], &target_pkgs);
                 } else if cli.only_repos {
                     println!(
                         ">>> '{}' not found in official repos. (--only-repos set, not searching AUR)",
-                        target_pkgs.join(" ")
+                        term
                     );
                 } else {
                     println!(
                         ">>> '{}' not found in official repos, searching AUR...",
-                        target_pkgs.join(" ")
+                        term
                     );
-                    run_cmd(AURA_BIN, &["-Ai"], &target_pkgs);
+                    print_aur_info_results(&aur::rpc_info(&target_pkgs));
                 }
             }
         } else if cli.aur {
-            println!("{} Searching in {} for '{}'...", ">>>".green().bold(), "AUR".cyan().bold(), target_pkgs.join(" "));
-            run_cmd(AURA_BIN, &["-As"], &target_pkgs);
+            println!("{} Searching in {} for '{}'...", ">>>".green().bold(), "AUR".cyan().bold(), term);
+            print_aur_search_results(&aur::rpc_search(&term, false));
         } else {
-            println!("{} Searching for '{}'...", ">>>".green().bold(), target_pkgs.join(" "));
-            run_cmd(AURA_BIN, &["-Ss"], &target_pkgs);
+            println!("{} Searching for '{}'...", ">>>".green().bold(), term);
+            run_cmd(PACMAN_BIN, &["-Ss"], &target_pkgs);
             if !cli.only_repos {
                 println!();
-                println!("{} Searching in {} for '{}'...", ">>>".green().bold(), "AUR".cyan().bold(), target_pkgs.join(" "));
-                run_cmd(AURA_BIN, &["-As"], &target_pkgs);
+                println!("{} Searching in {} for '{}'...", ">>>".green().bold(), "AUR".cyan().bold(), term);
+                print_aur_search_results(&aur::rpc_search(&term, false));
             }
         }
         return Ok(());
@@ -880,7 +938,9 @@ fn run() -> anyhow::Result<()> {
             ">>>".green().bold(),
             if cli.refresh { " (force refresh)" } else { "" }
         );
-        run_cmd(AURA_BIN, &[sync_flag], &[]);
+        // -Sy/-Syy writes to the local sync db and needs root, same as it
+        // did routed through aura.
+        run_cmd(SUDO_BIN, &[PACMAN_BIN, sync_flag], &[]);
         if target_pkgs.is_empty() && !has_world {
             return Ok(());
         }
@@ -1057,21 +1117,19 @@ fn run() -> anyhow::Result<()> {
         match load_last_action() {
             Some((kind, _atoms)) if kind == "update" => {
                 // Full-system upgrades aren't reversible package-by-package
-                // (no record of prior versions) — hand off to aura's own
-                // snapshot system instead, which does track that. `-Br` is
-                // interactive (prompts a snapshot picker), so this just
-                // shells straight out to it.
-                println!("{} Undoing last full-system upgrade via aura's snapshot restore...", ">>>".green().bold());
-                if cli.pretend {
-                    println!("{} (pretend) would run: aura -Br", ">>>".green().bold());
-                    return Ok(());
-                }
-                if run_cmd(AURA_BIN, &["-Br"], &[]) {
-                    clear_last_action();
-                } else {
-                    eprintln!(">>> Warning: aura -Br did not complete — saved state left in place.");
-                    std::process::exit(1);
-                }
+                // (no record of prior versions), and this tool no longer
+                // takes its own snapshot before an upgrade (see the update
+                // branch below) — that used to be aura's own `-B`
+                // state-save, backing `-Br` here. Neither exists anymore,
+                // so there's genuinely nothing to restore to.
+                eprintln!(
+                    "{} Full-system-upgrade undo isn't available — this build no longer takes a \
+                    pre-upgrade snapshot. Check `pacman -Qi <pkg>` / the pacman log \
+                    (/var/log/pacman.log) and downgrade specific packages manually if needed \
+                    (`pacman -U` against a cached .pkg.tar.* in /var/cache/pacman/pkg/).",
+                    ">>> Error:".red().bold()
+                );
+                std::process::exit(1);
             }
             Some((kind, atoms)) if kind == "install" => {
                 println!("{} Undoing last install — removing: {}", ">>>".green().bold(), atoms.join(", "));
@@ -1081,9 +1139,9 @@ fn run() -> anyhow::Result<()> {
                 if cli.pretend {
                     return Ok(());
                 }
-                let mut aura_args = vec!["-R"];
-                if !cli.ask { aura_args.push("--noconfirm"); }
-                let success = run_cmd(AURA_BIN, &aura_args, &bare);
+                let mut args: Vec<&str> = vec![PACMAN_BIN, "-R"];
+                if !cli.ask { args.push("--noconfirm"); }
+                let success = run_cmd(SUDO_BIN, &args, &bare);
                 if success {
                     if let Err(e) = remove_from_world_set(&bare) {
                         eprintln!(">>> Warning: package(s) removed but world.set was not updated: {:#}", e);
@@ -1115,9 +1173,9 @@ fn run() -> anyhow::Result<()> {
                     let names: Vec<String> = official.iter()
                         .map(|a| a.split('/').last().unwrap_or(a).to_string())
                         .collect();
-                    let mut args = vec!["-S"];
+                    let mut args: Vec<&str> = vec![PACMAN_BIN, "-S"];
                     if !cli.ask { args.push("--noconfirm"); }
-                    if run_cmd(AURA_BIN, &args, &names) {
+                    if run_cmd(SUDO_BIN, &args, &names) {
                         mark_asexplicit(&names);
                         if let Err(e) = add_to_world_set(&names, None) {
                             eprintln!(">>> Warning: package(s) reinstalled but world.set was not updated: {:#}", e);
@@ -1131,10 +1189,10 @@ fn run() -> anyhow::Result<()> {
                         .map(|a| a.split('/').last().unwrap_or(a).to_string())
                         .collect();
                     scan_aur_pkgbuilds_or_abort(&names);
-                    let mut args = vec!["-A"];
-                    if !cli.ask { args.push("--noconfirm"); }
-                    if run_cmd(AURA_BIN, &args, &names) {
-                        mark_asexplicit(&names);
+                    // aur_install() always leaves the explicit bit set on
+                    // success (see its doc comment) — no separate
+                    // mark_asexplicit() call needed the way `aura -A` required.
+                    if aur_install(&names, false, cli.ask, false, cli.skippgp, cli.no_sandbox) {
                         if let Err(e) = add_to_world_set(&names, Some("aur")) {
                             eprintln!(">>> Warning: package(s) reinstalled but world.set was not updated: {:#}", e);
                         }
@@ -1226,7 +1284,7 @@ fn run() -> anyhow::Result<()> {
         if !cli.pretend {
             save_resume_state(&build_resume_args(&cli, &[], true));
         }
-        let ok = provision_from_world_set(cli.pretend, cli.ask, cli.verbose, cli.err_inst)?;
+        let ok = provision_from_world_set(cli.pretend, cli.ask, cli.verbose, cli.err_inst, cli.no_sandbox)?;
         if !cli.pretend {
             if ok {
                 clear_resume_state();
@@ -1258,31 +1316,26 @@ fn run() -> anyhow::Result<()> {
             save_resume_state(&build_resume_args(&cli, &target_pkgs, has_world));
         }
 
-        // Snapshot the current package set before touching anything, via
-        // aura's own -B state-save. aura -Au does this automatically for
-        // itself, but -Syu (plain pacman-side upgrade) isn't guaranteed
-        // to — take it explicitly so `emerge --undo` always has something
-        // to restore to. Best-effort: a failed snapshot is a warning, not
-        // a reason to abort an upgrade the user asked for.
+        // No pre-upgrade snapshot is taken here anymore (previously
+        // `aura -B`, backing `emerge --undo` for a full-system upgrade —
+        // dropped along with the rest of aura; see the --undo "update"
+        // branch above for what that means for `--undo` now). The
+        // resume-state save above is unrelated and unaffected — `--resume`
+        // still works the same way.
         if !cli.pretend {
-            if !run_cmd(AURA_BIN, &["-B"], &[]) {
-                eprintln!(">>> Warning: failed to save an aura snapshot before upgrading — `--undo` may have nothing to restore.");
-            } else {
-                save_last_action(LastAction::Update, &["system".to_string()]);
-            }
+            save_last_action(LastAction::Update, &["system".to_string()]);
         }
 
         println!(">>> Calculating dependencies... done!");
         println!();
         println!(">>> Upgrading system (official repos)...");
         // `-Sy` (refresh) writes to the local sync db and needs root
-        // regardless of `--print` — that's what tripped this up, not
-        // aura being stricter than pacman about it. `-Su --print`
-        // (upgrade-only, no refresh) reads the already-synced db instead
-        // and needs no privilege escalation at all, matching how
-        // `--pretend` behaves everywhere else in this tool (never asks
-        // for sudo). Real runs still refresh via `-Syu` as before; if the
-        // synced db is stale, run `--sync` first for an accurate preview.
+        // regardless of `--print`. `-Su --print` (upgrade-only, no
+        // refresh) reads the already-synced db instead and needs no
+        // privilege escalation at all, matching how `--pretend` behaves
+        // everywhere else in this tool (never asks for sudo). Real runs
+        // still refresh via `-Syu` as before; if the synced db is stale,
+        // run `--sync` first for an accurate preview.
         let mut s_args: Vec<&str> = if cli.pretend {
             vec!["-Su", "--print"]
         } else {
@@ -1291,14 +1344,16 @@ fn run() -> anyhow::Result<()> {
         if cli.verbose {
             s_args.push("--verbose");
         }
-        let ok1 = run_cmd(AURA_BIN, &s_args, &[]);
+        let ok1 = if cli.pretend {
+            run_cmd(PACMAN_BIN, &s_args, &[])
+        } else {
+            let mut args: Vec<&str> = vec![PACMAN_BIN];
+            args.extend(&s_args);
+            run_cmd(SUDO_BIN, &args, &[])
+        };
 
         println!(">>> Upgrading AUR packages...");
-        let mut au_args = vec!["-Au"];
-        if cli.pretend {
-            au_args.push("--dryrun");
-        }
-        let ok2 = run_cmd(AURA_BIN, &au_args, &[]);
+        let ok2 = aur_upgrade_all(cli.pretend, cli.ask, cli.skippgp, cli.no_sandbox);
 
         println!();
         println!("{} Auto-cleaning packages...", ">>>".green().bold());
@@ -1451,18 +1506,26 @@ fn run() -> anyhow::Result<()> {
         println!();
         println!("{} Unmerging {}...", ">>>".green().bold(), target_pkgs.join(", ").bold());
 
-        let mut aura_args = vec!["-R"];
+        let mut pacman_args: Vec<&str> = vec!["-R"];
         if cli.pretend {
-            aura_args.push("--print");
+            pacman_args.push("--print");
         }
         if !cli.ask && !cli.pretend {
-            aura_args.push("--noconfirm");
+            pacman_args.push("--noconfirm");
         }
         if cli.verbose {
-            aura_args.push("--verbose");
+            pacman_args.push("--verbose");
         }
 
-        let success = run_cmd(AURA_BIN, &aura_args, &target_pkgs);
+        // --print never touches the system, so it doesn't need root (same
+        // pattern as --depclean above).
+        let success = if cli.pretend {
+            run_cmd(PACMAN_BIN, &pacman_args, &target_pkgs)
+        } else {
+            let mut args: Vec<&str> = vec![PACMAN_BIN];
+            args.extend(&pacman_args);
+            run_cmd(SUDO_BIN, &args, &target_pkgs)
+        };
         if success && !cli.pretend {
             if let Err(e) = remove_from_world_set(&target_pkgs) {
                 eprintln!(">>> Warning: package(s) unmerged but world.set was not updated: {:#}", e);
@@ -1528,10 +1591,10 @@ fn run() -> anyhow::Result<()> {
                 print_emerge_plan(&official_infos);
                 if cli.pretend { return Ok(()); }
                 print_emerge_emerging(&official_infos);
-                let mut off_args = vec!["-S"];
+                let mut off_args: Vec<&str> = vec![PACMAN_BIN, "-S"];
                 if cli.verbose { off_args.push("--verbose"); }
                 off_args.extend(&base_args);
-                success = run_cmd(AURA_BIN, &off_args, &target_pkgs);
+                success = run_cmd(SUDO_BIN, &off_args, &target_pkgs);
                 if success { installed_infos = official_infos; }
             } else if cli.only_repos {
                 // --only-repos: never touch the AUR. Unresolved names are
@@ -1562,10 +1625,10 @@ fn run() -> anyhow::Result<()> {
 
                 let official_names: Vec<String> =
                     official_infos.iter().map(|p| p.name.clone()).collect();
-                let mut off_args = vec!["-S"];
+                let mut off_args: Vec<&str> = vec![PACMAN_BIN, "-S"];
                 if cli.verbose { off_args.push("--verbose"); }
                 off_args.extend(&base_args);
-                let off_success = run_cmd(AURA_BIN, &off_args, &official_names);
+                let off_success = run_cmd(SUDO_BIN, &off_args, &official_names);
                 if off_success {
                     installed_infos = official_infos;
                 }
@@ -1620,10 +1683,10 @@ fn run() -> anyhow::Result<()> {
 
                 let official_names: Vec<String> =
                     official_infos.iter().map(|p| p.name.clone()).collect();
-                let mut off_args = vec!["-S"];
+                let mut off_args: Vec<&str> = vec![PACMAN_BIN, "-S"];
                 if cli.verbose { off_args.push("--verbose"); }
                 off_args.extend(&base_args);
-                success = run_cmd(AURA_BIN, &off_args, &official_names);
+                success = run_cmd(SUDO_BIN, &off_args, &official_names);
                 if success {
                     installed_infos.extend(official_infos);
                 }
@@ -1677,7 +1740,7 @@ fn run() -> anyhow::Result<()> {
                 } else if !installed_infos.is_empty() {
                     println!("{} Auto-cleaning packages...", ">>>".green().bold());
                     // `probe_official`/`probe_official_split` read the full
-                    // `aura -Sp --print-format` transaction, which includes
+                    // `pacman -Sp --print-format` transaction, which includes
                     // every dependency pacman needs to pull in alongside
                     // the named target(s) — not just what was actually
                     // requested. `installed_infos` inherits that, so it's
@@ -1708,9 +1771,9 @@ fn run() -> anyhow::Result<()> {
                         }
                     }
                     if !aur_names.is_empty() {
-                        // aura -A doesn't always leave the explicit bit set
-                        // the way `pacman -S` does — force it so world.set
-                        // and pacman's bookkeeping always agree.
+                        // aur_install() already leaves the explicit bit set
+                        // on success — this is just belt-and-suspenders so
+                        // world.set and pacman's bookkeeping always agree.
                         mark_asexplicit(&aur_names);
                         if let Err(e) = add_to_world_set(&aur_names, Some("aur")) {
                             eprintln!(">>> Warning: package(s) installed but world.set was not updated: {:#}", e);
@@ -1763,7 +1826,7 @@ fn run() -> anyhow::Result<()> {
     // now provision anything else world.set still lists as missing.
     if provision_after_install && !cli.pretend {
         println!();
-        if !provision_from_world_set(cli.pretend, cli.ask, cli.verbose, cli.err_inst)? {
+        if !provision_from_world_set(cli.pretend, cli.ask, cli.verbose, cli.err_inst, cli.no_sandbox)? {
             eprintln!(">>> Warning: not everything from world.set installed successfully.");
             std::process::exit(1);
         }
