@@ -30,7 +30,14 @@ use tree_sitter::Node;
 
 fn parse(source: &str) -> Option<tree_sitter::Tree> {
     let mut parser = tree_sitter::Parser::new();
-    parser.set_language(tree_sitter_bash::language()).ok()?;
+    // tree-sitter 0.22+ moved grammar crates off a raw `extern "C"`
+    // language-getter function and onto a `LanguageFn` static (the
+    // `tree-sitter-language` crate's abstraction, meant to decouple a
+    // grammar's own release cadence from the core `tree-sitter` crate's
+    // ABI) -- `LANGUAGE.into()` converts that into the `Language` value
+    // `set_language` wants, which itself now takes it by reference.
+    let language: tree_sitter::Language = tree_sitter_bash::LANGUAGE.into();
+    parser.set_language(&language).ok()?;
     parser.parse(source, None)
 }
 
