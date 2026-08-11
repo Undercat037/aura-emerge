@@ -12,9 +12,8 @@ test:
 git:
 	git add .
 	git commit -m "v$(VERSION) commit"
-	git push
 
-install: build test
+install: build test git
 	sudo cp -r $(BIN) /usr/bin/emerge
 
 uninstall:
@@ -24,9 +23,9 @@ clean:
 	cargo clean
 
 completions: build
-	sudo install -Dm644 <($(BIN) --gen-completions bash) /usr/share/bash-completion/completions/emerge
-	sudo install -Dm644 <($(BIN) --gen-completions zsh)  /usr/share/zsh/site-functions/_emerge
-	sudo install -Dm644 <($(BIN) --gen-completions fish) /usr/share/fish/vendor_completions.d/emerge.fish
+	$(BIN) --gen-completions bash | sudo tee /usr/share/bash-completion/completions/emerge > /dev/null
+	$(BIN) --gen-completions zsh | sudo tee /usr/share/zsh/site-functions/_emerge > /dev/null
+	$(BIN) --gen-completions fish | sudo tee /usr/share/fish/vendor_completions.d/emerge.fish > /dev/null
 
 man: build
 	sudo install -Dm644 <($(BIN) --gen-manpage) /usr/share/man/man1/emerge.1

@@ -1,7 +1,7 @@
 # aura-emerge
 en | [ua](UA-README.MD)
 
-> A Gentoo-style `emerge` wrapper for Arch Linux, built on top of [Aura](https://github.com/fosskers/aura).
+> Gentoo-style `emerge` for Arch Linux - installs from official repos, the AUR, and ABS, scans PKGBUILDs for supply-chain red flags before building, and runs untrusted build steps inside a `bwrap` sandbox.
 
 Manages packages via a `world.set` file — install once, track forever.
 
@@ -29,8 +29,8 @@ emerge --gen-completions [your-shell] # /usr/share/bash-completion/completions/e
 emerge --gen-manpage > /usr/share/man/man1/emerge.1
 ```
 
-**Requirements:** `aura` must be installed and in `/usr/bin/aura`.  
-**Optional:** `devtools` for `--abs` support (`emerge devtools`, provides `pkgctl`), `gpg` for automatic PGP key import (`--autopgp`).
+**Requirements:** `git` and `curl` (AUR git clones + RPC/cgit lookups, the news feed).  
+**Optional:** `devtools` for `--abs` support (`emerge devtools`, provides `pkgctl repo clone`), `gnupg` for automatic PGP key import (`--autopgp`), `bubblewrap` for sandboxed builds (see [Sandboxing](#sandboxing) — falls back to plain unsandboxed `makepkg` if it's missing).
 
 ## Gentoo → Arch: make.conf equivalent
 
@@ -61,12 +61,15 @@ For `CFLAGS`/`CXXFLAGS` reference see [GCC optimization flags](https://gcc.gnu.o
 ```bash
 emerge neovim                      # install package (official repos, fallbacks to AUR)
 emerge neovim-git --aur            # install from AUR explicitly
+emerge foo-git --aur --aur-deep    # also resolve and build AUR-only deps recursively (alias --aur-full)
 emerge neovim --only-repos         # install only from official repos, never touch the AUR
-emerge neovim --abs                # build from ABS (Arch Build System) source via pkgctl
+emerge neovim --abs                # build from ABS (Arch Build System) source via pkgctl repo clone, sandboxed in bwrap
+emerge neovim --abs --no-sandbox   # build from ABS unsandboxed (plain makepkg -si, no bwrap isolation)
 emerge neovim --abs --skippgp      # build from ABS, skip PGP signature check
 emerge neovim --abs --autopgp      # build from ABS, auto-import missing PGP keys, no prompt
-emerge neovim --abs --edit         # build from ABS, edit PKGBUILD before building ($EDITOR)
-emerge neovim-git --aur --edit     # install from AUR, edit PKGBUILD before building (aura --hotedit)
+emerge neovim --abs --edit         # build from ABS, edit PKGBUILD before building ($EDITOR), auto-regenerates .SRCINFO
+emerge neovim-git --aur --edit     # install from AUR, edit PKGBUILD before building, auto-regenerates .SRCINFO
+emerge neovim --aur --edit --off-src-regen  # edit PKGBUILD without regenerating .SRCINFO afterward
 emerge -c                          # remove orphans (depclean)
 emerge -C neovim                   # remove specific package (unmerge)
 emerge @world                      # provision: install what's missing from world.set (new machine, etc.)
@@ -84,9 +87,9 @@ emerge --news all                  # dismiss all news notifications
 emerge -s neovim                   # search in official repos + AUR
 emerge -s neovim --only-repos      # search official repos only, skip AUR
 emerge --searchdesc neovim         # search by package description
-emerge -sv neovim                  # detailed info (aura -Si / -Ai)
+emerge -sv neovim                  # detailed info
 emerge -sv neovim-git --aur        # detailed info from AUR only
-emerge -1 aura                     # install as dependency (no world.set)
+emerge -1 htop                     # install as dependency (no world.set)
 emerge -n neovim                   # do not reinstall if already installed (--noreplace)
 emerge -p neovim                   # pretend (dry run)
 emerge -a neovim                   # ask before installing
@@ -99,15 +102,24 @@ emerge --regen-sets @game-kit      # re-resolve repository prefixes for one cust
 emerge --regen-world-from-explicit # one-time migration: seed world.set from every explicitly-installed package
 emerge --resume                    # resume last interrupted transaction
 emerge --resume --skipfirst        # resume, skipping the first package
-emerge --undo                      # undo the last install, unmerge, or -u full-system upgrade
+emerge --undo                      # undo the last install or unmerge
+emerge --clean-source-cache        # delete the persistent VCS source cache (-git/-hg/-svn checkouts)
 emerge @preserved-rebuild          # check installed packages for missing deps, offer to reinstall
 emerge @preserved-rebuild -p       # pretend: just list missing dependencies
 emerge @preserved-rebuild -a       # ask before each pacman prompt during reinstall
 ```
 
+## Sandboxing
+
+`--abs` builds run the PKGBUILD's `pkgver()`/`prepare()`/`build()`/`check()`/`package()` functions inside a [`bwrap`](https://github.com/containers/bubblewrap) namespace, on by default when `bubblewrap` is installed: fake `$HOME` (no SSH/GPG/browser data), nothing writable outside the build dir (+ configured `PKGDEST`/`SRCDEST`/etc.), network shared, everything else (user/IPC/PID/UTS/cgroup) torn down.
+
+Second, independent layer on top of the [PKGBUILD scanner](#security-pkgbuild-scanning) — the scanner blocks *known*-bad patterns before anything runs, the sandbox limits the blast radius of whatever it missed. Dependency install and the final `pacman -U` stay outside the jail (no PKGBUILD code runs there).
+
+`--no-sandbox` falls back to plain `makepkg -si`. AUR builds aren't sandboxed yet — only `--abs` is wrapped so far.
+
 ## @preserved-rebuild
 
-There is no preserved-libs tracking in Arch, so `@preserved-rebuild` collects all dependencies declared by each installed package (`pacman -Qi`), passes the deduplicated list to `pacman -T` (which correctly resolves provides/virtual packages), and offers to reinstall any that are found to be unsatisfied via `aura -S --asdeps`. The `--asdeps` matters: these are dependencies, not something you asked for by name, so reinstalling them keeps pacman's explicit/dependency bookkeeping honest — otherwise they'd silently look "explicit" and could get vacuumed into world.set by a later `--regen-world-from-explicit`.
+There's no preserved-libs tracking in Arch, so `@preserved-rebuild` collects dependencies declared by each installed package (`pacman -Qi`), passes them deduplicated to `pacman -T`, and offers to reinstall any unsatisfied ones via `pacman -S --asdeps`. The `--asdeps` matters — otherwise they'd look "explicit" and could get pulled into world.set by a later `--regen-world-from-explicit`.
 
 ## world.set
 
@@ -134,9 +146,9 @@ Installing several packages at once no longer aborts the whole batch if one of t
 
 This is the Gentoo behavior that matters most, so it's worth spelling out:
 
-- **`emerge @world` (bare, no `-u`)** — *provision*. Reads `world.set` and installs whatever it lists that isn't already on this system. Nothing already installed is touched — not upgraded, not reinstalled. Each entry's prefix decides how it's fetched (official repo via `aura -S --needed`, `aur/` via `aura -A --needed` with the usual PKGBUILD scan, `abs/` and unresolved entries are listed but skipped — those need `emerge <pkg> --abs` or a plain `emerge <pkg>` by hand). This is the "set up a new machine from a tracked world.set" operation — commit `world.set` to your dotfiles, clone it onto a fresh install, run `emerge @world`, and get the whole package set back in one shot (official + AUR alike). If you also name packages, e.g. `emerge nano @world`, those install first and the rest of `world.set` is provisioned afterward.
-- **`emerge -u @world`** (or plain **`emerge -u`**) — *upgrade*. The literal Gentoo `emerge -u @world`: upgrades everything already installed via `aura -Syu` + `aura -Au`. Does not read `world.set` at all.
-- **`emerge --sync`** — just refreshes the databases (`-Sy`, or `-Syy` with `--refresh`), independent of the above.
+- **`emerge @world` (bare, no `-u`)** — *provision*. Installs whatever `world.set` lists that isn't on this system yet; nothing already installed is touched. Each entry's prefix decides the source (official repo, AUR resolver + PKGBUILD scan, or `abs`/unresolved — listed but skipped, needs `--abs`/manual install). The "set up a new machine" operation: commit `world.set` to dotfiles, clone, run `emerge @world`. Named packages install first, e.g. `emerge nano @world`.
+- **`emerge -u @world`** (or `emerge -u`) — *upgrade*. Upgrades everything already installed, repos + AUR. Doesn't touch `world.set`.
+- **`emerge --sync`** — just refreshes databases (`-Sy`/`-Syy`).
 
 ## Custom sets
 
@@ -160,11 +172,11 @@ emerge @game-kit @dev-tools neovim
 
 ## --undo
 
-Reverses the last successful install, unmerge, or `-u` full-system upgrade. Deliberately narrow in scope — only one step of history is kept, and it's best-effort:
+Reverses the last successful install or unmerge. Only one step of history is kept, best-effort:
 
-- **After an install:** removes only the packages that were brand new in that run (`aura -R` + drops them from world.set). Upgrades/reinstalls in the same batch are never touched, so `--undo` can't turn into an accidental system rollback.
-- **After an unmerge:** reinstalls the removed packages using the repo/AUR/ABS prefix that was recorded for each atom (`Err/`/`abs/` entries can't be auto-reinstalled — they're listed instead). Can't restore the exact prior version if it's no longer current.
-- **After `-u`:** full-system upgrades aren't reversible package-by-package (no record of prior versions here), so this hands off to Aura's own snapshot system instead — `emerge -u` takes an `aura -B` snapshot first, and `--undo` runs `aura -Br`, which brings up Aura's own interactive snapshot picker.
+- **After an install:** removes only the packages that were new in that run (`pacman -R`, drops from world.set). Upgrades/reinstalls in the same batch are untouched.
+- **After an unmerge:** reinstalls using each atom's recorded prefix (`Err/`/`abs/` entries are just listed). Can't restore an exact prior version if it's no longer current.
+- **After `-u`:** not supported — no per-package version history and no snapshot mechanism of its own. Roll back manually via `pacman -Qi`/the pacman log/cache if needed.
 
 ```bash
 emerge --undo
@@ -182,18 +194,14 @@ emerge --news all    # dismiss every currently listed item
 
 ## Security: PKGBUILD scanning
 
-Before every AUR install (`--aur`, plain fallback-to-AUR installs, and `@world` provisioning), aura-emerge fetches the raw `PKGBUILD` (and any referenced `.install` hook) from the AUR cgit mirror and greps it for common red-flag patterns before handing off to `aura`:
+Before every AUR install, aura-emerge fetches the raw `PKGBUILD` (and any `.install` hook) from the AUR cgit mirror and scans it before building, in two layers:
 
-- `curl | sh` / `wget -qO- | bash` style pipe-to-shell
-- base64-decoded execution, hex-escaped payloads
-- `chmod 777`, raw IPv4 literals in scripts
-- calls out to a foreign package manager (`npm install`, `pip install`, …) from inside the build
-- fetches from a paste-dump site (Pastebin, Hastebin, dpaste, ix.io, …) — the delivery mechanism of the 2018 acroread/balz/minergate AUR takeover
-- `sudo`/`pkexec`/`doas` invoked from inside the build script — `makepkg` builds unprivileged on purpose, so this is a privilege escalation mid-build, the mechanism reported in the openconnect-sso-anchored wave (Jul/Aug 2026)
-- `.onion` addresses referenced directly in the script — Tor-backed second-stage delivery, reused across the June and Jul/Aug 2026 waves
-- package/file names and payload hashes matching known IOCs from disclosed AUR supply-chain campaigns (e.g. "Atomic Arch", June 2026; the openconnect-sso-anchored wave, Jul/Aug 2026; the 2018 `compromised.txt` marker)
+- **AST checks** (`tree-sitter-bash`) for the highest-value signals — RCE pipelines, `sudo`/`pkexec`/`doas` mid-build, `eval` on a curl/wget substitution, python inline-exec — parsed as a real syntax tree so trivial text-matching evasions don't slip through.
+- **Line heuristics** as fallback/complement: `curl|sh` pipe-to-shell, base64/hex/openssl-decoded payloads, `chmod 777`, raw IPs, foreign package-manager calls (`npm install`, `pip install`…), paste-site fetches, `.onion` addresses, and known IOCs (package names/hashes) from disclosed AUR campaigns (e.g. "Atomic Arch" June 2026, the openconnect-sso wave Jul/Aug 2026, the 2018 `compromised.txt` marker).
 
-A hit doesn't block the install outright — it prints the offending file/line plus a direct link to review the source on cgit, and asks `Continue anyway? [y/N]` before proceeding. This is a cheap tripwire, not a substitute for actually reading the PKGBUILD yourself.
+Findings are tagged `Suspicious` (plausible but generic) or `ConfirmedIoc` (exact match to a known campaign, shown louder).
+
+A hit doesn't block the install — it prints the file/line, a cgit link, and asks `Continue anyway? [y/N]`. A cheap tripwire, not a substitute for reading the PKGBUILD yourself. `--abs` builds also get the [`bwrap` sandbox](#sandboxing) as a second, independent layer.
 
 ## Flags
 
@@ -211,11 +219,14 @@ A hit doesn't block the install outright — it prints the offending file/line p
 | `-v` | Verbose output |
 | `-n` | Do not reinstall (noreplace) |
 | `--aur` | Force AUR |
-| `--only-repos` | Only official repos, never search/install from AUR |
-| `--abs` | Build from ABS source via pkgctl |
+| `--aur-deep` (alias `--aur-full`) | Also resolve and build AUR-only dependencies recursively; implies `--aur` |
+| `--only-repos` | Only official repos, never search/install from the AUR |
+| `--abs` | Build from ABS source via `pkgctl repo clone`, sandboxed in `bwrap` by default |
+| `--no-sandbox` | Disable the `bwrap` sandbox for `--abs` builds, falling back to plain `makepkg -si` |
 | `--skippgp` | Skip PGP checks when building from ABS |
 | `--autopgp` | Auto-import missing PGP keys from a trusted keyserver when building from ABS, without prompting |
-| `--edit` | Edit PKGBUILD before building — opens `$EDITOR` for `--abs`, or passes `--hotedit` to `aura` for AUR |
+| `--edit` | Edit PKGBUILD before building — opens `$EDITOR`, then auto-regenerates `.SRCINFO` from the edit |
+| `--off-src-regen` | With `--edit`, skip the automatic `.SRCINFO` regeneration (old behavior) |
 | `--sync` | Sync databases |
 | `--refresh` | Force-refresh all databases even if up to date (`pacman -Syy`), used with `--sync` or `-u` |
 | `--info` | Show system info, mirroring Gentoo's `emerge --info` |
@@ -227,11 +238,13 @@ A hit doesn't block the install outright — it prints the offending file/line p
 | `--regen` | Regenerate metadata cache |
 | `--regen-world` | Re-resolve repo prefixes in world.set |
 | `--regen-sets <SET>` | Re-resolve repo prefixes for one custom set |
+| `--regen-sort` | With `--regen-sets`, also alphabetically re-sort the set file |
 | `--regen-world-from-explicit` | One-time migration: seed world.set from every explicitly-installed package |
 | `--err-inst` | With `@world` provisioning, also retry `Err/` (unresolved-source) entries via the normal install path |
 | `--resume` | Resume interrupted transaction |
 | `--skipfirst` | Skip first pkg when resuming |
-| `--undo` | Undo the last install, unmerge, or `-u` full-system upgrade |
+| `--undo` | Undo the last install or unmerge (not full-system upgrades — see `--undo` section) |
+| `--clean-source-cache` | Delete aura-emerge's persistent VCS source cache (`-git`/`-hg`/`-svn` checkouts) |
 | `--list-sets` | List available `@world` / `@preserved-rebuild` / custom sets |
 | `--with-bdeps` | Pull in build-time deps (compat) |
 | `--verbose-conflicts` | Verbose slot conflicts (compat) |

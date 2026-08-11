@@ -40,18 +40,47 @@ pub(crate) struct AurPkgInfo {
 /// Returns the clone path on success, `None` on any git failure (network,
 /// or the name genuinely isn't a pkgbase -- the two aren't distinguished
 /// here since callers fall back to an RPC lookup either way).
+///
+/// `dest_root` is expected to be a directory `clone_repo`'s caller owns
+/// exclusively for this run (see `AUR_BUILD_BASE`/`ABS_BUILD_BASE`'s
+/// wipe-on-start in packages.rs) -- if `target` already exists, that's a
+/// caller-side bug (stale wipe, or the same pkgbase cloned twice in one
+/// run), not a normal "package doesn't exist" case. Reported distinctly
+/// on stderr so it doesn't masquerade as an AUR miss several call-frames
+/// up in `clone_or_resolve()`/`resolve_and_build_aur()`.
 pub(crate) fn clone_repo(pkgbase: &str, dest_root: &Path) -> Option<PathBuf> {
     let url = format!("{}/{}.git", AUR_BASE_URL, pkgbase);
     let target = dest_root.join(pkgbase);
-    let ok = Command::new(GIT_BIN)
+    if target.exists() {
+        eprintln!(
+            ">>> Warning: build target {} already exists (stale from an earlier clone in this run?) -- skipping clone",
+            target.display()
+        );
+        return None;
+    }
+    let output = Command::new(GIT_BIN)
         .args(["clone", "--depth=1", "--quiet", &url])
         .arg(&target)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+        .stderr(Stdio::piped())
+        .output();
+    let ok = match &output {
+        Ok(o) => o.status.success(),
+        Err(_) => false,
+    };
     if !ok {
+        // Surface git's own stderr at a low volume rather than
+        // discarding it -- a genuine "repository not found" (bad/unknown
+        // pkgbase, the expected/common case) looks very different from a
+        // network timeout or TLS failure, and telling those apart used
+        // to require re-running with `git clone` by hand.
+        if let Ok(o) = &output {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            let stderr = stderr.trim();
+            if !stderr.is_empty() && !stderr.contains("Repository not found") {
+                eprintln!(">>> Note: git clone of '{}' failed: {}", pkgbase, stderr);
+            }
+        }
         return None;
     }
     // AUR's git backend happily "clones" successfully (exit 0) for a name
