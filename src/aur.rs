@@ -51,7 +51,24 @@ pub(crate) fn clone_repo(pkgbase: &str, dest_root: &Path) -> Option<PathBuf> {
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
-    ok.then_some(target)
+    if !ok {
+        return None;
+    }
+    // AUR's git backend happily "clones" successfully (exit 0) for a name
+    // that was never actually pushed as a package -- it just hands back an
+    // empty, zero-commit repo with no PKGBUILD in it. Treat that the same
+    // as "package doesn't exist" rather than letting the bogus empty clone
+    // limp downstream into a much more confusing failure several layers
+    // later (missing .SRCINFO, then "could not read PKGBUILD: No such
+    // file or directory"). Clean up the empty dir too, since dest_root is
+    // a fixed, reused-across-runs path (AUR_BUILD_BASE) -- leaving it
+    // behind would otherwise sit there as a stale, empty trap for the
+    // next run.
+    if !target.join("PKGBUILD").is_file() {
+        let _ = std::fs::remove_dir_all(&target);
+        return None;
+    }
+    Some(target)
 }
 
 /// Looks up a package name's real `pkgbase` via the official AUR RPC --

@@ -52,7 +52,7 @@ pub(crate) const WORLD_SET_FILE:  &str = "/etc/emerge/world.set";
 /// Directory for custom package sets: /etc/emerge/sets.d/<name>.set,
 /// invoked on the command line as `@<name>` (e.g. `@game-kit`).
 pub(crate) const SETS_DIR: &str = "/etc/emerge/sets.d";
-pub(crate) const ABS_BUILD_BASE:  &str = "/tmp/aura-emerge-abs";
+pub(crate) const ABS_BUILD_BASE:  &str = "/var/tmp/aura-emerge-abs";
 pub(crate) const WORLD_SET_TMP:  &str = "/etc/emerge/world.set.tmp";
 pub(crate) const RESUME_FILE: &str = "/etc/emerge/resume.state";
 pub(crate) const RESUME_TMP:  &str = "/etc/emerge/resume.state.tmp";
@@ -130,7 +130,11 @@ NEWS
 
 EXAMPLES
     emerge neovim                  Install (official repos, falls back to AUR)
-    emerge neovim-git --aur        Install explicitly from the AUR
+    emerge neovim-git --aur        Install explicitly from the AUR (just
+                                    the named package(s); errors out on an
+                                    AUR-only dependency instead of guessing)
+    emerge foo --aur-deep          Same, but also build AUR-only
+                                    dependencies recursively
     emerge @world                  Provision this machine from world.set
     emerge -u @world                Upgrade the whole system
     emerge @game-kit                Install a custom set
@@ -206,6 +210,18 @@ struct Cli {
     /// Explicitly force AUR only
     #[arg(long = "aur")]
     aur: bool,
+
+    /// Also resolve and build AUR-only dependencies of the requested
+    /// package(s) (recursively), instead of stopping and asking you to
+    /// opt in. Off by default: a plain --aur build only ever builds the
+    /// package(s) you actually named -- if one of its declared
+    /// dependencies turns out to be AUR-only too (not in the official
+    /// repos, not already installed), that's a hard stop with an error
+    /// telling you to re-run with --aur-deep, rather than silently
+    /// cloning and building an unbounded, unreviewed tree of other
+    /// people's PKGBUILDs on your behalf. Implies --aur.
+    #[arg(long = "aur-deep", alias = "aur-full")]
+    aur_deep: bool,
 
     /// Only use official repos: never search or install from the AUR
     #[arg(long = "only-repos")]
@@ -479,7 +495,8 @@ fn print_help() {
     println!("   emerge --help");
     println!("Options: -[1aCcDehNnpsuVv]");
     println!("          [ --abs                        ] [ --aur        ]");
-    println!("          [ --only-repos                 ] [ --skippgp    ]");
+    println!("          [ --aur-deep                   ] [ --skippgp    ]");
+    println!("          [ --only-repos                                  ]");
     println!("          [ --autopgp                    ] [ --edit       ]");
     println!("          [ --emptytree                  ] [ --newuse     ]");
     println!("          [ --noreplace                  ] [ --oneshot    ]");
@@ -597,6 +614,7 @@ fn build_resume_args(cli: &Cli, target_pkgs: &[String], has_world: bool) -> Vec<
     let mut args: Vec<String> = Vec::new();
     if cli.update       { args.push("--update".to_string()); }
     if cli.aur          { args.push("--aur".to_string()); }
+    if cli.aur_deep     { args.push("--aur-deep".to_string()); }
     if cli.only_repos   { args.push("--only-repos".to_string()); }
     if cli.abs          { args.push("--abs".to_string()); }
     if cli.skippgp      { args.push("--skippgp".to_string()); }
@@ -778,7 +796,15 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+
+    // --aur-deep implies --aur (it only makes sense as an AUR install,
+    // and this way every existing `if cli.aur { ... }` check downstream
+    // -- which decides whether AUR is searched/installed at all -- keeps
+    // working without also needing an `|| cli.aur_deep` at each site).
+    if cli.aur_deep {
+        cli.aur = true;
+    }
 
     // Shell completion generation: no pacman needed, no world.set
     // touched — this just prints a script to stdout. Handled before
@@ -1249,7 +1275,7 @@ fn run() -> anyhow::Result<()> {
                     // aur_install() always leaves the explicit bit set on
                     // success (see its doc comment) — no separate
                     // mark_asexplicit() call needed the way `aura -A` required.
-                    if aur_install(&names, false, cli.ask, false, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen) {
+                    if aur_install(&names, false, cli.ask, false, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen, cli.aur_deep) {
                         if let Err(e) = add_to_world_set(&names, Some("aur")) {
                             eprintln!(">>> Warning: package(s) reinstalled but world.set was not updated: {:#}", e);
                         }
@@ -1341,7 +1367,7 @@ fn run() -> anyhow::Result<()> {
         if !cli.pretend {
             save_resume_state(&build_resume_args(&cli, &[], true));
         }
-        let ok = provision_from_world_set(cli.pretend, cli.ask, cli.verbose, cli.err_inst, cli.no_sandbox, cli.off_src_regen)?;
+        let ok = provision_from_world_set(cli.pretend, cli.ask, cli.verbose, cli.err_inst, cli.no_sandbox, cli.off_src_regen, cli.aur_deep)?;
         if !cli.pretend {
             if ok {
                 clear_resume_state();
@@ -1410,7 +1436,7 @@ fn run() -> anyhow::Result<()> {
         };
 
         println!(">>> Upgrading AUR packages...");
-        let ok2 = aur_upgrade_all(cli.pretend, cli.ask, cli.skippgp, cli.no_sandbox, cli.off_src_regen);
+        let ok2 = aur_upgrade_all(cli.pretend, cli.ask, cli.skippgp, cli.no_sandbox, cli.off_src_regen, cli.aur_deep);
 
         println!();
         println!("{} Auto-cleaning packages...", ">>>".green().bold());
@@ -1635,7 +1661,7 @@ fn run() -> anyhow::Result<()> {
             print_emerge_emerging(&pkg_infos);
             let found_names: Vec<String> = pkg_infos.iter().map(|p| p.name.clone()).collect();
             scan_aur_pkgbuilds_or_abort(&found_names);
-            success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen);
+            success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen, cli.aur_deep);
             if success { installed_infos = pkg_infos; }
         } else {
             // Probe official repos in a way that's safe against partial matches:
@@ -1715,7 +1741,7 @@ fn run() -> anyhow::Result<()> {
                 print_emerge_emerging(&pkg_infos);
                 let found_names: Vec<String> = pkg_infos.iter().map(|p| p.name.clone()).collect();
                 scan_aur_pkgbuilds_or_abort(&found_names);
-                success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen);
+                success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen, cli.aur_deep);
                 if success { installed_infos = pkg_infos; }
             } else {
                 // Mixed case: some packages are official, some need the AUR.
@@ -1751,7 +1777,7 @@ fn run() -> anyhow::Result<()> {
                 if !aur_infos.is_empty() {
                     let aur_found_names: Vec<String> = aur_infos.iter().map(|p| p.name.clone()).collect();
                     scan_aur_pkgbuilds_or_abort(&aur_found_names);
-                    let aur_success = aur_install(&aur_found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen);
+                    let aur_success = aur_install(&aur_found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen, cli.aur_deep);
                     if aur_success {
                         installed_infos.extend(aur_infos);
                     } else {
@@ -1883,7 +1909,7 @@ fn run() -> anyhow::Result<()> {
     // now provision anything else world.set still lists as missing.
     if provision_after_install && !cli.pretend {
         println!();
-        if !provision_from_world_set(cli.pretend, cli.ask, cli.verbose, cli.err_inst, cli.no_sandbox, cli.off_src_regen)? {
+        if !provision_from_world_set(cli.pretend, cli.ask, cli.verbose, cli.err_inst, cli.no_sandbox, cli.off_src_regen, cli.aur_deep)? {
             eprintln!(">>> Warning: not everything from world.set installed successfully.");
             std::process::exit(1);
         }
