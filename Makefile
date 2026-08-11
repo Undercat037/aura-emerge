@@ -28,6 +28,6 @@ completions: build
 	$(BIN) --gen-completions fish | sudo tee /usr/share/fish/vendor_completions.d/emerge.fish > /dev/null
 
 man: build
-	sudo install -Dm644 <($(BIN) --gen-manpage) /usr/share/man/man1/emerge.1
+	$(BIN) --gen-manpage | sudo tee /usr/share/man/man1/emerge.1 > /dev/null
 
 all: install
