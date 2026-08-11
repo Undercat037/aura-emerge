@@ -4,9 +4,9 @@
 //! The line-based heuristics in `security.rs` are a cheap first pass, but
 //! they're pure text matching and can be evaded by anything that doesn't
 //! literally contain the substring being grepped for:
-//!   - `curl ... | s""h` (bash string concatenation — evaluates to `sh` at
+//!   - `curl ... | s""h` (bash string concatenation - evaluates to `sh` at
 //!     runtime, but no line contains the literal text "sh" after the pipe)
-//!   - `curl ... | /bin/sh` (absolute path instead of a bare shell name —
+//!   - `curl ... | /bin/sh` (absolute path instead of a bare shell name -
 //!     fixed on the line-based side too, but the AST handles it for free)
 //!   - `# sudo ./validator` or `makedepends=('sudo')` (both need their own
 //!     explicit "am I a comment / am I inside an array literal" carve-out
@@ -15,14 +15,14 @@
 //!
 //! Each function here parses the source with tree-sitter-bash and walks
 //! the real syntax tree. They return `None` both on "didn't find it" and
-//! on "couldn't parse it" — callers in `security.rs` fall back to the
+//! on "couldn't parse it" - callers in `security.rs` fall back to the
 //! corresponding line-based heuristic in that case (`.or_else(...)`), so a
 //! parse failure never silently drops a check, it just loses the extra
 //! precision for that one file.
 //!
 //! Command names are only ever matched when they're statically known
 //! (`resolve_word` bails to `None` on anything containing an unresolved
-//! `$expansion` or `$(command_substitution)`) — a command invoked through
+//! `$expansion` or `$(command_substitution)`) - a command invoked through
 //! a variable (`$RUNNER ./validator`) is a real blind spot here, same as
 //! it would be for any static analysis, and isn't claimed to be covered.
 
@@ -54,7 +54,7 @@ fn find_descendants<'a>(node: Node<'a>, kind: &str, out: &mut Vec<Node<'a>>) {
 /// Resolves a `word` / `raw_string` ('...') / `string` ("...") /
 /// `concatenation` node to a literal string. Returns `None` if the value
 /// depends on anything dynamic (an `expansion` or `command_substitution`
-/// inside a double-quoted string) — we never guess at a value we can't
+/// inside a double-quoted string) - we never guess at a value we can't
 /// actually determine statically.
 fn resolve_word(node: Node, src: &[u8]) -> Option<String> {
     match node.kind() {
@@ -108,7 +108,7 @@ const ESCALATORS: &[&str] = &["sudo", "pkexec", "doas"];
 
 /// Structural equivalent of `curl_pipe_shell_line`: a `pipeline` node
 /// where some earlier command resolves to curl/wget and the last command
-/// resolves to a shell — survives quoting (`| "sh"`, `| 'sh'`),
+/// resolves to a shell - survives quoting (`| "sh"`, `| 'sh'`),
 /// concatenation (`| s""h`), absolute paths (`| /bin/sh`), and `env`
 /// wrappers (`| env bash`, `| env -S sh`) uniformly, instead of needing a
 /// separate carve-out for each.
@@ -267,7 +267,7 @@ pub(crate) fn source_process_subst_remote(source: &str) -> Option<usize> {
 /// Structural equivalent of `eval_remote_exec_line`: an `eval` command
 /// whose arguments contain a `command_substitution` that itself contains
 /// a curl/wget command anywhere inside it, however it's nested (piped,
-/// wrapped, etc.) — not just "the line contains `$(` and `curl`".
+/// wrapped, etc.) - not just "the line contains `$(` and `curl`".
 pub(crate) fn eval_remote_exec(source: &str) -> Option<usize> {
     let tree = parse(source)?;
     let src = source.as_bytes();

@@ -93,7 +93,7 @@ pub(crate) const UNAME_BIN: &str = "/usr/bin/uname";
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
-/// Longer DESCRIPTION section for the man page (clap_mangen) — the plain
+/// Longer DESCRIPTION section for the man page (clap_mangen) - the plain
 /// `///` doc comment on `Cli` below is used for the one-line NAME/about.
 const LONG_ABOUT: &str = "\
 aura-emerge is a Gentoo-style emerge wrapper for Arch Linux, driving pacman \
@@ -105,7 +105,7 @@ package databases (--sync), upgrading everything already installed (-u / -u @wor
 and making sure this machine actually has everything world.set says it should \
 (bare @world).";
 
-/// EXTRA section appended after OPTIONS in the man page — worked examples and
+/// EXTRA section appended after OPTIONS in the man page - worked examples and
 /// the @world / custom-sets explanation that doesn't fit as a single flag's help.
 const AFTER_HELP: &str = "\
 WORLD.SET AND @world
@@ -361,11 +361,11 @@ struct Cli {
     /// (-u) performed by emerge. An install is reversed by removing only
     /// the packages that were brand new (upgrades/reinstalls in the same
     /// batch are left alone); an unmerge is reversed by reinstalling the
-    /// removed packages. A full-system upgrade is NOT reversible here —
+    /// removed packages. A full-system upgrade is NOT reversible here -
     /// this tool doesn't take a pre-upgrade snapshot (that was aura's own
     /// `-B`/`-Br`, dropped along with the rest of aura); use pacman's own
     /// log/cache to downgrade specific packages manually if needed. Only
-    /// one step of history is kept — best-effort, and install/unmerge
+    /// one step of history is kept - best-effort, and install/unmerge
     /// undo can't restore an exact prior version once it's no longer
     /// current in the repo/AUR.
     #[arg(long = "undo")]
@@ -392,7 +392,7 @@ struct Cli {
     /// (dropping '#' comments and blank-line grouping in the process). By
     /// itself --regen-sets only patches repository prefixes in place and
     /// leaves line order, comments, and blank lines untouched. This flag
-    /// is an addition to --regen-sets, not an alternative — it has no
+    /// is an addition to --regen-sets, not an alternative - it has no
     /// effect on its own.
     #[arg(long = "regen-sort", requires = "regen_sets")]
     regen_sort: bool,
@@ -492,13 +492,13 @@ struct Cli {
     #[arg(long = "alert", short = 'A')]             alert: bool,
 
     /// Generate a shell completion script and print it to stdout.
-    /// Used by packaging (PKGBUILD) to install completions — not meant
+    /// Used by packaging (PKGBUILD) to install completions - not meant
     /// for interactive use, hence hidden from --help.
     #[arg(long = "gen-completions", hide = true, value_name = "SHELL")]
     gen_completions: Option<Shell>,
 
     /// Generate the man page (troff/ROFF) via clap_mangen and print it to
-    /// stdout. Used by packaging (PKGBUILD) to install `emerge(1)` — this
+    /// stdout. Used by packaging (PKGBUILD) to install `emerge(1)` - this
     /// way the man page can never drift from --help, since both are
     /// generated from the same Cli definition. Hidden from --help.
     #[arg(long = "gen-manpage", hide = true)]
@@ -517,11 +517,11 @@ struct Cli {
     #[arg(long = "news", value_name = "N|all", num_args = 0..=1, default_missing_value = "")]
     news: Option<String>,
 
-    /// Full alias for `--news` — same `[N|all]` argument, same list, same
+    /// Full alias for `--news` - same `[N|all]` argument, same list, same
     /// read/unread tracking. Kept for Gentoo command-line muscle memory
-    /// (`emerge --check-news` isn't a real Gentoo action either — the
+    /// (`emerge --check-news` isn't a real Gentoo action either - the
     /// actual news notification there fires automatically after
-    /// `--sync` — but the flag name is common enough to be worth wiring
+    /// `--sync` - but the flag name is common enough to be worth wiring
     /// up properly rather than leaving as a silent no-op).
     #[arg(long = "check-news", value_name = "N|all", num_args = 0..=1, default_missing_value = "")]
     check_news: Option<String>,
@@ -557,7 +557,7 @@ fn print_help() {
     println!("          [ --list-sets | --regen-sets @<name>  | --news [N|all]    ]");
     println!();
     println!("   @world (no -u): install whatever's listed in /etc/emerge/world.set");
-    println!("   and missing from this system — declarative provisioning, e.g. for a");
+    println!("   and missing from this system - declarative provisioning, e.g. for a");
     println!("   freshly installed machine. Nothing already installed is touched.");
     println!();
     println!("   -u @world (or -u alone): full system upgrade (repos + AUR), the");
@@ -576,7 +576,7 @@ fn print_help() {
 // ── Shell completion: dynamic @set support ─────────────────────────────────────
 //
 // clap_complete's generated script only knows the flags declared at build
-// time — it has no idea what's in /etc/emerge/sets.d/ on the machine it
+// time - it has no idea what's in /etc/emerge/sets.d/ on the machine it
 // ends up installed on. This appends a small, shell-specific snippet after
 // the generated script that shells out to `emerge --list-sets` (world,
 // preserved-rebuild, and every sets.d/*.set) whenever the word being
@@ -687,11 +687,11 @@ fn build_resume_args(cli: &Cli, target_pkgs: &[String], has_world: bool) -> Vec<
 fn check_binaries() {
     // git is load-bearing now that AUR interaction (clone + RPC info/
     // search) goes straight through aur.rs instead of shelling out to
-    // aura — check for it up front like every other required binary,
+    // aura - check for it up front like every other required binary,
     // instead of only discovering it's missing mid-operation. curl used
     // to be in this list too, but every HTTP fetch (AUR RPC, cgit,
     // the news feed, ABS .SRCINFO) now goes through the in-process ureq
-    // client in http.rs instead of shelling out to it — see that
+    // client in http.rs instead of shelling out to it - see that
     // module's doc for why.
     for bin in &[PACMAN_BIN, SUDO_BIN, TEE_BIN, MV_BIN, RM_BIN, aur::GIT_BIN] {
         if !std::path::Path::new(bin).exists() {
@@ -714,7 +714,7 @@ fn is_safe_path(path: &str) -> bool {
 // ── AUR search/info output ──────────────────────────────────────────────────
 
 /// `pacman -Ss`-style two-line-per-result listing, for AUR RPC `search`
-/// results — replaces parsing/forwarding `aura -As`/`aura --searchdesc`
+/// results - replaces parsing/forwarding `aura -As`/`aura --searchdesc`
 /// (AUR half) output.
 fn print_aur_search_results(results: &[aur::AurPkgInfo]) {
     if results.is_empty() {
@@ -738,7 +738,7 @@ fn print_aur_search_results(results: &[aur::AurPkgInfo]) {
     }
 }
 
-/// `pacman -Si`-style field listing, for AUR RPC `info` results —
+/// `pacman -Si`-style field listing, for AUR RPC `info` results -
 /// replaces `aura -Ai` output.
 fn print_aur_info_results(results: &[aur::AurPkgInfo]) {
     if results.is_empty() {
@@ -776,7 +776,7 @@ fn run_cmd(prog: &str, args: &[&str], packages: &[String]) -> bool {
     }
 }
 
-/// Read one line from stdin, byte by byte, via the raw fd — bypassing
+/// Read one line from stdin, byte by byte, via the raw fd - bypassing
 /// Rust's `Stdin`, which over-reads into its own buffer. This tool follows
 /// a "y/N" prompt by spawning a child (pacman) that inherits stdin
 /// and expects its own interactive read right after; any bytes the parent
@@ -858,7 +858,7 @@ fn run() -> anyhow::Result<()> {
     }
 
     // Shell completion generation: no pacman needed, no world.set
-    // touched — this just prints a script to stdout. Handled before
+    // touched - this just prints a script to stdout. Handled before
     // check_binaries() so it also works in a clean chroot/build environment.
     if let Some(shell) = cli.gen_completions {
         let mut cmd = <Cli as clap::CommandFactory>::command();
@@ -868,7 +868,7 @@ fn run() -> anyhow::Result<()> {
     }
 
     // Man page generation: same idea as --gen-completions, but for
-    // emerge(1) — rendered straight from the Cli definition via
+    // emerge(1) - rendered straight from the Cli definition via
     // clap_mangen, so it can't drift out of sync with --help.
     if cli.gen_manpage {
         let cmd = <Cli as clap::CommandFactory>::command();
@@ -902,7 +902,7 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // --list-sets: no pacman needed — just enumerates what's on disk.
+    // --list-sets: no pacman needed - just enumerates what's on disk.
     // Also what shell completion shells out to for '@' completion.
     if cli.list_sets {
         println!("@world");
@@ -913,7 +913,7 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // --clean-source-cache: same idea, no pacman/sudo needed — just
+    // --clean-source-cache: same idea, no pacman/sudo needed - just
     // removes a directory under $HOME.
     if cli.clean_source_cache {
         match source_cache_dir() {
@@ -954,11 +954,11 @@ fn run() -> anyhow::Result<()> {
         .any(|p| p == "@world");
 
     // Detect @preserved-rebuild set (Gentoo-flavored trigger for a
-    // dependency-completeness check — see preserved_rebuild()).
+    // dependency-completeness check - see preserved_rebuild()).
     let has_preserved_rebuild = cli.packages.iter()
         .any(|p| p == "@preserved-rebuild");
 
-    // Any other "@name" token is a custom set — resolve it against
+    // Any other "@name" token is a custom set - resolve it against
     // /etc/emerge/sets.d/<name>.set (one package atom per line, '#'
     // comments allowed) and fold its contents into the package list, same
     // as if the user had typed every package in the file by hand.
@@ -1016,7 +1016,7 @@ fn run() -> anyhow::Result<()> {
 
         if cli.searchdesc {
             // Search descriptions: pacman -Ss for official, AUR RPC
-            // (by=name-desc) for AUR — both used to go through aura, which
+            // (by=name-desc) for AUR - both used to go through aura, which
             // just forwarded to pacman for the official half anyway.
             println!("{} Searching descriptions for '{}'...", ">>>".green().bold(), term);
             run_cmd(PACMAN_BIN, &["-Ss"], &target_pkgs);
@@ -1065,7 +1065,7 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // 2. Sync — sync DB, then continue to install if packages given
+    // 2. Sync - sync DB, then continue to install if packages given
     if cli.sync {
         let sync_flag = if cli.refresh { "-Syy" } else { "-Sy" };
         println!("{} Syncing package databases{}...",
@@ -1109,7 +1109,7 @@ fn run() -> anyhow::Result<()> {
 
     // --regen-world-from-explicit: seed world.set from every currently
     // explicitly-installed package (pacman -Qeq). Meant as a one-time
-    // migration step on a system that predates world.set tracking — run
+    // migration step on a system that predates world.set tracking - run
     // it once, and `-c`'s world.set protection (below) and `--prune`
     // start seeing the whole system instead of just what was installed
     // through `emerge` since world.set existed.
@@ -1139,7 +1139,7 @@ fn run() -> anyhow::Result<()> {
     if cli.prune {
         println!("{} Pruning packages not in world.set...", ">>>".green().bold());
         if !is_safe_path(WORLD_SET_FILE) {
-            eprintln!(">>> Warning: {} is a symlink — refusing to read", WORLD_SET_FILE);
+            eprintln!(">>> Warning: {} is a symlink - refusing to read", WORLD_SET_FILE);
             std::process::exit(1);
         }
         let world_bare: HashSet<String> = match fs::File::open(WORLD_SET_FILE) {
@@ -1245,7 +1245,7 @@ fn run() -> anyhow::Result<()> {
     }
 
     // --undo: reverse the last successful install or unmerge. Deliberately
-    // narrow — see the flag's help text for exactly what is and isn't
+    // narrow - see the flag's help text for exactly what is and isn't
     // covered.
     if cli.undo {
         match load_last_action() {
@@ -1253,11 +1253,11 @@ fn run() -> anyhow::Result<()> {
                 // Full-system upgrades aren't reversible package-by-package
                 // (no record of prior versions), and this tool no longer
                 // takes its own snapshot before an upgrade (see the update
-                // branch below) — that used to be aura's own `-B`
+                // branch below) - that used to be aura's own `-B`
                 // state-save, backing `-Br` here. Neither exists anymore,
                 // so there's genuinely nothing to restore to.
                 eprintln!(
-                    "{} Full-system-upgrade undo isn't available — this build no longer takes a \
+                    "{} Full-system-upgrade undo isn't available - this build no longer takes a \
                     pre-upgrade snapshot. Check `pacman -Qi <pkg>` / the pacman log \
                     (/var/log/pacman.log) and downgrade specific packages manually if needed \
                     (`pacman -U` against a cached .pkg.tar.* in /var/cache/pacman/pkg/).",
@@ -1266,7 +1266,7 @@ fn run() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
             Some((kind, atoms)) if kind == "install" => {
-                println!("{} Undoing last install — removing: {}", ">>>".green().bold(), atoms.join(", "));
+                println!("{} Undoing last install - removing: {}", ">>>".green().bold(), atoms.join(", "));
                 let bare: Vec<String> = atoms.iter()
                     .map(|a| a.split('/').last().unwrap_or(a).to_string())
                     .collect();
@@ -1282,12 +1282,12 @@ fn run() -> anyhow::Result<()> {
                     }
                     clear_last_action();
                 } else {
-                    eprintln!(">>> Warning: undo did not fully succeed — saved state left in place.");
+                    eprintln!(">>> Warning: undo did not fully succeed - saved state left in place.");
                     std::process::exit(1);
                 }
             }
             Some((kind, atoms)) if kind == "unmerge" => {
-                println!("{} Undoing last unmerge — reinstalling: {}", ">>>".green().bold(), atoms.join(", "));
+                println!("{} Undoing last unmerge - reinstalling: {}", ">>>".green().bold(), atoms.join(", "));
                 if cli.pretend {
                     return Ok(());
                 }
@@ -1324,7 +1324,7 @@ fn run() -> anyhow::Result<()> {
                         .collect();
                     scan_aur_pkgbuilds_or_abort(&names);
                     // aur_install() always leaves the explicit bit set on
-                    // success (see its doc comment) — no separate
+                    // success (see its doc comment) - no separate
                     // mark_asexplicit() call needed the way `aura -A` required.
                     if aur_install(&names, false, cli.ask, false, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen, cli.aur_deep, cli.unshare_net_build) {
                         if let Err(e) = add_to_world_set(&names, Some("aur")) {
@@ -1337,7 +1337,7 @@ fn run() -> anyhow::Result<()> {
                 if !unresolved.is_empty() {
                     eprintln!(
                         ">>> Warning: the following package(s) had no known source (abs/Err) and \
-                        were not auto-reinstalled — reinstall them manually if needed:"
+                        were not auto-reinstalled - reinstall them manually if needed:"
                     );
                     for u in &unresolved {
                         eprintln!("    {}", u);
@@ -1347,7 +1347,7 @@ fn run() -> anyhow::Result<()> {
                 if all_ok {
                     clear_last_action();
                 } else {
-                    eprintln!(">>> Warning: undo did not fully succeed — saved state left in place.");
+                    eprintln!(">>> Warning: undo did not fully succeed - saved state left in place.");
                     std::process::exit(1);
                 }
             }
@@ -1356,7 +1356,7 @@ fn run() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
             None => {
-                println!("{} Nothing to undo — no saved action found.", ">>>".green().bold());
+                println!("{} Nothing to undo - no saved action found.", ">>>".green().bold());
             }
         }
         return Ok(());
@@ -1372,7 +1372,7 @@ fn run() -> anyhow::Result<()> {
             println!(">>> Selecting {} into world.set...", p);
         }
         add_to_world_set(&target_pkgs, None)?;
-        // world.set now says these are explicitly wanted — mirror that onto
+        // world.set now says these are explicitly wanted - mirror that onto
         // pacman's own bookkeeping (no-ops for anything not yet installed).
         mark_asexplicit(&target_pkgs);
         return Ok(());
@@ -1389,7 +1389,7 @@ fn run() -> anyhow::Result<()> {
         }
         remove_from_world_set(&target_pkgs)?;
         // Opposite of --select: no longer wanted by world.set, so demote to
-        // a dependency in pacman's bookkeeping — makes it eligible for
+        // a dependency in pacman's bookkeeping - makes it eligible for
         // --depclean like any other transitive dependency.
         mark_asdeps(&target_pkgs);
         return Ok(());
@@ -1408,7 +1408,7 @@ fn run() -> anyhow::Result<()> {
     }
 
     // 3b. Bare `@world`, no other packages, no -u: declarative
-    // provisioning — install whatever world.set lists that isn't already
+    // provisioning - install whatever world.set lists that isn't already
     // on this system, and touch nothing that already is. This is the
     // "move world.set to a new machine and get everything back"
     // operation (or "make sure this machine matches what I asked for").
@@ -1430,7 +1430,7 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // 3. Full system upgrade — triggered by -u, with or without @world.
+    // 3. Full system upgrade - triggered by -u, with or without @world.
     // Equivalent to Gentoo's `emerge -u @world`: upgrades everything
     // already installed (official repos + AUR), it does not consult
     // world.set at all. For -Syy use `--sync --refresh`.
@@ -1438,7 +1438,7 @@ fn run() -> anyhow::Result<()> {
         if let Some(n) = news::unread_count_quiet() {
             if n > 0 {
                 println!(
-                    "{} {} unread Arch news item(s) — run `emerge --news` before continuing.",
+                    "{} {} unread Arch news item(s) - run `emerge --news` before continuing.",
                     ">>>".yellow().bold(),
                     n
                 );
@@ -1451,10 +1451,10 @@ fn run() -> anyhow::Result<()> {
         }
 
         // No pre-upgrade snapshot is taken here anymore (previously
-        // `aura -B`, backing `emerge --undo` for a full-system upgrade —
+        // `aura -B`, backing `emerge --undo` for a full-system upgrade -
         // dropped along with the rest of aura; see the --undo "update"
         // branch above for what that means for `--undo` now). The
-        // resume-state save above is unrelated and unaffected — `--resume`
+        // resume-state save above is unrelated and unaffected - `--resume`
         // still works the same way.
         if !cli.pretend {
             save_last_action(LastAction::Update, &["system".to_string()]);
@@ -1496,13 +1496,13 @@ fn run() -> anyhow::Result<()> {
             if ok1 && ok2 {
                 clear_resume_state();
             } else {
-                eprintln!(">>> Warning: not everything upgraded cleanly — state kept for `emerge --resume`.");
+                eprintln!(">>> Warning: not everything upgraded cleanly - state kept for `emerge --resume`.");
             }
         }
         return Ok(());
     }
 
-    // 4. Depclean (orphans) — pacman's own leaf-orphan detection
+    // 4. Depclean (orphans) - pacman's own leaf-orphan detection
     //    (`pacman -Qttdq`), with one guard: anything the user has
     //    explicitly asked for via world.set is protected even if pacman's
     //    dependency graph currently also sees it as a dependency of
@@ -1515,7 +1515,7 @@ fn run() -> anyhow::Result<()> {
     //    package (e.g. exo would be skipped here just because xdg-utils
     //    optionally uses it, even with zero hard reverse-dependencies).
     //    Doubling it (-tt / here as part of -Qttdq) makes pacman ignore
-    //    optional-for relationships too — the world.set filter right
+    //    optional-for relationships too - the world.set filter right
     //    below is what actually keeps this safe, the same way Gentoo's
     //    own --depclean doesn't spare a package just because *something*
     //    could optionally use it, only because it's in world.
@@ -1576,7 +1576,7 @@ fn run() -> anyhow::Result<()> {
                     pacman_args.push("--noconfirm");
                 }
 
-                // --print never touches the system, so it doesn't need root —
+                // --print never touches the system, so it doesn't need root -
                 // running it through sudo anyway just makes `-p` (pretend)
                 // prompt for a password to print a list, which defeats the
                 // point of a dry run.
@@ -1607,7 +1607,7 @@ fn run() -> anyhow::Result<()> {
         println!("{} These are the packages that would be unmerged:", ">>>".green().bold());
         println!();
         // Full repo/name atoms, captured while we still have the repo info
-        // (it's gone once the package is actually removed) — used to
+        // (it's gone once the package is actually removed) - used to
         // record this unmerge for `emerge --undo`.
         let mut unmerge_atoms: Vec<String> = Vec::new();
         for p in &target_pkgs {
@@ -1690,7 +1690,7 @@ fn run() -> anyhow::Result<()> {
         let mut installed_infos: Vec<PkgInfo> = Vec::new();
         // Names that turned out not to exist anywhere (official repos nor
         // AUR). Collected across whichever branch below runs, then
-        // reported once at the end — a batch install must still land
+        // reported once at the end - a batch install must still land
         // everything that *does* resolve instead of failing outright
         // because one name in the middle was a typo or got pulled.
         let mut not_found: Vec<String> = Vec::new();
@@ -1733,7 +1733,7 @@ fn run() -> anyhow::Result<()> {
             } else if cli.only_repos {
                 // --only-repos: never touch the AUR. Unresolved names are
                 // skipped (with a warning) rather than aborting the whole
-                // request — packages that *were* found officially still get
+                // request - packages that *were* found officially still get
                 // installed, same as e.g. `pacman -S` reporting "target not
                 // found" for one name without refusing the rest.
                 eprintln!(
@@ -1751,7 +1751,7 @@ fn run() -> anyhow::Result<()> {
 
                 print_emerge_plan(&official_infos);
                 if cli.pretend {
-                    // Not everything could be resolved — still exit non-zero
+                    // Not everything could be resolved - still exit non-zero
                     // so scripts can detect the partial result.
                     std::process::exit(1);
                 }
@@ -1767,13 +1767,13 @@ fn run() -> anyhow::Result<()> {
                     installed_infos = official_infos;
                 }
                 // Even on a clean install of the found packages, some
-                // requested names were never resolved — surface that as an
+                // requested names were never resolved - surface that as an
                 // overall failure/non-zero exit. The tail below still
                 // credits world.set / prints "Completed" for whatever did
                 // succeed, based on installed_infos.
                 success = false;
             } else if official_infos.is_empty() {
-                // Nothing found officially at all — search AUR for everything.
+                // Nothing found officially at all - search AUR for everything.
                 println!(
                     ">>> Not found in official repos. Searching AUR for '{}'...",
                     missing.join(", ")
@@ -1850,7 +1850,7 @@ fn run() -> anyhow::Result<()> {
         if !cli.pretend {
             if !installed_infos.is_empty() {
                 // installed_infos was resolved before the real install ran
-                // (before the AUR git clone/build, for AUR targets) — catch
+                // (before the AUR git clone/build, for AUR targets) - catch
                 // up to whatever actually landed on disk before displaying it.
                 refresh_installed_versions(&mut installed_infos);
                 print_emerge_completed(&installed_infos);
@@ -1864,7 +1864,7 @@ fn run() -> anyhow::Result<()> {
                         println!("{} Auto-cleaning packages...", ">>>".green().bold());
                         // makepkg -si marks explicit correctly on its own
                         // *unless* the package was already installed as a
-                        // dependency beforehand — force it so world.set
+                        // dependency beforehand - force it so world.set
                         // membership and pacman's bookkeeping always agree.
                         mark_asexplicit(&target_pkgs);
                         if let Err(e) = add_to_world_set(&target_pkgs, Some("abs")) {
@@ -1876,7 +1876,7 @@ fn run() -> anyhow::Result<()> {
                     // `probe_official`/`probe_official_split` read the full
                     // `pacman -Sp --print-format` transaction, which includes
                     // every dependency pacman needs to pull in alongside
-                    // the named target(s) — not just what was actually
+                    // the named target(s) - not just what was actually
                     // requested. `installed_infos` inherits that, so it's
                     // fine for display (print_emerge_completed above wants
                     // to show everything that got installed), but wrong
@@ -1906,7 +1906,7 @@ fn run() -> anyhow::Result<()> {
                     }
                     if !aur_names.is_empty() {
                         // aur_install() already leaves the explicit bit set
-                        // on success — this is just belt-and-suspenders so
+                        // on success - this is just belt-and-suspenders so
                         // world.set and pacman's bookkeeping always agree.
                         mark_asexplicit(&aur_names);
                         if let Err(e) = add_to_world_set(&aur_names, Some("aur")) {
@@ -1920,11 +1920,11 @@ fn run() -> anyhow::Result<()> {
                     // from world.set above. `--depclean`/`-c` (see the
                     // `pacman -Qttdq` block below) only proposes a package
                     // for removal if pacman's own install-reason says
-                    // "dependency" — a package aura leaves (or that
+                    // "dependency" - a package aura leaves (or that
                     // already was) marked "explicit" is invisible to it
                     // regardless of world.set. Force the reason here too,
                     // so a package that's excluded from world.set is also
-                    // depclean-eligible once nothing else needs it —
+                    // depclean-eligible once nothing else needs it -
                     // otherwise the two bookkeeping systems can disagree
                     // silently, the way `-c` finding "no orphaned
                     // packages" for freshly-pulled deps that were never

@@ -3,7 +3,7 @@
 //! Runs automatically before every AUR install: fetches each package's raw
 //! PKGBUILD from the AUR cgit mirror and greps for common red-flag patterns
 //! seen in malicious/compromised PKGBUILDs. Not a substitute for reading it
-//! yourself — just a cheap tripwire against obvious tricks. On any hit,
+//! yourself - just a cheap tripwire against obvious tricks. On any hit,
 //! install is blocked until the user types an explicit "y".
 //!
 //! Covers two disclosed 2026 AUR supply-chain campaigns specifically (in
@@ -12,7 +12,7 @@
 //! npm/bun-delivered infostealer) and the openconnect-sso-anchored wave
 //! (late July-early August, at least 89 named packages, a `validator`
 //! binary run via `sudo` mid-build, reused Tor-backed second-stage
-//! delivery) — see `sudo_escalation_line`, `onion_address_line`, and
+//! delivery) - see `sudo_escalation_line`, `onion_address_line`, and
 //! `KNOWN_MALICIOUS_SHA256` below.
 
 use colored::Colorize;
@@ -25,13 +25,13 @@ use crate::*;
 // Runs automatically before every AUR install. Fetches each package's raw
 // PKGBUILD from the AUR cgit mirror and greps for common red-flag patterns
 // seen in malicious/compromised PKGBUILDs. Not a substitute for reading it
-// yourself — just a cheap tripwire against obvious tricks.
+// yourself - just a cheap tripwire against obvious tricks.
 //
 // On any hit, install is blocked until the user types an explicit "y".
 
 /// Download a raw file from a package's AUR git tree via cgit (e.g.
 /// "PKGBUILD" or a referenced ".install" hook). Returns None on any
-/// failure — callers should treat that as "nothing to check", not clean.
+/// failure - callers should treat that as "nothing to check", not clean.
 pub(crate) fn fetch_aur_file(pkg: &str, filename: &str) -> Option<String> {
     let url = format!(
         "https://aur.archlinux.org/cgit/aur.git/plain/{}?h={}",
@@ -71,7 +71,7 @@ pub(crate) fn parse_install_filename(pkgbuild_text: &str) -> Option<String> {
 /// Same as `parse_install_filename`, but additionally resolves a
 /// `$pkgname`/`${pkgname}` or `$pkgbase`/`${pkgbase}` reference against the
 /// PKGBUILD's own declared value. Most real PKGBUILDs write
-/// `install=${pkgname}.install` rather than repeating the literal name —
+/// `install=${pkgname}.install` rather than repeating the literal name -
 /// the plain literal parser returns that unresolved string, the fetch
 /// against it 404s, and the install hook silently never gets scanned at
 /// all. Returns `None` if the value still contains an unresolved `$` after
@@ -137,13 +137,13 @@ pub(crate) fn curl_pipe_shell_line(line: &str) -> bool {
     let after_pipe = lower.splitn(2, '|').nth(1).unwrap_or("").trim();
     let mut tokens = after_pipe.split_whitespace();
     let mut first = tokens.next().unwrap_or("");
-    // `env sh` / `env -S bash` wrapper — skip past `env` and its flags to
+    // `env sh` / `env -S bash` wrapper - skip past `env` and its flags to
     // the actual interpreter token.
     if first == "env" {
         first = tokens.find(|t: &&str| !t.starts_with('-')).unwrap_or("");
     }
     // Strip a path prefix so `/bin/sh`, `/usr/bin/bash`, `./sh` etc. match
-    // the same as a bare shell name — the old exact-match here let
+    // the same as a bare shell name - the old exact-match here let
     // absolute-path shells slip straight through.
     let basename = first.rsplit('/').next().unwrap_or(first);
     ["sh", "bash", "zsh", "source", "."].contains(&basename)
@@ -161,7 +161,7 @@ pub(crate) fn line_of_curl_pipe_shell(source: &str) -> Option<usize> {
     source.lines().position(curl_pipe_shell_line).map(|i| i + 1)
 }
 
-/// `base64 -d` / `base64 --decode` — near-universal marker of obfuscated
+/// `base64 -d` / `base64 --decode` - near-universal marker of obfuscated
 /// payloads stashed in a PKGBUILD (legit PKGBUILDs essentially never need
 /// this).
 pub(crate) fn base64_decode_line(line: &str) -> bool {
@@ -201,7 +201,7 @@ fn pipes_into_shell(lower_line: &str) -> bool {
     ["sh", "bash", "zsh", "source", "."].contains(&basename)
 }
 
-/// `base64 -d ... | sh` / `base64 --decode ... | bash` — the base64-encoded
+/// `base64 -d ... | sh` / `base64 --decode ... | bash` - the base64-encoded
 /// analog of curl|sh: instead of fetching a script from the network, the
 /// payload is base64-encoded and stashed directly in the PKGBUILD, then
 /// decoded and piped straight into a shell. `base64_decode_line` above
@@ -233,7 +233,7 @@ pub(crate) fn line_of_base64_pipe_shell(source: &str) -> Option<usize> {
 
 /// `xxd -r -p ... | bash` (hex dump reversed back to binary; flag order
 /// doesn't matter, `-rp`/`-pr`/separate `-r -p` all count) piped into a
-/// shell — the hex-encoded sibling of `base64 -d | sh`: same obfuscation
+/// shell - the hex-encoded sibling of `base64 -d | sh`: same obfuscation
 /// role, just a different inline encoding for the stashed payload.
 pub(crate) fn xxd_pipe_shell_line(line: &str) -> bool {
     let l = line.trim();
@@ -261,7 +261,7 @@ pub(crate) fn line_of_xxd_pipe_shell(source: &str) -> Option<usize> {
     source.lines().position(xxd_pipe_shell_line).map(|i| i + 1)
 }
 
-/// `source <(curl ...)` / `. <(wget ...)` — the process-substitution
+/// `source <(curl ...)` / `. <(wget ...)` - the process-substitution
 /// cousin of both curl|sh (no literal pipe here) and `eval "$(curl ...)"`
 /// (no command substitution either): `source`/`.` reads the fetched script
 /// straight out of a `<(...)` stream and runs it, so neither of those two
@@ -289,7 +289,7 @@ pub(crate) fn line_of_source_process_subst(source: &str) -> Option<usize> {
     source.lines().position(source_process_subst_line).map(|i| i + 1)
 }
 
-/// `chmod 777` / `chmod -R 777` (and equivalent a+rwx) — overly permissive
+/// `chmod 777` / `chmod -R 777` (and equivalent a+rwx) - overly permissive
 /// perms with no legitimate reason to appear in a build script.
 pub(crate) fn chmod_777_line(line: &str) -> bool {
     let l = line.trim();
@@ -309,7 +309,7 @@ pub(crate) fn line_of_chmod_777(source: &str) -> Option<usize> {
     source.lines().position(chmod_777_line).map(|i| i + 1)
 }
 
-/// A bare dotted-quad IPv4 literal anywhere in the file — legit PKGBUILDs
+/// A bare dotted-quad IPv4 literal anywhere in the file - legit PKGBUILDs
 /// fetch from named domains, not hardcoded IPs. Heuristic: 4 dot-separated
 /// 1-3 digit groups <= 255, not adjacent to other digits/dots.
 ///
@@ -422,7 +422,7 @@ pub(crate) fn line_of_hex_escape_payload(source: &str) -> Option<usize> {
 /// A download/fetch aimed at a paste-dump site rather than a proper
 /// release/source host. Legitimate PKGBUILDs essentially never pull build
 /// inputs from a paste site; historically this is exactly how the 2018
-/// acroread/balz/minergate AUR takeover staged its payload — a `curl`
+/// acroread/balz/minergate AUR takeover staged its payload - a `curl`
 /// straight to a Pastebin raw URL, piped into the persistence script.
 /// Distinct from the generic curl-pipe-shell check: this fires even when
 /// the fetched content isn't piped directly into a shell on the same line
@@ -484,7 +484,7 @@ pub(crate) fn line_of_compromised_marker(source: &str) -> Option<usize> {
 ///
 /// A second, distinct wave hit the AUR in late July/early August 2026,
 /// anchored by a compromised `openconnect-sso` package (report: 30 Jul
-/// 2026) and at least 89 other publicly-corroborated package names —
+/// 2026) and at least 89 other publicly-corroborated package names -
 /// Arch disabled AUR package adoption and then all pushes while handling
 /// it. That wave's reported mechanism (a binary named `validator` run via
 /// `sudo` mid-build) is covered by `sudo_escalation_line` above rather
@@ -536,10 +536,10 @@ pub(crate) fn line_of_known_malicious_package(source: &str) -> Option<(usize, &'
 }
 
 /// `npm install <pkg>` / `bun add <pkg>` / `pip install <pkg>` etc. naming
-/// a specific external package — as opposed to a bare `npm ci`, which just
+/// a specific external package - as opposed to a bare `npm ci`, which just
 /// installs a project's own declared deps and is common/legitimate. Pulling
 /// a named package mid-build is exactly the Atomic Arch mechanism. Known
-/// false positive: legit installs of a global CLI tool this way also flag —
+/// false positive: legit installs of a global CLI tool this way also flag -
 /// acceptable since it only costs a review prompt, never a hard block.
 pub(crate) fn foreign_pkg_manager_install_line(line: &str) -> bool {
     const PATTERNS: &[&str] = &[
@@ -576,7 +576,7 @@ pub(crate) fn line_of_foreign_pkg_manager_install(source: &str) -> Option<usize>
 
 /// `sudo`/`pkexec`/`doas` invoked from inside a PKGBUILD/.install script.
 /// `makepkg` deliberately builds as an unprivileged user so a malicious
-/// `build()`/`package()` can't touch the system directly — a script that
+/// `build()`/`package()` can't touch the system directly - a script that
 /// escalates privileges itself is a structural red flag, not just a crude
 /// pattern. This is exactly the mechanism reported in the late-July/early-
 /// August 2026 AUR wave anchored by the compromised `openconnect-sso`
@@ -623,11 +623,11 @@ pub(crate) fn line_of_onion_address(source: &str) -> Option<usize> {
     source.lines().position(onion_address_line).map(|i| i + 1)
 }
 
-/// `eval "$(curl ...)"` / `eval `wget -O- ...`` — a stealthier cousin of
+/// `eval "$(curl ...)"` / `eval `wget -O- ...`` - a stealthier cousin of
 /// curl|sh: there's no literal pipe-into-shell to grep for, `eval` just
 /// runs the fetched text as shell code directly via command substitution.
 /// Deliberately scoped to `eval` paired with curl/wget inside a `$(...)`
-/// or backtick construct on the same line — bare `eval` alone is common
+/// or backtick construct on the same line - bare `eval` alone is common
 /// and legitimate in PKGBUILDs (e.g. evaluating an array variable).
 pub(crate) fn eval_remote_exec_line(line: &str) -> bool {
     let l = line.trim();
@@ -652,7 +652,7 @@ pub(crate) fn line_of_eval_remote_exec(source: &str) -> Option<usize> {
 
 /// `python(3) -c '...'` where the inline snippet itself execs/evals
 /// decoded content (`exec(`, `eval(`, `os.system(`, `subprocess.*`,
-/// `os.popen(`) — a python-flavored equivalent of `base64 -d | bash`,
+/// `os.popen(`) - a python-flavored equivalent of `base64 -d | bash`,
 /// dressed up as "just calling python" to dodge the shell-specific
 /// heuristics above.
 pub(crate) fn python_inline_exec_line(line: &str) -> bool {
@@ -680,7 +680,7 @@ pub(crate) fn line_of_python_inline_exec(source: &str) -> Option<usize> {
     source.lines().position(python_inline_exec_line).map(|i| i + 1)
 }
 
-/// `openssl enc -d` / `openssl ... -aes... -d` — decrypting a bundled blob
+/// `openssl enc -d` / `openssl ... -aes... -d` - decrypting a bundled blob
 /// at build time. Same obfuscation role as `base64 -d`, one step more
 /// effortful since it needs a key/passphrase baked in alongside it.
 pub(crate) fn openssl_decrypt_line(line: &str) -> bool {
@@ -704,7 +704,7 @@ pub(crate) fn line_of_openssl_decrypt(source: &str) -> Option<usize> {
 }
 
 /// How confident a finding is. `Suspicious` covers generic, crude-but-common
-/// heuristics (curl|sh, base64 -d, chmod 777, raw IP, hex-escape payload) —
+/// heuristics (curl|sh, base64 -d, chmod 777, raw IP, hex-escape payload) -
 /// each a real reason to look twice but each with plausible false positives.
 /// `ConfirmedIoc` is reserved for an exact-match indicator of compromise
 /// against a specific, disclosed AUR supply-chain campaign (e.g. Atomic
@@ -725,7 +725,7 @@ pub(crate) struct Finding {
     severity: Severity,
 }
 
-/// Run all heuristics against one PKGBUILD (or `.install` hook — same
+/// Run all heuristics against one PKGBUILD (or `.install` hook - same
 /// shell-script surface, same heuristics apply), returning line-numbered,
 /// severity-tagged findings (empty vec = clean).
 pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
@@ -769,14 +769,14 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
         findings.push(Finding {
             line,
             severity: Severity::Suspicious,
-            message: "fetches from a paste-dump site (pastebin/hastebin/dpaste/ix.io/...) — the delivery mechanism used by the 2018 acroread/balz/minergate AUR takeover".to_string(),
+            message: "fetches from a paste-dump site (pastebin/hastebin/dpaste/ix.io/...) - the delivery mechanism used by the 2018 acroread/balz/minergate AUR takeover".to_string(),
         });
     }
     if let Some(line) = line_of_compromised_marker(source) {
         findings.push(Finding {
             line,
             severity: Severity::ConfirmedIoc,
-            message: "references 'compromised.txt' — the exact marker file dropped by the 2018 acroread/balz/minergate AUR takeover".to_string(),
+            message: "references 'compromised.txt' - the exact marker file dropped by the 2018 acroread/balz/minergate AUR takeover".to_string(),
         });
     }
     if let Some((line, name)) = line_of_known_malicious_package(source) {
@@ -784,7 +784,7 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
             line,
             severity: Severity::ConfirmedIoc,
             message: format!(
-                "references '{}' — a known-malicious package name from a documented AUR supply-chain campaign (Atomic Arch, June 2026)",
+                "references '{}' - a known-malicious package name from a documented AUR supply-chain campaign (Atomic Arch, June 2026)",
                 name
             ),
         });
@@ -803,35 +803,35 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
         findings.push(Finding {
             line,
             severity: Severity::Suspicious,
-            message: "installs a named external package via npm/bun/yarn/pip/gem mid-build — the mechanism the Atomic Arch AUR campaign used to smuggle in its payload".to_string(),
+            message: "installs a named external package via npm/bun/yarn/pip/gem mid-build - the mechanism the Atomic Arch AUR campaign used to smuggle in its payload".to_string(),
         });
     }
     if let Some(line) = crate::bash_ast::sudo_escalation(source).or_else(|| line_of_sudo_escalation(source)) {
         findings.push(Finding {
             line,
             severity: Severity::Suspicious,
-            message: "invokes sudo/pkexec/doas from inside the build script — makepkg builds unprivileged on purpose, so this escalates privilege mid-build; the exact mechanism reported in the openconnect-sso-anchored AUR wave (Jul/Aug 2026)".to_string(),
+            message: "invokes sudo/pkexec/doas from inside the build script - makepkg builds unprivileged on purpose, so this escalates privilege mid-build; the exact mechanism reported in the openconnect-sso-anchored AUR wave (Jul/Aug 2026)".to_string(),
         });
     }
     if let Some(line) = line_of_onion_address(source) {
         findings.push(Finding {
             line,
             severity: Severity::Suspicious,
-            message: "references a .onion address — legitimate PKGBUILDs don't hardcode Tor hidden-service addresses; matches the Tor-backed second-stage delivery reused across the June 2026 and Jul/Aug 2026 AUR campaigns".to_string(),
+            message: "references a .onion address - legitimate PKGBUILDs don't hardcode Tor hidden-service addresses; matches the Tor-backed second-stage delivery reused across the June 2026 and Jul/Aug 2026 AUR campaigns".to_string(),
         });
     }
     if let Some(line) = crate::bash_ast::eval_remote_exec(source).or_else(|| line_of_eval_remote_exec(source)) {
         findings.push(Finding {
             line,
             severity: Severity::Suspicious,
-            message: "runs `eval` on a curl/wget command substitution — executes fetched remote content without a literal pipe-into-shell to grep for".to_string(),
+            message: "runs `eval` on a curl/wget command substitution - executes fetched remote content without a literal pipe-into-shell to grep for".to_string(),
         });
     }
     if let Some(line) = crate::bash_ast::python_inline_exec(source).or_else(|| line_of_python_inline_exec(source)) {
         findings.push(Finding {
             line,
             severity: Severity::Suspicious,
-            message: "python -c snippet execs/evals content inline — a python-flavored obfuscated-execution pattern".to_string(),
+            message: "python -c snippet execs/evals content inline - a python-flavored obfuscated-execution pattern".to_string(),
         });
     }
     if let Some(line) = line_of_openssl_decrypt(source) {
@@ -848,14 +848,14 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
         findings.push(Finding {
             line,
             severity: Severity::Suspicious,
-            message: "decodes a base64/hex-encoded blob and pipes it straight into a shell (base64 -d | sh / xxd -r -p | bash) — same obfuscated-execution role as curl|sh, just an inline-stashed payload instead of a network fetch".to_string(),
+            message: "decodes a base64/hex-encoded blob and pipes it straight into a shell (base64 -d | sh / xxd -r -p | bash) - same obfuscated-execution role as curl|sh, just an inline-stashed payload instead of a network fetch".to_string(),
         });
     }
     if let Some(line) = crate::bash_ast::source_process_subst_remote(source).or_else(|| line_of_source_process_subst(source)) {
         findings.push(Finding {
             line,
             severity: Severity::Suspicious,
-            message: "sources a curl/wget process substitution (source <(curl ...)) — runs fetched remote content with neither a literal pipe nor a command substitution for the other checks to key on".to_string(),
+            message: "sources a curl/wget process substitution (source <(curl ...)) - runs fetched remote content with neither a literal pipe nor a command substitution for the other checks to key on".to_string(),
         });
     }
     findings
@@ -866,7 +866,7 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
 /// print it and require an explicit "y" to continue; anything else aborts.
 ///
 /// Files that couldn't be fetched are silently skipped, not treated as a
-/// hit — this only adds friction on actual findings, never on lookup failures.
+/// hit - this only adds friction on actual findings, never on lookup failures.
 ///
 /// Returns what was actually fetched per pkgbase (only for entries where
 /// the PKGBUILD fetch succeeded), so a caller that's about to build from
@@ -1270,7 +1270,7 @@ package() {
         assert!(is_foreign_pkg_manager_install("npm install atomic-lockfile"));
         assert!(is_foreign_pkg_manager_install("bun add js-digest"));
         assert!(is_foreign_pkg_manager_install("pip install requests"));
-        // Local/project installs — no named external package — must NOT flag.
+        // Local/project installs - no named external package - must NOT flag.
         assert!(!is_foreign_pkg_manager_install("npm install"));
         assert!(!is_foreign_pkg_manager_install("npm ci"));
         assert!(!is_foreign_pkg_manager_install("npm install ."));
@@ -1468,8 +1468,8 @@ build() {
         // Reconstructed shape of the real 2018 payload: fetch a script off
         // Pastebin and pipe it into the shell, which then drops the marker
         // file. Should trip curl-pipe-shell (Suspicious), paste-site-fetch
-        // (Suspicious), and — since the marker also happens to appear in
-        // this build() — the exact-IOC check (ConfirmedIoc).
+        // (Suspicious), and - since the marker also happens to appear in
+        // this build() - the exact-IOC check (ConfirmedIoc).
         let src = r#"
 pkgname=acroread
 build() {
@@ -1532,7 +1532,7 @@ build() {
         // Reconstructed shape of the reported incident: an adopted
         // package's build() gains a bundled `validator` binary and runs
         // it with sudo. Should trip the sudo-escalation heuristic
-        // (Suspicious) — no ConfirmedIoc here since the binary name alone
+        // (Suspicious) - no ConfirmedIoc here since the binary name alone
         // isn't a matchable exact indicator, only the behavior is.
         let pkgbuild = r#"
 pkgname=openconnect-sso
@@ -1621,7 +1621,7 @@ build() {
 
     #[test]
     fn resolve_install_filename_unresolvable_bails() {
-        // pkgname is an array (split package) and install= references it —
+        // pkgname is an array (split package) and install= references it -
         // no single value to substitute, must return None rather than a
         // garbage filename that would 404 anyway.
         let src = "pkgname=(a b)\ninstall=${pkgname}.install\n";
@@ -1632,7 +1632,7 @@ build() {
     fn atomic_arch_style_pkgbuild_with_interpolated_install_still_caught() {
         // Same shape as atomic_arch_style_pkgbuild_and_install_flagged above,
         // but with the realistic ${pkgname}.install form instead of the
-        // literal name — this is the case that used to silently skip the
+        // literal name - this is the case that used to silently skip the
         // install hook entirely.
         let pkgbuild = r#"
 pkgname=totally-legit-tool

@@ -2,7 +2,7 @@
 pkgname=aura-emerge
 pkgver=0.00.0
 pkgrel=1
-pkgdesc="Gentoo-style emerge for Arch Linux — installs from official repos, the AUR, and ABS, scans PKGBUILDs for supply-chain red flags before building, and runs untrusted build steps inside a `bwrap` sandbox."
+pkgdesc="Gentoo-style emerge for Arch Linux - installs from official repos, the AUR, and ABS, scans PKGBUILDs for supply-chain red flags before building, and runs untrusted build steps inside a `bwrap` sandbox."
 arch=('x86_64')
 url="https://github.com/Undercat037/aura-emerge"
 license=('GPL-3.0')
@@ -34,7 +34,7 @@ package() {
     local out="$1"
     shift
     if ! "$bin" "$@" >"$out" || [ ! -s "$out" ]; then
-      error "\"$bin $*\" produced no output — refusing to package an empty file"
+      error "\"$bin $*\" produced no output - refusing to package an empty file"
       return 1
     fi
   }
