@@ -535,6 +535,77 @@ fn is_satisfiable_without_aur(name: &str) -> bool {
 /// before building, but only when both are true -- i.e. never for a
 /// recursively-resolved dependency (`is_top_level` is hardcoded `false`
 /// on the recursive call below), regardless of what `edit` is.
+/// `off_src_regen` only matters together with those two -- see
+/// `maybe_regen_srcinfo`.
+
+/// Regenerates `<dir>/.SRCINFO` from a just-edited `PKGBUILD` via
+/// `makepkg --printsrcinfo`, unless `off_src_regen` is set.
+///
+/// This is the one place aura-emerge *does* re-execute PKGBUILD content
+/// after an edit -- `--printsrcinfo` sources the whole file (global-scope
+/// code included, not just the `pkgver`/`prepare`/`build`/etc. functions
+/// the bwrap sandbox isolates later), which is exactly the risk
+/// `bash_ast.rs`'s doc comment and `srcinfo_dependencies`'s doc comment
+/// (in `aur.rs`) describe for parsing an *arbitrary* AUR PKGBUILD instead
+/// of just reading its checked-in `.SRCINFO`. The difference here is
+/// trust, not mechanism: this only ever runs against content the person
+/// running `--edit` just wrote themselves, in their own `$EDITOR`, and
+/// only after `verify_local_clone_or_rescan` has already re-scanned that
+/// exact content and let it through (that call happens before this one
+/// at both call sites, and aborts on a real finding before we get here)
+/// -- so by the time this runs, both the static scanner and the person's
+/// own review have already had a look at what's about to be sourced.
+/// `off_src_regen` exists for anyone who'd rather do the
+/// review-then-regenerate step manually instead, e.g. to inspect the
+/// generated `.SRCINFO` before it's used.
+///
+/// Best-effort and never fatal: a failure here is a warning, and the
+/// build continues against whatever `.SRCINFO` was already on disk
+/// (the old, pre-this-feature behavior) -- a stale dependency list is
+/// recoverable (worst case: the exact "edited PKGBUILD but the fix
+/// didn't take" conflict this was added for), aborting the whole build
+/// over a `--printsrcinfo` hiccup would not be.
+pub(crate) fn maybe_regen_srcinfo(dir: &std::path::Path, off_src_regen: bool) {
+    if off_src_regen {
+        eprintln!(
+            "{} --off-src-regen set -- not regenerating .SRCINFO. If you changed depends/makedepends/checkdepends, \
+            dependency resolution below still reflects the pre-edit .SRCINFO. Run `makepkg --printsrcinfo > .SRCINFO` \
+            in {} yourself first if you need the new dependencies picked up.",
+            ">>> Note:".yellow().bold(),
+            dir.display()
+        );
+        return;
+    }
+
+    println!("{} Regenerating .SRCINFO from the edited PKGBUILD...", ">>>".green().bold());
+    let output = Command::new(MAKEPKG_BIN)
+        .arg("--printsrcinfo")
+        .current_dir(dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output();
+    match output {
+        Ok(out) if out.status.success() && !out.stdout.is_empty() => {
+            if fs::write(dir.join(".SRCINFO"), &out.stdout).is_ok() {
+                println!("{} .SRCINFO regenerated.", ">>>".green().bold());
+            } else {
+                eprintln!(
+                    "{} could not write {} -- continuing with the previous .SRCINFO. Pass --off-src-regen to skip this step next time.",
+                    ">>> Warning:".yellow().bold(),
+                    dir.join(".SRCINFO").display()
+                );
+            }
+        }
+        _ => {
+            eprintln!(
+                "{} `makepkg --printsrcinfo` failed in {} -- continuing with the previous .SRCINFO, which may not reflect your edit. Pass --off-src-regen to skip this step next time.",
+                ">>> Warning:".yellow().bold(),
+                dir.display()
+            );
+        }
+    }
+}
+
 fn resolve_and_build_aur(
     pkg: &str,
     build_root: &std::path::Path,
@@ -543,6 +614,7 @@ fn resolve_and_build_aur(
     mark_asdeps: bool,
     edit: bool,
     is_top_level: bool,
+    off_src_regen: bool,
     isolation: BuildIsolation,
     building: &mut HashSet<String>,
     built: &mut HashMap<String, Vec<String>>,
@@ -570,7 +642,10 @@ fn resolve_and_build_aur(
     // for). Re-verifying against the *same* pre-edit `fetched` baseline
     // afterward means an actual edit (content now differs from what was
     // scanned above) gets scanned again automatically, same as any other
-    // clone/cgit mismatch -- see `verify_local_clone_or_rescan`.
+    // clone/cgit mismatch -- see `verify_local_clone_or_rescan`. Only
+    // *after* that re-scan doesn't abort do we go on to regenerate
+    // `.SRCINFO` (`maybe_regen_srcinfo`) -- see that function's doc
+    // comment for why that ordering matters.
     if edit && is_top_level {
         let editor = std::env::var("EDITOR")
             .or_else(|_| std::env::var("VISUAL"))
@@ -579,16 +654,8 @@ fn resolve_and_build_aur(
         println!("{} Opening {} in {}...", ">>>".green().bold(), "PKGBUILD".bold(), editor.green().bold());
         println!("{} Save and close the editor to continue building.", ">>>".yellow().bold());
         Command::new(&editor).arg(&pkgbuild).status().ok();
-        eprintln!(
-            "{} if you changed depends/makedepends/checkdepends, note this doesn't regenerate .SRCINFO -- \
-            aura-emerge deliberately never re-executes an edited PKGBUILD to do that automatically (see \
-            bash_ast.rs's doc comment for why), so dependency resolution below still reflects the \
-            pre-edit .SRCINFO. Run `makepkg --printsrcinfo > .SRCINFO` in {} yourself first if you need \
-            the new dependencies picked up.",
-            ">>> Note:".yellow().bold(),
-            dir.display()
-        );
         crate::security::verify_local_clone_or_rescan(&pkgbase, &dir, fetched.get(&pkgbase));
+        maybe_regen_srcinfo(&dir, off_src_regen);
     }
 
     let srcinfo_path = dir.join(".SRCINFO");
@@ -623,7 +690,7 @@ fn resolve_and_build_aur(
         if is_satisfiable_without_aur(dep) {
             continue;
         }
-        match resolve_and_build_aur(dep, build_root, ask, skippgp, true, false, false, isolation, building, built) {
+        match resolve_and_build_aur(dep, build_root, ask, skippgp, true, false, false, off_src_regen, isolation, building, built) {
             Some(mut tars) => aur_dep_tarballs.append(&mut tars),
             None => {
                 eprintln!(
@@ -665,7 +732,7 @@ pub(crate) const AUR_BUILD_BASE: &str = "/tmp/aura-emerge-aur";
 /// (`bwrap` -> unsandboxed `makepkg -si`, see `choose_build_isolation`)
 /// instead of shelling out to `aura -A`. `pkgctl` is not involved here
 /// at all -- only `--abs` ever calls it, and only for `repo clone`.
-pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, no_sandbox: bool) -> bool {
+pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, no_sandbox: bool, off_src_regen: bool) -> bool {
     if !std::path::Path::new("/usr/bin/git").exists() {
         eprintln!("{} required binary not found: /usr/bin/git", ">>> Fatal:".red().bold());
         return false;
@@ -749,7 +816,7 @@ pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
             pkg.green().bold()
         );
         println!();
-        if resolve_and_build_aur(pkg, &build_base, ask, skippgp, oneshot, edit, true, isolation, &mut building, &mut built).is_none() {
+        if resolve_and_build_aur(pkg, &build_base, ask, skippgp, oneshot, edit, true, off_src_regen, isolation, &mut building, &mut built).is_none() {
             all_ok = false;
         }
     }
@@ -769,7 +836,7 @@ pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
 /// build+install to `aur_install()` -- the same bwrap-sandboxed
 /// path used for a fresh AUR install, so an upgrade gets exactly the same
 /// isolation and PKGBUILD scanning as `emerge --aur <pkg>` does.
-pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbox: bool) -> bool {
+pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbox: bool, off_src_regen: bool) -> bool {
     let foreign = match Command::new(PACMAN_BIN)
         .args(["-Qm"])
         .env("LC_ALL", "C")
@@ -850,7 +917,7 @@ pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbo
     }
 
     let upgrade_names: Vec<String> = to_upgrade.iter().map(|(n, _, _)| n.clone()).collect();
-    aur_install(&upgrade_names, false, ask, false, skippgp, false, no_sandbox)
+    aur_install(&upgrade_names, false, ask, false, skippgp, false, no_sandbox, off_src_regen)
 }
 
 /// Installs already-built `*.pkg.tar.*` files directly via `pacman -U`
@@ -1079,7 +1146,7 @@ fn legacy_makepkg_si(build_dir: &std::path::Path, ask: bool, oneshot: bool, skip
 
 /// Build and install packages from ABS via `pkgctl repo clone` + `makepkg -si`
 /// (or, by default, the bwrap-sandboxed equivalent -- see `build_with_sandbox`).
-pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, autopgp: bool, no_sandbox: bool) -> bool {
+pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, autopgp: bool, no_sandbox: bool, off_src_regen: bool) -> bool {
     for bin in &[PKGCTL_BIN, MAKEPKG_BIN] {
         if !std::path::Path::new(bin).exists() {
             eprintln!(">>> Fatal: required binary not found: {}", bin);
@@ -1181,7 +1248,11 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
         // trunk/ subdirectory to descend into.
         let build_dir = pkg_dir.clone();
 
-        // Open PKGBUILD in $EDITOR before building if --edit is set
+        // Open PKGBUILD in $EDITOR before building if --edit is set. ABS
+        // checkouts aren't run through the AUR malicious-pattern scanner
+        // at all (they come straight from Arch's own trusted repos via
+        // pkgctl, edited or not), so unlike the AUR path there's no
+        // re-scan to do before regenerating .SRCINFO here.
         if edit {
             let editor = std::env::var("EDITOR")
                 .or_else(|_| std::env::var("VISUAL"))
@@ -1199,6 +1270,7 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
                 .arg(&pkgbuild)
                 .status()
                 .ok();
+            maybe_regen_srcinfo(&build_dir, off_src_regen);
         }
 
         // Proactively check/import PGP keys listed in validpgpkeys before
