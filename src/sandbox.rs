@@ -17,8 +17,8 @@
 //! just pacman resolving/installing package names) -- so both stay
 //! outside the jail and run the normal, trusted way. Only the shell
 //! functions the PKGBUILD itself defines run inside bwrap. See
-//! `packages::build_with_sandbox` for how the three steps are wired
-//! together.
+//! `packages::build_with_sandbox` for how the three (or, with
+//! `--unshare-net-build`, four) steps are wired together.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -67,18 +67,34 @@ pub(crate) fn bwrap_available() -> bool {
 /// diverging user-level override for the same variable would be an
 /// unusual setup on its own.
 ///
-/// Network stays shared (`--share-net`) since source downloads still
-/// need it; everything else (`--unshare-all`: user, ipc, pid, net, uts,
-/// cgroup -- net is then re-added by --share-net) is torn down.
+/// Network stays shared (`--share-net`) by default since source downloads
+/// still need it; everything else (`--unshare-all`: user, ipc, pid, net,
+/// uts, cgroup -- net is then optionally re-added by --share-net) is
+/// torn down. Pass `net = false` to leave it torn down instead -- see
+/// `net`'s own doc below for what that actually isolates and what it
+/// doesn't.
 ///
 /// `caller_args` should NOT include `-s`/`--syncdeps` or `-i`/`--install`
 /// -- see the module doc for why those two stay outside the sandbox.
+///
+/// `net`: whether this specific invocation gets `--share-net`. Callers
+/// building with `--unshare-net-build` (see `packages::build_with_sandbox`)
+/// pass `true` for the download/extract/`prepare()` phase (`makepkg
+/// --nobuild`) -- those are the declared, checksum/PGP-verified
+/// `source=()` entries, the legitimate/audited use of the network here --
+/// and `false` for the actual `build()`/`check()`/`package()` phase
+/// (`makepkg --noextract`), so a build step that reaches for the network
+/// *outside* the declared source list (an unvendored `cargo build`
+/// resolving crates.io mid-compile is exactly the case that prompted
+/// this) fails loudly instead of quietly succeeding with unaudited
+/// traffic from the untrusted part of the build.
 pub(crate) fn sandboxed_makepkg(
     makepkg_bin: &str,
     build_dir: &Path,
     caller_args: &[&str],
     real_gnupg_home: Option<&Path>,
     extra_dest_dirs: &[(&str, PathBuf)],
+    net: bool,
 ) -> Command {
     let build_dir_s = build_dir.to_string_lossy().to_string();
     let fake_home = PathBuf::from(SANDBOX_HOME);
@@ -89,8 +105,10 @@ pub(crate) fn sandboxed_makepkg(
         "--die-with-parent",
         "--new-session",
         "--unshare-all",
-        "--share-net",
     ]);
+    if net {
+        cmd.arg("--share-net");
+    }
     // Whole real filesystem, read-only: build() still needs to see
     // /usr, /etc/makepkg.conf, toolchains, etc. -- it just can't touch
     // any of it.
@@ -113,6 +131,7 @@ pub(crate) fn sandboxed_makepkg(
     // Any configured PKGDEST/SRCDEST/SRCPKGDEST/BUILDDIR that lives
     // outside build_dir gets its own writable bind + matching env var,
     // best-effort-created first since a fresh destination directory
+
     // (e.g. a PKGDEST nobody's built into yet) may not exist yet.
     for (var, path) in extra_dest_dirs {
         let _ = std::fs::create_dir_all(path);

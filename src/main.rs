@@ -252,6 +252,24 @@ struct Cli {
     #[arg(long = "no-sandbox")]
     no_sandbox: bool,
 
+    /// Cut network access entirely for the actual build()/check()/
+    /// package() step of a sandboxed build (implies nothing about
+    /// --no-sandbox -- with that flag set instead, there's no bwrap
+    /// sandbox at all to restrict, and this has no effect). By default
+    /// the sandbox keeps network access shared throughout the whole
+    /// build, since some PKGBUILDs (an unvendored `cargo build`/`go
+    /// build`/`pip install` that resolves its dependency graph
+    /// mid-compile rather than ahead of time) genuinely need it there.
+    /// With this flag, downloading/verifying/extracting the declared
+    /// `source=()` entries and running prepare() still gets network
+    /// (that's `makepkg --nobuild`, the legitimate/audited use); the
+    /// actual build runs in a second, fully network-isolated invocation
+    /// (`makepkg --noextract`) -- so a build step reaching for the
+    /// network outside its declared sources fails loudly instead of
+    /// quietly succeeding with unaudited traffic.
+    #[arg(long = "unshare-net-build")]
+    unshare_net_build: bool,
+
     /// Open PKGBUILD for editing before building. Opens $EDITOR on the
     /// checkout that will actually be built -- the ABS `pkgctl repo
     /// clone` checkout for --abs, or the AUR git clone for --aur/plain
@@ -628,6 +646,7 @@ fn build_resume_args(cli: &Cli, target_pkgs: &[String], has_world: bool) -> Vec<
     if cli.refresh      { args.push("--refresh".to_string()); }
     if cli.err_inst     { args.push("--err-inst".to_string()); }
     if cli.no_sandbox   { args.push("--no-sandbox".to_string()); }
+    if cli.unshare_net_build { args.push("--unshare-net-build".to_string()); }
     if has_world {
         args.push("@world".to_string());
     }
@@ -1276,7 +1295,7 @@ fn run() -> anyhow::Result<()> {
                     // aur_install() always leaves the explicit bit set on
                     // success (see its doc comment) — no separate
                     // mark_asexplicit() call needed the way `aura -A` required.
-                    if aur_install(&names, false, cli.ask, false, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen, cli.aur_deep) {
+                    if aur_install(&names, false, cli.ask, false, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen, cli.aur_deep, cli.unshare_net_build) {
                         if let Err(e) = add_to_world_set(&names, Some("aur")) {
                             eprintln!(">>> Warning: package(s) reinstalled but world.set was not updated: {:#}", e);
                         }
@@ -1368,7 +1387,7 @@ fn run() -> anyhow::Result<()> {
         if !cli.pretend {
             save_resume_state(&build_resume_args(&cli, &[], true));
         }
-        let ok = provision_from_world_set(cli.pretend, cli.ask, cli.verbose, cli.err_inst, cli.no_sandbox, cli.off_src_regen, cli.aur_deep)?;
+        let ok = provision_from_world_set(cli.pretend, cli.ask, cli.verbose, cli.err_inst, cli.no_sandbox, cli.off_src_regen, cli.aur_deep, cli.unshare_net_build)?;
         if !cli.pretend {
             if ok {
                 clear_resume_state();
@@ -1437,7 +1456,7 @@ fn run() -> anyhow::Result<()> {
         };
 
         println!(">>> Upgrading AUR packages...");
-        let ok2 = aur_upgrade_all(cli.pretend, cli.ask, cli.skippgp, cli.no_sandbox, cli.off_src_regen, cli.aur_deep);
+        let ok2 = aur_upgrade_all(cli.pretend, cli.ask, cli.skippgp, cli.no_sandbox, cli.off_src_regen, cli.aur_deep, cli.unshare_net_build);
 
         println!();
         println!("{} Auto-cleaning packages...", ">>>".green().bold());
@@ -1646,7 +1665,7 @@ fn run() -> anyhow::Result<()> {
         let mut not_found: Vec<String> = Vec::new();
 
         if cli.abs {
-            success = abs_install(&target_pkgs, cli.pretend, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.autopgp, cli.no_sandbox, cli.off_src_regen);
+            success = abs_install(&target_pkgs, cli.pretend, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.autopgp, cli.no_sandbox, cli.off_src_regen, cli.unshare_net_build);
         } else if cli.aur {
             let (pkg_infos, missing_aur) = resolve_aur_split(&target_pkgs);
             not_found = missing_aur;
@@ -1662,7 +1681,7 @@ fn run() -> anyhow::Result<()> {
             print_emerge_emerging(&pkg_infos);
             let found_names: Vec<String> = pkg_infos.iter().map(|p| p.name.clone()).collect();
             scan_aur_pkgbuilds_or_abort(&found_names);
-            success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen, cli.aur_deep);
+            success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen, cli.aur_deep, cli.unshare_net_build);
             if success { installed_infos = pkg_infos; }
         } else {
             // Probe official repos in a way that's safe against partial matches:
@@ -1742,7 +1761,7 @@ fn run() -> anyhow::Result<()> {
                 print_emerge_emerging(&pkg_infos);
                 let found_names: Vec<String> = pkg_infos.iter().map(|p| p.name.clone()).collect();
                 scan_aur_pkgbuilds_or_abort(&found_names);
-                success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen, cli.aur_deep);
+                success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen, cli.aur_deep, cli.unshare_net_build);
                 if success { installed_infos = pkg_infos; }
             } else {
                 // Mixed case: some packages are official, some need the AUR.
@@ -1778,7 +1797,7 @@ fn run() -> anyhow::Result<()> {
                 if !aur_infos.is_empty() {
                     let aur_found_names: Vec<String> = aur_infos.iter().map(|p| p.name.clone()).collect();
                     scan_aur_pkgbuilds_or_abort(&aur_found_names);
-                    let aur_success = aur_install(&aur_found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen, cli.aur_deep);
+                    let aur_success = aur_install(&aur_found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen, cli.aur_deep, cli.unshare_net_build);
                     if aur_success {
                         installed_infos.extend(aur_infos);
                     } else {
@@ -1910,7 +1929,7 @@ fn run() -> anyhow::Result<()> {
     // now provision anything else world.set still lists as missing.
     if provision_after_install && !cli.pretend {
         println!();
-        if !provision_from_world_set(cli.pretend, cli.ask, cli.verbose, cli.err_inst, cli.no_sandbox, cli.off_src_regen, cli.aur_deep)? {
+        if !provision_from_world_set(cli.pretend, cli.ask, cli.verbose, cli.err_inst, cli.no_sandbox, cli.off_src_regen, cli.aur_deep, cli.unshare_net_build)? {
             eprintln!(">>> Warning: not everything from world.set installed successfully.");
             std::process::exit(1);
         }
