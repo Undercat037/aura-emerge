@@ -508,11 +508,41 @@ fn choose_build_isolation(no_sandbox: bool) -> BuildIsolation {
 /// package too, so a shared dependency across runs isn't rebuilt).
 /// Used by `resolve_and_build_aur` to decide whether a `.SRCINFO`
 /// dependency needs to be recursively resolved as an AUR package.
+///
+/// Deliberately doesn't mean "already satisfied, nothing to install" --
+/// `zlib` being a real synced package makes this `true` even when
+/// `zlib-ng-compat` (which `Provides`+`Conflicts` it) is what's actually
+/// installed. That distinction is `already_satisfied`'s job, used at the
+/// `pacman -S` step in `build_with_sandbox` instead of here -- see its
+/// doc comment for why the two checks can't be merged into one.
 fn is_satisfiable_without_aur(name: &str) -> bool {
     let bare = name.split(['<', '>', '=']).next().unwrap_or(name);
     let synced = Command::new(PACMAN_BIN).args(["-Si", bare]).stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
     if synced { return true; }
     Command::new(PACMAN_BIN).args(["-Qi", bare]).stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
+}
+
+/// Whether pacman already considers a `depends=()`/`makedepends=()`
+/// entry (`name`, which may carry a version constraint like `foo>=1.2`)
+/// satisfied on this system right now -- via an exact installed match,
+/// *or* via some other installed package's `provides=()`. This is
+/// `pacman -T`/`--deptest`, the same provides- and version-aware check
+/// makepkg's own `-s` syncdeps step uses internally to decide what
+/// actually needs installing.
+///
+/// This is the check that was missing and caused a real conflict: a
+/// PKGBUILD's plain `depends=(zlib)` with `zlib-ng-compat` (which
+/// `provides=(zlib)` and `conflicts=(zlib)`, a common pattern for
+/// Arch's zlib-ng-as-drop-in-replacement packages) already installed
+/// used to sail straight through `is_satisfiable_without_aur` (`zlib`
+/// *is* a real synced package -- that check has no opinion on what's
+/// actually installed right now) and get queued for a literal
+/// `pacman -S zlib`, which pacman then refuses because of the
+/// `Conflicts`. Filtering the `pacman -S` list through this first means
+/// an already-provides-satisfied dependency is skipped entirely instead
+/// of being force-installed into a fight it can't win.
+fn already_satisfied(name: &str) -> bool {
+    Command::new(PACMAN_BIN).args(["-T", name]).stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
 }
 
 /// Recursively resolves and builds an AUR package `pkg`, building
@@ -565,6 +595,23 @@ fn is_satisfiable_without_aur(name: &str) -> bool {
 /// recoverable (worst case: the exact "edited PKGBUILD but the fix
 /// didn't take" conflict this was added for), aborting the whole build
 /// over a `--printsrcinfo` hiccup would not be.
+/// Best-effort defensive reset after handing the terminal to `$EDITOR`.
+/// Some editors/colorschemes (nvim with a "true color" theme is the
+/// common one, especially on kitty/wezterm/foot) set the terminal's
+/// default foreground/background/cursor color via OSC 10/11/12 and
+/// don't always restore them on exit -- if that happens, our own
+/// perfectly-correctly-emitted `.yellow().bold()`/`.green().bold()`
+/// ANSI codes right after can end up looking colorless, because the
+/// terminal's idea of "default color" got silently remapped. `\x1b[0m`
+/// resets SGR (bold/color) state; the three OSC resets ask the terminal
+/// to drop any override back to its own default fg/bg/cursor color.
+/// All four are no-ops on a terminal that never had anything to reset,
+/// so this is safe to call unconditionally.
+fn reset_terminal_colors_after_editor() {
+    print!("\x1b[0m\x1b]110\x07\x1b]111\x07\x1b]112\x07");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+}
+
 pub(crate) fn maybe_regen_srcinfo(dir: &std::path::Path, off_src_regen: bool) {
     if off_src_regen {
         eprintln!(
@@ -667,6 +714,7 @@ fn resolve_and_build_aur(
         println!("{} Opening {} in {}...", ">>>".green().bold(), "PKGBUILD".bold(), editor.green().bold());
         println!("{} Save and close the editor to continue building.", ">>>".yellow().bold());
         Command::new(&editor).arg(&pkgbuild).status().ok();
+        reset_terminal_colors_after_editor();
         crate::security::verify_local_clone_or_rescan(&pkgbase, &dir, fetched.get(&pkgbase));
         maybe_regen_srcinfo(&dir, off_src_regen);
     }
@@ -1009,7 +1057,17 @@ fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, one
         crate::bash_ast::pkgbuild_dependencies(&pkgbuild_src, &arch)
     };
     let repo_deps: Option<Vec<String>> = all_deps.map(|deps| {
-        deps.into_iter().filter(|d| is_satisfiable_without_aur(d)).collect()
+        // `already_satisfied` first: an installed provides-satisfying
+        // package (zlib-ng-compat for zlib, etc.) means nothing needs
+        // installing for this dep at all, regardless of whether the
+        // literal name is also a real synced package -- see its doc
+        // comment. What's left still needs `is_satisfiable_without_aur`
+        // to rule out AUR-only deps (not yet installed by step 0 at the
+        // time this runs -- see the ordering note above).
+        deps.into_iter()
+            .filter(|d| !already_satisfied(d))
+            .filter(|d| is_satisfiable_without_aur(d))
+            .collect()
     });
 
     // 0. Locally-built AUR-only dependencies -- see doc comment above.
@@ -1283,6 +1341,7 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
                 .arg(&pkgbuild)
                 .status()
                 .ok();
+            reset_terminal_colors_after_editor();
             maybe_regen_srcinfo(&build_dir, off_src_regen);
         }
 

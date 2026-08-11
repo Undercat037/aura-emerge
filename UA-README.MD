@@ -7,23 +7,26 @@
 
 ## Встановлення
 
+### Makepkg
 ```bash
 git clone https://github.com/Undercat037/aura-emerge
 cd aura-emerge
 makepkg -si
 ```
-або через AUR:
+### AUR:
 ```bash
-paru -S aura-emerge 
+paru -S aura-emerge
 ```
-
-Ручна збірка:
+### Ручна збірка:
 
 ```bash
 git clone https://github.com/Undercat037/aura-emerge
 cd aura-emerge
-cargo build --release && sudo cp -r target/release/aura-emerge /usr/bin/emerge
+cargo build --release 
+sudo cp -r target/release/aura-emerge /usr/bin/emerge
 ln -s /usr/bin/emerge /usr/bin/portageq
+emerge --gen-completions [your-shell] # /usr/share/bash-completion/completions/emerge , /usr/share/zsh/site-functions/_emerge , /usr/share/fish/vendor_completions.d/emerge.fish
+emerge --gen-manpage > /usr/share/man/man1/emerge.1
 ```
 
 **Вимоги:** `aura` має бути встановлена та доступна в `/usr/bin/aura`.  

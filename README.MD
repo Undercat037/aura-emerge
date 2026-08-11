@@ -7,22 +7,26 @@ Manages packages via a `world.set` file — install once, track forever.
 
 ## Installation
 
+### Makepkg
 ```bash
 git clone https://github.com/Undercat037/aura-emerge
 cd aura-emerge
 makepkg -si
 ```
-or via AUR:
+### AUR:
 ```bash
 paru -S aura-emerge
 ```
-Manual:
+### Manual:
 
 ```bash
 git clone https://github.com/Undercat037/aura-emerge
 cd aura-emerge
-cargo build --release && sudo cp -r target/release/aura-emerge /usr/bin/emerge
+cargo build --release 
+sudo cp -r target/release/aura-emerge /usr/bin/emerge
 ln -s /usr/bin/emerge /usr/bin/portageq
+emerge --gen-completions [your-shell] # /usr/share/bash-completion/completions/emerge , /usr/share/zsh/site-functions/_emerge , /usr/share/fish/vendor_completions.d/emerge.fish
+emerge --gen-manpage > /usr/share/man/man1/emerge.1
 ```
 
 **Requirements:** `aura` must be installed and in `/usr/bin/aura`.  
