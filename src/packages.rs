@@ -568,11 +568,18 @@ fn is_satisfiable_without_aur(name: &str) -> bool {
 pub(crate) fn maybe_regen_srcinfo(dir: &std::path::Path, off_src_regen: bool) {
     if off_src_regen {
         eprintln!(
-            "{} --off-src-regen set -- not regenerating .SRCINFO. If you changed depends/makedepends/checkdepends, \
-            dependency resolution below still reflects the pre-edit .SRCINFO. Run `makepkg --printsrcinfo > .SRCINFO` \
-            in {} yourself first if you need the new dependencies picked up.",
+            "{} {} set -- not regenerating .SRCINFO.",
             ">>> Note:".yellow().bold(),
-            dir.display()
+            "--off-src-regen".cyan()
+        );
+        eprintln!(
+            "    dependency resolution below still reflects the {} .SRCINFO.",
+            "pre-edit".bold()
+        );
+        eprintln!("    changed depends/makedepends/checkdepends? Regenerate it yourself first:");
+        eprintln!(
+            "      {}",
+            format!("(cd {} && makepkg --printsrcinfo > .SRCINFO)", dir.display()).cyan()
         );
         return;
     }
@@ -587,21 +594,27 @@ pub(crate) fn maybe_regen_srcinfo(dir: &std::path::Path, off_src_regen: bool) {
     match output {
         Ok(out) if out.status.success() && !out.stdout.is_empty() => {
             if fs::write(dir.join(".SRCINFO"), &out.stdout).is_ok() {
-                println!("{} .SRCINFO regenerated.", ">>>".green().bold());
+                println!(
+                    "{} .SRCINFO regenerated ({}).",
+                    ">>>".green().bold(),
+                    dir.join(".SRCINFO").display().to_string().dimmed()
+                );
             } else {
                 eprintln!(
-                    "{} could not write {} -- continuing with the previous .SRCINFO. Pass --off-src-regen to skip this step next time.",
+                    "{} could not write {} -- continuing with the previous .SRCINFO.",
                     ">>> Warning:".yellow().bold(),
-                    dir.join(".SRCINFO").display()
+                    dir.join(".SRCINFO").display().to_string().dimmed()
                 );
+                eprintln!("    pass {} to skip this step next time.", "--off-src-regen".cyan());
             }
         }
         _ => {
             eprintln!(
-                "{} `makepkg --printsrcinfo` failed in {} -- continuing with the previous .SRCINFO, which may not reflect your edit. Pass --off-src-regen to skip this step next time.",
+                "{} `makepkg --printsrcinfo` failed in {} -- continuing with the previous .SRCINFO, which may not reflect your edit.",
                 ">>> Warning:".yellow().bold(),
-                dir.display()
+                dir.display().to_string().dimmed()
             );
+            eprintln!("    pass {} to skip this step next time.", "--off-src-regen".cyan());
         }
     }
 }
