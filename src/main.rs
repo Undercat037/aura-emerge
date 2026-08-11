@@ -1346,7 +1346,7 @@ fn run() -> anyhow::Result<()> {
             if ok {
                 clear_resume_state();
             } else {
-                eprintln!(">>> Warning: not everything installed successfully.");
+                eprintln!("{} not everything installed successfully.", ">>> Warning:".yellow().bold());
                 std::process::exit(1);
             }
         }
@@ -1863,7 +1863,7 @@ fn run() -> anyhow::Result<()> {
             }
 
             if !success {
-                eprintln!(">>> Warning: not all requested packages were installed successfully.");
+                eprintln!("{} not all requested packages were installed successfully.", ">>> Warning:".yellow().bold());
                 std::process::exit(1);
             } else {
                 clear_resume_state();
