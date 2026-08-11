@@ -242,13 +242,29 @@ struct Cli {
     /// handling) -- never a separately-fetched copy. Only applies to a
     /// directly-requested package, not to a recursively-pulled-in AUR
     /// dependency, and not to batch paths (--update's @world provisioning,
-    /// --aur -u). Editing a PKGBUILD does NOT regenerate its `.SRCINFO`
-    /// (see bash_ast.rs's doc comment for why aura-emerge won't
-    /// re-execute an edited PKGBUILD to do that automatically) -- a
-    /// dependency-array edit needs a manual `makepkg --printsrcinfo` in
-    /// the checkout to actually take effect.
+    /// --aur -u).
+    ///
+    /// After you save and close the editor, `.SRCINFO` is automatically
+    /// regenerated from the edited PKGBUILD (`makepkg --printsrcinfo`)
+    /// so a `depends`/`makedepends`/`checkdepends` edit actually takes
+    /// effect for dependency resolution -- this is the one place
+    /// aura-emerge re-executes PKGBUILD content after an edit (see
+    /// `packages::maybe_regen_srcinfo`'s doc comment for why that's
+    /// reasonable here specifically, unlike for an arbitrary AUR
+    /// PKGBUILD). Pass --off-src-regen to skip this and go back to the
+    /// old behavior (dependency resolution keeps using the pre-edit
+    /// `.SRCINFO`).
     #[arg(long = "edit")]
     edit: bool,
+
+    /// Disable the automatic `.SRCINFO` regeneration that `--edit` now
+    /// does after you save and close the editor (see `--edit`'s own doc
+    /// comment). With this set, `--edit` goes back to the old behavior:
+    /// dependency resolution keeps using the pre-edit `.SRCINFO`, and
+    /// you get the same "run `makepkg --printsrcinfo` yourself" note as
+    /// before. Has no effect without `--edit`.
+    #[arg(long = "off-src-regen")]
+    off_src_regen: bool,
 
     /// Verbose output / detailed info in search mode (-sv = pacman -Si / AUR info)
     #[arg(short = 'v', long = "verbose")]
@@ -586,6 +602,7 @@ fn build_resume_args(cli: &Cli, target_pkgs: &[String], has_world: bool) -> Vec<
     if cli.skippgp      { args.push("--skippgp".to_string()); }
     if cli.autopgp      { args.push("--autopgp".to_string()); }
     if cli.edit         { args.push("--edit".to_string()); }
+    if cli.off_src_regen { args.push("--off-src-regen".to_string()); }
     if cli.oneshot      { args.push("--oneshot".to_string()); }
     if cli.noreplace    { args.push("--noreplace".to_string()); }
     if cli.verbose      { args.push("--verbose".to_string()); }
@@ -1232,7 +1249,7 @@ fn run() -> anyhow::Result<()> {
                     // aur_install() always leaves the explicit bit set on
                     // success (see its doc comment) — no separate
                     // mark_asexplicit() call needed the way `aura -A` required.
-                    if aur_install(&names, false, cli.ask, false, cli.skippgp, cli.edit, cli.no_sandbox) {
+                    if aur_install(&names, false, cli.ask, false, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen) {
                         if let Err(e) = add_to_world_set(&names, Some("aur")) {
                             eprintln!(">>> Warning: package(s) reinstalled but world.set was not updated: {:#}", e);
                         }
@@ -1324,7 +1341,7 @@ fn run() -> anyhow::Result<()> {
         if !cli.pretend {
             save_resume_state(&build_resume_args(&cli, &[], true));
         }
-        let ok = provision_from_world_set(cli.pretend, cli.ask, cli.verbose, cli.err_inst, cli.no_sandbox)?;
+        let ok = provision_from_world_set(cli.pretend, cli.ask, cli.verbose, cli.err_inst, cli.no_sandbox, cli.off_src_regen)?;
         if !cli.pretend {
             if ok {
                 clear_resume_state();
@@ -1393,7 +1410,7 @@ fn run() -> anyhow::Result<()> {
         };
 
         println!(">>> Upgrading AUR packages...");
-        let ok2 = aur_upgrade_all(cli.pretend, cli.ask, cli.skippgp, cli.no_sandbox);
+        let ok2 = aur_upgrade_all(cli.pretend, cli.ask, cli.skippgp, cli.no_sandbox, cli.off_src_regen);
 
         println!();
         println!("{} Auto-cleaning packages...", ">>>".green().bold());
@@ -1602,7 +1619,7 @@ fn run() -> anyhow::Result<()> {
         let mut not_found: Vec<String> = Vec::new();
 
         if cli.abs {
-            success = abs_install(&target_pkgs, cli.pretend, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.autopgp, cli.no_sandbox);
+            success = abs_install(&target_pkgs, cli.pretend, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.autopgp, cli.no_sandbox, cli.off_src_regen);
         } else if cli.aur {
             let (pkg_infos, missing_aur) = resolve_aur_split(&target_pkgs);
             not_found = missing_aur;
@@ -1618,7 +1635,7 @@ fn run() -> anyhow::Result<()> {
             print_emerge_emerging(&pkg_infos);
             let found_names: Vec<String> = pkg_infos.iter().map(|p| p.name.clone()).collect();
             scan_aur_pkgbuilds_or_abort(&found_names);
-            success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox);
+            success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen);
             if success { installed_infos = pkg_infos; }
         } else {
             // Probe official repos in a way that's safe against partial matches:
@@ -1698,7 +1715,7 @@ fn run() -> anyhow::Result<()> {
                 print_emerge_emerging(&pkg_infos);
                 let found_names: Vec<String> = pkg_infos.iter().map(|p| p.name.clone()).collect();
                 scan_aur_pkgbuilds_or_abort(&found_names);
-                success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox);
+                success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen);
                 if success { installed_infos = pkg_infos; }
             } else {
                 // Mixed case: some packages are official, some need the AUR.
@@ -1734,7 +1751,7 @@ fn run() -> anyhow::Result<()> {
                 if !aur_infos.is_empty() {
                     let aur_found_names: Vec<String> = aur_infos.iter().map(|p| p.name.clone()).collect();
                     scan_aur_pkgbuilds_or_abort(&aur_found_names);
-                    let aur_success = aur_install(&aur_found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox);
+                    let aur_success = aur_install(&aur_found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen);
                     if aur_success {
                         installed_infos.extend(aur_infos);
                     } else {
@@ -1866,7 +1883,7 @@ fn run() -> anyhow::Result<()> {
     // now provision anything else world.set still lists as missing.
     if provision_after_install && !cli.pretend {
         println!();
-        if !provision_from_world_set(cli.pretend, cli.ask, cli.verbose, cli.err_inst, cli.no_sandbox)? {
+        if !provision_from_world_set(cli.pretend, cli.ask, cli.verbose, cli.err_inst, cli.no_sandbox, cli.off_src_regen)? {
             eprintln!(">>> Warning: not everything from world.set installed successfully.");
             std::process::exit(1);
         }
