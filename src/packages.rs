@@ -677,6 +677,7 @@ fn resolve_and_build_aur(
     off_src_regen: bool,
     isolation: BuildIsolation,
     deep: bool,
+    unshare_net_build: bool,
     building: &mut HashSet<String>,
     built: &mut HashMap<String, Vec<String>>,
 ) -> Option<Vec<String>> {
@@ -792,7 +793,7 @@ fn resolve_and_build_aur(
             building.remove(&pkgbase);
             return None;
         }
-        match resolve_and_build_aur(dep, build_root, ask, skippgp, true, false, false, off_src_regen, isolation, deep, building, built) {
+        match resolve_and_build_aur(dep, build_root, ask, skippgp, true, false, false, off_src_regen, isolation, deep, unshare_net_build, building, built) {
             Some(mut tars) => aur_dep_tarballs.append(&mut tars),
             None => {
                 eprintln!(
@@ -809,7 +810,7 @@ fn resolve_and_build_aur(
 
     let build_started = std::time::SystemTime::now();
     let result = match isolation {
-        BuildIsolation::Bwrap => build_with_sandbox(&dir, &pkgbase, ask, mark_asdeps, skippgp, &aur_dep_tarballs).then(|| find_built_packages(&dir, build_started)),
+        BuildIsolation::Bwrap => build_with_sandbox(&dir, &pkgbase, ask, mark_asdeps, skippgp, &aur_dep_tarballs, unshare_net_build).then(|| find_built_packages(&dir, build_started)),
         BuildIsolation::None => {
             if !install_local_tarballs(&aur_dep_tarballs, ask, true) {
                 eprintln!("{} failed to install locally-built AUR dependencies for '{}'", ">>> Error:".red().bold(), pkgbase);
@@ -897,7 +898,7 @@ fn clear_build_base(dir: &std::path::Path) -> std::io::Result<()> {
 /// (`bwrap` -> unsandboxed `makepkg -si`, see `choose_build_isolation`)
 /// instead of shelling out to `aura -A`. `pkgctl` is not involved here
 /// at all -- only `--abs` ever calls it, and only for `repo clone`.
-pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, no_sandbox: bool, off_src_regen: bool, deep: bool) -> bool {
+pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, no_sandbox: bool, off_src_regen: bool, deep: bool, unshare_net_build: bool) -> bool {
     if !std::path::Path::new("/usr/bin/git").exists() {
         eprintln!("{} required binary not found: /usr/bin/git", ">>> Fatal:".red().bold());
         return false;
@@ -1004,7 +1005,7 @@ pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
             pkg.green().bold()
         );
         println!();
-        if resolve_and_build_aur(pkg, &build_base, ask, skippgp, oneshot, edit, true, off_src_regen, isolation, deep, &mut building, &mut built).is_none() {
+        if resolve_and_build_aur(pkg, &build_base, ask, skippgp, oneshot, edit, true, off_src_regen, isolation, deep, unshare_net_build, &mut building, &mut built).is_none() {
             all_ok = false;
         }
     }
@@ -1024,7 +1025,7 @@ pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
 /// build+install to `aur_install()` -- the same bwrap-sandboxed
 /// path used for a fresh AUR install, so an upgrade gets exactly the same
 /// isolation and PKGBUILD scanning as `emerge --aur <pkg>` does.
-pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbox: bool, off_src_regen: bool, deep: bool) -> bool {
+pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbox: bool, off_src_regen: bool, deep: bool, unshare_net_build: bool) -> bool {
     let foreign = match Command::new(PACMAN_BIN)
         .args(["-Qm"])
         .env("LC_ALL", "C")
@@ -1105,7 +1106,7 @@ pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbo
     }
 
     let upgrade_names: Vec<String> = to_upgrade.iter().map(|(n, _, _)| n.clone()).collect();
-    aur_install(&upgrade_names, false, ask, false, skippgp, false, no_sandbox, off_src_regen, deep)
+    aur_install(&upgrade_names, false, ask, false, skippgp, false, no_sandbox, off_src_regen, deep, unshare_net_build)
 }
 
 /// Installs already-built `*.pkg.tar.*` files directly via `pacman -U`
@@ -1143,6 +1144,10 @@ fn install_local_tarballs(tarballs: &[String], ask: bool, mark_asdeps: bool) -> 
 /// anything else, since `pacman -S` below has no way to find them.
 /// Pass `&[]` for a plain ABS build with no local AUR dependencies.
 ///
+/// `unshare_net_build`: when set, step 2 (the actual sandboxed build)
+/// splits into two separate bwrap invocations instead of one -- see the
+/// comment right before step 2 for why and how.
+///
 /// Returns `false` on any failure. Dependency resolution prefers
 /// `.SRCINFO` when the checkout has one (see step 1a below); only when
 /// that's absent and the PKGBUILD's dependency arrays can't be
@@ -1150,7 +1155,7 @@ fn install_local_tarballs(tarballs: &[String], ask: bool, mark_asdeps: bool) -> 
 /// assignment, ...) does this fall back to the plain unsandboxed
 /// `makepkg -si` path for this one package rather than guessing at a
 /// partial dependency list.
-fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, oneshot: bool, skippgp: bool, aur_dep_tarballs: &[String]) -> bool {
+fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, oneshot: bool, skippgp: bool, aur_dep_tarballs: &[String], unshare_net_build: bool) -> bool {
     let pkgbuild_src = match fs::read_to_string(build_dir.join("PKGBUILD")) {
         Ok(s) => s,
         Err(e) => {
@@ -1230,6 +1235,13 @@ fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, one
                 ">>> Warning:".yellow().bold(),
                 pkgbase
             );
+            if unshare_net_build {
+                eprintln!(
+                    "{} this fallback runs plain `makepkg -si` with no bwrap sandbox at all, so --unshare-net-build has no effect here -- '{}' builds with full network access this time.",
+                    ">>> Warning:".yellow().bold(),
+                    pkgbase
+                );
+            }
             return legacy_makepkg_si(build_dir, ask, oneshot, skippgp);
         }
     }
@@ -1239,6 +1251,38 @@ fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, one
     //    (installation happens separately in step 3) -- see
     //    sandbox.rs's doc comment for why those two specifically stay
     //    outside the jail.
+    //
+    //    Normally this is one `makepkg` invocation covering
+    //    `pkgver()`/download+extract/`prepare()`/`build()`/`package()`
+    //    together, with the network shared throughout (some PKGBUILDs --
+    //    an unvendored `cargo build`/`go build`/`pip install` that
+    //    resolves its dependency graph mid-compile instead of ahead of
+    //    time via `prepare()` -- genuinely need network access during
+    //    `build()` itself, not just to fetch the declared `source=()`
+    //    array, so this stays the permissive default).
+    //
+    //    `--unshare-net-build` splits this into two bwrap invocations
+    //    instead: (a) `makepkg --nobuild`, network shared, which only
+    //    covers `pkgver()` + retrieving/verifying/extracting the
+    //    declared, checksum/PGP-verified `source=()` entries, plus
+    //    `prepare()`; then (b) `makepkg --noextract`, network torn down
+    //    (no `--share-net`), which picks up from there and runs
+    //    `build()`/`check()`/`package()`. `--noextract` also skips
+    //    re-running `prepare()` -- makepkg only runs it as part of the
+    //    extraction step, which (a) already did. A `build()` that
+    //    genuinely needs the network (the cargo/go/pip case above) then
+    //    fails loudly in phase (b) instead of quietly succeeding with
+    //    unaudited traffic from the untrusted part of the build -- which
+    //    is the point: it surfaces a PKGBUILD reaching for the network
+    //    somewhere other than its declared sources.
+    //
+    //    Known gap: a `pkgver()` that itself needs the network (rare --
+    //    almost always just `git describe`/similar against the already-
+    //    extracted local source tree) runs again in phase (b) too, since
+    //    makepkg re-evaluates it on every invocation; with the network
+    //    torn down there, that specific case would fail even though it
+    //    ran fine in phase (a). Not worth special-casing for how rare it
+    //    is in practice.
     let mut makepkg_args: Vec<&str> = Vec::new();
     if !ask { makepkg_args.push("--noconfirm"); }
     if skippgp { makepkg_args.push("--skippgpcheck"); }
@@ -1265,13 +1309,43 @@ fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, one
             cache.display()
         );
     }
+
     let build_started = std::time::SystemTime::now();
-    let build_ok = crate::sandbox::sandboxed_makepkg(MAKEPKG_BIN, build_dir, &makepkg_args, real_gnupg.as_deref(), &extra_dest_dirs)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    let build_ok = if unshare_net_build {
+        println!(
+            "{} --unshare-net-build set -- fetching/extracting sources with network access, then building '{}' with none.",
+            ">>>".green().bold(),
+            pkgbase
+        );
+        let mut nobuild_args = makepkg_args.clone();
+        nobuild_args.push("--nobuild");
+        let fetch_ok = crate::sandbox::sandboxed_makepkg(MAKEPKG_BIN, build_dir, &nobuild_args, real_gnupg.as_deref(), &extra_dest_dirs, true)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !fetch_ok {
+            eprintln!("{} fetching/extracting sources failed for '{}'", ">>> Error:".red().bold(), pkgbase);
+            return false;
+        }
+        let mut noextract_args = makepkg_args.clone();
+        noextract_args.push("--noextract");
+        crate::sandbox::sandboxed_makepkg(MAKEPKG_BIN, build_dir, &noextract_args, real_gnupg.as_deref(), &extra_dest_dirs, false)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    } else {
+        crate::sandbox::sandboxed_makepkg(MAKEPKG_BIN, build_dir, &makepkg_args, real_gnupg.as_deref(), &extra_dest_dirs, true)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
     if !build_ok {
         eprintln!("{} sandboxed build failed for '{}'", ">>> Error:".red().bold(), pkgbase);
+        if unshare_net_build {
+            eprintln!(
+                "    if this failed reaching for the network during build() -- check for an unvendored dependency fetch (cargo/go/pip/npm resolving its graph mid-build instead of in prepare()) and re-run without --unshare-net-build if that's expected for this package."
+            );
+        }
         return false;
     }
 
@@ -1376,7 +1450,7 @@ fn legacy_makepkg_si(build_dir: &std::path::Path, ask: bool, oneshot: bool, skip
 
 /// Build and install packages from ABS via `pkgctl repo clone` + `makepkg -si`
 /// (or, by default, the bwrap-sandboxed equivalent -- see `build_with_sandbox`).
-pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, autopgp: bool, no_sandbox: bool, off_src_regen: bool) -> bool {
+pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, autopgp: bool, no_sandbox: bool, off_src_regen: bool, unshare_net_build: bool) -> bool {
     for bin in &[PKGCTL_BIN, MAKEPKG_BIN] {
         if !std::path::Path::new(bin).exists() {
             eprintln!(">>> Fatal: required binary not found: {}", bin);
@@ -1526,7 +1600,7 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
         }
 
         let build_ok = match isolation {
-            BuildIsolation::Bwrap => build_with_sandbox(&build_dir, &info.name, ask, oneshot, skippgp, &[]),
+            BuildIsolation::Bwrap => build_with_sandbox(&build_dir, &info.name, ask, oneshot, skippgp, &[], unshare_net_build),
             BuildIsolation::None => legacy_makepkg_si(&build_dir, ask, oneshot, skippgp),
         };
 
