@@ -1,12 +1,18 @@
 BIN := target/release/aura-emerge
+VERSION := $(shell grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
 
-.PHONY: build test install uninstall clean completions man all
+.PHONY: build test install uninstall clean completions man git all
 
 build:
 	cargo build --release
 
 test:
 	cargo test --release
+
+git:
+	git add .
+	git commit -m "v$(VERSION) commit"
+	git push
 
 install: build test
 	sudo cp -r $(BIN) /usr/bin/emerge
@@ -16,7 +22,6 @@ uninstall:
 
 clean:
 	cargo clean
-
 
 completions: build
 	sudo install -Dm644 <($(BIN) --gen-completions bash) /usr/share/bash-completion/completions/emerge

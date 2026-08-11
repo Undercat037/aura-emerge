@@ -676,6 +676,7 @@ fn resolve_and_build_aur(
     is_top_level: bool,
     off_src_regen: bool,
     isolation: BuildIsolation,
+    deep: bool,
     building: &mut HashSet<String>,
     built: &mut HashMap<String, Vec<String>>,
 ) -> Option<Vec<String>> {
@@ -748,10 +749,26 @@ fn resolve_and_build_aur(
 
     let mut aur_dep_tarballs = Vec::new();
     for dep in &deps {
-        if is_satisfiable_without_aur(dep) {
+        if already_satisfied(dep) || is_satisfiable_without_aur(dep) {
             continue;
         }
-        match resolve_and_build_aur(dep, build_root, ask, skippgp, true, false, false, off_src_regen, isolation, building, built) {
+        if !deep {
+            // Plain --aur (no --aur-deep): only build what was actually
+            // requested. Rather than silently walking off into someone
+            // else's dependency tree -- other AUR PKGBUILDs this run
+            // hasn't scanned or shown the user yet -- stop here and make
+            // that an explicit, informed choice.
+            eprintln!(
+                "{} '{}' depends on '{}', which is only available from the AUR -- re-run with {} to also build AUR-only dependencies.",
+                ">>> Error:".red().bold(),
+                pkgbase,
+                dep,
+                "--aur-deep".cyan()
+            );
+            building.remove(&pkgbase);
+            return None;
+        }
+        match resolve_and_build_aur(dep, build_root, ask, skippgp, true, false, false, off_src_regen, isolation, deep, building, built) {
             Some(mut tars) => aur_dep_tarballs.append(&mut tars),
             None => {
                 eprintln!(
@@ -786,14 +803,14 @@ fn resolve_and_build_aur(
 }
 
 /// Root directory AUR builds happen under, mirroring `ABS_BUILD_BASE`.
-pub(crate) const AUR_BUILD_BASE: &str = "/tmp/aura-emerge-aur";
+pub(crate) const AUR_BUILD_BASE: &str = "/var/tmp/aura-emerge-aur";
 
 /// Install packages from the AUR by cloning their git repos directly and
 /// building through the same isolation ladder as `--abs`
 /// (`bwrap` -> unsandboxed `makepkg -si`, see `choose_build_isolation`)
 /// instead of shelling out to `aura -A`. `pkgctl` is not involved here
 /// at all -- only `--abs` ever calls it, and only for `repo clone`.
-pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, no_sandbox: bool, off_src_regen: bool) -> bool {
+pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, no_sandbox: bool, off_src_regen: bool, deep: bool) -> bool {
     if !std::path::Path::new("/usr/bin/git").exists() {
         eprintln!("{} required binary not found: /usr/bin/git", ">>> Fatal:".red().bold());
         return false;
@@ -877,7 +894,7 @@ pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
             pkg.green().bold()
         );
         println!();
-        if resolve_and_build_aur(pkg, &build_base, ask, skippgp, oneshot, edit, true, off_src_regen, isolation, &mut building, &mut built).is_none() {
+        if resolve_and_build_aur(pkg, &build_base, ask, skippgp, oneshot, edit, true, off_src_regen, isolation, deep, &mut building, &mut built).is_none() {
             all_ok = false;
         }
     }
@@ -897,7 +914,7 @@ pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
 /// build+install to `aur_install()` -- the same bwrap-sandboxed
 /// path used for a fresh AUR install, so an upgrade gets exactly the same
 /// isolation and PKGBUILD scanning as `emerge --aur <pkg>` does.
-pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbox: bool, off_src_regen: bool) -> bool {
+pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbox: bool, off_src_regen: bool, deep: bool) -> bool {
     let foreign = match Command::new(PACMAN_BIN)
         .args(["-Qm"])
         .env("LC_ALL", "C")
@@ -978,7 +995,7 @@ pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbo
     }
 
     let upgrade_names: Vec<String> = to_upgrade.iter().map(|(n, _, _)| n.clone()).collect();
-    aur_install(&upgrade_names, false, ask, false, skippgp, false, no_sandbox, off_src_regen)
+    aur_install(&upgrade_names, false, ask, false, skippgp, false, no_sandbox, off_src_regen, deep)
 }
 
 /// Installs already-built `*.pkg.tar.*` files directly via `pacman -U`
