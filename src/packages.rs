@@ -826,8 +826,70 @@ fn resolve_and_build_aur(
     result
 }
 
-/// Root directory AUR builds happen under, mirroring `ABS_BUILD_BASE`.
-pub(crate) const AUR_BUILD_BASE: &str = "/var/tmp/aura-emerge-aur";
+/// Root directory AUR builds happen under, mirroring `abs_build_base()`.
+///
+/// Lives under the user's own cache dir (`$XDG_CACHE_HOME` or
+/// `~/.cache/aura-emerge/build/aur`), not the old shared
+/// `/var/tmp/aura-emerge-aur` -- `/var/tmp` is a sticky, multi-user
+/// directory, and every other bit of this tool's persistent state
+/// already lives under `~/.cache/aura-emerge` (see `source_cache_dir`,
+/// news.rs's read-state cache). Falls back to the old `/var/tmp` path
+/// only if neither `$XDG_CACHE_HOME` nor `$HOME` is set at all, rather
+/// than failing outright.
+pub(crate) fn aur_build_base() -> std::path::PathBuf {
+    build_base_dir("aur")
+}
+
+/// See `aur_build_base()`.
+pub(crate) fn abs_build_base() -> std::path::PathBuf {
+    build_base_dir("abs")
+}
+
+fn build_base_dir(name: &str) -> std::path::PathBuf {
+    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
+        if !xdg.is_empty() {
+            return std::path::PathBuf::from(xdg).join("aura-emerge/build").join(name);
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            return std::path::PathBuf::from(home).join(".cache/aura-emerge/build").join(name);
+        }
+    }
+    std::path::PathBuf::from(format!("/var/tmp/aura-emerge-{}", name))
+}
+
+/// Wipes an AUR_BUILD_BASE/ABS_BUILD_BASE-style tree. Falls back to
+/// `sudo rm -rf` if the plain removal fails.
+///
+/// Why a plain `remove_dir_all` can fail here even though the tree is
+/// entirely owned by the invoking user: a PKGBUILD's `package()` step
+/// runs for real even inside fakeroot -- fakeroot only fakes *ownership*
+/// reporting back to `stat`/`chown`, it does not intercept `chmod`. A
+/// package that installs something with a restrictive mode
+/// (`install -d -m 700 ...`, a build tool that marks its own output
+/// read-only, etc.) leaves a real, non-writable file or directory
+/// behind, and removing an entry needs write permission on its *parent*
+/// directory -- so the same user who owns everything here can still get
+/// `Permission denied` trying to clean it up. Reaching for `sudo` (used
+/// elsewhere in this file for the same class of trusted, no-PKGBUILD-
+/// code-involved operation) is simpler and more honest than silently
+/// poking at permission bits ourselves first.
+fn clear_build_base(dir: &std::path::Path) -> std::io::Result<()> {
+    if let Err(e) = std::fs::remove_dir_all(dir) {
+        let dir_s = dir.to_string_lossy().to_string();
+        let ok = Command::new(SUDO_BIN)
+            .args([RM_BIN, "-rf", "--"])
+            .arg(&dir_s)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            return Err(e);
+        }
+    }
+    Ok(())
+}
 
 /// Install packages from the AUR by cloning their git repos directly and
 /// building through the same isolation ladder as `--abs`
@@ -896,11 +958,11 @@ pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
     // packages live outside this tree entirely now -- see
     // `source_cache_dir` -- so this wipe doesn't cost a re-download of
     // those on the next run.
-    let build_base = std::path::PathBuf::from(AUR_BUILD_BASE);
+    let build_base = aur_build_base();
     if build_base.exists() {
         // Deliberately NOT `let _ = ...`: a failed wipe here used to be
         // silently swallowed, leaving a stale per-pkgbase clone (e.g.
-        // `AUR_BUILD_BASE/setrixtui`) behind from a previous run.
+        // `aur_build_base()/setrixtui`) behind from a previous run.
         // `create_dir_all` below then happily no-ops on the
         // already-existing `build_base`, so nothing downstream notices
         // -- until `clone_repo()`'s `git clone` into that now-occupied
@@ -908,21 +970,23 @@ pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
         // directory), which `clone_or_resolve()` can't tell apart from a
         // genuine "not on the AUR" and reports as exactly that. Surface
         // the real problem here instead of that confusing three-frames-
-        // removed symptom.
-        if let Err(e) = std::fs::remove_dir_all(&build_base) {
+        // removed symptom. `clear_build_base()` already falls back to
+        // `sudo rm -rf` on a plain-removal failure, so a failure that
+        // reaches here means even that didn't work.
+        if let Err(e) = clear_build_base(&build_base) {
             eprintln!(
                 "{} could not clear stale build directory {}: {}",
                 ">>> Fatal:".red().bold(),
-                AUR_BUILD_BASE,
+                build_base.display(),
                 e
             );
-            eprintln!("    remove it manually and re-run, e.g.:");
-            eprintln!("      {}", format!("sudo rm -rf {}", AUR_BUILD_BASE).cyan());
+            eprintln!("    sudo rm -rf failed too -- check what's holding onto it, e.g.:");
+            eprintln!("      {}", format!("sudo lsof +D {}", build_base.display()).cyan());
             return false;
         }
     }
     if std::fs::create_dir_all(&build_base).is_err() {
-        eprintln!("{} could not create build directory {}", ">>> Fatal:".red().bold(), AUR_BUILD_BASE);
+        eprintln!("{} could not create build directory {}", ">>> Fatal:".red().bold(), build_base.display());
         return false;
     }
 
@@ -1329,22 +1393,24 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
     if pretend { return true; }
 
     // Clean up any stale build dir from interrupted previous run. Same
-    // as AUR_BUILD_BASE's cleanup in aur_install(): the persistent
+    // as aur_build_base()'s cleanup in aur_install(): the persistent
     // source cache (source_cache_dir) lives outside this tree, so
     // wiping it doesn't force a VCS re-clone on the next run.
-    let build_base = std::path::PathBuf::from(ABS_BUILD_BASE);
+    let build_base = abs_build_base();
     if build_base.exists() {
-        // See the matching AUR_BUILD_BASE wipe in aur_install() for why
-        // this can no longer silently swallow a failed removal.
-        if let Err(e) = std::fs::remove_dir_all(&build_base) {
+        // See the matching aur_build_base() wipe in aur_install() for
+        // why this can no longer silently swallow a failed removal, and
+        // clear_build_base()'s doc comment for why it falls back to
+        // `sudo rm -rf` before giving up.
+        if let Err(e) = clear_build_base(&build_base) {
             eprintln!(
                 "{} could not clear stale build directory {}: {}",
                 ">>> Fatal:".red().bold(),
-                ABS_BUILD_BASE,
+                build_base.display(),
                 e
             );
-            eprintln!("    remove it manually and re-run, e.g.:");
-            eprintln!("      {}", format!("sudo rm -rf {}", ABS_BUILD_BASE).cyan());
+            eprintln!("    sudo rm -rf failed too -- check what's holding onto it, e.g.:");
+            eprintln!("      {}", format!("sudo lsof +D {}", build_base.display()).cyan());
             return false;
         }
     }

@@ -42,8 +42,8 @@ pub(crate) struct AurPkgInfo {
 /// here since callers fall back to an RPC lookup either way).
 ///
 /// `dest_root` is expected to be a directory `clone_repo`'s caller owns
-/// exclusively for this run (see `AUR_BUILD_BASE`/`ABS_BUILD_BASE`'s
-/// wipe-on-start in packages.rs) -- if `target` already exists, that's a
+/// exclusively for this run (see `packages::aur_build_base()`/
+/// `abs_build_base()`'s wipe-on-start) -- if `target` already exists, that's a
 /// caller-side bug (stale wipe, or the same pkgbase cloned twice in one
 /// run), not a normal "package doesn't exist" case. Reported distinctly
 /// on stderr so it doesn't masquerade as an AUR miss several call-frames
@@ -90,7 +90,7 @@ pub(crate) fn clone_repo(pkgbase: &str, dest_root: &Path) -> Option<PathBuf> {
     // limp downstream into a much more confusing failure several layers
     // later (missing .SRCINFO, then "could not read PKGBUILD: No such
     // file or directory"). Clean up the empty dir too, since dest_root is
-    // a fixed, reused-across-runs path (AUR_BUILD_BASE) -- leaving it
+    // a fixed, reused-across-runs path (packages::aur_build_base()) -- leaving it
     // behind would otherwise sit there as a stale, empty trap for the
     // next run.
     if !target.join("PKGBUILD").is_file() {

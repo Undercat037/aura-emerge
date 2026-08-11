@@ -52,7 +52,8 @@ pub(crate) const WORLD_SET_FILE:  &str = "/etc/emerge/world.set";
 /// Directory for custom package sets: /etc/emerge/sets.d/<name>.set,
 /// invoked on the command line as `@<name>` (e.g. `@game-kit`).
 pub(crate) const SETS_DIR: &str = "/etc/emerge/sets.d";
-pub(crate) const ABS_BUILD_BASE:  &str = "/var/tmp/aura-emerge-abs";
+// AUR/ABS build roots moved to per-user cache dirs -- see
+// packages::aur_build_base()/abs_build_base().
 pub(crate) const WORLD_SET_TMP:  &str = "/etc/emerge/world.set.tmp";
 pub(crate) const RESUME_FILE: &str = "/etc/emerge/resume.state";
 pub(crate) const RESUME_TMP:  &str = "/etc/emerge/resume.state.tmp";
