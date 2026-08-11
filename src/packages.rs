@@ -807,15 +807,16 @@ fn resolve_and_build_aur(
         }
     }
 
+    let build_started = std::time::SystemTime::now();
     let result = match isolation {
-        BuildIsolation::Bwrap => build_with_sandbox(&dir, &pkgbase, ask, mark_asdeps, skippgp, &aur_dep_tarballs).then(|| find_built_packages(&dir)),
+        BuildIsolation::Bwrap => build_with_sandbox(&dir, &pkgbase, ask, mark_asdeps, skippgp, &aur_dep_tarballs).then(|| find_built_packages(&dir, build_started)),
         BuildIsolation::None => {
             if !install_local_tarballs(&aur_dep_tarballs, ask, true) {
                 eprintln!("{} failed to install locally-built AUR dependencies for '{}'", ">>> Error:".red().bold(), pkgbase);
                 building.remove(&pkgbase);
                 return None;
             }
-            legacy_makepkg_si(&dir, ask, mark_asdeps, skippgp).then(|| find_built_packages(&dir))
+            legacy_makepkg_si(&dir, ask, mark_asdeps, skippgp).then(|| find_built_packages(&dir, build_started))
         }
     };
 
@@ -1264,6 +1265,7 @@ fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, one
             cache.display()
         );
     }
+    let build_started = std::time::SystemTime::now();
     let build_ok = crate::sandbox::sandboxed_makepkg(MAKEPKG_BIN, build_dir, &makepkg_args, real_gnupg.as_deref(), &extra_dest_dirs)
         .status()
         .map(|s| s.success())
@@ -1275,7 +1277,7 @@ fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, one
 
     // 3. Install the built package(s), outside the sandbox: another
     //    plain pacman operation, no PKGBUILD code involved.
-    let pkg_files = find_built_packages(build_dir);
+    let pkg_files = find_built_packages(build_dir, build_started);
     if pkg_files.is_empty() {
         eprintln!("{} sandboxed build for '{}' produced no package file", ">>> Error:".red().bold(), pkgbase);
         return false;
@@ -1292,23 +1294,54 @@ fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, one
         .unwrap_or(false)
 }
 
-/// Every `*.pkg.tar.*` file sitting directly in `build_dir` after a
-/// build -- `build_dir` is a freshly-cloned checkout each run (see the
-/// stale-dir cleanup in `abs_install`), so there's nothing stale left
-/// over from a previous build to accidentally pick up here.
-fn find_built_packages(build_dir: &std::path::Path) -> Vec<String> {
+/// Every `*.pkg.tar.*` file this build actually produced.
+///
+/// Searches `PKGDEST` (resolved the same way `resolve_dest_dirs`/
+/// `sandboxed_makepkg` bind it into the sandbox) when the user has one
+/// configured outside `build_dir` -- that's where makepkg actually
+/// writes the package in that case, so searching `build_dir` alone (the
+/// old behavior) found nothing and got reported as "produced no package
+/// file" even though the build succeeded. Falls back to `build_dir`
+/// itself, makepkg's own default when `PKGDEST` isn't set.
+///
+/// Unlike `build_dir` -- a freshly-cloned checkout each run (see the
+/// stale-dir cleanup in `abs_install`/`aur_install`), so nothing stale
+/// can be sitting in there -- a configured `PKGDEST` is a persistent
+/// directory the user reuses across every build, and very likely
+/// already has unrelated `*.pkg.tar.*` files in it from earlier runs.
+/// `not_before` (the caller's best timestamp for "just before this
+/// build started", with a couple seconds of slack for coarse filesystem
+/// mtime resolution) filters those out so only what this build just
+/// wrote gets picked up.
+fn find_built_packages(build_dir: &std::path::Path, not_before: std::time::SystemTime) -> Vec<String> {
+    let search_dir = extra_makepkg_dest_dirs(build_dir)
+        .into_iter()
+        .find(|(name, _)| *name == "PKGDEST")
+        .map(|(_, path)| path)
+        .unwrap_or_else(|| build_dir.to_path_buf());
+    let cutoff = not_before
+        .checked_sub(std::time::Duration::from_secs(2))
+        .unwrap_or(not_before);
+
     let mut out = Vec::new();
-    if let Ok(entries) = fs::read_dir(build_dir) {
-        for e in entries.flatten() {
-            let path = e.path();
-            if path.is_file() {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if name.contains(".pkg.tar") {
-                        out.push(path.to_string_lossy().to_string());
-                    }
-                }
-            }
+    let Ok(entries) = fs::read_dir(&search_dir) else { return out };
+    for e in entries.flatten() {
+        let path = e.path();
+        if !path.is_file() {
+            continue;
         }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+        if !name.contains(".pkg.tar") {
+            continue;
+        }
+        match e.metadata().and_then(|m| m.modified()) {
+            Ok(mtime) if mtime >= cutoff => {}
+            // Older than this build, or mtime unreadable -- don't guess
+            // whether an unreadable-mtime file belongs to this build;
+            // skip it rather than risk `pacman -U`-ing something stale.
+            _ => continue,
+        }
+        out.push(path.to_string_lossy().to_string());
     }
     out
 }
