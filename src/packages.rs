@@ -333,20 +333,11 @@ pub(crate) fn print_emerge_completed(pkgs: &[PkgInfo]) {
 pub(crate) fn abs_get_version(pkg: &str) -> String {
     // Try to fetch .SRCINFO from GitLab raw API
     let url = format!("{}/{}/raw/HEAD/.SRCINFO", ABS_GITLAB_BASE, pkg);
-    let output = Command::new("curl")
-        .args(["-sf", "--max-time", "5", &url])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output();
-
-    if let Ok(out) = output {
-        if out.status.success() {
-            let text = String::from_utf8_lossy(&out.stdout);
-            for line in text.lines() {
-                let line = line.trim();
-                if line.starts_with("pkgver = ") {
-                    return line["pkgver = ".len()..].trim().to_string();
-                }
+    if let Some(text) = crate::http::get(&url, 5) {
+        for line in text.lines() {
+            let line = line.trim();
+            if line.starts_with("pkgver = ") {
+                return line["pkgver = ".len()..].trim().to_string();
             }
         }
     }

@@ -16,6 +16,33 @@ mod bash_ast;
 mod sandbox;
 mod aur;
 
+/// Shared HTTP GET, replacing the `curl -sfL --max-time N` subprocess
+/// calls that used to be scattered across aur.rs/security.rs/news.rs/
+/// packages.rs. One `ureq`-backed call instead of four `Command::new
+/// ("curl")` sites: no dependency on a `curl` binary being installed,
+/// real typed errors instead of parsed exit codes, one place to touch
+/// if the timeout/redirect/TLS story ever changes. Still a plain
+/// blocking call, matching every other bit of I/O in this codebase
+/// (`Command::output()` blocks too) -- no async runtime anywhere else
+/// here, so reqwest+tokio would be more machinery for the same result.
+mod http {
+    use std::time::Duration;
+
+    /// GET `url`, returning the body as text, or `None` on any failure.
+    /// Mirrors `curl -sfL --max-time <timeout_secs>`: non-2xx is a
+    /// failure (`ureq` does this itself), redirects are followed
+    /// automatically, and the timeout bounds the whole request, not
+    /// just the connect phase. Every distinct failure mode collapses to
+    /// `None` since every caller already treated "couldn't fetch" as
+    /// one case -- skip this pkg, fall back, nothing to check.
+    pub(crate) fn get(url: &str, timeout_secs: u64) -> Option<String> {
+        let agent = ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(timeout_secs))
+            .build();
+        agent.get(url).call().ok()?.into_string().ok()
+    }
+}
+
 use clap::Parser;
 use clap_complete::Shell;
 use colored::Colorize;
@@ -658,11 +685,15 @@ fn build_resume_args(cli: &Cli, target_pkgs: &[String], has_world: bool) -> Vec<
 
 /// Abort early if required binaries are missing.
 fn check_binaries() {
-    // git/curl are load-bearing now that AUR interaction (clone + RPC
-    // info/search) goes straight through aur.rs instead of shelling out
-    // to aura — check for them up front like every other required binary,
-    // instead of only discovering they're missing mid-operation.
-    for bin in &[PACMAN_BIN, SUDO_BIN, TEE_BIN, MV_BIN, RM_BIN, aur::GIT_BIN, aur::CURL_BIN] {
+    // git is load-bearing now that AUR interaction (clone + RPC info/
+    // search) goes straight through aur.rs instead of shelling out to
+    // aura — check for it up front like every other required binary,
+    // instead of only discovering it's missing mid-operation. curl used
+    // to be in this list too, but every HTTP fetch (AUR RPC, cgit,
+    // the news feed, ABS .SRCINFO) now goes through the in-process ureq
+    // client in http.rs instead of shelling out to it — see that
+    // module's doc for why.
+    for bin in &[PACMAN_BIN, SUDO_BIN, TEE_BIN, MV_BIN, RM_BIN, aur::GIT_BIN] {
         if !std::path::Path::new(bin).exists() {
             eprintln!(">>> Fatal: required binary not found: {}", bin);
             std::process::exit(1);

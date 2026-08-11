@@ -13,7 +13,7 @@ git:
 	git add .
 	git commit -m "v$(VERSION) commit"
 
-install: build test git
+install: build test
 	sudo cp -r $(BIN) /usr/bin/emerge
 
 uninstall:

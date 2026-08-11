@@ -1,10 +1,11 @@
 //! Arch Linux news feed — a Gentoo-`eselect news`-style notification system.
 //!
 //! Fetches the official RSS feed (https://archlinux.org/feeds/news/) via
-//! curl, same approach as the AUR PKGBUILD fetcher in security.rs, and does
-//! a small hand-rolled tag extraction (no XML crate in the dependency
-//! tree — the feed's structure is stable and simple enough that this is
-//! fine, same spirit as the pattern-matching in security.rs).
+//! the shared http.rs GET helper, same approach as the AUR PKGBUILD
+//! fetcher in security.rs, and does a small hand-rolled tag extraction (no
+//! XML crate in the dependency tree — the feed's structure is stable and
+//! simple enough that this is fine, same spirit as the pattern-matching in
+//! security.rs).
 //!
 //! Read/unread state is tracked per-user in ~/.cache/aura-emerge/news.state
 //! (NOT under /etc/emerge — unlike world.set/resume.state/lastaction.state,
@@ -14,9 +15,7 @@
 use colored::Colorize;
 use std::fs;
 use std::io::Write;
-use std::process::{Command, Stdio};
 
-const CURL_BIN: &str = "/usr/bin/curl";
 const NEWS_FEED_URL: &str = "https://archlinux.org/feeds/news/";
 /// Longest we'll show in the list view before truncating.
 const LIST_LIMIT: usize = 30;
@@ -32,16 +31,7 @@ pub(crate) struct NewsItem {
 // ── Fetch ────────────────────────────────────────────────────────────────────
 
 fn fetch_feed() -> Option<String> {
-    let output = Command::new(CURL_BIN)
-        .args(["-sfL", "--max-time", "10", NEWS_FEED_URL])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let text = crate::http::get(NEWS_FEED_URL, 10)?;
     if text.trim().is_empty() { None } else { Some(text) }
 }
 
