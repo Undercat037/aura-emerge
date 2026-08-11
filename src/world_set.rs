@@ -1,6 +1,6 @@
 //! Handling of /etc/emerge/world.set: the explicit-install tracking file.
 //!
-//! Split out of main.rs — covers repo-prefix resolution for world.set
+//! Split out of main.rs - covers repo-prefix resolution for world.set
 //! entries, the add/remove/regen/write operations on the file itself,
 //! custom package sets under /etc/emerge/sets.d/, and declarative
 //! provisioning from world.set (bare `emerge @world`, no -u).
@@ -50,12 +50,12 @@ pub(crate) fn get_pkg_repo(pkg: &str) -> Option<String> {
         None
     }
 
-    // 1. Local DB — authoritative for installed packages
+    // 1. Local DB - authoritative for installed packages
     if let Some(stdout) = pacman_c(&["-Qi", bare]) {
         return first_repo(&stdout);  // None here = locally built, no repo field
     }
 
-    // 2. Sync DB — for packages not yet installed (--select etc.)
+    // 2. Sync DB - for packages not yet installed (--select etc.)
     if let Some(stdout) = pacman_c(&["-Si", bare]) {
         return first_repo(&stdout);
     }
@@ -82,7 +82,7 @@ pub(crate) fn pkg_world_entry(pkg: &str, forced_prefix: Option<&str>) -> String 
 // ── custom sets (/etc/emerge/sets.d/<name>.set, invoked as @<name>) ────────────
 
 /// Is `name` (the part after '@') safe to use as a set filename?
-/// Deliberately conservative — this becomes part of a filesystem path.
+/// Deliberately conservative - this becomes part of a filesystem path.
 pub(crate) fn valid_set_name(name: &str) -> bool {
     !name.is_empty()
         && name != "world"
@@ -98,7 +98,7 @@ pub(crate) fn read_custom_set(name: &str) -> Result<Vec<String>> {
     let path = format!("{}/{}.set", SETS_DIR, name);
 
     if !is_safe_path(&path) {
-        bail!("{} is a symlink — refusing to read", path);
+        bail!("{} is a symlink - refusing to read", path);
     }
 
     let file = fs::File::open(&path)
@@ -145,7 +145,7 @@ pub(crate) fn list_custom_sets() -> Vec<String> {
 /// `emerge @world` with no `-u`: install whatever world.set lists that
 /// isn't already on this system. Unlike the `-u @world` full upgrade,
 /// this never touches a package that's already installed and never
-/// consults the sync databases on its own — it's meant for "this machine
+/// consults the sync databases on its own - it's meant for "this machine
 /// is missing packages world.set says it should have" (a fresh install,
 /// or one that fell behind a dotfiles-tracked world.set), not for
 /// upgrading what's already there.
@@ -160,7 +160,7 @@ pub(crate) fn list_custom_sets() -> Vec<String> {
 /// differently:
 /// - A bare entry with *no* prefix at all means nothing could be
 ///   determined about it when it was written (not installed, not in any
-///   sync DB at the time) — there's nothing to lose by just trying the
+///   sync DB at the time) - there's nothing to lose by just trying the
 ///   normal install path (official repos first, AUR on a miss), so this
 ///   always happens.
 /// - An `Err/` entry means the package *is* installed, just from a
@@ -178,7 +178,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
     println!("{} Provisioning system from world.set...", ">>>".green().bold());
 
     if !is_safe_path(WORLD_SET_FILE) {
-        bail!("{} is a symlink — refusing to read", WORLD_SET_FILE);
+        bail!("{} is a symlink - refusing to read", WORLD_SET_FILE);
     }
 
     let entries: Vec<String> = match fs::File::open(WORLD_SET_FILE) {
@@ -189,13 +189,13 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
             .filter(|l| !l.is_empty())
             .collect(),
         Err(_) => {
-            println!(">>> world.set not found — nothing to provision.");
+            println!(">>> world.set not found - nothing to provision.");
             return Ok(true);
         }
     };
 
     if entries.is_empty() {
-        println!(">>> world.set is empty — nothing to provision.");
+        println!(">>> world.set is empty - nothing to provision.");
         return Ok(true);
     }
 
@@ -218,9 +218,9 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
     let mut official_missing: Vec<String> = Vec::new();
     let mut aur_missing: Vec<String> = Vec::new();
     let mut abs_missing: Vec<String> = Vec::new();
-    // Installed from somewhere unidentifiable (Err/) — only listed unless --err-inst.
+    // Installed from somewhere unidentifiable (Err/) - only listed unless --err-inst.
     let mut err_missing: Vec<String> = Vec::new();
-    // No prefix at all (not installed, no repo found when written) — always retried.
+    // No prefix at all (not installed, no repo found when written) - always retried.
     let mut bare_missing: Vec<String> = Vec::new();
 
     for entry in &entries {
@@ -269,7 +269,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
     let total = official_missing.len() + aur_missing.len() + abs_missing.len()
         + unresolved_listed.len() + resolved_official.len() + resolved_aur.len();
     if total == 0 {
-        println!("{} Nothing to do — every world.set package is already installed.", ">>>".green().bold());
+        println!("{} Nothing to do - every world.set package is already installed.", ">>>".green().bold());
         return Ok(true);
     }
 
@@ -282,16 +282,16 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
         println!("[{} {:<4}] {}", "ebuild".green(), "N".green().bold(), p.green().bold());
     }
     for p in &resolved_official {
-        println!("[{} {:<4}] {} (source was unresolved — found in official repos)", "ebuild".green(), "N".green().bold(), p.green().bold());
+        println!("[{} {:<4}] {} (source was unresolved - found in official repos)", "ebuild".green(), "N".green().bold(), p.green().bold());
     }
     for p in &resolved_aur {
-        println!("[{} {:<4}] {} (source was unresolved — will try the AUR)", "ebuild".green(), "N".cyan().bold(), p.cyan().bold());
+        println!("[{} {:<4}] {} (source was unresolved - will try the AUR)", "ebuild".green(), "N".cyan().bold(), p.cyan().bold());
     }
     for p in &abs_missing {
-        println!("[{} {:<4}] {} (built from ABS — needs `emerge {} --abs`)", "ebuild".green(), "N".yellow().bold(), p.yellow().bold(), p);
+        println!("[{} {:<4}] {} (built from ABS - needs `emerge {} --abs`)", "ebuild".green(), "N".yellow().bold(), p.yellow().bold(), p);
     }
     for p in &unresolved_listed {
-        println!("[{} {:<4}] {} (installed from an unknown source — retry with --err-inst, or install manually)", "ebuild".green(), "N".red().bold(), p.red().bold());
+        println!("[{} {:<4}] {} (installed from an unknown source - retry with --err-inst, or install manually)", "ebuild".green(), "N".red().bold(), p.red().bold());
     }
     println!();
     println!("{}: {} package(s)", "Total".bold(), total);
@@ -319,7 +319,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
         scan_aur_pkgbuilds_or_abort(&aur_missing);
         // aur_install() builds+installs via the bwrap-isolated path
         // (see packages.rs) and, unlike the old `aura -A`, always leaves
-        // the explicit bit set on success — no separate mark_asexplicit()
+        // the explicit bit set on success - no separate mark_asexplicit()
         // call needed here the way the old `aura -A` path required.
         if !aur_install(&aur_missing, false, ask, false, false, false, no_sandbox, off_src_regen, deep, unshare_net_build) {
             overall_ok = false;
@@ -368,7 +368,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
 
     if !abs_missing.is_empty() {
         eprintln!(
-            "{} {} package(s) were built from ABS and can't be reproduced unattended — \
+            "{} {} package(s) were built from ABS and can't be reproduced unattended - \
             install them yourself: `emerge <pkg> --abs`",
             " *".yellow().bold(), abs_missing.len()
         );
@@ -376,7 +376,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
     }
     if !unresolved_listed.is_empty() {
         eprintln!(
-            "{} {} package(s) are installed from an unknown source — retry with \
+            "{} {} package(s) are installed from an unknown source - retry with \
             `--err-inst` to attempt the normal official/AUR install path, or install manually.",
             " *".yellow().bold(), unresolved_listed.len()
         );
@@ -396,7 +396,7 @@ pub(crate) fn regen_world_set() -> Result<()> {
     println!("{} Regenerating world.set repository prefixes...", ">>>".green().bold());
 
     if !is_safe_path(WORLD_SET_FILE) {
-        bail!("{} is a symlink — refusing to modify", WORLD_SET_FILE);
+        bail!("{} is a symlink - refusing to modify", WORLD_SET_FILE);
     }
 
     let file = fs::File::open(WORLD_SET_FILE)
@@ -442,17 +442,17 @@ pub(crate) fn regen_world_set() -> Result<()> {
 ///
 /// By default (`sort == false`) this preserves the file exactly as
 /// written: line order, `#` comments, and blank-line grouping all survive
-/// — each package line just has its repo prefix re-resolved in place.
+/// - each package line just has its repo prefix re-resolved in place.
 /// Pass `sort == true` (the `--regen-sort` flag) to instead collapse the
 /// file down to a flat, deduplicated, alphabetically sorted list of
-/// entries — which, unavoidably, drops the comments and blank-line
+/// entries - which, unavoidably, drops the comments and blank-line
 /// grouping, since there's nothing sensible to sort them relative to.
 pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
     println!("{} Regenerating prefixes for @{}...", ">>>".green().bold(), name);
 
     let path = format!("{}/{}.set", SETS_DIR, name);
     if !is_safe_path(&path) {
-        bail!("{} is a symlink — refusing to modify", path);
+        bail!("{} is a symlink - refusing to modify", path);
     }
 
     let file = fs::File::open(&path)
@@ -464,7 +464,7 @@ pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
         .collect();
 
     if raw_lines.iter().all(|l| l.trim().is_empty()) {
-        println!(">>> @{} is empty or does not exist ({}) — nothing to regenerate.", name, path);
+        println!(">>> @{} is empty or does not exist ({}) - nothing to regenerate.", name, path);
         return Ok(());
     }
 
@@ -491,7 +491,7 @@ pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
 
         let bare = trimmed.split('/').last().unwrap_or(trimmed);
         // Preserve an existing abs/aur prefix as a fallback if
-        // re-resolution can't find a live repo — otherwise a regen
+        // re-resolution can't find a live repo - otherwise a regen
         // collapses a known-origin entry down to a generic, henceforth
         // indistinguishable "Err/<name>". See regen_world_set() for the
         // same fix on world.set proper.
@@ -525,7 +525,7 @@ pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
 
     let tmp = format!("{}.tmp", path);
     if !is_safe_path(&tmp) {
-        bail!("{} is a symlink — refusing to write", tmp);
+        bail!("{} is a symlink - refusing to write", tmp);
     }
     let _ = Command::new(SUDO_BIN).args([RM_BIN, "-f", &tmp]).status();
 
@@ -572,7 +572,7 @@ pub(crate) fn add_to_world_set(packages: &[String], forced_prefix: Option<&str>)
     println!("{} Adding to world.set...", ">>>".green().bold());
 
     if !is_safe_path(WORLD_SET_FILE) {
-        bail!("{} is a symlink — refusing to read", WORLD_SET_FILE);
+        bail!("{} is a symlink - refusing to read", WORLD_SET_FILE);
     }
 
     // current_set keyed by bare package name → full "repo/name" or "name" entry
@@ -612,7 +612,7 @@ pub(crate) fn remove_from_world_set(packages: &[String]) -> Result<()> {
     println!(">>> Removing from world.set...");
 
     if !is_safe_path(WORLD_SET_FILE) {
-        bail!("{} is a symlink — refusing to read", WORLD_SET_FILE);
+        bail!("{} is a symlink - refusing to read", WORLD_SET_FILE);
     }
 
     // key = bare name, value = full entry
@@ -652,11 +652,11 @@ pub(crate) fn remove_from_world_set(packages: &[String]) -> Result<()> {
 // success; left in place on failure/interruption so the next --resume picks
 // up where things left off.
 
-/// Save the given argv-style tokens as the resumable state. Best-effort —
+/// Save the given argv-style tokens as the resumable state. Best-effort -
 /// a failure here shouldn't abort the (already in-progress) real operation.
 pub(crate) fn save_resume_state(args: &[String]) {
     if !is_safe_path(RESUME_TMP) || !is_safe_path(RESUME_FILE) {
-        eprintln!(">>> Warning: refusing to save resume state — symlink detected");
+        eprintln!(">>> Warning: refusing to save resume state - symlink detected");
         return;
     }
 
@@ -691,7 +691,7 @@ pub(crate) fn save_resume_state(args: &[String]) {
         .status();
 }
 
-/// Drop the saved resume state — call after a fully successful operation.
+/// Drop the saved resume state - call after a fully successful operation.
 pub(crate) fn clear_resume_state() {
     let _ = Command::new(SUDO_BIN).args([RM_BIN, "-f", RESUME_FILE]).status();
 }
@@ -717,7 +717,7 @@ pub(crate) fn load_resume_state() -> Option<Vec<String>> {
 // Remembers the most recent successful install or unmerge so `emerge --undo`
 // can reverse it. Deliberately narrow in scope: install-undo only ever
 // covers packages recorded as brand new (never an upgrade/reinstall), and
-// unmerge-undo just reinstalls the removed atoms via the normal path — it
+// unmerge-undo just reinstalls the removed atoms via the normal path - it
 // can't restore an exact prior version if that's no longer current in the
 // repo/AUR. Only one step of history is kept, same as --resume.
 
@@ -738,12 +738,12 @@ impl LastAction {
 }
 
 /// Save the kind of action plus the affected atoms as the undoable state.
-/// Best-effort — a failure here shouldn't abort the (already completed)
+/// Best-effort - a failure here shouldn't abort the (already completed)
 /// real operation, it just means `--undo` won't have anything to work with.
 pub(crate) fn save_last_action(kind: LastAction, atoms: &[String]) {
     if atoms.is_empty() { return; }
     if !is_safe_path(LASTACTION_TMP) || !is_safe_path(LASTACTION_FILE) {
-        eprintln!(">>> Warning: refusing to save undo state — symlink detected");
+        eprintln!(">>> Warning: refusing to save undo state - symlink detected");
         return;
     }
 
@@ -779,7 +779,7 @@ pub(crate) fn save_last_action(kind: LastAction, atoms: &[String]) {
         .status();
 }
 
-/// Drop the saved undo state — call once `--undo` has acted on it, so the
+/// Drop the saved undo state - call once `--undo` has acted on it, so the
 /// same action can't be replayed a second time.
 pub(crate) fn clear_last_action() {
     let _ = Command::new(SUDO_BIN).args([RM_BIN, "-f", LASTACTION_FILE]).status();

@@ -1,7 +1,7 @@
 //! Package resolution/probing, ABS builds, the portageq shim, `--info`
 //! system info, and the @preserved-rebuild dependency check.
 //!
-//! Split out of main.rs — these are all "package operation" helpers that
+//! Split out of main.rs - these are all "package operation" helpers that
 //! main() dispatches into.
 
 use colored::Colorize;
@@ -77,12 +77,12 @@ pub(crate) fn status_colored(status: &str) -> String {
 
 /// Force the given packages to be flagged as explicitly installed via
 /// `pacman -D --asexplicit`. Used after AUR/ABS installs (where the
-/// install path — aura/makepkg — doesn't always leave the explicit bit
+/// install path - aura/makepkg - doesn't always leave the explicit bit
 /// set the way a plain `pacman -S` would) and by `--select`, so world.set
 /// membership and pacman's own bookkeeping never disagree.
 ///
 /// Best-effort: silently no-ops for names that aren't actually installed
-/// (e.g. `--select` on a package not yet pulled in) — that's an expected,
+/// (e.g. `--select` on a package not yet pulled in) - that's an expected,
 /// non-error case, not something worth warning about.
 pub(crate) fn mark_asexplicit(pkgs: &[String]) {
     let bare: Vec<String> = pkgs.iter()
@@ -102,7 +102,7 @@ pub(crate) fn mark_asexplicit(pkgs: &[String]) {
 /// Opposite of mark_asexplicit(): flags the given packages as
 /// installed-as-dependency via `pacman -D --asdeps`. Used by `--deselect`
 /// so a package dropped from world.set is no longer treated as something
-/// the user explicitly wants — it becomes eligible for `--depclean` /
+/// the user explicitly wants - it becomes eligible for `--depclean` /
 /// `pacman -Qtdq` orphan cleanup like any other transitive dependency.
 ///
 /// Same best-effort semantics as mark_asexplicit().
@@ -281,7 +281,7 @@ pub(crate) fn print_emerge_emerging(pkgs: &[PkgInfo]) {
 /// in place.
 ///
 /// `installed_infos` is built from `resolve_aur_split`/`probe_official`
-/// *before* the real install runs — for AUR targets specifically, that's
+/// *before* the real install runs - for AUR targets specifically, that's
 /// before `aura -A` does its git pull, so if upstream pushes a new
 /// PKGBUILD version between resolution and build (exactly what happens
 /// on a fast-moving -git-style package, or just unlucky timing), the
@@ -289,7 +289,7 @@ pub(crate) fn print_emerge_emerging(pkgs: &[PkgInfo]) {
 /// build finishes. pacman/aura install whatever the freshly-pulled
 /// PKGBUILD says regardless, so the display should catch up to that,
 /// not the other way around. Called right after a successful install,
-/// before `print_emerge_completed` — best-effort: a `pacman -Q` miss
+/// before `print_emerge_completed` - best-effort: a `pacman -Q` miss
 /// just leaves the planned version in place rather than erroring out.
 pub(crate) fn refresh_installed_versions(pkgs: &mut [PkgInfo]) {
     for p in pkgs.iter_mut() {
@@ -1042,7 +1042,7 @@ pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbo
         .collect();
 
     if installed.is_empty() {
-        println!(">>> No foreign (AUR/local) packages installed — nothing to upgrade.");
+        println!(">>> No foreign (AUR/local) packages installed - nothing to upgrade.");
         return true;
     }
 
@@ -1071,9 +1071,9 @@ pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbo
 
     if !not_in_aur.is_empty() {
         // Expected/routine for anything installed via --abs (ABS builds
-        // aren't in the AUR at all) — a quiet note, not a warning.
+        // aren't in the AUR at all) - a quiet note, not a warning.
         println!(
-            ">>> {} foreign package(s) not found in the AUR (likely --abs-built) — skipped: {}",
+            ">>> {} foreign package(s) not found in the AUR (likely --abs-built) - skipped: {}",
             not_in_aur.len(),
             not_in_aur.join(", ")
         );
@@ -1455,7 +1455,7 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
     let pkg_infos: Vec<PkgInfo> = pkgs.iter().filter_map(|pkg| {
         let bare = pkg.split('/').last().unwrap_or(pkg);
         if !validate_pkg(bare) || bare.contains('/') {
-            eprintln!(">>> Error: invalid package name '{}' — skipping", bare);
+            eprintln!(">>> Error: invalid package name '{}' - skipping", bare);
             return None;
         }
         let version = abs_get_version(bare);
@@ -1527,7 +1527,7 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
         let pkg_dir = build_base.join(&info.name);
 
         if !pkg_dir.starts_with(&build_base) {
-            eprintln!(">>> Error: suspicious path for '{}' — skipping", info.name);
+            eprintln!(">>> Error: suspicious path for '{}' - skipping", info.name);
             all_ok = false;
             continue;
         }
@@ -1553,7 +1553,7 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
         }
 
         // pkgctl clones straight into <build_base>/<pkg>/ with PKGBUILD at
-        // the top level — unlike the old asp/svntogit layout, there's no
+        // the top level - unlike the old asp/svntogit layout, there's no
         // trunk/ subdirectory to descend into.
         let build_dir = pkg_dir.clone();
 
@@ -1635,7 +1635,7 @@ pub(crate) fn portageq_shim(args: &[String]) {
             println!("arch");
         }
         "get_repo_path" => {
-            // args: eroot repo — return any existing dir
+            // args: eroot repo - return any existing dir
             println!("/var/db/pkg");
         }
         "get_repo_news_path" => {
@@ -1668,7 +1668,7 @@ pub(crate) fn portageq_shim(args: &[String]) {
                 print!("{}", String::from_utf8_lossy(&out.stdout));
             }
         }
-        // Unknown command — exit silently so fish doesn't crash
+        // Unknown command - exit silently so fish doesn't crash
         _ => {}
     }
 }
@@ -2122,7 +2122,7 @@ pub(crate) fn missing_via_pacman_t(deps: &[String]) -> Vec<String> {
 
 /// `@preserved-rebuild`: scan every installed package's declared
 /// dependencies, find the ones that aren't actually satisfied on the
-/// system, and offer to reinstall them (`aura -S`, i.e. official repos —
+/// system, and offer to reinstall them (`aura -S`, i.e. official repos -
 /// a dependency that vanished is essentially always a repo package).
 pub(crate) fn preserved_rebuild(pretend: bool, ask: bool) {
     println!("{} Checking installed packages for missing dependencies...", ">>>".green().bold());
