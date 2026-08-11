@@ -680,6 +680,30 @@ fn resolve_and_build_aur(
     building: &mut HashSet<String>,
     built: &mut HashMap<String, Vec<String>>,
 ) -> Option<Vec<String>> {
+    // Fast-path cache check BEFORE touching the filesystem at all: covers
+    // the common (non-split-package) case where `pkg` already equals a
+    // pkgbase we've already cloned+built earlier in this same run -- e.g.
+    // a diamond dependency, where two different top-level packages both
+    // depend on this one. Without this check we'd fall through to
+    // `clone_or_resolve()` below and try to `git clone` into
+    // `build_root/<pkgbase>` a second time, which already exists
+    // (populated by the earlier successful build) -- `git clone` refuses
+    // to clone into a non-empty directory, so that call fails, and
+    // because the AUR RPC lookup it falls back to returns the *same*
+    // name, `clone_or_resolve()` reports it as "not found in the AUR"
+    // even though it's sitting right there, already built.
+    //
+    // This doesn't cover the split-package case (requested child name
+    // differs from the cached pkgbase, e.g. two different split children
+    // of the same pkgbase requested by two different dependents) -- that
+    // still needs the real pkgbase from `clone_or_resolve()` below to
+    // find the cache entry, and by then the directory already exists.
+    // Rarer in practice than the plain diamond-dependency case, and
+    // pre-existing (not something this fast path makes worse).
+    if let Some(cached) = built.get(pkg) {
+        return Some(cached.clone());
+    }
+
     let Some((dir, pkgbase)) = crate::aur::clone_or_resolve(pkg, build_root) else {
         eprintln!("{} '{}' not found in the AUR", ">>> Error:".red().bold(), pkg);
         return None;
@@ -874,7 +898,28 @@ pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
     // those on the next run.
     let build_base = std::path::PathBuf::from(AUR_BUILD_BASE);
     if build_base.exists() {
-        let _ = std::fs::remove_dir_all(&build_base);
+        // Deliberately NOT `let _ = ...`: a failed wipe here used to be
+        // silently swallowed, leaving a stale per-pkgbase clone (e.g.
+        // `AUR_BUILD_BASE/setrixtui`) behind from a previous run.
+        // `create_dir_all` below then happily no-ops on the
+        // already-existing `build_base`, so nothing downstream notices
+        // -- until `clone_repo()`'s `git clone` into that now-occupied
+        // target dir fails (git refuses to clone into a non-empty
+        // directory), which `clone_or_resolve()` can't tell apart from a
+        // genuine "not on the AUR" and reports as exactly that. Surface
+        // the real problem here instead of that confusing three-frames-
+        // removed symptom.
+        if let Err(e) = std::fs::remove_dir_all(&build_base) {
+            eprintln!(
+                "{} could not clear stale build directory {}: {}",
+                ">>> Fatal:".red().bold(),
+                AUR_BUILD_BASE,
+                e
+            );
+            eprintln!("    remove it manually and re-run, e.g.:");
+            eprintln!("      {}", format!("sudo rm -rf {}", AUR_BUILD_BASE).cyan());
+            return false;
+        }
     }
     if std::fs::create_dir_all(&build_base).is_err() {
         eprintln!("{} could not create build directory {}", ">>> Fatal:".red().bold(), AUR_BUILD_BASE);
@@ -1289,7 +1334,19 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
     // wiping it doesn't force a VCS re-clone on the next run.
     let build_base = std::path::PathBuf::from(ABS_BUILD_BASE);
     if build_base.exists() {
-        let _ = std::fs::remove_dir_all(&build_base);
+        // See the matching AUR_BUILD_BASE wipe in aur_install() for why
+        // this can no longer silently swallow a failed removal.
+        if let Err(e) = std::fs::remove_dir_all(&build_base) {
+            eprintln!(
+                "{} could not clear stale build directory {}: {}",
+                ">>> Fatal:".red().bold(),
+                ABS_BUILD_BASE,
+                e
+            );
+            eprintln!("    remove it manually and re-run, e.g.:");
+            eprintln!("      {}", format!("sudo rm -rf {}", ABS_BUILD_BASE).cyan());
+            return false;
+        }
     }
     let mut all_ok = true;
 
