@@ -15,7 +15,6 @@ use std::process::{Command, Stdio};
 pub(crate) const AUR_BASE_URL: &str = "https://aur.archlinux.org";
 const AUR_RPC_INFO_URL: &str = "https://aur.archlinux.org/rpc/v5/info";
 const AUR_RPC_SEARCH_URL: &str = "https://aur.archlinux.org/rpc/v5/search";
-pub(crate) const CURL_BIN: &str = "/usr/bin/curl";
 pub(crate) const GIT_BIN: &str = "/usr/bin/git";
 /// AUR RPC caps `arg[]=` batches; stay comfortably under it.
 const RPC_INFO_BATCH: usize = 100;
@@ -106,16 +105,7 @@ pub(crate) fn clone_repo(pkgbase: &str, dest_root: &Path) -> Option<PathBuf> {
 /// network/parse failure or if the name doesn't exist on the AUR at all.
 pub(crate) fn lookup_pkgbase(pkg: &str) -> Option<String> {
     let url = format!("{}?v=5&type=info&arg[]={}", AUR_RPC_INFO_URL, urlencode(pkg));
-    let out = Command::new(CURL_BIN)
-        .args(["-sfL", "--max-time", "10", &url])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let body = String::from_utf8_lossy(&out.stdout);
+    let body = crate::http::get(&url, 10)?;
     extract_json_string_field(&body, "PackageBase")
 }
 
@@ -135,7 +125,7 @@ pub(crate) fn rpc_info(names: &[String]) -> Vec<AurPkgInfo> {
             url.push_str("&arg[]=");
             url.push_str(&urlencode(n));
         }
-        let Some(body) = curl_get(&url) else { continue };
+        let Some(body) = http_get(&url) else { continue };
         out.extend(parse_pkg_results(&body));
     }
     out
@@ -151,23 +141,14 @@ pub(crate) fn rpc_info(names: &[String]) -> Vec<AurPkgInfo> {
 pub(crate) fn rpc_search(term: &str, by_desc: bool) -> Vec<AurPkgInfo> {
     let by = if by_desc { "name-desc" } else { "name" };
     let url = format!("{}/{}?v=5&by={}", AUR_RPC_SEARCH_URL, urlencode(term), by);
-    match curl_get(&url) {
+    match http_get(&url) {
         Some(body) => parse_pkg_results(&body),
         None => Vec::new(),
     }
 }
 
-fn curl_get(url: &str) -> Option<String> {
-    let out = Command::new(CURL_BIN)
-        .args(["-sfL", "--max-time", "10", url])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+fn http_get(url: &str) -> Option<String> {
+    crate::http::get(url, 10)
 }
 
 /// Resolves a requested package name to (clone directory, real pkgbase).

