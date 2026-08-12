@@ -603,6 +603,140 @@ fn reset_terminal_colors_after_editor() {
     let _ = std::io::Write::flush(&mut std::io::stdout());
 }
 
+// ── --pkgbuild-view: show/diff PKGBUILD before building, offer edit ────────
+
+/// Outcome of a `--pkgbuild-view` prompt for one top-level package.
+pub(crate) struct PkgbuildViewOutcome {
+    /// Whether to continue building this package at all.
+    pub(crate) proceed: bool,
+    /// Whether the PKGBUILD was actually opened (and possibly modified)
+    /// in $EDITOR as part of this step - callers that need to re-verify/
+    /// regenerate `.SRCINFO` after an edit only do so when this is true.
+    pub(crate) edited: bool,
+}
+
+/// Where `--pkgbuild-view` keeps the last-shown copy of each pkgbase's
+/// PKGBUILD, purely so the *next* run can show a diff instead of the
+/// whole file again. Purely a UX cache, no security role (unlike the AUR
+/// scanner's own fetched-vs-clone comparison) - if `$HOME`/
+/// `$XDG_CACHE_HOME` can't be resolved, or `pkgbase` doesn't look like a
+/// safe filename, callers just fall back to showing the full file every
+/// time instead of failing.
+fn pkgbuild_view_cache_path(pkgbase: &str) -> Option<std::path::PathBuf> {
+    if pkgbase.is_empty() || pkgbase.contains(['/', '\\']) {
+        return None;
+    }
+    let base = if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
+        if xdg.is_empty() {
+            std::path::PathBuf::from(std::env::var("HOME").ok()?).join(".cache")
+        } else {
+            std::path::PathBuf::from(xdg)
+        }
+    } else {
+        std::path::PathBuf::from(std::env::var("HOME").ok()?).join(".cache")
+    };
+    Some(base.join("aura-emerge/pkgbuild-view").join(format!("{}.PKGBUILD", pkgbase)))
+}
+
+/// `--pkgbuild-view`: show the PKGBUILD about to be built for a
+/// directly-requested (top-level) package - a diff against the
+/// last-shown copy of this pkgbase when one's cached (see
+/// `pkgbuild_view_cache_path`), the full file otherwise - and ask for
+/// confirmation before the build starts. Declining offers to open it in
+/// $EDITOR right there instead of just failing the package outright.
+///
+/// Only ever called for a top-level target (never a recursively-pulled
+/// AUR-only dependency), same restriction `--edit` already applies and
+/// for the same reason: nobody wants a prompt for every transitive dep
+/// of the one thing they actually asked for.
+pub(crate) fn pkgbuild_view_step(pkgbase: &str, dir: &std::path::Path) -> PkgbuildViewOutcome {
+    let pkgbuild_path = dir.join("PKGBUILD");
+    let Ok(current) = fs::read_to_string(&pkgbuild_path) else {
+        eprintln!(
+            "{} could not read PKGBUILD for '{}' -- skipping --pkgbuild-view for it.",
+            ">>> Warning:".yellow().bold(),
+            pkgbase
+        );
+        return PkgbuildViewOutcome { proceed: true, edited: false };
+    };
+
+    let cache_path = pkgbuild_view_cache_path(pkgbase);
+    let previous = cache_path.as_ref().and_then(|p| fs::read_to_string(p).ok());
+
+    println!();
+    println!("{} PKGBUILD for {}:", ">>>".green().bold(), pkgbase.bold());
+    println!();
+    match &previous {
+        Some(prev) if *prev == current => {
+            println!("    ({})", "unchanged since last shown".dimmed());
+        }
+        Some(prev) => {
+            // Best-effort unified diff via the system `diff` binary
+            // (diffutils - already pulled in by base-devel on any machine
+            // that can build packages at all, so this isn't a new
+            // dependency in practice). Falls back to printing the whole
+            // current file if `diff` is missing or the call fails outright.
+            let tmp_prev = std::env::temp_dir()
+                .join(format!("aura-emerge-pkgbuild-view-{}-prev", std::process::id()));
+            let mut shown_diff = false;
+            if std::path::Path::new("/usr/bin/diff").exists() && fs::write(&tmp_prev, prev).is_ok() {
+                let diff_out = Command::new("/usr/bin/diff")
+                    .args(["-u", "--label", "PKGBUILD (previous)", "--label", "PKGBUILD (current)"])
+                    .arg(&tmp_prev)
+                    .arg(&pkgbuild_path)
+                    .output();
+                let _ = fs::remove_file(&tmp_prev);
+                if let Ok(out) = diff_out {
+                    if !out.stdout.is_empty() {
+                        print!("{}", String::from_utf8_lossy(&out.stdout));
+                        shown_diff = true;
+                    }
+                }
+            }
+            if !shown_diff {
+                println!("{}", current);
+            }
+        }
+        None => println!("{}", current),
+    }
+    println!();
+
+    // Update the cache with what was just shown, regardless of what the
+    // user decides below - the point is diffing against "last shown",
+    // not "last actually built".
+    if let Some(path) = &cache_path {
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::write(path, &current);
+    }
+
+    eprint!("{} Continue with this build? [Y/n] ", ">>>".yellow().bold());
+    io::stderr().flush().ok();
+    let answer = read_line_raw();
+    if answer.trim().is_empty() || answer.trim().eq_ignore_ascii_case("y") {
+        return PkgbuildViewOutcome { proceed: true, edited: false };
+    }
+
+    eprint!("{} Open it in $EDITOR instead of skipping it? [y/N] ", ">>>".yellow().bold());
+    io::stderr().flush().ok();
+    let answer2 = read_line_raw();
+    if !answer2.trim().eq_ignore_ascii_case("y") {
+        eprintln!("{} skipping '{}'.", ">>>".red().bold(), pkgbase);
+        return PkgbuildViewOutcome { proceed: false, edited: false };
+    }
+
+    let editor = std::env::var("EDITOR")
+        .or_else(|_| std::env::var("VISUAL"))
+        .unwrap_or_else(|_| "nano".to_string());
+    println!("{} Opening {} in {}...", ">>>".green().bold(), "PKGBUILD".bold(), editor.green().bold());
+    println!("{} Save and close the editor to continue building.", ">>>".yellow().bold());
+    Command::new(&editor).arg(&pkgbuild_path).status().ok();
+    reset_terminal_colors_after_editor();
+
+    PkgbuildViewOutcome { proceed: true, edited: true }
+}
+
 pub(crate) fn maybe_regen_srcinfo(dir: &std::path::Path, off_src_regen: bool) {
     if off_src_regen {
         eprintln!(
@@ -671,6 +805,7 @@ fn resolve_and_build_aur(
     unshare_net_build: bool,
     building: &mut HashSet<String>,
     built: &mut HashMap<String, Vec<String>>,
+    pkgbuild_view: bool,
 ) -> Option<Vec<String>> {
     // Fast-path cache check BEFORE touching the filesystem at all: covers
     // the common (non-split-package) case where `pkg` already equals a
@@ -736,6 +871,22 @@ fn resolve_and_build_aur(
         maybe_regen_srcinfo(&dir, off_src_regen);
     }
 
+    // --pkgbuild-view: show/diff the PKGBUILD and ask for confirmation
+    // before building, same top-level-only restriction as --edit above.
+    // Runs after --edit's own block so a view/diff reflects any edit that
+    // was just made, not the pre-edit content.
+    if pkgbuild_view && is_top_level {
+        let outcome = pkgbuild_view_step(&pkgbase, &dir);
+        if !outcome.proceed {
+            building.remove(&pkgbase);
+            return None;
+        }
+        if outcome.edited {
+            crate::security::verify_local_clone_or_rescan(&pkgbase, &dir, fetched.get(&pkgbase));
+            maybe_regen_srcinfo(&dir, off_src_regen);
+        }
+    }
+
     let srcinfo_path = dir.join(".SRCINFO");
 
     // Cheap integrity check: the `.SRCINFO` a package's own repo ships
@@ -784,7 +935,7 @@ fn resolve_and_build_aur(
             building.remove(&pkgbase);
             return None;
         }
-        match resolve_and_build_aur(dep, build_root, ask, skippgp, true, false, false, off_src_regen, isolation, deep, unshare_net_build, building, built) {
+        match resolve_and_build_aur(dep, build_root, ask, skippgp, true, false, false, off_src_regen, isolation, deep, unshare_net_build, building, built, false) {
             Some(mut tars) => aur_dep_tarballs.append(&mut tars),
             None => {
                 eprintln!(
@@ -889,7 +1040,7 @@ fn clear_build_base(dir: &std::path::Path) -> std::io::Result<()> {
 /// (`bwrap` -> unsandboxed `makepkg -si`, see `choose_build_isolation`)
 /// instead of shelling out to `aura -A`. `pkgctl` is not involved here
 /// at all -- only `--abs` ever calls it, and only for `repo clone`.
-pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, no_sandbox: bool, off_src_regen: bool, deep: bool, unshare_net_build: bool) -> bool {
+pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, no_sandbox: bool, off_src_regen: bool, deep: bool, unshare_net_build: bool, pkgbuild_view: bool) -> bool {
     if !std::path::Path::new("/usr/bin/git").exists() {
         eprintln!("{} required binary not found: /usr/bin/git", ">>> Fatal:".red().bold());
         return false;
@@ -996,7 +1147,7 @@ pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
             pkg.green().bold()
         );
         println!();
-        if resolve_and_build_aur(pkg, &build_base, ask, skippgp, oneshot, edit, true, off_src_regen, isolation, deep, unshare_net_build, &mut building, &mut built).is_none() {
+        if resolve_and_build_aur(pkg, &build_base, ask, skippgp, oneshot, edit, true, off_src_regen, isolation, deep, unshare_net_build, &mut building, &mut built, pkgbuild_view).is_none() {
             all_ok = false;
         }
     }
@@ -1097,7 +1248,7 @@ pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbo
     }
 
     let upgrade_names: Vec<String> = to_upgrade.iter().map(|(n, _, _)| n.clone()).collect();
-    aur_install(&upgrade_names, false, ask, false, skippgp, false, no_sandbox, off_src_regen, deep, unshare_net_build)
+    aur_install(&upgrade_names, false, ask, false, skippgp, false, no_sandbox, off_src_regen, deep, unshare_net_build, false)
 }
 
 /// Installs already-built `*.pkg.tar.*` files directly via `pacman -U`
@@ -1441,7 +1592,7 @@ fn legacy_makepkg_si(build_dir: &std::path::Path, ask: bool, oneshot: bool, skip
 
 /// Build and install packages from ABS via `pkgctl repo clone` + `makepkg -si`
 /// (or, by default, the bwrap-sandboxed equivalent -- see `build_with_sandbox`).
-pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, autopgp: bool, no_sandbox: bool, off_src_regen: bool, unshare_net_build: bool) -> bool {
+pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, autopgp: bool, no_sandbox: bool, off_src_regen: bool, unshare_net_build: bool, pkgbuild_view: bool) -> bool {
     for bin in &[PKGCTL_BIN, MAKEPKG_BIN] {
         if !std::path::Path::new(bin).exists() {
             eprintln!(">>> Fatal: required binary not found: {}", bin);
@@ -1583,6 +1734,23 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
             maybe_regen_srcinfo(&build_dir, off_src_regen);
         }
 
+        // --pkgbuild-view: same show/diff/confirm step as the AUR path,
+        // after --edit's own block so it reflects any edit just made.
+        // Every ABS package here is inherently "top-level" (no recursive
+        // ABS-dependency resolution the way AUR has), so no is_top_level
+        // gate is needed.
+        if pkgbuild_view {
+            let outcome = pkgbuild_view_step(&info.name, &build_dir);
+            if !outcome.proceed {
+                let _ = std::fs::remove_dir_all(&pkg_dir);
+                all_ok = false;
+                continue;
+            }
+            if outcome.edited {
+                maybe_regen_srcinfo(&build_dir, off_src_regen);
+            }
+        }
+
         // Proactively check/import PGP keys listed in validpgpkeys before
         // even attempting the build (unless --skippgp, which makes this
         // moot).
@@ -1613,6 +1781,104 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
     }
 
     all_ok
+}
+
+// ── --pkgbuild-inst: install an arbitrary local PKGBUILD checkout ──────────
+
+/// `--pkgbuild-inst <PATH>`: build and install a local PKGBUILD checkout
+/// through the normal emerge pipeline (scanner + bwrap sandbox) instead
+/// of a bare, unaudited `makepkg -si` - the same trust model as an AUR
+/// clone, just pointed at a directory the caller already has on disk
+/// instead of one we `git clone`d ourselves.
+///
+/// Unlike `aur_install`/`abs_install`, there's no AUR RPC lookup or
+/// `pkgctl repo clone` step: `path` is trusted to already be a real
+/// PKGBUILD checkout, and this function's only job is to run it through
+/// the same scan → (optional view/edit) → dependency-aware sandboxed
+/// build → install sequence every other install path uses.
+///
+/// Returns the `.SRCINFO`-declared `pkgname`(s) actually built on
+/// success (for the caller to record in world.set with the "Err/" prefix
+/// - see `world_set::pkg_world_entry`'s doc comment on why that prefix
+/// exists specifically for "a genuinely local build with no traceable
+/// origin"), or `None` on any failure.
+pub(crate) fn pkgbuild_local_install(
+    path: &std::path::Path,
+    ask: bool,
+    oneshot: bool,
+    skippgp: bool,
+    no_sandbox: bool,
+    off_src_regen: bool,
+    unshare_net_build: bool,
+    pkgbuild_view: bool,
+) -> Option<Vec<String>> {
+    let pkgbuild_path = path.join("PKGBUILD");
+    if !pkgbuild_path.is_file() {
+        eprintln!("{} no PKGBUILD found in {}", ">>> Error:".red().bold(), path.display());
+        return None;
+    }
+
+    // Cosmetic label for log messages only (matches the "pkgbase" role
+    // every other build path passes around) - the directory's own name,
+    // falling back to the literal path if that can't be extracted. Never
+    // used for dependency resolution or anything security-relevant; the
+    // real pkgname(s) come from .SRCINFO once that's generated below.
+    let label = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| path.display().to_string());
+
+    println!("{} Scanning {} for suspicious patterns...", ">>>".green().bold(), label.bold());
+    // Same scanner every AUR/ABS build runs through, pointed directly at
+    // this checkout. `prefetched: None` forces a full local scan - there
+    // was never a separate cgit fetch to compare against the way there is
+    // for an AUR clone, so nothing to diff.
+    crate::security::verify_local_clone_or_rescan(&label, path, None);
+
+    if pkgbuild_view {
+        let outcome = pkgbuild_view_step(&label, path);
+        if !outcome.proceed {
+            return None;
+        }
+        if outcome.edited {
+            crate::security::verify_local_clone_or_rescan(&label, path, None);
+        }
+    }
+
+    // No .SRCINFO shipped with an arbitrary local PKGBUILD in the common
+    // case - generate one now so build_with_sandbox can resolve
+    // dependencies statically instead of falling back to the unsandboxed
+    // legacy path. Only runs after the scan (and optional --pkgbuild-view
+    // edit + re-scan) above has already passed - see maybe_regen_srcinfo's
+    // doc comment for why that ordering is what makes running
+    // `--printsrcinfo` here reasonable at all.
+    if !path.join(".SRCINFO").exists() {
+        maybe_regen_srcinfo(path, off_src_regen);
+    }
+
+    if !skippgp {
+        ensure_pgp_keys(&pkgbuild_path, false);
+    }
+
+    let isolation = choose_build_isolation(no_sandbox);
+    let build_ok = match isolation {
+        BuildIsolation::Bwrap => build_with_sandbox(path, &label, ask, oneshot, skippgp, &[], unshare_net_build),
+        BuildIsolation::None => legacy_makepkg_si(path, ask, oneshot, skippgp),
+    };
+    if !build_ok {
+        eprintln!("{} build failed for {}", ">>> Error:".red().bold(), path.display());
+        return None;
+    }
+
+    // Prefer the real pkgname(s) declared in .SRCINFO (handles split
+    // packages correctly); fall back to the cosmetic directory-name label
+    // if for some reason .SRCINFO still isn't there after the regen
+    // attempt above (e.g. --off-src-regen with no pre-existing file).
+    Some(
+        crate::aur::srcinfo_pkgnames(&path.join(".SRCINFO"))
+            .unwrap_or_else(|| vec![label.clone()]),
+    )
 }
 
 // ── portageq shim ─────────────────────────────────────────────────────────────

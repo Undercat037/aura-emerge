@@ -66,6 +66,7 @@ See [GCC optimization flags](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options
 emerge neovim                              # official repos, falls back to AUR
 emerge neovim-git --aur                    # AUR only (no recursive AUR deps)
 emerge foo-git --aur --aur-deep            # also recursively build AUR-only deps (--aur-full)
+emerge foo-git --aur --aur-deep --sudoloop # same, but keep sudo warm through the whole recursive build
 emerge neovim --only-repos                 # official repos only, never touch AUR
 emerge neovim --abs                        # build from ABS (pkgctl), in bwrap sandbox
 emerge neovim --abs --no-sandbox           # ABS without sandbox (plain makepkg -si)
@@ -89,6 +90,10 @@ emerge --info                              # system info (Gentoo-style emerge --
 emerge --news                              # Arch Linux news, flags unread
 emerge --news 3                            # read item 3 in full
 emerge --news all                          # mark all as read
+emerge neovim-git --aur --edit --pkgbuild-view  # view/diff the PKGBUILD too, on top of --edit
+emerge neovim --abs --pkgbuild-view        # same for an ABS build
+emerge --pkgbuild-inst ~/src/my-pkg        # build+install a local PKGBUILD checkout (scanner + bwrap, like AUR/ABS)
+emerge --pkgbuild-inst ~/src/my-pkg --pkgbuild-view --skippgp
 emerge -s neovim                           # search (repos + AUR)
 emerge -s neovim --only-repos              # search official repos only
 emerge --searchdesc neovim                 # search by description
@@ -113,6 +118,8 @@ emerge --clean-source-cache                # wipe persistent VCS source cache (-
 emerge @preserved-rebuild                  # check installed packages for missing deps
 emerge @preserved-rebuild -p               # pretend: list only
 emerge @preserved-rebuild -a               # ask before each pacman prompt
+emerge --batchinstall pkgs.txt              # mass-install from a list file
+emerge --batchinstall pkgs.txt --aur -a     # combine with any other flag
 ```
 
 ## Sandbox
@@ -144,6 +151,39 @@ emerge --clean-source-cache   # delete that cache
 ```
 
 If `makepkg.conf` already sets `SRCDEST`, that value is used instead.
+
+## Batch install
+
+`--batchinstall <FILE>` reads a plain-text package list and folds it into the normal package list before anything runs - same format as a [custom set](#custom-sets) (one atom per line, `#` comments allowed), but from any path you give directly, no need to register it under `/etc/emerge/sets.d/` first.
+
+```
+# pkgs.txt
+neovim
+aur/visual-studio-code-bin
+firefox
+```
+
+```bash
+emerge --batchinstall pkgs.txt
+```
+
+Since it's folded in alongside `cli.packages`, it combines with every other flag exactly like typed-out names would (`-p`, `-a`, `--aur`, `--abs`, `--only-repos`, ...).
+
+## PKGBUILD review
+
+`--pkgbuild-view` shows the PKGBUILD about to be built right before the build starts, and asks for confirmation - a diff against the last-shown copy of that pkgbase when one's cached under `~/.cache/aura-emerge/pkgbuild-view/`, the full file the first time. Declining offers to open it in `$EDITOR` right there instead of just skipping the package. Combines with `--edit` (which runs first, so the view/diff reflects whatever you just edited). Applies to `--aur`/plain AUR-fallback installs and `--abs`, always only for a directly-requested package - never for a recursively-pulled-in AUR dependency, and never for a batch path (`@world` provisioning, `-u`, `--undo`).
+
+```bash
+emerge neovim-git --aur --pkgbuild-view
+emerge neovim --abs --edit --pkgbuild-view   # edit first, then view/diff the result
+```
+
+`--pkgbuild-inst <PATH>` builds and installs an arbitrary local PKGBUILD checkout through the same pipeline as an AUR/ABS install - scanner, then the bwrap sandbox - instead of a bare, unaudited `makepkg -si`. `PATH` must contain a `PKGBUILD`; if there's no `.SRCINFO` yet, one is generated (`makepkg --printsrcinfo`, same as `--edit` does) so dependencies resolve statically. Combines with `--pkgbuild-view`, `-a`/`--ask`, `-1`/`--oneshot`, `--skippgp`, `--no-sandbox`, `--unshare-net-build`, `--off-src-regen`; not compatible with any package/`@set` argument or `--aur`/`--abs`. Recorded in `world.set` with the `Err/` prefix (source unknown - see [world.set](#worldset)) unless `-1`/`--oneshot` is also given.
+
+```bash
+emerge --pkgbuild-inst ~/src/my-pkg
+emerge --pkgbuild-inst ~/src/my-pkg --pkgbuild-view --skippgp
+```
 
 ## @preserved-rebuild
 
@@ -239,6 +279,7 @@ AUR and ABS builds are additionally constrained by the [bwrap sandbox](#sandbox)
 | `-c` | Remove orphans (depclean) |
 | `-p` | Pretend (dry run) |
 | `-a` | Ask before acting |
+| `--sudoloop` | Keep sudo timestamp warm for the whole run |
 | `-1` | Install as dependency (oneshot) |
 | `-v` | Verbose output |
 | `-n` | Do not reinstall if present (noreplace) |
@@ -251,6 +292,8 @@ AUR and ABS builds are additionally constrained by the [bwrap sandbox](#sandbox)
 | `--skippgp` | Skip PGP checks (ABS) |
 | `--autopgp` | Auto-import missing PGP keys (ABS) |
 | `--edit` | Edit PKGBUILD before building; regenerates `.SRCINFO` after save |
+| `--pkgbuild-view` | Show/diff PKGBUILD, confirm before building (offers `$EDITOR` on decline) |
+| `--pkgbuild-inst <PATH>` | Build+install a local PKGBUILD checkout (scanner + bwrap) |
 | `--off-src-regen` | With `--edit` - do not regenerate `.SRCINFO` |
 | `--sync` | Sync package databases |
 | `--refresh` | Force `-Syy` (with `--sync` or `-u`) |
@@ -270,6 +313,7 @@ AUR and ABS builds are additionally constrained by the [bwrap sandbox](#sandbox)
 | `--skipfirst` | Skip first package on resume |
 | `--undo` | Undo last install/unmerge |
 | `--clean-source-cache` | Wipe persistent VCS source cache |
+| `--batchinstall <FILE>` | Mass-install from a package list file |
 | `--list-sets` | List available `@sets` |
 | `-h` / `--help` | Help |
 | `-V` / `--version` | Version |
