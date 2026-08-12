@@ -231,6 +231,21 @@ struct Cli {
     #[arg(short = 'a', long = "ask")]
     ask: bool,
 
+    /// Keep the sudo timestamp cache warm for the whole run, so a long
+    /// operation (a big --aur-deep tree, `-u @world`, ...) only ever
+    /// prompts for your password once, up front, instead of stalling
+    /// unattended partway through the next `pacman -S`/`-U` once the
+    /// timestamp expires. Runs `sudo -v` once synchronously before
+    /// anything else (so the prompt happens now, cleanly, not
+    /// interleaved with build output later), then refreshes it in the
+    /// background every 60s for the rest of the process's lifetime.
+    /// Purely a convenience - every individual `sudo`-prefixed command
+    /// this program runs is unchanged either way, and if the timestamp
+    /// does lapse for any reason (system suspend, sudo config change),
+    /// that one command just prompts again as normal.
+    #[arg(long = "sudoloop")]
+    sudoloop: bool,
+
     /// Install as dependency (no world.set)
     #[arg(short = '1', long = "oneshot")]
     oneshot: bool,
@@ -327,6 +342,32 @@ struct Cli {
     /// before. Has no effect without `--edit`.
     #[arg(long = "off-src-regen")]
     off_src_regen: bool,
+
+    /// Show the PKGBUILD about to be built and ask for confirmation
+    /// before the build starts - a diff against the last-shown copy of
+    /// this pkgbase when one's cached (~/.cache/aura-emerge/pkgbuild-view/),
+    /// the full file the first time. Declining offers to open it in
+    /// $EDITOR right there instead of just skipping the package outright
+    /// (combines naturally with --edit, which runs first if both are
+    /// set, so a view/diff after --edit reflects the edit you just made).
+    /// Same top-level-only restriction as --edit: never fires for a
+    /// recursively-pulled-in AUR dependency, and doesn't apply to batch
+    /// paths (@world provisioning, -u).
+    #[arg(long = "pkgbuild-view")]
+    pkgbuild_view: bool,
+
+    /// Build and install an arbitrary local PKGBUILD checkout through the
+    /// normal emerge pipeline (scanner + bwrap sandbox) instead of a bare
+    /// `makepkg -i`. PATH must contain a PKGBUILD. Combines with
+    /// --pkgbuild-view, --skippgp, --no-sandbox, --unshare-net-build,
+    /// --off-src-regen, -a/--ask, and -1/--oneshot exactly like a normal
+    /// install; not compatible with any package/@set argument, --aur,
+    /// or --abs (those name something to resolve elsewhere, whereas this
+    /// already points straight at a checkout on disk). Recorded in
+    /// world.set with the "Err/" prefix (source unknown - see world.set's
+    /// own doc comment) unless --oneshot is also given.
+    #[arg(long = "pkgbuild-inst", value_name = "PATH")]
+    pkgbuild_inst: Option<String>,
 
     /// Verbose output / detailed info in search mode (-sv = pacman -Si / AUR info)
     #[arg(short = 'v', long = "verbose")]
@@ -443,6 +484,17 @@ struct Cli {
     /// ~/.cache).
     #[arg(long = "clean-source-cache")]
     clean_source_cache: bool,
+
+    /// Mass-install from a plain-text list file: one package atom per
+    /// line, blank lines and '#' comments ignored - same format as a
+    /// custom set (`/etc/emerge/sets.d/<name>.set`), except this reads
+    /// from an arbitrary path you give directly instead of a fixed
+    /// directory, so it doesn't need to be pre-registered as a `@<name>`
+    /// set first. Entries are folded into the normal package list before
+    /// any action runs, so `-p`/`-a`/`--aur`/`--abs`/etc. all apply to
+    /// the whole batch exactly as if you'd typed every name by hand.
+    #[arg(long = "batchinstall", value_name = "FILE")]
+    batchinstall: Option<String>,
 
     // ── Gentoo compat flags (accepted silently, no-op) ──────────────────────
 
@@ -679,6 +731,43 @@ fn build_resume_args(cli: &Cli, target_pkgs: &[String], has_world: bool) -> Vec<
     }
     args.extend(target_pkgs.iter().cloned());
     args
+}
+
+// ── --sudoloop: keep the sudo timestamp cache warm ─────────────────────────
+
+/// Prime sudo synchronously (so the one password prompt happens now,
+/// before any other output) then spawn a background thread that refreshes
+/// the timestamp (`sudo -v`, no output, no prompt expected) every 60s for
+/// as long as the process lives. Fire-and-forget: the thread is simply
+/// killed along with every other thread whenever the process exits (this
+/// codebase already leans on plain `std::process::exit()` throughout, so
+/// there's no graceful-shutdown convention to hook into, and none is
+/// needed here - a `sudo -v` that never gets to run one more time changes
+/// nothing).
+///
+/// Returns false (and prints nothing itself - caller decides how loud to
+/// be) if the initial `sudo -v` fails, e.g. wrong password or sudoers
+/// denies it outright, so the caller can warn and continue without the
+/// loop rather than silently pretending it's active.
+fn start_sudoloop() -> bool {
+    let primed = Command::new(SUDO_BIN)
+        .arg("-v")
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !primed {
+        return false;
+    }
+    std::thread::spawn(|| loop {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        let _ = Command::new(SUDO_BIN)
+            .arg("-v")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    });
+    true
 }
 
 // ── Binary existence check ────────────────────────────────────────────────────
@@ -936,6 +1025,65 @@ fn run() -> anyhow::Result<()> {
 
     check_binaries();
 
+    if cli.sudoloop {
+        if !start_sudoloop() {
+            eprintln!(">>> Warning: sudo -v failed; continuing without --sudoloop.");
+        }
+    }
+
+    // --pkgbuild-inst <PATH>: a standalone action, same spirit as --news/
+    // --list-sets above but *after* check_binaries()/--sudoloop since it
+    // ends in a real `pacman -U` and needs sudo. Doesn't mix with named
+    // packages/@sets or --aur/--abs (those name something to *resolve*
+    // elsewhere; this already points straight at a checkout on disk).
+    if let Some(path_str) = &cli.pkgbuild_inst {
+        if !cli.packages.is_empty() {
+            eprintln!(">>> Error: --pkgbuild-inst does not take package names or @sets.");
+            std::process::exit(1);
+        }
+        if cli.aur || cli.abs {
+            eprintln!(">>> Error: --pkgbuild-inst is not compatible with --aur/--abs.");
+            std::process::exit(1);
+        }
+        let path = std::path::PathBuf::from(path_str);
+        if cli.pretend {
+            println!(
+                "{} Would scan and build {} (--pretend: not building).",
+                ">>>".green().bold(),
+                path.display()
+            );
+            return Ok(());
+        }
+        return match pkgbuild_local_install(
+            &path,
+            cli.ask,
+            cli.oneshot,
+            cli.skippgp,
+            cli.no_sandbox,
+            cli.off_src_regen,
+            cli.unshare_net_build,
+            cli.pkgbuild_view,
+        ) {
+            Some(names) => {
+                if !cli.oneshot {
+                    mark_asexplicit(&names);
+                    // "Err/" - a genuinely local build with no traceable
+                    // origin (see world.set's own doc comment on that
+                    // prefix); there's no AUR/ABS source to record here.
+                    if let Err(e) = add_to_world_set(&names, Some("Err")) {
+                        eprintln!(
+                            ">>> Warning: package(s) installed but world.set was not updated: {:#}",
+                            e
+                        );
+                    }
+                }
+                println!("{} Installed: {}", ">>>".green().bold(), names.join(", "));
+                Ok(())
+            }
+            None => std::process::exit(1),
+        };
+    }
+
     if cli.aur && cli.only_repos {
         eprintln!(">>> Error: --aur and --only-repos are mutually exclusive.");
         std::process::exit(1);
@@ -996,6 +1144,25 @@ fn run() -> anyhow::Result<()> {
             .collect::<Vec<_>>(),
     );
     target_pkgs.extend(custom_set_pkgs);
+
+    // --batchinstall <FILE>: fold in a one-off package list from an
+    // arbitrary path, same format/validation as a custom set (see
+    // world_set::read_batch_file). Folded in here, before any action
+    // branches below, so it behaves exactly like packages typed by hand.
+    if let Some(path) = &cli.batchinstall {
+        match read_batch_file(path) {
+            Ok(pkgs) => {
+                if pkgs.is_empty() {
+                    eprintln!(">>> Warning: batch file is empty (no valid entries): {}", path);
+                }
+                target_pkgs.extend(pkgs);
+            }
+            Err(e) => {
+                eprintln!(">>> Error: {:#}", e);
+                std::process::exit(1);
+            }
+        }
+    }
 
     // 0. @preserved-rebuild: a standalone action, checked before search/
     //    install so `emerge @preserved-rebuild` (with no other packages)
@@ -1326,7 +1493,7 @@ fn run() -> anyhow::Result<()> {
                     // aur_install() always leaves the explicit bit set on
                     // success (see its doc comment) - no separate
                     // mark_asexplicit() call needed the way `aura -A` required.
-                    if aur_install(&names, false, cli.ask, false, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen, cli.aur_deep, cli.unshare_net_build) {
+                    if aur_install(&names, false, cli.ask, false, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen, cli.aur_deep, cli.unshare_net_build, false) {
                         if let Err(e) = add_to_world_set(&names, Some("aur")) {
                             eprintln!(">>> Warning: package(s) reinstalled but world.set was not updated: {:#}", e);
                         }
@@ -1696,7 +1863,7 @@ fn run() -> anyhow::Result<()> {
         let mut not_found: Vec<String> = Vec::new();
 
         if cli.abs {
-            success = abs_install(&target_pkgs, cli.pretend, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.autopgp, cli.no_sandbox, cli.off_src_regen, cli.unshare_net_build);
+            success = abs_install(&target_pkgs, cli.pretend, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.autopgp, cli.no_sandbox, cli.off_src_regen, cli.unshare_net_build, cli.pkgbuild_view);
         } else if cli.aur {
             let (pkg_infos, missing_aur) = resolve_aur_split(&target_pkgs);
             not_found = missing_aur;
@@ -1712,7 +1879,7 @@ fn run() -> anyhow::Result<()> {
             print_emerge_emerging(&pkg_infos);
             let found_names: Vec<String> = pkg_infos.iter().map(|p| p.name.clone()).collect();
             scan_aur_pkgbuilds_or_abort(&found_names);
-            success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen, cli.aur_deep, cli.unshare_net_build);
+            success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen, cli.aur_deep, cli.unshare_net_build, cli.pkgbuild_view);
             if success { installed_infos = pkg_infos; }
         } else {
             // Probe official repos in a way that's safe against partial matches:
@@ -1792,7 +1959,7 @@ fn run() -> anyhow::Result<()> {
                 print_emerge_emerging(&pkg_infos);
                 let found_names: Vec<String> = pkg_infos.iter().map(|p| p.name.clone()).collect();
                 scan_aur_pkgbuilds_or_abort(&found_names);
-                success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen, cli.aur_deep, cli.unshare_net_build);
+                success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen, cli.aur_deep, cli.unshare_net_build, cli.pkgbuild_view);
                 if success { installed_infos = pkg_infos; }
             } else {
                 // Mixed case: some packages are official, some need the AUR.
@@ -1828,7 +1995,7 @@ fn run() -> anyhow::Result<()> {
                 if !aur_infos.is_empty() {
                     let aur_found_names: Vec<String> = aur_infos.iter().map(|p| p.name.clone()).collect();
                     scan_aur_pkgbuilds_or_abort(&aur_found_names);
-                    let aur_success = aur_install(&aur_found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen, cli.aur_deep, cli.unshare_net_build);
+                    let aur_success = aur_install(&aur_found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen, cli.aur_deep, cli.unshare_net_build, cli.pkgbuild_view);
                     if aur_success {
                         installed_infos.extend(aur_infos);
                     } else {

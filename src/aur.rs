@@ -221,6 +221,24 @@ pub(crate) fn srcinfo_pkgbase(path: &Path) -> Option<String> {
     })
 }
 
+/// Every `pkgname = ...` value declared in a `.SRCINFO` file - usually
+/// one, but a split package declares several. Used by `--pkgbuild-inst`
+/// to figure out what to record in world.set after a local build, since
+/// there's no AUR/ABS resolution step to have already produced that name
+/// list the way there is for every other install path.
+pub(crate) fn srcinfo_pkgnames(path: &Path) -> Option<Vec<String>> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let names: Vec<String> = text
+        .lines()
+        .filter_map(|l| {
+            let (key, value) = l.trim().split_once('=')?;
+            (key.trim() == "pkgname").then(|| value.trim().to_string())
+        })
+        .filter(|n| !n.is_empty())
+        .collect();
+    if names.is_empty() { None } else { Some(names) }
+}
+
 fn urlencode(s: &str) -> String {
     // AUR package names are restricted to alnum + a small punctuation set
     // (-, _, ., @, +) -- none of that needs escaping in a query string, so

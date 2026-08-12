@@ -122,6 +122,37 @@ pub(crate) fn read_custom_set(name: &str) -> Result<Vec<String>> {
     Ok(pkgs)
 }
 
+/// Read a `--batchinstall <FILE>` list: same format as a custom set (one
+/// package atom per line, blank lines and '#' comments ignored, each
+/// entry run through validate_pkg()) but from an arbitrary caller-given
+/// path instead of a fixed SETS_DIR entry - so it works for a one-off
+/// list that was never registered as `@<name>`.
+pub(crate) fn read_batch_file(path: &str) -> Result<Vec<String>> {
+    if !is_safe_path(path) {
+        bail!("{} is a symlink - refusing to read", path);
+    }
+
+    let file = fs::File::open(path)
+        .with_context(|| format!("could not open batch file: {}", path))?;
+
+    let pkgs: Vec<String> = io::BufReader::new(file)
+        .lines()
+        .map_while(io::Result::ok)
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter(|l| {
+            if validate_pkg(l) {
+                true
+            } else {
+                eprintln!(">>> Warning: invalid entry in {} (skipped): {}", path, l);
+                false
+            }
+        })
+        .collect();
+
+    Ok(pkgs)
+}
+
 /// List every custom set under SETS_DIR (bare names, no ".set", no '@'),
 /// sorted. Used by `--list-sets` and by shell completion for `@<TAB>`.
 pub(crate) fn list_custom_sets() -> Vec<String> {
@@ -321,7 +352,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
         // (see packages.rs) and, unlike the old `aura -A`, always leaves
         // the explicit bit set on success - no separate mark_asexplicit()
         // call needed here the way the old `aura -A` path required.
-        if !aur_install(&aur_missing, false, ask, false, false, false, no_sandbox, off_src_regen, deep, unshare_net_build) {
+        if !aur_install(&aur_missing, false, ask, false, false, false, no_sandbox, off_src_regen, deep, unshare_net_build, false) {
             overall_ok = false;
             eprintln!(">>> Warning: some AUR package(s) failed to install.");
         }
@@ -353,7 +384,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
             ">>>".green().bold(), resolved_aur.len()
         );
         scan_aur_pkgbuilds_or_abort(&resolved_aur);
-        if aur_install(&resolved_aur, false, ask, false, false, false, no_sandbox, off_src_regen, deep, unshare_net_build) {
+        if aur_install(&resolved_aur, false, ask, false, false, false, no_sandbox, off_src_regen, deep, unshare_net_build, false) {
             if let Err(e) = add_to_world_set(&resolved_aur, Some("aur")) {
                 eprintln!(">>> Warning: package(s) installed but world.set was not updated: {:#}", e);
             }
