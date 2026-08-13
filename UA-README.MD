@@ -73,12 +73,12 @@ emerge neovim --abs --skippgp              # ABS, пропустити пере�
 emerge neovim --abs --autopgp              # ABS, автоімпорт відсутніх PGP-ключів
 emerge neovim --abs --edit                 # ABS, редагувати PKGBUILD ($EDITOR), оновлює .SRCINFO
 emerge neovim-git --aur --edit             # AUR, редагувати PKGBUILD, оновлює .SRCINFO
-emerge neovim-git --aur --edit --off-src-regen  # редагувати без оновлення .SRCINFO
+emerge neovim-git --aur --edit --skip-srcinfo-regen  # редагувати без оновлення .SRCINFO
 emerge neovim-git --aur --unshare-net-build     # збірка без мережі на етапі build()/check()/package()
 emerge -c                                  # видалити сиріт (depclean)
 emerge -C neovim                           # видалити пакунок (unmerge)
 emerge @world                              # provision: встановити відсутнє з world.set
-emerge @world --err-inst                   # також спробувати записи Err/ звичайним шляхом
+emerge @world --err-install                   # також спробувати записи Err/ звичайним шляхом
 emerge -u @world                           # повне оновлення (репо + AUR); world.set не читається
 emerge -u @world --refresh                 # оновлення з примусовим -Syy
 emerge --sync                              # синхронізувати бази
@@ -91,10 +91,10 @@ emerge --news 3                            # прочитати новину 3
 emerge --news all                          # позначити всі як прочитані
 emerge neovim-git --aur --edit --pkgbuild-view  # перегляд/diff PKGBUILD поверх --edit
 emerge neovim --abs --pkgbuild-view        # те саме для ABS
-emerge --pkgbuild-inst ~/src/my-pkg        # зібрати+встановити локальний checkout PKGBUILD (сканер + bwrap, як AUR/ABS)
-emerge --pkgbuild-inst ~/src/my-pkg --pkgbuild-view --skippgp
+emerge --install-pkgbuild ~/src/my-pkg        # зібрати+встановити локальний checkout PKGBUILD (сканер + bwrap, як AUR/ABS)
+emerge --install-pkgbuild ~/src/my-pkg --pkgbuild-view --skippgp
 emerge --scan neovim-git --aur              # лише аудит, без збірки
-emerge --pkgbuild-inst ~/src/my-pkg --scan  # те саме для локального checkout
+emerge --install-pkgbuild ~/src/my-pkg --scan  # те саме для локального checkout
 emerge -u --devel                           # повне оновлення + перевірка upstream для -git/-hg/-svn/-bzr
 emerge --check-devel                        # лише звіт, які devel-пакунки зрушили upstream
 emerge -s neovim                           # пошук (репо + AUR)
@@ -181,18 +181,18 @@ emerge neovim-git --aur --pkgbuild-view
 emerge neovim --abs --edit --pkgbuild-view   # спочатку edit, потім view/diff результату
 ```
 
-`--pkgbuild-inst <PATH>` збирає і встановлює довільний локальний checkout PKGBUILD через той самий пайплайн, що й AUR/ABS - сканер, потім пісочниця bwrap - замість «голого» `makepkg -si`. У `PATH` має бути `PKGBUILD`; якщо немає `.SRCINFO`, він генерується (`makepkg --printsrcinfo`, як після `--edit`), щоб залежності розв’язувались статично. Поєднується з `--pkgbuild-view`, `-a`/`--ask`, `-1`/`--oneshot`, `--skippgp`, `--no-sandbox`, `--unshare-net-build`, `--off-src-regen`; несумісний з іменами пакунків/`@set` або `--aur`/`--abs`. У `world.set` записується з префіксом `Err/` (джерело невідоме - див. [world.set](#worldset)), якщо не задано `-1`/`--oneshot`.
+`--install-pkgbuild <PATH>` збирає і встановлює довільний локальний checkout PKGBUILD через той самий пайплайн, що й AUR/ABS - сканер, потім пісочниця bwrap - замість «голого» `makepkg -si`. У `PATH` має бути `PKGBUILD`; якщо немає `.SRCINFO`, він генерується (`makepkg --printsrcinfo`, як після `--edit`), щоб залежності розв’язувались статично. Поєднується з `--pkgbuild-view`, `-a`/`--ask`, `-1`/`--oneshot`, `--skippgp`, `--no-sandbox`, `--unshare-net-build`, `--skip-srcinfo-regen`; несумісний з іменами пакунків/`@set` або `--aur`/`--abs`. У `world.set` записується з префіксом `Err/` (джерело невідоме - див. [world.set](#worldset)), якщо не задано `-1`/`--oneshot`.
 
 ```bash
-emerge --pkgbuild-inst ~/src/my-pkg
-emerge --pkgbuild-inst ~/src/my-pkg --pkgbuild-view --skippgp
+emerge --install-pkgbuild ~/src/my-pkg
+emerge --install-pkgbuild ~/src/my-pkg --pkgbuild-view --skippgp
 ```
 
-`--scan` перевіряє PKGBUILD (+ `.install`) без збірки й встановлення - тягне з cgit для імені AUR-пакунка або читає локальний checkout з `--pkgbuild-inst <PATH> --scan`. Той самий звіт, що й звичайний pre-build scan, без запиту `Continue anyway?` (немає куди продовжувати). Ненульовий код виходу при будь-якій знахідці - зручно в скриптах. Поки що не підключено до `--abs`.
+`--scan` перевіряє PKGBUILD (+ `.install`) без збірки й встановлення - тягне з cgit для імені AUR-пакунка або читає локальний checkout з `--install-pkgbuild <PATH> --scan`. Той самий звіт, що й звичайний pre-build scan, без запиту `Continue anyway?` (немає куди продовжувати). Ненульовий код виходу при будь-якій знахідці - зручно в скриптах. Поки що не підключено до `--abs`.
 
 ```bash
 emerge --scan neovim-git --aur
-emerge --pkgbuild-inst ~/src/my-pkg --scan
+emerge --install-pkgbuild ~/src/my-pkg --scan
 ```
 
 ## Перевірка upstream devel-пакунків
@@ -316,9 +316,9 @@ emerge --news all    # позначити всі як прочитані
 | `--autopgp` | Автоімпорт відсутніх PGP-ключів (ABS) |
 | `--edit` | Редагувати PKGBUILD перед збіркою; після збереження оновлює `.SRCINFO` |
 | `--pkgbuild-view` | Показати/diff PKGBUILD, підтвердити перед збіркою (при відмові пропонує `$EDITOR`) |
-| `--pkgbuild-inst <PATH>` | Зібрати+встановити локальний checkout PKGBUILD (сканер + bwrap) |
-| `--scan` | Лише аудит PKGBUILD/.install, без збірки/встановлення (AUR або `--pkgbuild-inst`) |
-| `--off-src-regen` | Разом з `--edit` - не оновлювати `.SRCINFO` |
+| `--install-pkgbuild <PATH>` | Зібрати+встановити локальний checkout PKGBUILD (сканер + bwrap) |
+| `--scan` | Лише аудит PKGBUILD/.install, без збірки/встановлення (AUR або `--install-pkgbuild`) |
+| `--skip-srcinfo-regen` | Разом з `--edit` - не оновлювати `.SRCINFO` |
 | `--sync` | Синхронізувати бази |
 | `--refresh` | Примусово `-Syy` (з `--sync` або `-u`) |
 | `--info` | Інформація про систему |
@@ -332,7 +332,7 @@ emerge --news all    # позначити всі як прочитані
 | `--regen-sets <SET>` | Оновити префікси для одного набору |
 | `--regen-sort` | Разом з `--regen-sets` - відсортувати файл |
 | `--regen-world-from-explicit` | Міграція: наповнити world.set з `pacman -Qeq` |
-| `--err-inst` | При `@world` також пробувати записи `Err/` |
+| `--err-install` | При `@world` також пробувати записи `Err/` |
 | `--resume` | Продовжити перерваний процес |
 | `--skipfirst` | Пропустити перший пакунок при resume |
 | `--undo` | Скасувати останнє встановлення/видалення |

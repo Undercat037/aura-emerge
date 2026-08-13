@@ -197,7 +197,7 @@ pub(crate) fn list_custom_sets() -> Vec<String> {
 /// - An `Err/` entry means the package *is* installed, just from a
 ///   source pacman/aura couldn't identify (e.g. built by hand outside
 ///   aura-emerge). That's a bit more suspect, so by default these are
-///   only listed; pass `err_inst` (the CLI's `--err-inst`) to have them
+///   only listed; pass `err_install` (the CLI's `--err-install`) to have them
 ///   go through the same normal-resolution path instead.
 ///
 /// Whatever gets installed this way has its world.set entry corrected to
@@ -205,7 +205,7 @@ pub(crate) fn list_custom_sets() -> Vec<String> {
 ///
 /// Returns Ok(true) if everything resolvable installed cleanly (or this
 /// was a --pretend run), Ok(false) if something failed.
-pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, err_inst: bool, no_sandbox: bool, off_src_regen: bool, deep: bool, unshare_net_build: bool) -> Result<bool> {
+pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, err_install: bool, no_sandbox: bool, skip_srcinfo_regen: bool, deep: bool, unshare_net_build: bool) -> Result<bool> {
     println!("{} Provisioning system from world.set...", ">>>".green().bold());
 
     if !is_safe_path(WORLD_SET_FILE) {
@@ -249,7 +249,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
     let mut official_missing: Vec<String> = Vec::new();
     let mut aur_missing: Vec<String> = Vec::new();
     let mut abs_missing: Vec<String> = Vec::new();
-    // Installed from somewhere unidentifiable (Err/) - only listed unless --err-inst.
+    // Installed from somewhere unidentifiable (Err/) - only listed unless --err-install.
     let mut err_missing: Vec<String> = Vec::new();
     // No prefix at all (not installed, no repo found when written) - always retried.
     let mut bare_missing: Vec<String> = Vec::new();
@@ -277,9 +277,9 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
     }
 
     // Bare entries always get a normal-resolution attempt; Err/ entries
-    // only join in when --err-inst is passed.
+    // only join in when --err-install is passed.
     let mut to_resolve: Vec<String> = bare_missing.clone();
-    if err_inst {
+    if err_install {
         to_resolve.extend(err_missing.iter().cloned());
     }
 
@@ -294,8 +294,8 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
         resolved_aur = missing;
     }
 
-    // Err/ entries left un-attempted this run (only relevant without --err-inst).
-    let unresolved_listed: Vec<String> = if err_inst { Vec::new() } else { err_missing.clone() };
+    // Err/ entries left un-attempted this run (only relevant without --err-install).
+    let unresolved_listed: Vec<String> = if err_install { Vec::new() } else { err_missing.clone() };
 
     let total = official_missing.len() + aur_missing.len() + abs_missing.len()
         + unresolved_listed.len() + resolved_official.len() + resolved_aur.len();
@@ -322,7 +322,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
         println!("[{} {:<4}] {} (built from ABS - needs `emerge {} --abs`)", "ebuild".green(), "N".yellow().bold(), p.yellow().bold(), p);
     }
     for p in &unresolved_listed {
-        println!("[{} {:<4}] {} (installed from an unknown source - retry with --err-inst, or install manually)", "ebuild".green(), "N".red().bold(), p.red().bold());
+        println!("[{} {:<4}] {} (installed from an unknown source - retry with --err-install, or install manually)", "ebuild".green(), "N".red().bold(), p.red().bold());
     }
     println!();
     println!("{}: {} package(s)", "Total".bold(), total);
@@ -352,7 +352,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
         // (see packages.rs) and, unlike the old `aura -A`, always leaves
         // the explicit bit set on success - no separate mark_asexplicit()
         // call needed here the way the old `aura -A` path required.
-        if !aur_install(&aur_missing, false, ask, false, false, false, no_sandbox, off_src_regen, deep, unshare_net_build, false) {
+        if !aur_install(&aur_missing, false, ask, false, false, false, no_sandbox, skip_srcinfo_regen, deep, unshare_net_build, false) {
             overall_ok = false;
             eprintln!(">>> Warning: some AUR package(s) failed to install.");
         }
@@ -384,7 +384,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
             ">>>".green().bold(), resolved_aur.len()
         );
         scan_aur_pkgbuilds_or_abort(&resolved_aur);
-        if aur_install(&resolved_aur, false, ask, false, false, false, no_sandbox, off_src_regen, deep, unshare_net_build, false) {
+        if aur_install(&resolved_aur, false, ask, false, false, false, no_sandbox, skip_srcinfo_regen, deep, unshare_net_build, false) {
             if let Err(e) = add_to_world_set(&resolved_aur, Some("aur")) {
                 eprintln!(">>> Warning: package(s) installed but world.set was not updated: {:#}", e);
             }
@@ -408,7 +408,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
     if !unresolved_listed.is_empty() {
         eprintln!(
             "{} {} package(s) are installed from an unknown source - retry with \
-            `--err-inst` to attempt the normal official/AUR install path, or install manually.",
+            `--err-install` to attempt the normal official/AUR install path, or install manually.",
             " *".yellow().bold(), unresolved_listed.len()
         );
         for p in &unresolved_listed { eprintln!("     {}", p); }

@@ -222,7 +222,7 @@ pub(crate) fn srcinfo_pkgbase(path: &Path) -> Option<String> {
 }
 
 /// Every `pkgname = ...` value declared in a `.SRCINFO` file - usually
-/// one, but a split package declares several. Used by `--pkgbuild-inst`
+/// one, but a split package declares several. Used by `--install-pkgbuild`
 /// to figure out what to record in world.set after a local build, since
 /// there's no AUR/ABS resolution step to have already produced that name
 /// list the way there is for every other install path.

@@ -137,7 +137,7 @@ CUSTOM SETS
     meaningfully attached to anything). --regen-sort is a modifier, not a
     standalone action -- it only does something alongside --regen-sets.
 
-UNRESOLVED (Err/) PACKAGES AND --err-inst
+UNRESOLVED (Err/) PACKAGES AND --err-install
     An entry can end up in world.set (or get written back by --regen-world
     / --regen-sets) as Err/<name> when it's installed locally but its
     source repo couldn't be determined, or as a bare <name> with no prefix
@@ -146,7 +146,7 @@ UNRESOLVED (Err/) PACKAGES AND --err-inst
     <name> entry is always resolved the normal way (official repos first,
     AUR on a miss) since there's nothing to lose by trying. An Err/<name>
     entry is more suspect -- it was already installed from *somewhere*
-    unknown -- so by default it's only listed, not touched. Pass --err-inst
+    unknown -- so by default it's only listed, not touched. Pass --err-install
     to have those installed the normal way too.
 
 NEWS
@@ -168,7 +168,7 @@ EXAMPLES
     emerge foo --scan              Audit the PKGBUILD/.install only - no
                                     build, no install, exits non-zero on
                                     any finding
-    emerge --pkgbuild-inst ./pkg   Build+install a local PKGBUILD checkout
+    emerge --install-pkgbuild ./pkg  Build+install a local PKGBUILD checkout
                                     through the normal scanner+sandbox path
     emerge --batchinstall list.txt Install every package atom listed in
                                     list.txt, one per line
@@ -273,13 +273,13 @@ struct Cli {
     aur: bool,
 
     /// Report-only PKGBUILD/.install audit: fetches (AUR) or reads
-    /// (--pkgbuild-inst) the same files the normal scanner checks before
+    /// (--install-pkgbuild) the same files the normal scanner checks before
     /// a build, prints the same findings, but never builds or installs
     /// anything - no "Continue anyway?" gate either, since there's
     /// nothing to continue to. Exits non-zero if any finding was
     /// reported (or the fetch/read itself failed), zero on a clean scan,
     /// so it's usable in a script. Currently AUR- and
-    /// --pkgbuild-inst-only; not yet wired up for --abs.
+    /// --install-pkgbuild-only, i.e. not yet wired up for --abs.
     #[arg(long = "scan")]
     scan: bool,
 
@@ -379,7 +379,7 @@ struct Cli {
     /// aura-emerge re-executes PKGBUILD content after an edit (see
     /// `packages::maybe_regen_srcinfo`'s doc comment for why that's
     /// reasonable here specifically, unlike for an arbitrary AUR
-    /// PKGBUILD). Pass --off-src-regen to skip this and go back to the
+    /// PKGBUILD). Pass --skip-srcinfo-regen to skip this and go back to the
     /// old behavior (dependency resolution keeps using the pre-edit
     /// `.SRCINFO`).
     #[arg(long = "edit")]
@@ -391,8 +391,8 @@ struct Cli {
     /// dependency resolution keeps using the pre-edit `.SRCINFO`, and
     /// you get the same "run `makepkg --printsrcinfo` yourself" note as
     /// before. Has no effect without `--edit`.
-    #[arg(long = "off-src-regen")]
-    off_src_regen: bool,
+    #[arg(long = "skip-srcinfo-regen")]
+    skip_srcinfo_regen: bool,
 
     /// Show the PKGBUILD about to be built and ask for confirmation
     /// before the build starts - a diff against the last-shown copy of
@@ -411,14 +411,14 @@ struct Cli {
     /// normal emerge pipeline (scanner + bwrap sandbox) instead of a bare
     /// `makepkg -i`. PATH must contain a PKGBUILD. Combines with
     /// --pkgbuild-view, --skippgp, --no-sandbox, --unshare-net-build,
-    /// --off-src-regen, -a/--ask, and -1/--oneshot exactly like a normal
+    /// --skip-srcinfo-regen, -a/--ask, and -1/--oneshot exactly like a normal
     /// install; not compatible with any package/@set argument, --aur,
     /// or --abs (those name something to resolve elsewhere, whereas this
     /// already points straight at a checkout on disk). Recorded in
     /// world.set with the "Err/" prefix (source unknown - see world.set's
     /// own doc comment) unless --oneshot is also given.
-    #[arg(long = "pkgbuild-inst", value_name = "PATH", value_hint = clap::ValueHint::DirPath)]
-    pkgbuild_inst: Option<String>,
+    #[arg(long = "install-pkgbuild", value_name = "PATH", value_hint = clap::ValueHint::DirPath)]
+    install_pkgbuild: Option<String>,
 
     /// Verbose output / detailed info in search mode (-sv = pacman -Si / AUR info)
     #[arg(short = 'v', long = "verbose")]
@@ -494,8 +494,8 @@ struct Cli {
     /// are normally just listed and skipped. With this flag they're instead
     /// installed through the normal procedure (official repos first, AUR
     /// on a miss), same as a plain `emerge <pkg>`.
-    #[arg(long = "err-inst")]
-    err_inst: bool,
+    #[arg(long = "err-install")]
+    err_install: bool,
 
     /// One-time migration: seed world.set from every currently
     /// explicitly-installed package (pacman -Qeq), for systems that
@@ -646,7 +646,7 @@ fn print_help() {
     println!("          [ --abs                        ] [ --aur        ]");
     println!("          [ --aur-deep                   ] [ --skippgp    ]");
     println!("          [ --only-repos                 ] [ --autopgp    ]");
-    println!("          [ --edit                       ] [ --off-src-regen ]");
+    println!("          [ --edit                       ] [ --skip-srcinfo-regen ]");
     println!("          [ --pkgbuild-view              ] [ --emptytree ]");
     println!("          [ --newuse                     ] [ --noreplace  ]");
     println!("          [ --oneshot                    ] [ --pretend    ]");
@@ -654,7 +654,7 @@ fn print_help() {
     println!("          [ --no-sandbox                 ] [ --unshare-net-build ]");
     println!("          [ --devel                      ] [ --sudoloop   ]");
     println!("          [ --verbose-conflicts          ] [ --with-bdeps ]");
-    println!("          [ --err-inst                   ] [ --regen-sort ]");
+    println!("          [ --err-install                 ] [ --regen-sort ]");
     println!("          [ --deep                                        ]");
     println!("Actions:  [ --depclean  | --deselect | --prune      | --regen       ]");
     println!("          [ --resume    | --search   | --select     | --searchdesc  ]");
@@ -662,7 +662,7 @@ fn print_help() {
     println!("          [ --version   | --info     | --regen-world-from-explicit  ]");
     println!("          [ --list-sets | --regen-sets @<name>  | --news [N|all]    ]");
     println!("          [ --check-news [N|all] | --check-devel | --undo          ]");
-    println!("          [ --scan <pkg...>       | --pkgbuild-inst <PATH>          ]");
+    println!("          [ --scan <pkg...>       | --install-pkgbuild <PATH>       ]");
     println!("          [ --batchinstall <FILE> | --clean-source-cache            ]");
     println!();
     println!("   @world (no -u): install whatever's listed in /etc/emerge/world.set");
@@ -681,7 +681,7 @@ fn print_help() {
     println!("   before building. --scan <pkg...>: the same audit, report-only,");
     println!("   never builds or installs - exits non-zero on any finding.");
     println!();
-    println!("   --pkgbuild-inst <PATH>: build+install a local PKGBUILD checkout");
+    println!("   --install-pkgbuild <PATH>: build+install a local PKGBUILD checkout");
     println!("   through this same pipeline (scanner + sandbox) instead of a");
     println!("   bare `makepkg -i`. --batchinstall <FILE>: install a plain-text");
     println!("   package list in one shot, same format as a custom set.");
@@ -789,12 +789,12 @@ fn build_resume_args(cli: &Cli, target_pkgs: &[String], has_world: bool) -> Vec<
     if cli.skippgp      { args.push("--skippgp".to_string()); }
     if cli.autopgp      { args.push("--autopgp".to_string()); }
     if cli.edit         { args.push("--edit".to_string()); }
-    if cli.off_src_regen { args.push("--off-src-regen".to_string()); }
+    if cli.skip_srcinfo_regen { args.push("--skip-srcinfo-regen".to_string()); }
     if cli.oneshot      { args.push("--oneshot".to_string()); }
     if cli.noreplace    { args.push("--noreplace".to_string()); }
     if cli.verbose      { args.push("--verbose".to_string()); }
     if cli.refresh      { args.push("--refresh".to_string()); }
-    if cli.err_inst     { args.push("--err-inst".to_string()); }
+    if cli.err_install     { args.push("--err-install".to_string()); }
     if cli.no_sandbox   { args.push("--no-sandbox".to_string()); }
     if cli.unshare_net_build { args.push("--unshare-net-build".to_string()); }
     if has_world {
@@ -1109,24 +1109,24 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
-    // --pkgbuild-inst <PATH>: a standalone action, same spirit as --news/
+    // --install-pkgbuild <PATH>: a standalone action, same spirit as --news/
     // --list-sets above but *after* check_binaries()/--sudoloop since it
     // ends in a real `pacman -U` and needs sudo. Doesn't mix with named
     // packages/@sets or --aur/--abs (those name something to *resolve*
     // elsewhere; this already points straight at a checkout on disk).
-    if let Some(path_str) = &cli.pkgbuild_inst {
+    if let Some(path_str) = &cli.install_pkgbuild {
         if !cli.packages.is_empty() {
-            eprintln!(">>> Error: --pkgbuild-inst does not take package names or @sets.");
+            eprintln!(">>> Error: --install-pkgbuild does not take package names or @sets.");
             std::process::exit(1);
         }
         if cli.aur || cli.abs {
-            eprintln!(">>> Error: --pkgbuild-inst is not compatible with --aur/--abs.");
+            eprintln!(">>> Error: --install-pkgbuild is not compatible with --aur/--abs.");
             std::process::exit(1);
         }
         let path = std::path::PathBuf::from(path_str);
 
         // --scan: report-only, no build. Checked first since it's a
-        // strict subset of the normal --pkgbuild-inst flow below (both
+        // strict subset of the normal --install-pkgbuild flow below (both
         // start with the same scanner).
         if cli.scan {
             return if crate::security::scan_report_local(
@@ -1153,7 +1153,7 @@ fn run() -> anyhow::Result<()> {
             cli.oneshot,
             cli.skippgp,
             cli.no_sandbox,
-            cli.off_src_regen,
+            cli.skip_srcinfo_regen,
             cli.unshare_net_build,
             cli.pkgbuild_view,
         ) {
@@ -1268,7 +1268,7 @@ fn run() -> anyhow::Result<()> {
             std::process::exit(1);
         }
         if target_pkgs.is_empty() {
-            eprintln!(">>> Error: --scan needs at least one package name (or use --pkgbuild-inst <PATH> --scan for a local checkout).");
+            eprintln!(">>> Error: --scan needs at least one package name (or use --install-pkgbuild <PATH> --scan for a local checkout).");
             std::process::exit(1);
         }
         let mut all_clean = true;
@@ -1613,7 +1613,7 @@ fn run() -> anyhow::Result<()> {
                     // aur_install() always leaves the explicit bit set on
                     // success (see its doc comment) - no separate
                     // mark_asexplicit() call needed the way `aura -A` required.
-                    if aur_install(&names, false, cli.ask, false, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen, cli.aur_deep, cli.unshare_net_build, false) {
+                    if aur_install(&names, false, cli.ask, false, cli.skippgp, cli.edit, cli.no_sandbox, cli.skip_srcinfo_regen, cli.aur_deep, cli.unshare_net_build, false) {
                         if let Err(e) = add_to_world_set(&names, Some("aur")) {
                             eprintln!(">>> Warning: package(s) reinstalled but world.set was not updated: {:#}", e);
                         }
@@ -1705,7 +1705,7 @@ fn run() -> anyhow::Result<()> {
         if !cli.pretend {
             save_resume_state(&build_resume_args(&cli, &[], true));
         }
-        let ok = provision_from_world_set(cli.pretend, cli.ask, cli.verbose, cli.err_inst, cli.no_sandbox, cli.off_src_regen, cli.aur_deep, cli.unshare_net_build)?;
+        let ok = provision_from_world_set(cli.pretend, cli.ask, cli.verbose, cli.err_install, cli.no_sandbox, cli.skip_srcinfo_regen, cli.aur_deep, cli.unshare_net_build)?;
         if !cli.pretend {
             if ok {
                 clear_resume_state();
@@ -1774,7 +1774,7 @@ fn run() -> anyhow::Result<()> {
         };
 
         println!(">>> Upgrading AUR packages...");
-        let ok2 = aur_upgrade_all(cli.pretend, cli.ask, cli.skippgp, cli.no_sandbox, cli.off_src_regen, cli.aur_deep, cli.unshare_net_build, cli.devel);
+        let ok2 = aur_upgrade_all(cli.pretend, cli.ask, cli.skippgp, cli.no_sandbox, cli.skip_srcinfo_regen, cli.aur_deep, cli.unshare_net_build, cli.devel);
 
         println!();
         println!("{} Auto-cleaning packages...", ">>>".green().bold());
@@ -1983,7 +1983,7 @@ fn run() -> anyhow::Result<()> {
         let mut not_found: Vec<String> = Vec::new();
 
         if cli.abs {
-            success = abs_install(&target_pkgs, cli.pretend, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.autopgp, cli.no_sandbox, cli.off_src_regen, cli.unshare_net_build, cli.pkgbuild_view);
+            success = abs_install(&target_pkgs, cli.pretend, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.autopgp, cli.no_sandbox, cli.skip_srcinfo_regen, cli.unshare_net_build, cli.pkgbuild_view);
         } else if cli.aur {
             let (pkg_infos, missing_aur) = resolve_aur_split(&target_pkgs);
             not_found = missing_aur;
@@ -1999,7 +1999,7 @@ fn run() -> anyhow::Result<()> {
             print_emerge_emerging(&pkg_infos);
             let found_names: Vec<String> = pkg_infos.iter().map(|p| p.name.clone()).collect();
             scan_aur_pkgbuilds_or_abort(&found_names);
-            success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen, cli.aur_deep, cli.unshare_net_build, cli.pkgbuild_view);
+            success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.skip_srcinfo_regen, cli.aur_deep, cli.unshare_net_build, cli.pkgbuild_view);
             if success { installed_infos = pkg_infos; }
         } else {
             // Probe official repos in a way that's safe against partial matches:
@@ -2079,7 +2079,7 @@ fn run() -> anyhow::Result<()> {
                 print_emerge_emerging(&pkg_infos);
                 let found_names: Vec<String> = pkg_infos.iter().map(|p| p.name.clone()).collect();
                 scan_aur_pkgbuilds_or_abort(&found_names);
-                success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen, cli.aur_deep, cli.unshare_net_build, cli.pkgbuild_view);
+                success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.skip_srcinfo_regen, cli.aur_deep, cli.unshare_net_build, cli.pkgbuild_view);
                 if success { installed_infos = pkg_infos; }
             } else {
                 // Mixed case: some packages are official, some need the AUR.
@@ -2115,7 +2115,7 @@ fn run() -> anyhow::Result<()> {
                 if !aur_infos.is_empty() {
                     let aur_found_names: Vec<String> = aur_infos.iter().map(|p| p.name.clone()).collect();
                     scan_aur_pkgbuilds_or_abort(&aur_found_names);
-                    let aur_success = aur_install(&aur_found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.off_src_regen, cli.aur_deep, cli.unshare_net_build, cli.pkgbuild_view);
+                    let aur_success = aur_install(&aur_found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.skip_srcinfo_regen, cli.aur_deep, cli.unshare_net_build, cli.pkgbuild_view);
                     if aur_success {
                         installed_infos.extend(aur_infos);
                     } else {
@@ -2247,7 +2247,7 @@ fn run() -> anyhow::Result<()> {
     // now provision anything else world.set still lists as missing.
     if provision_after_install && !cli.pretend {
         println!();
-        if !provision_from_world_set(cli.pretend, cli.ask, cli.verbose, cli.err_inst, cli.no_sandbox, cli.off_src_regen, cli.aur_deep, cli.unshare_net_build)? {
+        if !provision_from_world_set(cli.pretend, cli.ask, cli.verbose, cli.err_install, cli.no_sandbox, cli.skip_srcinfo_regen, cli.aur_deep, cli.unshare_net_build)? {
             eprintln!(">>> Warning: not everything from world.set installed successfully.");
             std::process::exit(1);
         }
