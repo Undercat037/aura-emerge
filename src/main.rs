@@ -163,6 +163,21 @@ EXAMPLES
                                     AUR-only dependency instead of guessing)
     emerge foo --aur-deep          Same, but also build AUR-only
                                     dependencies recursively
+    emerge foo --pkgbuild-view     Review the PKGBUILD (diff on rebuilds)
+                                    and confirm before it's built
+    emerge foo --scan              Audit the PKGBUILD/.install only - no
+                                    build, no install, exits non-zero on
+                                    any finding
+    emerge --pkgbuild-inst ./pkg   Build+install a local PKGBUILD checkout
+                                    through the normal scanner+sandbox path
+    emerge --batchinstall list.txt Install every package atom listed in
+                                    list.txt, one per line
+    emerge -u --devel               Upgrade, and also rebuild installed
+                                    -git/-hg/-svn/-bzr packages whose
+                                    upstream has moved
+    emerge --check-devel            Report which -git/-hg/-svn/-bzr
+                                    packages are behind upstream, without
+                                    rebuilding anything
     emerge @world                  Provision this machine from world.set
     emerge -u @world                Upgrade the whole system
     emerge @game-kit                Install a custom set
@@ -172,9 +187,12 @@ EXAMPLES
     emerge --news all               Dismiss all news notifications
 
 FILES
-    /etc/emerge/world.set          Explicitly-installed packages
-    /etc/emerge/sets.d/*.set       Custom package sets
-    /etc/emerge/resume.state       Saved state for --resume
+    /etc/emerge/world.set                  Explicitly-installed packages
+    /etc/emerge/sets.d/*.set               Custom package sets
+    /etc/emerge/resume.state               Saved state for --resume
+    ~/.cache/aura-emerge/pkgbuild-view/    Last-shown PKGBUILDs (for --pkgbuild-view diffs)
+    ~/.cache/aura-emerge/devel.state       Last-checked upstream refs (--devel/--check-devel)
+    ~/.cache/aura-emerge/news.state        Read/unread Arch news items
 
 AUTHOR
     Undercat037 <https://github.com/Undercat037/aura-emerge>";
@@ -399,7 +417,7 @@ struct Cli {
     /// already points straight at a checkout on disk). Recorded in
     /// world.set with the "Err/" prefix (source unknown - see world.set's
     /// own doc comment) unless --oneshot is also given.
-    #[arg(long = "pkgbuild-inst", value_name = "PATH")]
+    #[arg(long = "pkgbuild-inst", value_name = "PATH", value_hint = clap::ValueHint::DirPath)]
     pkgbuild_inst: Option<String>,
 
     /// Verbose output / detailed info in search mode (-sv = pacman -Si / AUR info)
@@ -526,7 +544,7 @@ struct Cli {
     /// set first. Entries are folded into the normal package list before
     /// any action runs, so `-p`/`-a`/`--aur`/`--abs`/etc. all apply to
     /// the whole batch exactly as if you'd typed every name by hand.
-    #[arg(long = "batchinstall", value_name = "FILE")]
+    #[arg(long = "batchinstall", value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
     batchinstall: Option<String>,
 
     // ── Gentoo compat flags (accepted silently, no-op) ──────────────────────
@@ -627,11 +645,14 @@ fn print_help() {
     println!("Options: -[1aCcDehNnpsuVv]");
     println!("          [ --abs                        ] [ --aur        ]");
     println!("          [ --aur-deep                   ] [ --skippgp    ]");
-    println!("          [ --only-repos                                  ]");
-    println!("          [ --autopgp                    ] [ --edit       ]");
-    println!("          [ --emptytree                  ] [ --newuse     ]");
-    println!("          [ --noreplace                  ] [ --oneshot    ]");
-    println!("          [ --pretend                    ] [ --skipfirst  ]");
+    println!("          [ --only-repos                 ] [ --autopgp    ]");
+    println!("          [ --edit                       ] [ --off-src-regen ]");
+    println!("          [ --pkgbuild-view              ] [ --emptytree ]");
+    println!("          [ --newuse                     ] [ --noreplace  ]");
+    println!("          [ --oneshot                    ] [ --pretend    ]");
+    println!("          [ --skipfirst                  ] [ --refresh    ]");
+    println!("          [ --no-sandbox                 ] [ --unshare-net-build ]");
+    println!("          [ --devel                      ] [ --sudoloop   ]");
     println!("          [ --verbose-conflicts          ] [ --with-bdeps ]");
     println!("          [ --err-inst                   ] [ --regen-sort ]");
     println!("          [ --deep                                        ]");
@@ -640,6 +661,9 @@ fn print_help() {
     println!("          [ --sync      | --unmerge  | --update     | --regen-world ]");
     println!("          [ --version   | --info     | --regen-world-from-explicit  ]");
     println!("          [ --list-sets | --regen-sets @<name>  | --news [N|all]    ]");
+    println!("          [ --check-news [N|all] | --check-devel | --undo          ]");
+    println!("          [ --scan <pkg...>       | --pkgbuild-inst <PATH>          ]");
+    println!("          [ --batchinstall <FILE> | --clean-source-cache            ]");
     println!();
     println!("   @world (no -u): install whatever's listed in /etc/emerge/world.set");
     println!("   and missing from this system - declarative provisioning, e.g. for a");
@@ -653,6 +677,20 @@ fn print_help() {
     println!("   package per line (# comments allowed). Use --list-sets to see");
     println!("   what's available.");
     println!();
+    println!("   --pkgbuild-view: show the PKGBUILD (diff on rebuilds) and ask");
+    println!("   before building. --scan <pkg...>: the same audit, report-only,");
+    println!("   never builds or installs - exits non-zero on any finding.");
+    println!();
+    println!("   --pkgbuild-inst <PATH>: build+install a local PKGBUILD checkout");
+    println!("   through this same pipeline (scanner + sandbox) instead of a");
+    println!("   bare `makepkg -i`. --batchinstall <FILE>: install a plain-text");
+    println!("   package list in one shot, same format as a custom set.");
+    println!();
+    println!("   --devel / --check-devel: catch -git/-hg/-svn/-bzr AUR packages");
+    println!("   whose upstream has moved even though the AUR page's recorded");
+    println!("   version hasn't. --check-devel only reports; -u --devel rebuilds.");
+    println!();
+    println!("   For the full story behind every flag: man emerge");
     println!("   For more help consult the README: https://github.com/Undercat037/aura-emerge");
     println!();
     println!("Author: Undercat037");

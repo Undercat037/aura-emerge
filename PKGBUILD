@@ -1,5 +1,5 @@
 # Maintainer: Undercat037 <deltacatdeveloper@gmail.com>
-pkgname=aura-emerge
+pkgname=aura-emerge-git
 pkgver=0.00.0
 pkgrel=1
 pkgdesc="Gentoo-style emerge for Arch Linux - installs from official repos, the AUR, and ABS, scans PKGBUILDs for supply-chain red flags before building, and runs untrusted build steps inside a `bwrap` sandbox."
@@ -9,7 +9,7 @@ license=('GPL-3.0')
 depends=('git' 'sudo')
 optdepends=('gnupg: for PGP verification' 'pkgctl: for abs' 'bubblewrap: for sandboxing')
 makedepends=('rust' 'cargo')
-conflicts=('portage' 'portage-git')
+conflicts=('portage' 'portage-git' 'aura-emerge')
 provides=('portageq')
 install=aura-emerge.install
 backup=('etc/emerge/world.set')

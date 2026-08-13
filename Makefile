@@ -11,10 +11,10 @@ test:
 
 git:
 	git add .
-	git commit -m "v$(VERSION) commit"
+	git commit -m "v$(VERSION) update"
 
-install: build test
-	sudo cp -r $(BIN) /usr/bin/emerge
+push: git
+	git push --follow-tags
 
 uninstall:
 	sudo rm -f /usr/bin/emerge
@@ -22,12 +22,15 @@ uninstall:
 clean:
 	cargo clean
 
-completions: build
+completions:
 	$(BIN) --gen-completions bash | sudo tee /usr/share/bash-completion/completions/emerge > /dev/null
 	$(BIN) --gen-completions zsh | sudo tee /usr/share/zsh/site-functions/_emerge > /dev/null
 	$(BIN) --gen-completions fish | sudo tee /usr/share/fish/vendor_completions.d/emerge.fish > /dev/null
 
-man: build
+man:
 	$(BIN) --gen-manpage | sudo tee /usr/share/man/man1/emerge.1 > /dev/null
+
+install: build test completions man
+	sudo cp -r $(BIN) /usr/bin/emerge
 
 all: install
