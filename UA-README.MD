@@ -1,4 +1,3 @@
-# aura-emerge
 [en](README.MD) | ua
 
 > Автономний ПМ у стилі Gentoo `emerge` для Arch Linux - встановлює з офіційних репозиторіїв, AUR та ABS, сканує PKGBUILD на ознаки атак на ланцюг постачання перед збіркою і виконує недовірені кроки збірки всередині пісочниці `bwrap`.
@@ -66,6 +65,7 @@ sudo nvim /etc/makepkg.conf
 emerge neovim                              # офіційні репо, при відсутності - AUR
 emerge neovim-git --aur                    # лише AUR (без рекурсії AUR-залежностей)
 emerge foo-git --aur --aur-deep            # також рекурсивно зібрати AUR-only залежності (--aur-full)
+emerge foo-git --aur --aur-deep --sudoloop # те саме, але тримати sudo «теплим» протягом усієї рекурсивної збірки
 emerge neovim --only-repos                 # лише офіційні репо, без AUR
 emerge neovim --abs                        # зібрати з ABS (pkgctl), у пісочниці bwrap
 emerge neovim --abs --no-sandbox           # ABS без пісочниці (звичайний makepkg -si)
@@ -89,6 +89,14 @@ emerge --info                              # інформація про сис�
 emerge --news                              # новини Arch Linux, непрочитані позначені
 emerge --news 3                            # прочитати новину 3
 emerge --news all                          # позначити всі як прочитані
+emerge neovim-git --aur --edit --pkgbuild-view  # перегляд/diff PKGBUILD поверх --edit
+emerge neovim --abs --pkgbuild-view        # те саме для ABS
+emerge --pkgbuild-inst ~/src/my-pkg        # зібрати+встановити локальний checkout PKGBUILD (сканер + bwrap, як AUR/ABS)
+emerge --pkgbuild-inst ~/src/my-pkg --pkgbuild-view --skippgp
+emerge --scan neovim-git --aur              # лише аудит, без збірки
+emerge --pkgbuild-inst ~/src/my-pkg --scan  # те саме для локального checkout
+emerge -u --devel                           # повне оновлення + перевірка upstream для -git/-hg/-svn/-bzr
+emerge --check-devel                        # лише звіт, які devel-пакунки зрушили upstream
 emerge -s neovim                           # пошук (репо + AUR)
 emerge -s neovim --only-repos              # пошук лише в офіційних репо
 emerge --searchdesc neovim                 # пошук за описом
@@ -113,6 +121,8 @@ emerge --clean-source-cache                # очистити кеш VCS-дже�
 emerge @preserved-rebuild                  # перевірити відсутні залежності
 emerge @preserved-rebuild -p               # лише показати список
 emerge @preserved-rebuild -a               # запитувати перед кожним pacman
+emerge --batchinstall pkgs.txt              # масове встановлення зі списку
+emerge --batchinstall pkgs.txt --aur -a     # поєднується з будь-яким іншим прапором
 ```
 
 ## Пісочниця
@@ -144,6 +154,57 @@ emerge --clean-source-cache   # видалити цей кеш
 ```
 
 Якщо в `makepkg.conf` уже задано власний `SRCDEST` - використовується він.
+
+## Масове встановлення
+
+`--batchinstall <FILE>` читає текстовий список пакунків і додає його до звичайного списку до будь-яких дій - той самий формат, що й [власний набір](#власні-набори-sets) (один атом на рядок, `#`-коментарі дозволені), але з довільного шляху, без реєстрації в `/etc/emerge/sets.d/`.
+
+```
+# pkgs.txt
+neovim
+aur/visual-studio-code-bin
+firefox
+```
+
+```bash
+emerge --batchinstall pkgs.txt
+```
+
+Оскільки список зливається з `cli.packages`, працює з усіма іншими прапорами так само, як іменовані пакунки (`-p`, `-a`, `--aur`, `--abs`, `--only-repos`, ...).
+
+## Перегляд PKGBUILD
+
+`--pkgbuild-view` показує PKGBUILD перед збіркою і просить підтвердження - diff відносно останньої показаної копії цього pkgbase (кеш `~/.cache/aura-emerge/pkgbuild-view/`), або повний файл уперше. Відмова пропонує відкрити його в `$EDITOR` замість простого пропуску. Поєднується з `--edit` (який іде першим, тож view/diff відображає щойно зроблені правки). Працює для `--aur`/звичайного AUR-fallback і `--abs`, лише для безпосередньо запрошеного пакунка - ніколи для рекурсивно підтягнутої AUR-залежності і ніколи для пакетних шляхів (`@world`, `-u`, `--undo`).
+
+```bash
+emerge neovim-git --aur --pkgbuild-view
+emerge neovim --abs --edit --pkgbuild-view   # спочатку edit, потім view/diff результату
+```
+
+`--pkgbuild-inst <PATH>` збирає і встановлює довільний локальний checkout PKGBUILD через той самий пайплайн, що й AUR/ABS - сканер, потім пісочниця bwrap - замість «голого» `makepkg -si`. У `PATH` має бути `PKGBUILD`; якщо немає `.SRCINFO`, він генерується (`makepkg --printsrcinfo`, як після `--edit`), щоб залежності розв’язувались статично. Поєднується з `--pkgbuild-view`, `-a`/`--ask`, `-1`/`--oneshot`, `--skippgp`, `--no-sandbox`, `--unshare-net-build`, `--off-src-regen`; несумісний з іменами пакунків/`@set` або `--aur`/`--abs`. У `world.set` записується з префіксом `Err/` (джерело невідоме - див. [world.set](#worldset)), якщо не задано `-1`/`--oneshot`.
+
+```bash
+emerge --pkgbuild-inst ~/src/my-pkg
+emerge --pkgbuild-inst ~/src/my-pkg --pkgbuild-view --skippgp
+```
+
+`--scan` перевіряє PKGBUILD (+ `.install`) без збірки й встановлення - тягне з cgit для імені AUR-пакунка або читає локальний checkout з `--pkgbuild-inst <PATH> --scan`. Той самий звіт, що й звичайний pre-build scan, без запиту `Continue anyway?` (немає куди продовжувати). Ненульовий код виходу при будь-якій знахідці - зручно в скриптах. Поки що не підключено до `--abs`.
+
+```bash
+emerge --scan neovim-git --aur
+emerge --pkgbuild-inst ~/src/my-pkg --scan
+```
+
+## Перевірка upstream devel-пакунків
+
+Конвенція Arch для `-git`/`-hg`/`-svn`/`-bzr` обчислює версію в `pkgver()` з історії VCS під час збірки - але версія *на сторінці AUR* змінюється лише коли мейнтейнер вручну перепушує PKGBUILD, і для активного пакунка це може відставати від реального upstream на тижні чи місяці. Звичайний `-u` порівнює лише записану AUR-версію, тож часто ніколи не пропонує перезбірку, навіть коли upstream уже пішов далі.
+
+`--devel` (разом із `-u`) і `--check-devel` (окремо, лише звіт) закривають цю дірку: для кожного встановленого devel-пакунка парсять `git+` URL прямо з PKGBUILD і роблять `git ls-remote` проти нього - без локального клону - порівнюючи з останнім баченим хешем (`~/.cache/aura-emerge/devel.state`). Поки що лише git; `-hg`/`-svn`/`-bzr` розпізнаються, але звітуються як «не вдалося визначити», а не мовчки пропускаються.
+
+```bash
+emerge -u --devel        # звичайне повне оновлення + перезбірка devel, чий upstream зрушив
+emerge --check-devel     # лише звіт, хто зрушив, без перезбірки
+```
 
 ## @preserved-rebuild
 
@@ -235,10 +296,13 @@ emerge --news all    # позначити всі як прочитані
 | `--searchdesc` | Пошук за описом |
 | `-sv` | Детальна інформація |
 | `-u` | Повне оновлення системи (world.set не читається) |
+| `--devel` | Разом із `-u` - також перезібрати `-git`/`-hg`/`-svn`/`-bzr`, чий upstream зрушив |
+| `--check-devel` | Звіт, які devel-пакунки мають зміни upstream (без перезбірки) |
 | `-C` | Видалити пакунки (unmerge) |
 | `-c` | Видалити сиріт (depclean) |
 | `-p` | Симуляція (dry run) |
 | `-a` | Запит підтвердження |
+| `--sudoloop` | Тримати sudo timestamp «теплим» протягом усього запуску |
 | `-1` | Встановити як залежність (oneshot) |
 | `-v` | Детальний вивід |
 | `-n` | Не перевстановлювати (noreplace) |
@@ -251,6 +315,9 @@ emerge --news all    # позначити всі як прочитані
 | `--skippgp` | Пропустити перевірку PGP (ABS) |
 | `--autopgp` | Автоімпорт відсутніх PGP-ключів (ABS) |
 | `--edit` | Редагувати PKGBUILD перед збіркою; після збереження оновлює `.SRCINFO` |
+| `--pkgbuild-view` | Показати/diff PKGBUILD, підтвердити перед збіркою (при відмові пропонує `$EDITOR`) |
+| `--pkgbuild-inst <PATH>` | Зібрати+встановити локальний checkout PKGBUILD (сканер + bwrap) |
+| `--scan` | Лише аудит PKGBUILD/.install, без збірки/встановлення (AUR або `--pkgbuild-inst`) |
 | `--off-src-regen` | Разом з `--edit` - не оновлювати `.SRCINFO` |
 | `--sync` | Синхронізувати бази |
 | `--refresh` | Примусово `-Syy` (з `--sync` або `-u`) |
@@ -270,6 +337,7 @@ emerge --news all    # позначити всі як прочитані
 | `--skipfirst` | Пропустити перший пакунок при resume |
 | `--undo` | Скасувати останнє встановлення/видалення |
 | `--clean-source-cache` | Очистити кеш VCS-джерел |
+| `--batchinstall <FILE>` | Масове встановлення зі списку пакунків |
 | `--list-sets` | Показати доступні `@sets` |
 | `-h` / `--help` | Довідка |
 | `-V` / `--version` | Версія |

@@ -94,6 +94,10 @@ emerge neovim-git --aur --edit --pkgbuild-view  # view/diff the PKGBUILD too, on
 emerge neovim --abs --pkgbuild-view        # same for an ABS build
 emerge --pkgbuild-inst ~/src/my-pkg        # build+install a local PKGBUILD checkout (scanner + bwrap, like AUR/ABS)
 emerge --pkgbuild-inst ~/src/my-pkg --pkgbuild-view --skippgp
+emerge --scan neovim-git --aur              # audit only, no build
+emerge --pkgbuild-inst ~/src/my-pkg --scan  # same, for a local checkout
+emerge -u --devel                           # full upgrade + upstream check for -git/-hg/-svn/-bzr
+emerge --check-devel                        # just report which devel packages moved upstream
 emerge -s neovim                           # search (repos + AUR)
 emerge -s neovim --only-repos              # search official repos only
 emerge --searchdesc neovim                 # search by description
@@ -183,6 +187,24 @@ emerge neovim --abs --edit --pkgbuild-view   # edit first, then view/diff the re
 ```bash
 emerge --pkgbuild-inst ~/src/my-pkg
 emerge --pkgbuild-inst ~/src/my-pkg --pkgbuild-view --skippgp
+```
+
+`--scan` audits a PKGBUILD (+ `.install`) without building or installing anything - fetches straight from cgit for an AUR package name, or reads a local checkout directly with `--pkgbuild-inst <PATH> --scan`. Same findings/report as the normal pre-build scan, minus the "Continue anyway?" gate (nothing to continue to). Exits non-zero on any finding, so it's usable in a script. Not yet wired up for `--abs`.
+
+```bash
+emerge --scan neovim-git --aur
+emerge --pkgbuild-inst ~/src/my-pkg --scan
+```
+
+## Devel package upstream check
+
+Arch's `-git`/`-hg`/`-svn`/`-bzr` convention has `pkgver()` compute the version at build time from the VCS history - but the version *recorded on the AUR page itself* only moves when the maintainer manually re-pushes it, which for an actively-developed package can lag real upstream activity by weeks or months. Plain `-u` only ever compares that recorded AUR version, so it routinely never flags these for a rebuild even when upstream has moved on.
+
+`--devel` (with `-u`) and `--check-devel` (standalone, report-only) close that gap: for every installed devel package, they parse the `git+` source URL straight out of its PKGBUILD and run `git ls-remote` against it directly - no local clone needed - comparing the result against the hash last seen (`~/.cache/aura-emerge/devel.state`). git-only for now; `-hg`/`-svn`/`-bzr` packages are recognized but reported as "couldn't determine" rather than silently skipped.
+
+```bash
+emerge -u --devel        # normal full upgrade, plus rebuild any devel package whose upstream moved
+emerge --check-devel     # just report which ones moved, no rebuild
 ```
 
 ## @preserved-rebuild
@@ -275,6 +297,8 @@ AUR and ABS builds are additionally constrained by the [bwrap sandbox](#sandbox)
 | `--searchdesc` | Search by description |
 | `-sv` | Detailed package info |
 | `-u` | Full system upgrade (does not read world.set) |
+| `--devel` | With `-u` - also rebuild `-git`/`-hg`/`-svn`/`-bzr` packages whose upstream moved |
+| `--check-devel` | Report which devel packages have upstream changes (no rebuild) |
 | `-C` | Remove packages (unmerge) |
 | `-c` | Remove orphans (depclean) |
 | `-p` | Pretend (dry run) |
@@ -294,6 +318,7 @@ AUR and ABS builds are additionally constrained by the [bwrap sandbox](#sandbox)
 | `--edit` | Edit PKGBUILD before building; regenerates `.SRCINFO` after save |
 | `--pkgbuild-view` | Show/diff PKGBUILD, confirm before building (offers `$EDITOR` on decline) |
 | `--pkgbuild-inst <PATH>` | Build+install a local PKGBUILD checkout (scanner + bwrap) |
+| `--scan` | Audit-only PKGBUILD/.install scan, no build/install (AUR or `--pkgbuild-inst`) |
 | `--off-src-regen` | With `--edit` - do not regenerate `.SRCINFO` |
 | `--sync` | Sync package databases |
 | `--refresh` | Force `-Syy` (with `--sync` or `-u`) |
