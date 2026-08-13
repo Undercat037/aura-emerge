@@ -556,11 +556,11 @@ fn already_satisfied(name: &str) -> bool {
 /// before building, but only when both are true -- i.e. never for a
 /// recursively-resolved dependency (`is_top_level` is hardcoded `false`
 /// on the recursive call below), regardless of what `edit` is.
-/// `off_src_regen` only matters together with those two -- see
+/// `skip_srcinfo_regen` only matters together with those two -- see
 /// `maybe_regen_srcinfo`.
 
 /// Regenerates `<dir>/.SRCINFO` from a just-edited `PKGBUILD` via
-/// `makepkg --printsrcinfo`, unless `off_src_regen` is set.
+/// `makepkg --printsrcinfo`, unless `skip_srcinfo_regen` is set.
 ///
 /// This is the one place aura-emerge *does* re-execute PKGBUILD content
 /// after an edit -- `--printsrcinfo` sources the whole file (global-scope
@@ -576,7 +576,7 @@ fn already_satisfied(name: &str) -> bool {
 /// at both call sites, and aborts on a real finding before we get here)
 /// -- so by the time this runs, both the static scanner and the person's
 /// own review have already had a look at what's about to be sourced.
-/// `off_src_regen` exists for anyone who'd rather do the
+/// `skip_srcinfo_regen` exists for anyone who'd rather do the
 /// review-then-regenerate step manually instead, e.g. to inspect the
 /// generated `.SRCINFO` before it's used.
 ///
@@ -737,12 +737,12 @@ pub(crate) fn pkgbuild_view_step(pkgbase: &str, dir: &std::path::Path) -> Pkgbui
     PkgbuildViewOutcome { proceed: true, edited: true }
 }
 
-pub(crate) fn maybe_regen_srcinfo(dir: &std::path::Path, off_src_regen: bool) {
-    if off_src_regen {
+pub(crate) fn maybe_regen_srcinfo(dir: &std::path::Path, skip_srcinfo_regen: bool) {
+    if skip_srcinfo_regen {
         eprintln!(
             "{} {} set -- not regenerating .SRCINFO.",
             ">>> Note:".yellow().bold(),
-            "--off-src-regen".cyan()
+            "--skip-srcinfo-regen".cyan()
         );
         eprintln!(
             "    dependency resolution below still reflects the {} .SRCINFO.",
@@ -777,7 +777,7 @@ pub(crate) fn maybe_regen_srcinfo(dir: &std::path::Path, off_src_regen: bool) {
                     ">>> Warning:".yellow().bold(),
                     dir.join(".SRCINFO").display().to_string().dimmed()
                 );
-                eprintln!("    pass {} to skip this step next time.", "--off-src-regen".cyan());
+                eprintln!("    pass {} to skip this step next time.", "--skip-srcinfo-regen".cyan());
             }
         }
         _ => {
@@ -786,7 +786,7 @@ pub(crate) fn maybe_regen_srcinfo(dir: &std::path::Path, off_src_regen: bool) {
                 ">>> Warning:".yellow().bold(),
                 dir.display().to_string().dimmed()
             );
-            eprintln!("    pass {} to skip this step next time.", "--off-src-regen".cyan());
+            eprintln!("    pass {} to skip this step next time.", "--skip-srcinfo-regen".cyan());
         }
     }
 }
@@ -799,7 +799,7 @@ fn resolve_and_build_aur(
     mark_asdeps: bool,
     edit: bool,
     is_top_level: bool,
-    off_src_regen: bool,
+    skip_srcinfo_regen: bool,
     isolation: BuildIsolation,
     deep: bool,
     unshare_net_build: bool,
@@ -868,7 +868,7 @@ fn resolve_and_build_aur(
         Command::new(&editor).arg(&pkgbuild).status().ok();
         reset_terminal_colors_after_editor();
         crate::security::verify_local_clone_or_rescan(&pkgbase, &dir, fetched.get(&pkgbase));
-        maybe_regen_srcinfo(&dir, off_src_regen);
+        maybe_regen_srcinfo(&dir, skip_srcinfo_regen);
     }
 
     // --pkgbuild-view: show/diff the PKGBUILD and ask for confirmation
@@ -883,7 +883,7 @@ fn resolve_and_build_aur(
         }
         if outcome.edited {
             crate::security::verify_local_clone_or_rescan(&pkgbase, &dir, fetched.get(&pkgbase));
-            maybe_regen_srcinfo(&dir, off_src_regen);
+            maybe_regen_srcinfo(&dir, skip_srcinfo_regen);
         }
     }
 
@@ -935,7 +935,7 @@ fn resolve_and_build_aur(
             building.remove(&pkgbase);
             return None;
         }
-        match resolve_and_build_aur(dep, build_root, ask, skippgp, true, false, false, off_src_regen, isolation, deep, unshare_net_build, building, built, false) {
+        match resolve_and_build_aur(dep, build_root, ask, skippgp, true, false, false, skip_srcinfo_regen, isolation, deep, unshare_net_build, building, built, false) {
             Some(mut tars) => aur_dep_tarballs.append(&mut tars),
             None => {
                 eprintln!(
@@ -1040,7 +1040,7 @@ fn clear_build_base(dir: &std::path::Path) -> std::io::Result<()> {
 /// (`bwrap` -> unsandboxed `makepkg -si`, see `choose_build_isolation`)
 /// instead of shelling out to `aura -A`. `pkgctl` is not involved here
 /// at all -- only `--abs` ever calls it, and only for `repo clone`.
-pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, no_sandbox: bool, off_src_regen: bool, deep: bool, unshare_net_build: bool, pkgbuild_view: bool) -> bool {
+pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, no_sandbox: bool, skip_srcinfo_regen: bool, deep: bool, unshare_net_build: bool, pkgbuild_view: bool) -> bool {
     if !std::path::Path::new("/usr/bin/git").exists() {
         eprintln!("{} required binary not found: /usr/bin/git", ">>> Fatal:".red().bold());
         return false;
@@ -1147,7 +1147,7 @@ pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
             pkg.green().bold()
         );
         println!();
-        if resolve_and_build_aur(pkg, &build_base, ask, skippgp, oneshot, edit, true, off_src_regen, isolation, deep, unshare_net_build, &mut building, &mut built, pkgbuild_view).is_none() {
+        if resolve_and_build_aur(pkg, &build_base, ask, skippgp, oneshot, edit, true, skip_srcinfo_regen, isolation, deep, unshare_net_build, &mut building, &mut built, pkgbuild_view).is_none() {
             all_ok = false;
         }
     }
@@ -1372,7 +1372,7 @@ pub(crate) fn check_devel_all() -> bool {
     true
 }
 
-pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbox: bool, off_src_regen: bool, deep: bool, unshare_net_build: bool, devel: bool) -> bool {
+pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbox: bool, skip_srcinfo_regen: bool, deep: bool, unshare_net_build: bool, devel: bool) -> bool {
     let foreign = match Command::new(PACMAN_BIN)
         .args(["-Qm"])
         .env("LC_ALL", "C")
@@ -1484,7 +1484,7 @@ pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbo
     }
 
     let upgrade_names: Vec<String> = to_upgrade.iter().map(|(n, _, _)| n.clone()).collect();
-    aur_install(&upgrade_names, false, ask, false, skippgp, false, no_sandbox, off_src_regen, deep, unshare_net_build, false)
+    aur_install(&upgrade_names, false, ask, false, skippgp, false, no_sandbox, skip_srcinfo_regen, deep, unshare_net_build, false)
 }
 
 /// Installs already-built `*.pkg.tar.*` files directly via `pacman -U`
@@ -1828,7 +1828,7 @@ fn legacy_makepkg_si(build_dir: &std::path::Path, ask: bool, oneshot: bool, skip
 
 /// Build and install packages from ABS via `pkgctl repo clone` + `makepkg -si`
 /// (or, by default, the bwrap-sandboxed equivalent -- see `build_with_sandbox`).
-pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, autopgp: bool, no_sandbox: bool, off_src_regen: bool, unshare_net_build: bool, pkgbuild_view: bool) -> bool {
+pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, autopgp: bool, no_sandbox: bool, skip_srcinfo_regen: bool, unshare_net_build: bool, pkgbuild_view: bool) -> bool {
     for bin in &[PKGCTL_BIN, MAKEPKG_BIN] {
         if !std::path::Path::new(bin).exists() {
             eprintln!(">>> Fatal: required binary not found: {}", bin);
@@ -1967,7 +1967,7 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
                 .status()
                 .ok();
             reset_terminal_colors_after_editor();
-            maybe_regen_srcinfo(&build_dir, off_src_regen);
+            maybe_regen_srcinfo(&build_dir, skip_srcinfo_regen);
         }
 
         // --pkgbuild-view: same show/diff/confirm step as the AUR path,
@@ -1983,7 +1983,7 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
                 continue;
             }
             if outcome.edited {
-                maybe_regen_srcinfo(&build_dir, off_src_regen);
+                maybe_regen_srcinfo(&build_dir, skip_srcinfo_regen);
             }
         }
 
@@ -2019,9 +2019,9 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
     all_ok
 }
 
-// ── --pkgbuild-inst: install an arbitrary local PKGBUILD checkout ──────────
+// ── --install-pkgbuild: install an arbitrary local PKGBUILD checkout ──────────
 
-/// `--pkgbuild-inst <PATH>`: build and install a local PKGBUILD checkout
+/// `--install-pkgbuild <PATH>`: build and install a local PKGBUILD checkout
 /// through the normal emerge pipeline (scanner + bwrap sandbox) instead
 /// of a bare, unaudited `makepkg -si` - the same trust model as an AUR
 /// clone, just pointed at a directory the caller already has on disk
@@ -2044,7 +2044,7 @@ pub(crate) fn pkgbuild_local_install(
     oneshot: bool,
     skippgp: bool,
     no_sandbox: bool,
-    off_src_regen: bool,
+    skip_srcinfo_regen: bool,
     unshare_net_build: bool,
     pkgbuild_view: bool,
 ) -> Option<Vec<String>> {
@@ -2090,7 +2090,7 @@ pub(crate) fn pkgbuild_local_install(
     // doc comment for why that ordering is what makes running
     // `--printsrcinfo` here reasonable at all.
     if !path.join(".SRCINFO").exists() {
-        maybe_regen_srcinfo(path, off_src_regen);
+        maybe_regen_srcinfo(path, skip_srcinfo_regen);
     }
 
     if !skippgp {
@@ -2110,7 +2110,7 @@ pub(crate) fn pkgbuild_local_install(
     // Prefer the real pkgname(s) declared in .SRCINFO (handles split
     // packages correctly); fall back to the cosmetic directory-name label
     // if for some reason .SRCINFO still isn't there after the regen
-    // attempt above (e.g. --off-src-regen with no pre-existing file).
+    // attempt above (e.g. --skip-srcinfo-regen with no pre-existing file).
     Some(
         crate::aur::srcinfo_pkgnames(&path.join(".SRCINFO"))
             .unwrap_or_else(|| vec![label.clone()]),

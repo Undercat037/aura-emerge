@@ -74,12 +74,12 @@ emerge neovim --abs --skippgp              # ABS, skip PGP signature checks
 emerge neovim --abs --autopgp              # ABS, auto-import missing PGP keys
 emerge neovim --abs --edit                 # ABS, edit PKGBUILD ($EDITOR), regenerates .SRCINFO
 emerge neovim-git --aur --edit             # AUR, edit PKGBUILD, regenerates .SRCINFO
-emerge neovim-git --aur --edit --off-src-regen  # edit without regenerating .SRCINFO
+emerge neovim-git --aur --edit --skip-srcinfo-regen  # edit without regenerating .SRCINFO
 emerge neovim-git --aur --unshare-net-build     # no network during build()/check()/package()
 emerge -c                                  # remove orphans (depclean)
 emerge -C neovim                           # remove package (unmerge)
 emerge @world                              # provision: install missing entries from world.set
-emerge @world --err-inst                   # also retry Err/ (unknown-source) entries normally
+emerge @world --err-install                   # also retry Err/ (unknown-source) entries normally
 emerge -u @world                           # full system upgrade (repos + AUR); does not read world.set
 emerge -u @world --refresh                 # upgrade with forced -Syy first
 emerge --sync                              # sync package databases
@@ -92,10 +92,10 @@ emerge --news 3                            # read item 3 in full
 emerge --news all                          # mark all as read
 emerge neovim-git --aur --edit --pkgbuild-view  # view/diff the PKGBUILD too, on top of --edit
 emerge neovim --abs --pkgbuild-view        # same for an ABS build
-emerge --pkgbuild-inst ~/src/my-pkg        # build+install a local PKGBUILD checkout (scanner + bwrap, like AUR/ABS)
-emerge --pkgbuild-inst ~/src/my-pkg --pkgbuild-view --skippgp
+emerge --install-pkgbuild ~/src/my-pkg        # build+install a local PKGBUILD checkout (scanner + bwrap, like AUR/ABS)
+emerge --install-pkgbuild ~/src/my-pkg --pkgbuild-view --skippgp
 emerge --scan neovim-git --aur              # audit only, no build
-emerge --pkgbuild-inst ~/src/my-pkg --scan  # same, for a local checkout
+emerge --install-pkgbuild ~/src/my-pkg --scan  # same, for a local checkout
 emerge -u --devel                           # full upgrade + upstream check for -git/-hg/-svn/-bzr
 emerge --check-devel                        # just report which devel packages moved upstream
 emerge -s neovim                           # search (repos + AUR)
@@ -182,18 +182,18 @@ emerge neovim-git --aur --pkgbuild-view
 emerge neovim --abs --edit --pkgbuild-view   # edit first, then view/diff the result
 ```
 
-`--pkgbuild-inst <PATH>` builds and installs an arbitrary local PKGBUILD checkout through the same pipeline as an AUR/ABS install - scanner, then the bwrap sandbox - instead of a bare, unaudited `makepkg -si`. `PATH` must contain a `PKGBUILD`; if there's no `.SRCINFO` yet, one is generated (`makepkg --printsrcinfo`, same as `--edit` does) so dependencies resolve statically. Combines with `--pkgbuild-view`, `-a`/`--ask`, `-1`/`--oneshot`, `--skippgp`, `--no-sandbox`, `--unshare-net-build`, `--off-src-regen`; not compatible with any package/`@set` argument or `--aur`/`--abs`. Recorded in `world.set` with the `Err/` prefix (source unknown - see [world.set](#worldset)) unless `-1`/`--oneshot` is also given.
+`--install-pkgbuild <PATH>` builds and installs an arbitrary local PKGBUILD checkout through the same pipeline as an AUR/ABS install - scanner, then the bwrap sandbox - instead of a bare, unaudited `makepkg -si`. `PATH` must contain a `PKGBUILD`; if there's no `.SRCINFO` yet, one is generated (`makepkg --printsrcinfo`, same as `--edit` does) so dependencies resolve statically. Combines with `--pkgbuild-view`, `-a`/`--ask`, `-1`/`--oneshot`, `--skippgp`, `--no-sandbox`, `--unshare-net-build`, `--skip-srcinfo-regen`; not compatible with any package/`@set` argument or `--aur`/`--abs`. Recorded in `world.set` with the `Err/` prefix (source unknown - see [world.set](#worldset)) unless `-1`/`--oneshot` is also given.
 
 ```bash
-emerge --pkgbuild-inst ~/src/my-pkg
-emerge --pkgbuild-inst ~/src/my-pkg --pkgbuild-view --skippgp
+emerge --install-pkgbuild ~/src/my-pkg
+emerge --install-pkgbuild ~/src/my-pkg --pkgbuild-view --skippgp
 ```
 
-`--scan` audits a PKGBUILD (+ `.install`) without building or installing anything - fetches straight from cgit for an AUR package name, or reads a local checkout directly with `--pkgbuild-inst <PATH> --scan`. Same findings/report as the normal pre-build scan, minus the "Continue anyway?" gate (nothing to continue to). Exits non-zero on any finding, so it's usable in a script. Not yet wired up for `--abs`.
+`--scan` audits a PKGBUILD (+ `.install`) without building or installing anything - fetches straight from cgit for an AUR package name, or reads a local checkout directly with `--install-pkgbuild <PATH> --scan`. Same findings/report as the normal pre-build scan, minus the "Continue anyway?" gate (nothing to continue to). Exits non-zero on any finding, so it's usable in a script. Not yet wired up for `--abs`.
 
 ```bash
 emerge --scan neovim-git --aur
-emerge --pkgbuild-inst ~/src/my-pkg --scan
+emerge --install-pkgbuild ~/src/my-pkg --scan
 ```
 
 ## Devel package upstream check
@@ -317,9 +317,9 @@ AUR and ABS builds are additionally constrained by the [bwrap sandbox](#sandbox)
 | `--autopgp` | Auto-import missing PGP keys (ABS) |
 | `--edit` | Edit PKGBUILD before building; regenerates `.SRCINFO` after save |
 | `--pkgbuild-view` | Show/diff PKGBUILD, confirm before building (offers `$EDITOR` on decline) |
-| `--pkgbuild-inst <PATH>` | Build+install a local PKGBUILD checkout (scanner + bwrap) |
-| `--scan` | Audit-only PKGBUILD/.install scan, no build/install (AUR or `--pkgbuild-inst`) |
-| `--off-src-regen` | With `--edit` - do not regenerate `.SRCINFO` |
+| `--install-pkgbuild <PATH>` | Build+install a local PKGBUILD checkout (scanner + bwrap) |
+| `--scan` | Audit-only PKGBUILD/.install scan, no build/install (AUR or `--install-pkgbuild`) |
+| `--skip-srcinfo-regen` | With `--edit` - do not regenerate `.SRCINFO` |
 | `--sync` | Sync package databases |
 | `--refresh` | Force `-Syy` (with `--sync` or `-u`) |
 | `--info` | System info |
@@ -333,7 +333,7 @@ AUR and ABS builds are additionally constrained by the [bwrap sandbox](#sandbox)
 | `--regen-sets <SET>` | Re-resolve prefixes for one custom set |
 | `--regen-sort` | With `--regen-sets` - also sort the file |
 | `--regen-world-from-explicit` | Migration: seed world.set from `pacman -Qeq` |
-| `--err-inst` | On `@world`, also retry `Err/` entries |
+| `--err-install` | On `@world`, also retry `Err/` entries |
 | `--resume` | Resume interrupted transaction |
 | `--skipfirst` | Skip first package on resume |
 | `--undo` | Undo last install/unmerge |

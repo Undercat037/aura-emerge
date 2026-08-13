@@ -1118,7 +1118,7 @@ pub(crate) fn scan_report_aur(pkg: &str) -> bool {
     scan_report(pkg, &pkgbuild_src, install, None)
 }
 
-/// `--scan` for a local checkout (`--pkgbuild-inst <PATH> --scan`): read
+/// `--scan` for a local checkout (`--install-pkgbuild <PATH> --scan`): read
 /// PKGBUILD (+ referenced `.install`) straight from `dir` and print a
 /// findings report. `false` if PKGBUILD couldn't be read, or any finding;
 /// `true` on a clean scan.
