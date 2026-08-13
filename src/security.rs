@@ -1062,6 +1062,77 @@ pub(crate) enum SourceOrigin<'a> {
     LocalClone(&'a std::path::Path),
 }
 
+// ── --scan: report-only PKGBUILD/.install audit ─────────────────────────────
+
+/// Shared report body for `--scan`: scan `pkgbuild_src` (and `install`,
+/// if any) and print exactly what `scan_aur_pkgbuilds_or_abort`/
+/// `verify_local_clone_or_rescan` would, minus the "Continue anyway?"
+/// gate - `--scan` never builds anything, so there's nothing to gate.
+/// Returns `true` for a clean scan (no findings), `false` otherwise;
+/// callers use this only to pick an exit code.
+fn scan_report(label: &str, pkgbuild_src: &str, install: Option<(String, String)>, local_dir: Option<&std::path::Path>) -> bool {
+    let mut pkg_findings: Vec<(String, Finding)> = scan_pkgbuild_source(pkgbuild_src)
+        .into_iter()
+        .map(|f| ("PKGBUILD".to_string(), f))
+        .collect();
+    if let Some((name, src)) = &install {
+        pkg_findings.extend(scan_pkgbuild_source(src).into_iter().map(|f| (name.clone(), f)));
+    }
+
+    if pkg_findings.is_empty() {
+        println!("{} {}: no suspicious patterns found.", ">>>".green().bold(), label.bold());
+        return true;
+    }
+
+    let atomic: Vec<&(String, Finding)> = pkg_findings.iter()
+        .filter(|(_, f)| f.severity == Severity::ConfirmedIoc)
+        .collect();
+    let suspicious: Vec<&(String, Finding)> = pkg_findings.iter()
+        .filter(|(_, f)| f.severity == Severity::Suspicious)
+        .collect();
+
+    if !atomic.is_empty() {
+        let origin = match local_dir { Some(d) => SourceOrigin::LocalClone(d), None => SourceOrigin::Cgit };
+        print_finding_block(label, "Alert, matched a known-malicious IOC", &atomic, true, origin);
+    }
+    if !suspicious.is_empty() {
+        let origin = match local_dir { Some(d) => SourceOrigin::LocalClone(d), None => SourceOrigin::Cgit };
+        print_finding_block(label, "Warning, detected suspicious fragment", &suspicious, false, origin);
+    }
+    false
+}
+
+/// `--scan` for an AUR package name: fetch PKGBUILD (+ referenced
+/// `.install`) from cgit - the same source `scan_aur_pkgbuilds_or_abort`
+/// fetches from before ever cloning anything - and print a findings
+/// report. `false` on a fetch failure (package doesn't exist on the AUR,
+/// or a network hiccup) or any finding; `true` on a clean scan.
+pub(crate) fn scan_report_aur(pkg: &str) -> bool {
+    println!("{} Scanning {} (AUR)...", ">>>".green().bold(), pkg.bold());
+    let Some(pkgbuild_src) = fetch_aur_pkgbuild(pkg) else {
+        eprintln!("{} could not fetch PKGBUILD for '{}' from the AUR.", ">>> Error:".red().bold(), pkg);
+        return false;
+    };
+    let install = resolve_install_filename(&pkgbuild_src)
+        .and_then(|name| fetch_aur_file(pkg, &name).map(|src| (name, src)));
+    scan_report(pkg, &pkgbuild_src, install, None)
+}
+
+/// `--scan` for a local checkout (`--pkgbuild-inst <PATH> --scan`): read
+/// PKGBUILD (+ referenced `.install`) straight from `dir` and print a
+/// findings report. `false` if PKGBUILD couldn't be read, or any finding;
+/// `true` on a clean scan.
+pub(crate) fn scan_report_local(label: &str, dir: &std::path::Path) -> bool {
+    println!("{} Scanning {} ({})...", ">>>".green().bold(), label.bold(), dir.display());
+    let Ok(pkgbuild_src) = std::fs::read_to_string(dir.join("PKGBUILD")) else {
+        eprintln!("{} no PKGBUILD found in {}.", ">>> Error:".red().bold(), dir.display());
+        return false;
+    };
+    let install = resolve_install_filename(&pkgbuild_src)
+        .and_then(|name| std::fs::read_to_string(dir.join(&name)).ok().map(|src| (name, src)));
+    scan_report(label, &pkgbuild_src, install, Some(dir))
+}
+
 /// Print one alert block in the emerge-style `>>> ===...` box.
 ///
 /// `is_atomic` picks the color scheme: `true` (a confirmed IOC match

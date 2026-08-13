@@ -254,6 +254,39 @@ struct Cli {
     #[arg(long = "aur")]
     aur: bool,
 
+    /// Report-only PKGBUILD/.install audit: fetches (AUR) or reads
+    /// (--pkgbuild-inst) the same files the normal scanner checks before
+    /// a build, prints the same findings, but never builds or installs
+    /// anything - no "Continue anyway?" gate either, since there's
+    /// nothing to continue to. Exits non-zero if any finding was
+    /// reported (or the fetch/read itself failed), zero on a clean scan,
+    /// so it's usable in a script. Currently AUR- and
+    /// --pkgbuild-inst-only; not yet wired up for --abs.
+    #[arg(long = "scan")]
+    scan: bool,
+
+    /// With `-u`: additionally check every installed `-git`/`-hg`/`-svn`/
+    /// `-bzr` AUR package's upstream repo directly (`git ls-remote`) and
+    /// fold in anyone whose HEAD has moved since the last check, even
+    /// though the AUR page's own recorded version - only bumped when the
+    /// maintainer manually re-pushes a `pkgver()` change - didn't. Plain
+    /// `-u` alone only ever compares that recorded AUR version via
+    /// `vercmp`, which routinely never fires for an actively-developed
+    /// `-git` package between real maintainer pushes. git-only for now
+    /// (hg+/svn+/bzr+ sources aren't parsed yet); anything else is
+    /// silently skipped, not reported as an error. See `--check-devel`
+    /// for the read-only version of this same check.
+    #[arg(long = "devel")]
+    devel: bool,
+
+    /// Report which installed `-git`/`-hg`/`-svn`/`-bzr` AUR packages
+    /// have upstream commits beyond what's currently installed - without
+    /// rebuilding or installing anything. Same upstream check as
+    /// `-u --devel`, just report-only; run `emerge -u --devel` afterward
+    /// to actually rebuild what it flags.
+    #[arg(long = "check-devel")]
+    check_devel: bool,
+
     /// Also resolve and build AUR-only dependencies of the requested
     /// package(s) (recursively), instead of stopping and asking you to
     /// opt in. Off by default: a plain --aur build only ever builds the
@@ -1025,6 +1058,13 @@ fn run() -> anyhow::Result<()> {
 
     check_binaries();
 
+    // --check-devel: report-only, no sudo needed (no install/pacman -S/
+    // -U happens here) - runs before --sudoloop for that reason.
+    if cli.check_devel {
+        check_devel_all();
+        return Ok(());
+    }
+
     if cli.sudoloop {
         if !start_sudoloop() {
             eprintln!(">>> Warning: sudo -v failed; continuing without --sudoloop.");
@@ -1046,6 +1086,21 @@ fn run() -> anyhow::Result<()> {
             std::process::exit(1);
         }
         let path = std::path::PathBuf::from(path_str);
+
+        // --scan: report-only, no build. Checked first since it's a
+        // strict subset of the normal --pkgbuild-inst flow below (both
+        // start with the same scanner).
+        if cli.scan {
+            return if crate::security::scan_report_local(
+                path.file_name().and_then(|n| n.to_str()).unwrap_or(path_str),
+                &path,
+            ) {
+                Ok(())
+            } else {
+                std::process::exit(1)
+            };
+        }
+
         if cli.pretend {
             println!(
                 "{} Would scan and build {} (--pretend: not building).",
@@ -1162,6 +1217,33 @@ fn run() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         }
+    }
+
+    // --scan: report-only PKGBUILD/.install audit, no build, no install.
+    // AUR-only for now (fetched via cgit, same source scan_aur_pkgbuilds_or_abort
+    // uses before ever cloning anything) - --abs isn't wired up yet since
+    // that needs a throwaway `pkgctl repo clone` with no reusable helper
+    // to call standalone today (see aura-emerge-tasks.md).
+    if cli.scan {
+        if cli.abs {
+            eprintln!(">>> Error: --scan doesn't support --abs yet; drop --abs or use --pkgbuild-view during a normal --abs install instead.");
+            std::process::exit(1);
+        }
+        if target_pkgs.is_empty() {
+            eprintln!(">>> Error: --scan needs at least one package name (or use --pkgbuild-inst <PATH> --scan for a local checkout).");
+            std::process::exit(1);
+        }
+        let mut all_clean = true;
+        for pkg in &target_pkgs {
+            if !crate::security::scan_report_aur(pkg) {
+                all_clean = false;
+            }
+            println!();
+        }
+        if !all_clean {
+            std::process::exit(1);
+        }
+        return Ok(());
     }
 
     // 0. @preserved-rebuild: a standalone action, checked before search/
@@ -1654,7 +1736,7 @@ fn run() -> anyhow::Result<()> {
         };
 
         println!(">>> Upgrading AUR packages...");
-        let ok2 = aur_upgrade_all(cli.pretend, cli.ask, cli.skippgp, cli.no_sandbox, cli.off_src_regen, cli.aur_deep, cli.unshare_net_build);
+        let ok2 = aur_upgrade_all(cli.pretend, cli.ask, cli.skippgp, cli.no_sandbox, cli.off_src_regen, cli.aur_deep, cli.unshare_net_build, cli.devel);
 
         println!();
         println!("{} Auto-cleaning packages...", ">>>".green().bold());

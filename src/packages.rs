@@ -1167,7 +1167,212 @@ pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
 /// build+install to `aur_install()` -- the same bwrap-sandboxed
 /// path used for a fresh AUR install, so an upgrade gets exactly the same
 /// isolation and PKGBUILD scanning as `emerge --aur <pkg>` does.
-pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbox: bool, off_src_regen: bool, deep: bool, unshare_net_build: bool) -> bool {
+// ── --devel / --check-devel: upstream drift check for -git/-hg/-svn/-bzr ───
+
+/// Whether `name` looks like an Arch "devel package" by the usual
+/// naming convention. Only `-git` sources are actually parsed today (see
+/// `extract_git_source_url`) - `-hg`/`-svn`/`-bzr` packages are still
+/// recognized here so they show up as "couldn't determine" rather than
+/// being silently invisible, but their upstream isn't actually checked
+/// yet.
+fn is_devel_pkg(name: &str) -> bool {
+    ["-git", "-hg", "-svn", "-bzr"].iter().any(|suf| name.ends_with(suf))
+}
+
+/// Very small best-effort extraction of the first `git+` VCS source URL
+/// out of a PKGBUILD's `source=()` array text. Deliberately not full
+/// bash parsing (this project only does that for the security scanner's
+/// AST pass in bash_ast.rs) - a miss here just means the devel check is
+/// skipped for that package, same as any other "couldn't determine"
+/// case, so a wrong or partial parse costs nothing.
+///
+/// Returns `(url, branch)`; `branch` is `Some` only when a `#branch=...`
+/// fragment was present in the source entry (`git ls-remote` checks the
+/// remote's `HEAD` otherwise, i.e. its default branch).
+fn extract_git_source_url(pkgbuild_src: &str) -> Option<(String, Option<String>)> {
+    let idx = pkgbuild_src.find("git+")?;
+    let rest = &pkgbuild_src[idx + "git+".len()..];
+    let end = rest.find(['\'', '"', ' ', '\n', '\t']).unwrap_or(rest.len());
+    let raw = &rest[..end];
+    let (url_part, frag) = match raw.split_once('#') {
+        Some((u, f)) => (u, Some(f)),
+        None => (raw, None),
+    };
+    if url_part.is_empty() {
+        return None;
+    }
+    let branch = frag.and_then(|f| {
+        f.split('&').find_map(|kv| kv.strip_prefix("branch=")).map(str::to_string)
+    });
+    Some((url_part.to_string(), branch))
+}
+
+/// `git ls-remote <url> [branch|HEAD]`, no local clone involved at all -
+/// just asks the remote what its current commit is. Returns the commit
+/// hash from the first line of output, or `None` on any failure
+/// (network, bad URL, private repo, `git` missing, ...).
+fn git_ls_remote_head(url: &str, branch: Option<&str>) -> Option<String> {
+    let refname = branch.unwrap_or("HEAD");
+    let out = Command::new("git")
+        .args(["ls-remote", url, refname])
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.lines().next()?.split_whitespace().next().map(str::to_string)
+}
+
+/// Where `--devel`/`--check-devel` remember the last upstream commit
+/// hash seen for each devel package, so a *second* run can tell "moved"
+/// from "first time we've ever looked". `name<TAB>hash` per line, same
+/// spirit as `news.rs`'s read-state file.
+fn devel_state_path() -> Option<std::path::PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    Some(std::path::Path::new(&home).join(".cache/aura-emerge/devel.state"))
+}
+
+fn load_devel_state() -> HashMap<String, String> {
+    let Some(path) = devel_state_path() else { return Default::default() };
+    let Ok(text) = fs::read_to_string(path) else { return Default::default() };
+    text.lines()
+        .filter_map(|l| l.split_once('\t'))
+        .map(|(name, hash)| (name.trim().to_string(), hash.trim().to_string()))
+        .collect()
+}
+
+fn save_devel_state(state: &HashMap<String, String>) {
+    let Some(path) = devel_state_path() else {
+        eprintln!(">>> Warning: could not determine $HOME, devel state not saved");
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        if fs::create_dir_all(parent).is_err() {
+            eprintln!(">>> Warning: could not create {}, devel state not saved", parent.display());
+            return;
+        }
+    }
+    let tmp = path.with_extension("tmp");
+    let write_result = (|| -> std::io::Result<()> {
+        let mut f = fs::File::create(&tmp)?;
+        for (name, hash) in state {
+            writeln!(f, "{}\t{}", name, hash)?;
+        }
+        Ok(())
+    })();
+    if write_result.is_err() || fs::rename(&tmp, &path).is_err() {
+        eprintln!(">>> Warning: failed to save devel state");
+    }
+}
+
+enum DevelStatus {
+    /// Upstream HEAD differs from the hash recorded last time this
+    /// package was checked.
+    Moved,
+    Unchanged,
+    /// First time this package has ever been checked (no prior
+    /// baseline) - the current hash gets recorded either way, but
+    /// there's nothing to have "moved" relative to yet, so this is
+    /// never treated as an upgrade candidate on its own.
+    FirstSeen,
+    /// Couldn't fetch the PKGBUILD, couldn't find a `git+` source in
+    /// it, or `git ls-remote` itself failed. Never treated as "moved" -
+    /// "can't tell" is not the same as "out of date".
+    Unknown,
+}
+
+/// Check one devel package's upstream against the last-recorded hash in
+/// `state` (mutated in place with whatever hash was just seen, so the
+/// caller only needs to `save_devel_state` once after a whole batch).
+fn check_devel_pkg(pkg: &str, state: &mut HashMap<String, String>) -> DevelStatus {
+    let Some(pkgbuild_src) = crate::security::fetch_aur_pkgbuild(pkg) else {
+        return DevelStatus::Unknown;
+    };
+    let Some((url, branch)) = extract_git_source_url(&pkgbuild_src) else {
+        return DevelStatus::Unknown;
+    };
+    let Some(hash) = git_ls_remote_head(&url, branch.as_deref()) else {
+        return DevelStatus::Unknown;
+    };
+    let status = match state.get(pkg) {
+        Some(prev) if *prev == hash => DevelStatus::Unchanged,
+        Some(_) => DevelStatus::Moved,
+        None => DevelStatus::FirstSeen,
+    };
+    state.insert(pkg.to_string(), hash);
+    status
+}
+
+/// `--check-devel`: report which installed devel packages have upstream
+/// commits beyond what was last recorded, without building or installing
+/// anything. See `-u --devel` (the `devel` block inside
+/// `aur_upgrade_all`) for the version that folds this into a real
+/// upgrade run.
+pub(crate) fn check_devel_all() -> bool {
+    let foreign = match Command::new(PACMAN_BIN)
+        .args(["-Qm"])
+        .env("LC_ALL", "C")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+    {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).into_owned(),
+        _ => {
+            eprintln!("{} failed to list foreign (AUR/local) packages (pacman -Qm)", ">>> Error:".red().bold());
+            return false;
+        }
+    };
+
+    let devel_names: Vec<String> = foreign
+        .lines()
+        .filter_map(|l| l.split_whitespace().next())
+        .filter(|n| is_devel_pkg(n))
+        .map(str::to_string)
+        .collect();
+
+    if devel_names.is_empty() {
+        println!(">>> No installed -git/-hg/-svn/-bzr packages found.");
+        return true;
+    }
+
+    println!("{} Checking upstream for {} devel package(s)...", ">>>".green().bold(), devel_names.len());
+    let mut state = load_devel_state();
+    let mut moved: Vec<String> = Vec::new();
+    let mut unknown: Vec<String> = Vec::new();
+    for name in &devel_names {
+        match check_devel_pkg(name, &mut state) {
+            DevelStatus::Moved => moved.push(name.clone()),
+            DevelStatus::Unchanged | DevelStatus::FirstSeen => {}
+            DevelStatus::Unknown => unknown.push(name.clone()),
+        }
+    }
+    save_devel_state(&state);
+
+    println!();
+    if moved.is_empty() {
+        println!("{} No devel package(s) with upstream changes.", ">>>".green().bold());
+    } else {
+        println!("{} {} devel package(s) with upstream changes:", ">>>".yellow().bold(), moved.len());
+        for n in &moved {
+            println!("  [{} {:<4}] {}", "ebuild".green(), "U".yellow().bold(), n.yellow().bold());
+        }
+        println!();
+        println!(">>> Use `emerge -u --devel` to rebuild these along with the normal upgrade.");
+    }
+    if !unknown.is_empty() {
+        println!();
+        println!(
+            "{} could not determine upstream status for (missing git+ source, fetch failed, or non-git VCS): {}",
+            "Note:".dimmed(),
+            unknown.join(", ")
+        );
+    }
+    true
+}
+
+pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbox: bool, off_src_regen: bool, deep: bool, unshare_net_build: bool, devel: bool) -> bool {
     let foreign = match Command::new(PACMAN_BIN)
         .args(["-Qm"])
         .env("LC_ALL", "C")
@@ -1228,6 +1433,37 @@ pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbo
             not_in_aur.len(),
             not_in_aur.join(", ")
         );
+    }
+
+    // --devel: additionally check every installed devel (-git/-hg/-svn/
+    // -bzr) package's upstream repo directly, and fold in anyone whose
+    // HEAD has moved even though the vercmp pass above found nothing -
+    // the whole point of --devel, since AUR's own recorded version for
+    // these routinely lags real upstream activity. Skips anything the
+    // vercmp pass already caught (no point checking twice).
+    if devel {
+        let already: std::collections::HashSet<&str> =
+            to_upgrade.iter().map(|(n, _, _)| n.as_str()).collect();
+        let candidates: Vec<&String> = installed
+            .iter()
+            .map(|(n, _)| n)
+            .filter(|n| is_devel_pkg(n) && !already.contains(n.as_str()))
+            .collect();
+        if !candidates.is_empty() {
+            println!(">>> Checking upstream for {} devel package(s)...", candidates.len());
+            let mut state = load_devel_state();
+            for name in candidates {
+                if matches!(check_devel_pkg(name, &mut state), DevelStatus::Moved) {
+                    let old = installed
+                        .iter()
+                        .find(|(n, _)| n == name)
+                        .map(|(_, v)| v.clone())
+                        .unwrap_or_default();
+                    to_upgrade.push((name.clone(), old, "devel (upstream moved)".to_string()));
+                }
+            }
+            save_devel_state(&state);
+        }
     }
 
     if to_upgrade.is_empty() {
