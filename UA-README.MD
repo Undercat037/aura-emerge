@@ -7,30 +7,40 @@
 
 ## Встановлення
 
-### Makepkg
-```bash
-git clone https://github.com/Undercat037/aura-emerge
-cd aura-emerge
-makepkg -si
-```
-
 ### AUR
 ```bash
 paru -S aura-emerge
 ```
+### Makepkg
+```bash
+git clone https://aur.archlinux.org/aura-emerge.git
+cd aura-emerge
+makepkg -si
+```
+
+<details>
+<summary><h3>Ручна збірка/makepkg (Нестабільна)</h3></summary>
 
 ### Ручна збірка
 ```bash
-git clone https://github.com/Undercat037/aura-emerge
+git clone https://github.com/Undercat037/aura-emerge.git
 cd aura-emerge
 cargo build --release
 sudo cp target/release/aura-emerge /usr/bin/emerge
 sudo ln -sf /usr/bin/emerge /usr/bin/portageq
-emerge --gen-completions bash   # → /usr/share/bash-completion/completions/emerge
-emerge --gen-completions zsh    # → /usr/share/zsh/site-functions/_emerge
-emerge --gen-completions fish   # → /usr/share/fish/vendor_completions.d/emerge.fish
+emerge --gen-completions bash | sudo tee /usr/share/bash-completion/completions/emerge
+emerge --gen-completions zsh | sudo tee /usr/share/zsh/site-functions/_emerge
+emerge --gen-completions fish | sudo tee /usr/share/fish/vendor_completions.d/emerge.fish
 emerge --gen-manpage | sudo tee /usr/share/man/man1/emerge.1 >/dev/null
 ```
+### Makepkg
+```bash
+git clone https://github.com/Undercat037/aura-emerge.git
+cd aura-emerge
+makepkg -si
+```
+</details>
+
 
 **Залежності:** `git`  
 **Опційно:**
@@ -288,6 +298,16 @@ emerge --news all    # позначити всі як прочитані
 Знахідки: `Suspicious` або `ConfirmedIoc`. Спрацювання не блокує жорстко - показує файл/рядок, посилання на cgit, запит `Continue anyway? [y/N]`.
 
 Збірки AUR і ABS додатково захищені [пісочницею `bwrap`](#пісочниця).
+
+<details>
+<summary><h3>Тестування(після встановлення)</h3></summary>
+
+```bash
+git clone https://github.com/Undercat037/aura-emerge.git
+cd aura-emerge
+emerge --install-pkgbuild ./scaner-test --ask
+```
+</details>
 
 <details>
 <summary><h3>Прапори</h3></summary>

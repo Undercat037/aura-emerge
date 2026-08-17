@@ -7,30 +7,39 @@ Packages are tracked in a `world.set` file - install once, track forever.
 
 ## Installation
 
-### Makepkg
-```bash
-git clone https://github.com/Undercat037/aura-emerge
-cd aura-emerge
-makepkg -si
-```
-
 ### AUR
 ```bash
 paru -S aura-emerge
 ```
+### Makepkg
+```bash
+git clone https://aur.archlinux.org/aura-emerge.git
+cd aura-emerge
+makepkg -si
+```
+
+<details>
+<summary><h3>Manual/makepkg (Unstable)</h3></summary>
 
 ### Manual build
 ```bash
-git clone https://github.com/Undercat037/aura-emerge
+git clone https://github.com/Undercat037/aura-emerge.git
 cd aura-emerge
 cargo build --release
 sudo cp target/release/aura-emerge /usr/bin/emerge
 sudo ln -sf /usr/bin/emerge /usr/bin/portageq
-emerge --gen-completions bash   # → /usr/share/bash-completion/completions/emerge
-emerge --gen-completions zsh    # → /usr/share/zsh/site-functions/_emerge
-emerge --gen-completions fish   # → /usr/share/fish/vendor_completions.d/emerge.fish
+emerge --gen-completions bash | sudo tee /usr/share/bash-completion/completions/emerge
+emerge --gen-completions zsh | sudo tee /usr/share/zsh/site-functions/_emerge
+emerge --gen-completions fish | sudo tee /usr/share/fish/vendor_completions.d/emerge.fish
 emerge --gen-manpage | sudo tee /usr/share/man/man1/emerge.1 >/dev/null
 ```
+### Makepkg
+```bash
+git clone https://github.com/Undercat037/aura-emerge.git
+cd aura-emerge
+makepkg -si
+```
+</details>
 
 **Dependencies:** `git`  
 **Optional:**
@@ -220,7 +229,7 @@ cachyos-extra-v3/rust-analyzer
 chaotic-aur/visual-studio-code-bin
 core/nano
 aur/ayugram-desktop-bin
-abs/nano-custom
+abs/nano
 extra/firefox
 ```
 
@@ -288,6 +297,17 @@ Before every AUR install, the raw `PKGBUILD` (and any `.install` hook) is fetche
 Findings are `Suspicious` or `ConfirmedIoc`. A hit does not hard-block - it prints the file/line, a cgit link, and asks `Continue anyway? [y/N]`.
 
 AUR and ABS builds are additionally constrained by the [bwrap sandbox](#sandbox).
+
+<details>
+<summary><h3>Testing(post-install)</h3></summary>
+
+```bash
+git clone https://github.com/Undercat037/aura-emerge.git
+cd aura-emerge
+emerge --install-pkgbuild ./scaner-test --ask
+```
+</details>
+
 
 <details>
 <summary><h3>Flags</h3></summary>
