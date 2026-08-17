@@ -2,12 +2,14 @@
 pkgname=aura-emerge-git
 pkgver=0.00.0
 pkgrel=1
-pkgdesc="Gentoo-style emerge for Arch Linux - installs from official repos, the AUR, and ABS, scans PKGBUILDs for supply-chain red flags before building, and runs untrusted build steps inside a `bwrap` sandbox."
+pkgdesc="Gentoo-style emerge for Arch Linux - installs from official repos, the AUR, and ABS, scans PKGBUILDs for supply-chain red flags before building, and runs untrusted build steps inside a bwrap sandbox."
 arch=('x86_64')
 url="https://github.com/Undercat037/aura-emerge"
 license=('GPL-3.0')
 depends=('git' 'sudo')
-optdepends=('gnupg: for PGP verification' 'pkgctl: for abs' 'bubblewrap: for sandboxing')
+optdepends=('devtools: for --abs support (pkgctl repo clone)'
+            'gnupg: for PGP verification when building from ABS'
+            'bubblewrap: sandboxed builds (falls back to unsandboxed with --no-sandbox)')
 makedepends=('rust' 'cargo')
 conflicts=('portage' 'portage-git' 'aura-emerge')
 provides=('portageq')

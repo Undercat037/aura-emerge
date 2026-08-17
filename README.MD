@@ -345,10 +345,6 @@ AUR and ABS builds are additionally constrained by the [bwrap sandbox](#sandbox)
 
 The `emerge(1)` man page is generated from the CLI via `clap_mangen` (`emerge --gen-manpage`), so it cannot drift from `--help`.
 
-## Demo
-
-[vhs-emerge](repo-files/emerge.gif)
-
 ## Author
 
 **Undercat037**
