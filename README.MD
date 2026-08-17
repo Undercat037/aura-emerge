@@ -289,7 +289,8 @@ Findings are `Suspicious` or `ConfirmedIoc`. A hit does not hard-block - it prin
 
 AUR and ABS builds are additionally constrained by the [bwrap sandbox](#sandbox).
 
-## Flags
+<details>
+<summary>## Flags</summary>
 
 | Flag | Description |
 |------|-------------|
@@ -344,6 +345,7 @@ AUR and ABS builds are additionally constrained by the [bwrap sandbox](#sandbox)
 | `-V` / `--version` | Version |
 
 The `emerge(1)` man page is generated from the CLI via `clap_mangen` (`emerge --gen-manpage`), so it cannot drift from `--help`.
+</details>
 
 ## Author
 
