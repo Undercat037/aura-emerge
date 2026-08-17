@@ -1167,10 +1167,12 @@ pub(crate) fn scan_report_local(label: &str, dir: &std::path::Path) -> bool {
 
 /// Print one alert block in the emerge-style `>>> ===...` box.
 ///
-/// `is_atomic` picks the color scheme: `true` (a confirmed IOC match
-/// against a disclosed campaign, near-zero false-positive risk) uses
-/// red/orange for a louder alert; `false` (generic heuristic hit) uses
-/// yellow throughout.
+/// Both severities now share the same red/orange scheme (previously
+/// yellow-only for a generic heuristic hit vs red/orange for a
+/// confirmed IOC match) -- a heuristic hit is still worth stopping for,
+/// so it shouldn't read as visually "less serious" than a confirmed
+/// one. `is_atomic` is kept in the signature only so callers don't need
+/// to change; it no longer affects rendering.
 ///
 /// Each finding line names the file and line it fired on; the block ends
 /// with a way to go read each referenced file in full -- a cgit link for
@@ -1178,19 +1180,14 @@ pub(crate) fn scan_report_local(label: &str, dir: &std::path::Path) -> bool {
 pub(crate) fn print_finding_block(pkg: &str, headline: &str, findings: &[&(String, Finding)], is_atomic: bool, origin: SourceOrigin) {
     let bar = "===================================";
     let arrow_str = ">>>";
+    let _ = is_atomic;
 
     eprintln!();
-    if is_atomic {
-        eprintln!("{} {}", arrow_str.red().bold(), bar.truecolor(255, 140, 0).bold());
-        eprintln!("{} {}", arrow_str.red().bold(), format!("{} ({})", headline, pkg).yellow().bold());
-        eprintln!("{} {}", arrow_str.red().bold(), bar.truecolor(255, 140, 0).bold());
-    } else {
-        eprintln!("{} {}", arrow_str.yellow().bold(), bar.yellow().bold());
-        eprintln!("{} {}", arrow_str.yellow().bold(), format!("{} ({})", headline, pkg).yellow().bold());
-        eprintln!("{} {}", arrow_str.yellow().bold(), bar.yellow().bold());
-    }
+    eprintln!("{} {}", arrow_str.red().bold(), bar.truecolor(255, 140, 0).bold());
+    eprintln!("{} {}", arrow_str.red().bold(), format!("{} ({})", headline, pkg).yellow().bold());
+    eprintln!("{} {}", arrow_str.red().bold(), bar.truecolor(255, 140, 0).bold());
 
-    let arrow = || if is_atomic { arrow_str.truecolor(255, 140, 0).bold() } else { arrow_str.yellow().bold() };
+    let arrow = || arrow_str.truecolor(255, 140, 0).bold();
 
     let mut files_seen: Vec<&str> = Vec::new();
     for (file, finding) in findings {
