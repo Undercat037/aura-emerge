@@ -310,7 +310,7 @@ emerge --install-pkgbuild ./scaner-test --ask
 </details>
 
 <details>
-<summary><h3>Прапори</h3></summary>
+<summary><h2>Прапори</h2></summary>
 
 | Прапор | Опис |
 |--------|------|

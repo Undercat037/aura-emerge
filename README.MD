@@ -310,7 +310,7 @@ emerge --install-pkgbuild ./scaner-test --ask
 
 
 <details>
-<summary><h3>Flags</h3></summary>
+<summary><h2>Flags</h2></summary>
 
 | Flag | Description |
 |------|-------------|
