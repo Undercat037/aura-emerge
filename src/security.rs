@@ -59,7 +59,8 @@ pub(crate) fn parse_install_filename(pkgbuild_text: &str) -> Option<String> {
             continue;
         }
         if let Some(rest) = l.strip_prefix("install=") {
-            let name = rest.trim().trim_matches('\'').trim_matches('"');
+            let value = strip_trailing_comment(rest);
+            let name = value.trim().trim_matches('\'').trim_matches('"');
             if !name.is_empty() {
                 return Some(name.to_string());
             }
@@ -96,6 +97,45 @@ pub(crate) fn resolve_install_filename(pkgbuild_text: &str) -> Option<String> {
     }
 }
 
+/// Strips a trailing `# comment` from a raw `key=value` remainder, the
+/// way bash actually would - not just "everything after `key=`" the way
+/// this file used to treat it. Two failure modes that produced before
+/// this fix: an inline-commented `install=${pkgname}.install   # ...`
+/// resolved to a garbage filename with the comment text glued onto the
+/// end, so the `.install` hook silently never got read or scanned at
+/// all (caught via a real repro: a Cyrillic comment on that exact line
+/// left the file completely unscanned, no error, no warning - it just
+/// quietly wasn't there); a `pkgdesc="... # not a comment"` could have
+/// been truncated at the `#` if this didn't handle quoting.
+///
+/// bash's own rule: `#` starts a comment only when it begins a new word
+/// (preceded by whitespace, or the very start of the remainder) - a `#`
+/// stuck directly onto other characters isn't one. A quoted value
+/// (`'...'`/`"..."`) takes priority and is returned whole up to its
+/// matching close quote, `#` inside it or not - `pkgdesc="a #1 thing"`
+/// keeps its `#`, same as bash would.
+fn strip_trailing_comment(rest: &str) -> &str {
+    let trimmed = rest.trim_start();
+    let lead_ws = rest.len() - trimmed.len();
+    let bytes = trimmed.as_bytes();
+    if let Some(&first) = bytes.first() {
+        if first == b'\'' || first == b'"' {
+            if let Some(close_rel) = trimmed[1..].find(first as char) {
+                return &rest[..lead_ws + close_rel + 2];
+            }
+            return rest; // unterminated quote - nothing sane to cut, leave as-is
+        }
+    }
+    let mut prev_was_space = true; // start of the (already-trimmed) value counts as a boundary
+    for (i, c) in trimmed.char_indices() {
+        if c == '#' && prev_was_space {
+            return &rest[..lead_ws + i];
+        }
+        prev_was_space = c.is_whitespace();
+    }
+    rest
+}
+
 /// Grabs a simple scalar `key=value` assignment from a PKGBUILD (first
 /// match, comments skipped). Returns `None` for array assignments
 /// (`pkgname=(a b)`, used by split packages) since there's no single
@@ -108,10 +148,11 @@ fn simple_var(source: &str, key: &str) -> Option<String> {
             continue;
         }
         if let Some(rest) = l.strip_prefix(&needle) {
-            if rest.starts_with('(') {
+            if rest.trim_start().starts_with('(') {
                 return None;
             }
-            let v = rest.trim().trim_matches('\'').trim_matches('"');
+            let value = strip_trailing_comment(rest);
+            let v = value.trim().trim_matches('\'').trim_matches('"');
             if !v.is_empty() {
                 return Some(v.to_string());
             }
@@ -1183,9 +1224,9 @@ pub(crate) fn print_finding_block(pkg: &str, headline: &str, findings: &[&(Strin
     let _ = is_atomic;
 
     eprintln!();
-    eprintln!("{} {}", arrow_str.red().bold(), bar.truecolor(255, 140, 0).bold());
-    eprintln!("{} {}", arrow_str.red().bold(), format!("{} ({})", headline, pkg).yellow().bold());
-    eprintln!("{} {}", arrow_str.red().bold(), bar.truecolor(255, 140, 0).bold());
+    eprintln!("{} {}", arrow_str.truecolor(250, 16, 66).bold(), bar.truecolor(250, 16, 66).bold());
+    eprintln!("{} {}", arrow_str.truecolor(250, 16, 66).bold(), format!("{} ({})", headline, pkg).yellow().bold());
+    eprintln!("{} {}", arrow_str.truecolor(250, 16, 66).bold(), bar.truecolor(250, 16, 66).bold());
 
     let arrow = || arrow_str.truecolor(255, 140, 0).bold();
 
@@ -1406,6 +1447,41 @@ package() {
         );
         assert_eq!(parse_install_filename("# install=foo.install"), None);
         assert_eq!(parse_install_filename("pkgname=foo\npkgver=1.0"), None);
+    }
+
+    #[test]
+    fn parse_install_filename_ignores_trailing_inline_comment() {
+        // the real repro: an inline comment on the install= line (even one
+        // that re-mentions ${pkgname}, as a copy-pasted note might) used to
+        // get glued onto the value, producing a filename that could never
+        // exist on disk - the .install hook then silently never got read
+        // or scanned, with no error anywhere.
+        assert_eq!(
+            parse_install_filename("install=foo.install   # some comment"),
+            Some("foo.install".to_string())
+        );
+        assert_eq!(
+            parse_install_filename("install=${pkgname}.install   # note: mentions ${pkgname} again"),
+            Some("${pkgname}.install".to_string())
+        );
+        assert_eq!(
+            resolve_install_filename(
+                "pkgname=scaner-test\ninstall=${pkgname}.install                                                   # interpolation test ${pkgname}\n"
+            ),
+            Some("scaner-test.install".to_string())
+        );
+        // a quoted value keeps a '#' that's actually inside the quotes
+        assert_eq!(
+            parse_install_filename("install=\"foo#bar.install\"  # trailing comment"),
+            Some("foo#bar.install".to_string())
+        );
+    }
+
+    #[test]
+    fn simple_var_ignores_trailing_inline_comment() {
+        assert_eq!(simple_var("pkgname=foo   # the package name", "pkgname"), Some("foo".to_string()));
+        assert_eq!(simple_var("pkgdesc=\"a #1 package\"  # comment", "pkgdesc"), Some("a #1 package".to_string()));
+        assert_eq!(simple_var("pkgname=(a b)  # split package", "pkgname"), None);
     }
 
     #[test]
