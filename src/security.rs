@@ -1466,7 +1466,7 @@ package() {
         );
         assert_eq!(
             resolve_install_filename(
-                "pkgname=scaner-test\ninstall=${pkgname}.install                                                   # interpolation test ${pkgname}\n"
+                "pkgname=scaner-test\ninstall=${pkgname}.install                                                   # тест интерполяции ${pkgname}\n"
             ),
             Some("scaner-test.install".to_string())
         );
