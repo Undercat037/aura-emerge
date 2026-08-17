@@ -34,6 +34,66 @@ pub(crate) fn bwrap_available() -> bool {
     Path::new(BWRAP_BIN).exists()
 }
 
+/// Fixes the `rustup could not choose a version of cargo to run,
+/// because ... no default is configured` failure a sandboxed `build()`
+/// hits for any PKGBUILD that shells out to `cargo`/`rustc` on a
+/// rustup-managed toolchain (reported against aura-emerge's own
+/// PKGBUILD, which builds itself with `cargo build --release`).
+///
+/// rustup keeps its default-toolchain setting and installed toolchains
+/// under `$RUSTUP_HOME` (`$HOME/.rustup` unless overridden), and its
+/// `cargo`/`rustc` shims on `$PATH` (`$HOME/.cargo/bin`, inherited by
+/// the sandboxed process same as any other `$PATH` entry -- `$HOME`
+/// itself has no bearing on that lookup). The fake, empty `$HOME` set
+/// above for the sandbox doesn't hide the real toolchain files -- they
+/// stay reachable at their real absolute path under the whole-
+/// filesystem `--ro-bind /` -- it just changes where rustup's own
+/// `$HOME`-relative default now points, to a `$RUSTUP_HOME` that's
+/// empty. Same shims, same installed toolchain on disk, but rustup can
+/// no longer find its own settings, so it refuses to guess.
+///
+/// Fix: explicitly `--setenv RUSTUP_HOME` back to wherever it *really*
+/// resolves outside the sandbox (the user's own override if
+/// `$RUSTUP_HOME` is set, `$HOME/.rustup` otherwise) so rustup finds
+/// its real `settings.toml` and installed toolchains again. No new
+/// bind rule needed -- that path is already exposed read-only by the
+/// `--ro-bind /` above, which is exactly right here: a build only ever
+/// needs to *use* an already-installed toolchain, never to install or
+/// modify one.
+///
+/// `$CARGO_HOME` deliberately does NOT get the same treatment: unlike
+/// `~/.rustup`, `~/.cargo` can hold a real secret
+/// (`~/.cargo/credentials.toml`, a crates.io publish token), and this
+/// module's whole premise is that a hostile `build()` shouldn't get
+/// read access to anything under the real `$HOME` worth stealing.
+/// Instead it's pointed at a fresh, writable directory inside
+/// `build_dir` (already the one writable exception carved out above) --
+/// cargo treats a missing/empty `CARGO_HOME` as "start a new registry
+/// cache here" and works fine, it just re-fetches the crates.io index
+/// and dependencies into this sandboxed cache instead of reusing the
+/// user's real one.
+fn rustup_env(build_dir: &Path) -> Vec<(String, String)> {
+    let mut env = Vec::new();
+
+    let real_rustup_home = std::env::var("RUSTUP_HOME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".rustup")));
+    if let Some(rustup_home) = real_rustup_home {
+        if rustup_home.is_dir() {
+            env.push(("RUSTUP_HOME".to_string(), rustup_home.to_string_lossy().to_string()));
+        }
+    }
+
+    let cargo_home = build_dir.join(".aura-emerge-sandbox-cargo-home");
+    if std::fs::create_dir_all(&cargo_home).is_ok() {
+        env.push(("CARGO_HOME".to_string(), cargo_home.to_string_lossy().to_string()));
+    }
+
+    env
+}
+
 /// Builds the `bwrap ... -- makepkg ...` command that runs the
 /// build-time PKGBUILD functions in an isolated user/mount/pid/ipc/uts
 /// namespace.
@@ -158,6 +218,12 @@ pub(crate) fn sandboxed_makepkg(
             let src_s = gnupg.to_string_lossy().to_string();
             cmd.args(["--ro-bind", &src_s, &dest_s]);
         }
+    }
+
+    // rustup: see `rustup_env`'s doc comment for why this needs its own
+    // handling on top of the fake $HOME above.
+    for (k, v) in rustup_env(build_dir) {
+        cmd.args(["--setenv", &k, &v]);
     }
 
     cmd.args(["--chdir", &build_dir_s]);
