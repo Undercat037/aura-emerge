@@ -290,7 +290,7 @@ Findings are `Suspicious` or `ConfirmedIoc`. A hit does not hard-block - it prin
 AUR and ABS builds are additionally constrained by the [bwrap sandbox](#sandbox).
 
 <details>
-<summary>## Flags</summary>
+<summary><h3>Flags</h3></summary>
 
 | Flag | Description |
 |------|-------------|
