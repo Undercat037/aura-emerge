@@ -344,10 +344,6 @@ emerge --news all    # позначити всі як прочитані
 
 Man-сторінка `emerge(1)` генерується з CLI через `clap_mangen` (`emerge --gen-manpage`), тож не розходиться з `--help`.
 
-## Демонстрація
-
-[vhs-emerge](repo-files/emerge.gif)
-
 ## Автор
 
 **Undercat037**
