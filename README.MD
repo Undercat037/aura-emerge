@@ -367,6 +367,6 @@ emerge --install-pkgbuild ./scaner-test --ask
 The `emerge(1)` man page is generated from the CLI via `clap_mangen` (`emerge --gen-manpage`), so it cannot drift from `--help`.
 </details>
 
-## Author
-
-**Undercat037**
+## Author/License
+Copyright (C) 2026 **Undercat037**
+GPL-3.0 license
