@@ -367,6 +367,6 @@ emerge --install-pkgbuild ./scaner-test --ask
 Man-сторінка `emerge(1)` генерується з CLI через `clap_mangen` (`emerge --gen-manpage`), тож не розходиться з `--help`.
 </details>
 
-## Автор
-
-**Undercat037**
+## Автор/Ліцензія
+Copyright (C) 2026 **Undercat037**
+GPL-3.0 license
