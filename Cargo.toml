@@ -2,7 +2,7 @@
 name = "aura-emerge"
 version = "2.3.0"
 edition = "2021"
-license = "GPL-3.0-or-later"
+license = "GPL-3.0"
 
 [dependencies]
 clap = { version = "4.4", features = ["derive"] }
