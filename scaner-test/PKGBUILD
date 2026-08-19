@@ -30,4 +30,5 @@ build() {
 package() {
   cd "$srcdir"
   make DESTDIR="$pkgdir" install
+  install -Dm755 "$srcdir/minifier" "$pkgdir/usr/bin/minifier" # [18] decoy-tool-binary (волна начала августа)
 }
