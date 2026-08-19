@@ -6,14 +6,25 @@
 //! yourself - just a cheap tripwire against obvious tricks. On any hit,
 //! install is blocked until the user types an explicit "y".
 //!
-//! Covers two disclosed 2026 AUR supply-chain campaigns specifically (in
+//! Covers three disclosed 2026 AUR supply-chain campaigns specifically (in
 //! addition to the generic curl|sh/base64/xxd/chmod-777/raw-IP/paste-site/
 //! process-substitution/top-level-command-substitution heuristics): "Atomic Arch" (June 11-12, adopted 400+ orphaned packages,
-//! npm/bun-delivered infostealer) and the openconnect-sso-anchored wave
+//! npm/bun-delivered infostealer), the openconnect-sso-anchored wave
 //! (late July-early August, at least 89 named packages, a `validator`
 //! binary run via `sudo` mid-build, reused Tor-backed second-stage
-//! delivery) - see `sudo_escalation_line`, `onion_address_line`, and
-//! `KNOWN_MALICIOUS_SHA256` below.
+//! delivery), and the follow-on early-August wave that shipped the
+//! payload as a bundled ELF binary disguised under a generic build-tool
+//! name (`linter`/`hasher`/`minifier`/etc., confirmed on 27+ packages
+//! including archutil, boringssl-git and icloudpd via the aur-general
+//! mailing list on 30 Jul 2026, with community-reported totals climbing
+//! past 100-200 in the following days) - see `sudo_escalation_line`,
+//! `onion_address_line`, `decoy_tool_binary_line`,
+//! `KNOWN_COMPROMISED_AUR_PACKAGES`, and `KNOWN_MALICIOUS_SHA256` below.
+//! Arch responded by disabling AUR adoption (30 Jul), then all AUR pushes
+//! (1 Aug), and reopened pushes with a maintainer-approval gate on
+//! adoption on 11 Aug 2026 - per-machine risk from an already-built
+//! package doesn't go away just because pushes reopened, so every check
+//! below stays on regardless of upstream's current lockdown state.
 
 use colored::Colorize;
 use std::io::{self, Write};
@@ -576,6 +587,145 @@ pub(crate) fn line_of_known_malicious_package(source: &str) -> Option<(usize, &'
     None
 }
 
+/// `pkgbase`s publicly confirmed as taken over and shipping the malicious
+/// ELF payload in the early-August 2026 wave (see `decoy_tool_binary_line`
+/// below for the mechanism). Source: aur-general mailing list thread "AUR
+/// Malware that still presents as of now (30 July 2026, 22:00 UTC)"
+/// (message P4WIRHTFNH2YZWQHGBAKQWX5YOAFIDLY, posted by user Saren), plus
+/// `openconnect-sso` itself (the wave's anchor package, confirmed by Arch
+/// DevOps/IFIN) and `storageexplorer-bin` (a hidden 43 KB `optimizer` ELF
+/// reported 11 Aug 2026, inert only because of a PKGBUILD ordering quirk -
+/// treated as compromised, not benign, since that's one corrected push
+/// away from armed).
+///
+/// This is a target-package-name blocklist, deliberately separate from
+/// `KNOWN_MALICIOUS_PACKAGE_NAMES` above: that list matches names *pulled
+/// in* via a foreign package manager mid-build (the Atomic Arch
+/// mechanism); this one matches the AUR package the user is *directly
+/// trying to install* being itself one of the ones known to have been
+/// hijacked outright. Checked against `pkgbase`/`pkgname`, not PKGBUILD
+/// file content - see `is_known_compromised_package`.
+///
+/// Same staleness caveat as `KNOWN_MALICIOUS_PACKAGE_NAMES`: campaigns add
+/// new victims faster than any static list can track, so absence from
+/// this list is not a clean bill of health - `decoy_tool_binary_line`
+/// below is the generic, non-name-based backstop for this same campaign.
+const KNOWN_COMPROMISED_AUR_PACKAGES: &[&str] = &[
+    "openconnect-sso",
+    "archutil",
+    "bigwebapp-manager",
+    "boringssl-git",
+    "cinnamon-no-nemo",
+    "duhh",
+    "eden-nightly",
+    "garlic-decompiler-gui",
+    "gigolo-git",
+    "gitarbor-bin",
+    "icloudpd",
+    "imago-bin",
+    "juicebox-plus-git",
+    "magic-context-dashboard-bin",
+    "option-term",
+    "pagerduty-short-circuiter",
+    "portless",
+    "pylnker-git",
+    "python-libipld-git",
+    "python-numkong",
+    "python-parallax",
+    "python-ultraplot-git",
+    "ramses-git",
+    "src-cli-bin",
+    "steamidra-bin",
+    "stirling-pdf-desktop-bin",
+    "wiki-go",
+    "windscribe-cli-v2-bin",
+    "storageexplorer-bin",
+];
+
+/// Case-insensitive exact match of a `pkgbase`/`pkgname` against
+/// `KNOWN_COMPROMISED_AUR_PACKAGES`. Exact, not substring - unlike the
+/// content-based checks above, matching a package name by substring would
+/// misfire constantly (e.g. "parser" as a substring of some unrelated,
+/// clean package's name).
+pub(crate) fn is_known_compromised_package(pkg: &str) -> bool {
+    KNOWN_COMPROMISED_AUR_PACKAGES.iter().any(|p| p.eq_ignore_ascii_case(pkg))
+}
+
+/// Shared by every entry point that knows the target package's own name
+/// up front (`scan_aur_pkgbuilds_or_abort` at install time, and
+/// `scan_report`, used by both `--scan <pkg>` and
+/// `--install-pkgbuild --scan`) - `Some` iff `name` is itself on
+/// `KNOWN_COMPROMISED_AUR_PACKAGES`, ready to push onto that caller's
+/// findings list.
+fn known_compromised_package_finding(name: &str) -> Option<(String, Finding)> {
+    is_known_compromised_package(name).then(|| {
+        (
+            "pkgbase".to_string(),
+            Finding {
+                line: 0,
+                severity: Severity::ConfirmedIoc,
+                message: format!(
+                    "'{}' is itself on the publicly confirmed list of AUR packages hijacked in the early-August 2026 wave - installing it pulls whatever the current maintainer has pushed, confirmed-malicious history or not",
+                    name
+                ),
+            },
+        )
+    })
+}
+
+/// Generic-sounding filenames the early-August 2026 wave used to disguise
+/// its ELF payload as an innocuous build helper (see module doc). Kept
+/// separate from any name-based package blocklist on purpose: attackers
+/// rotate which packages they hit far faster than they'll rotate this
+/// specific naming trick, so this heuristic should keep paying off against
+/// packages not yet on `KNOWN_COMPROMISED_AUR_PACKAGES`.
+const DECOY_TOOL_BINARY_NAMES: &[&str] = &[
+    "linter", "hasher", "minifier", "validator", "converter", "indexer",
+    "encryptor", "checker", "tagger", "parser", "preprocessor", "generator",
+    "assembler", "packer", "compressor", "serializer", "migrator",
+    "optimizer", "merger",
+];
+
+/// A line that both (a) installs a file with executable permissions
+/// (`install -Dm755` / `-m755` / `chmod +x`) and (b) names its target as
+/// one of `DECOY_TOOL_BINARY_NAMES` under a `bin`-ish destination (or has
+/// no path separator at all, e.g. a bare `install -Dm755 validator
+/// "$pkgdir/usr/bin/validator"`). Suspicious, not confirmed-IOC: plenty of
+/// legitimate packages genuinely ship a tool called `validator` or
+/// `parser`, so this only prompts review, same as the other heuristics -
+/// it just happens to be a very good prompt right now, since this is
+/// exactly the disguise the early-August 2026 wave used across every
+/// package in `KNOWN_COMPROMISED_AUR_PACKAGES`.
+pub(crate) fn decoy_tool_binary_line(line: &str) -> bool {
+    let l = line.trim();
+    if l.starts_with('#') {
+        return false;
+    }
+    let lower = l.to_lowercase();
+    let installs_executable = lower.contains("install")
+        && (lower.contains("-dm755") || lower.contains("-dm 755") || lower.contains("-m755") || lower.contains("-m 755"))
+        || lower.contains("chmod +x")
+        || lower.contains("chmod 755");
+    if !installs_executable {
+        return false;
+    }
+    DECOY_TOOL_BINARY_NAMES.iter().any(|name| {
+        // Match the name as its own path segment/word, not as a substring
+        // of something longer (e.g. "validators.conf" shouldn't hit).
+        lower.split(|c: char| c == '/' || c.is_whitespace() || c == '"' || c == '\'')
+            .any(|tok| tok == *name)
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn has_decoy_tool_binary(source: &str) -> bool {
+    source.lines().any(decoy_tool_binary_line)
+}
+
+pub(crate) fn line_of_decoy_tool_binary(source: &str) -> Option<usize> {
+    source.lines().position(decoy_tool_binary_line).map(|i| i + 1)
+}
+
 /// `npm install <pkg>` / `bun add <pkg>` / `pip install <pkg>` etc. naming
 /// a specific external package - as opposed to a bare `npm ci`, which just
 /// installs a project's own declared deps and is common/legitimate. Pulling
@@ -931,6 +1081,13 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
             message: "command substitution ($(...) or `...`) outside any function - this runs the instant ANYTHING sources the PKGBUILD (makepkg --printsrcinfo, an AUR helper's metadata read, ...), not just during build(); often just a stray markdown-code-span backtick pasted into a field like pkgdesc, but treated the same either way since the effect is identical".to_string(),
         });
     }
+    if let Some(line) = line_of_decoy_tool_binary(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "installs an executable under a generic build-tool name (linter/hasher/minifier/validator/...) - the payload-disguise technique used across the early-August 2026 AUR wave (see KNOWN_COMPROMISED_AUR_PACKAGES)".to_string(),
+        });
+    }
     findings
 }
 
@@ -966,6 +1123,13 @@ pub(crate) fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) -> std::collections::
             .into_iter()
             .map(|f| ("PKGBUILD".to_string(), f))
             .collect();
+
+        // Name-based check against publicly confirmed hijacked pkgbases -
+        // independent of PKGBUILD content, so it still fires even on a
+        // build script that (for now) reads completely clean.
+        if let Some(finding) = known_compromised_package_finding(pkg) {
+            pkg_findings.push(finding);
+        }
 
         if let Some((install_name, install_src)) = &install {
             pkg_findings.extend(
@@ -1150,6 +1314,17 @@ fn scan_report(label: &str, pkgbuild_src: &str, install: Option<(String, String)
         .collect();
     if let Some((name, src)) = &install {
         pkg_findings.extend(scan_pkgbuild_source(src).into_iter().map(|f| (name.clone(), f)));
+    }
+
+    // Same name-based check as scan_aur_pkgbuilds_or_abort - `--scan`/
+    // `--install-pkgbuild --scan` are separate entry points from the
+    // install-time path, so this needs its own copy rather than relying
+    // on the caller to have gone through that function first. `label` is
+    // the pkgbase for `scan_report_aur` and the local directory's name
+    // for `scan_report_local` - both are what the user is about to
+    // build, so it's the right thing to check either way.
+    if let Some(finding) = known_compromised_package_finding(label) {
+        pkg_findings.push(finding);
     }
 
     if pkg_findings.is_empty() {
@@ -1420,6 +1595,53 @@ package() {
             Some("js-digest")
         );
         assert_eq!(contains_known_malicious_package("npm install typescript"), None);
+    }
+
+    #[test]
+    fn decoy_tool_binary_detected() {
+        // Real August-2026-wave shape: install a bundled ELF under a
+        // generic build-tool name.
+        assert!(has_decoy_tool_binary(r#"install -Dm755 "$srcdir/linter" "$pkgdir/usr/bin/linter""#));
+        assert!(has_decoy_tool_binary(r#"install -Dm755 hasher "$pkgdir/usr/bin/hasher""#));
+        assert!(has_decoy_tool_binary("chmod +x \"$pkgdir/usr/bin/validator\""));
+        assert!(has_decoy_tool_binary("chmod 755 $pkgdir/usr/bin/optimizer"));
+        // Commented out - must not flag.
+        assert!(!has_decoy_tool_binary("# install -Dm755 validator /usr/bin/validator"));
+        // Unrelated install (docs, not an executable under a decoy name).
+        assert!(!has_decoy_tool_binary(r#"install -Dm644 "$pkgdir/usr/share/doc/README""#));
+        // Substring of the decoy name, not the name itself - must not flag.
+        assert!(!has_decoy_tool_binary(r#"install -Dm755 validators.conf "$pkgdir/etc/validators.conf""#));
+        // A legitimate binary install under an unrelated name - must not flag.
+        assert!(!has_decoy_tool_binary(r#"install -Dm755 "$srcdir/aura-emerge" "$pkgdir/usr/bin/aura-emerge""#));
+    }
+
+    #[test]
+    fn decoy_tool_binary_flagged_in_full_scan() {
+        let src = "build() {\n  install -Dm755 \"$srcdir/minifier\" \"$pkgdir/usr/bin/minifier\"\n}\n";
+        let findings = scan_pkgbuild_source(src);
+        assert!(findings.iter().any(|f| f.message.contains("generic build-tool name")));
+    }
+
+    #[test]
+    fn known_compromised_package_name_detected() {
+        assert!(is_known_compromised_package("archutil"));
+        assert!(is_known_compromised_package("openconnect-sso"));
+        assert!(is_known_compromised_package("StorageExplorer-Bin")); // case-insensitive
+        // Not a substring match - a lookalike/unrelated name must not flag.
+        assert!(!is_known_compromised_package("archutil2"));
+        assert!(!is_known_compromised_package("my-archutil-fork"));
+        assert!(!is_known_compromised_package("firefox"));
+    }
+
+    #[test]
+    fn known_compromised_package_name_flagged_via_scan_report() {
+        // `--scan`/`--install-pkgbuild --scan` go through `scan_report`,
+        // a separate entry point from the install-time
+        // `scan_aur_pkgbuilds_or_abort` - make sure the name check fires
+        // there too, on a totally clean PKGBUILD body.
+        let clean = "pkgname=archutil\npkgver=1.0\npkgrel=1\nbuild() {\n  make\n}\n";
+        assert!(!scan_report("archutil", clean, None, None));
+        assert!(scan_report("firefox", clean, None, None));
     }
 
     #[test]
