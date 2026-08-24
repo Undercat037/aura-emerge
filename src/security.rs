@@ -1,23 +1,18 @@
 //! AUR PKGBUILD safety scanner.
 //!
-//! Runs automatically before every AUR install: fetches each package's
-//! raw PKGBUILD from the AUR cgit mirror and greps for red-flag
-//! patterns seen in malicious/compromised PKGBUILDs. Not a substitute
-//! for reading it yourself -- a cheap tripwire against obvious tricks.
-//! Any hit blocks install until the user types an explicit "y".
+//! Runs before every AUR install: fetches the raw PKGBUILD from the AUR
+//! cgit mirror and greps for red-flag patterns. Not a substitute for
+//! reading it yourself -- a cheap tripwire. Any hit blocks install
+//! until an explicit "y".
 //!
 //! Beyond generic heuristics (curl|sh, base64/xxd, chmod-777, raw-IP,
-//! paste-site, process/command substitution), specifically covers three
-//! disclosed 2026 AUR supply-chain campaigns: "Atomic Arch" (June,
-//! adopted orphaned packages, npm/bun infostealer), the
-//! openconnect-sso-anchored wave (Jul-Aug, `validator` binary run via
-//! `sudo`, Tor-backed second stage), and the early-August wave shipping
-//! payload as a bundled ELF disguised as a generic build tool. See
-//! `sudo_escalation_line`, `onion_address_line`, `decoy_tool_binary_line`,
-//! `KNOWN_COMPROMISED_AUR_PACKAGES`, `KNOWN_MALICIOUS_SHA256` below.
-//! Arch locked down AUR pushes/adoption through Aug 2026, but per-machine
-//! risk from an already-built package doesn't depend on upstream's
-//! current lockdown state, so every check here stays on regardless.
+//! paste-site, process/command substitution), covers three disclosed
+//! 2026 AUR campaigns: "Atomic Arch" (adopted packages, npm/bun
+//! infostealer), the openconnect-sso wave (`validator` run via `sudo`,
+//! Tor second stage), and the early-August wave (ELF disguised as a
+//! generic build tool). See `sudo_escalation_line`, `onion_address_line`,
+//! `decoy_tool_binary_line`, `KNOWN_COMPROMISED_AUR_PACKAGES`,
+//! `KNOWN_MALICIOUS_SHA256`.
 
 use colored::Colorize;
 use std::io::{self, Write};
@@ -64,13 +59,9 @@ pub(crate) fn parse_install_filename(pkgbuild_text: &str) -> Option<String> {
     None
 }
 
-/// Same as `parse_install_filename`, but also resolves a
-/// `$pkgname`/`$pkgbase` reference against the PKGBUILD's own declared
-/// value. Most real PKGBUILDs write `install=${pkgname}.install` --
-/// without this, the fetch against the unresolved literal 404s and the
-/// install hook silently never gets scanned. Returns `None` if a `$`
-/// remains unresolved after substitution (e.g. `pkgname` as an array in
-/// a split package) rather than fetching a garbage filename.
+/// Same as `parse_install_filename`, but resolves a `$pkgname`/`$pkgbase`
+/// reference too -- most PKGBUILDs write `install=${pkgname}.install`.
+/// `None` if a `$` remains unresolved (e.g. `pkgname` as an array).
 pub(crate) fn resolve_install_filename(pkgbuild_text: &str) -> Option<String> {
     let raw = parse_install_filename(pkgbuild_text)?;
     if !raw.contains('$') {
@@ -90,17 +81,13 @@ pub(crate) fn resolve_install_filename(pkgbuild_text: &str) -> Option<String> {
     }
 }
 
-/// Strips a trailing `# comment` from a raw `key=value` remainder the
-/// way bash actually would, not just "everything after `key=`". Fixes
-/// two bugs: an inline-commented `install=${pkgname}.install   # ...`
-/// used to resolve to a garbage filename with the comment glued on,
-/// silently leaving the `.install` hook unscanned; a
-/// `pkgdesc="... # not a comment"` could get truncated at the `#`.
+/// Strips a trailing `# comment` the way bash actually would, not just
+/// "everything after `key=`". Fixes: an inline-commented
+/// `install=${pkgname}.install   # ...` used to leave the `.install`
+/// hook unscanned; `pkgdesc="... # not a comment"` could get truncated.
 ///
-/// bash's rule: `#` starts a comment only at the start of a new word
-/// (preceded by whitespace or nothing) -- stuck onto other characters,
-/// it isn't one. A quoted value takes priority and is returned whole up
-/// to its matching close quote, `#` inside it or not.
+/// bash's rule: `#` starts a comment only at the start of a new word.
+/// A quoted value is returned whole regardless of `#` inside it.
 fn strip_trailing_comment(rest: &str) -> &str {
     let trimmed = rest.trim_start();
     let lead_ws = rest.len() - trimmed.len();
@@ -211,13 +198,10 @@ pub(crate) fn line_of_base64_decode(source: &str) -> Option<usize> {
     source.lines().position(base64_decode_line).map(|i| i + 1)
 }
 
-/// Shared by the base64/xxd "decode | shell" checks below: given an
-/// already-lowercased line, does everything after the *last* `|` resolve
-/// to a shell (bare name, absolute path, or an `env`/`env -S` wrapper)?
-/// Deliberately the *last* segment, not the first (unlike
-/// `curl_pipe_shell_line`'s tail logic) -- a decoder commonly sits behind
-/// its own upstream pipe (`cat payload | base64 -d | sh`), so anchoring on
-/// the first `|` would inspect the wrong stage.
+/// Shared by base64/xxd "decode | shell" checks: does everything after
+/// the *last* `|` resolve to a shell? Last, not first (unlike
+/// `curl_pipe_shell_line`) -- a decoder often sits behind its own
+/// upstream pipe (`cat payload | base64 -d | sh`).
 fn pipes_into_shell(lower_line: &str) -> bool {
     let after_pipe = lower_line.rsplitn(2, '|').next().unwrap_or("").trim();
     let mut tokens = after_pipe.split_whitespace();
@@ -229,11 +213,8 @@ fn pipes_into_shell(lower_line: &str) -> bool {
     ["sh", "bash", "zsh", "source", "."].contains(&basename)
 }
 
-/// `base64 -d ... | sh` -- the base64-encoded analog of curl|sh: payload
-/// stashed encoded in the PKGBUILD, decoded, piped straight to a shell.
-/// `base64_decode_line` already flags any bare `base64 -d`; this is the
-/// strictly worse case (decoded bytes run immediately, no inspection),
-/// so it gets its own higher-signal call-out.
+/// `base64 -d ... | sh` -- the base64 analog of curl|sh. Strictly worse
+/// than a bare `base64_decode_line` hit: decoded bytes run immediately.
 pub(crate) fn base64_pipe_shell_line(line: &str) -> bool {
     let l = line.trim();
     if l.starts_with('#') {
@@ -286,13 +267,9 @@ pub(crate) fn line_of_xxd_pipe_shell(source: &str) -> Option<usize> {
     source.lines().position(xxd_pipe_shell_line).map(|i| i + 1)
 }
 
-/// `source <(curl ...)` / `. <(wget ...)` - the process-substitution
-/// cousin of both curl|sh (no literal pipe here) and `eval "$(curl ...)"`
-/// (no command substitution either): `source`/`.` reads the fetched script
-/// straight out of a `<(...)` stream and runs it, so neither of those two
-/// checks has anything to key on. Deliberately scoped to `source`/`.`
-/// paired with curl/wget inside a `<(...)` on the same line, mirroring how
-/// `eval_remote_exec_line` is scoped to eval + curl/wget inside `$(...)`.
+/// `source <(curl ...)` -- the process-substitution cousin of curl|sh
+/// (no pipe) and `eval "$(curl ...)"` (no command substitution):
+/// `source`/`.` reads the fetched script straight from `<(...)`.
 pub(crate) fn source_process_subst_line(line: &str) -> bool {
     let l = line.trim();
     if l.starts_with('#') {
@@ -334,13 +311,11 @@ pub(crate) fn line_of_chmod_777(source: &str) -> Option<usize> {
     source.lines().position(chmod_777_line).map(|i| i + 1)
 }
 
-/// A bare dotted-quad IPv4 literal anywhere in the file - legit PKGBUILDs
-/// fetch from named domains, not hardcoded IPs. Heuristic: 4 dot-separated
-/// 1-3 digit groups <= 255, not adjacent to other digits/dots.
+/// A bare dotted-quad IPv4 literal anywhere in the file -- legit
+/// PKGBUILDs fetch from named domains, not hardcoded IPs.
 ///
-/// Known false positive: a 4-component version string like "1.2.3.4" is
-/// indistinguishable from an IP here. Acceptable since this only prompts
-/// a review, not a hard failure.
+/// Known false positive: a version string like "1.2.3.4" looks the
+/// same. Acceptable since this only prompts review, not a hard failure.
 pub(crate) fn line_has_raw_ipv4(source: &str) -> bool {
     let bytes = source.as_bytes();
     let is_boundary = |c: Option<u8>| !matches!(c, Some(b) if b.is_ascii_digit() || b == b'.');
@@ -444,13 +419,9 @@ pub(crate) fn line_of_hex_escape_payload(source: &str) -> Option<usize> {
     source.lines().position(hex_escape_payload_line).map(|i| i + 1)
 }
 
-/// A download aimed at a paste-dump site rather than a proper
-/// release/source host. Legitimate PKGBUILDs essentially never do this;
-/// the 2018 acroread/balz/minergate AUR takeover staged its payload this
-/// way (`curl` to a Pastebin raw URL, piped into a persistence script).
-/// Distinct from the curl-pipe-shell check: fires even if the fetched
-/// content isn't piped into a shell on the same line (saved to a file
-/// and `source`d/`exec`'d later, say).
+/// A download aimed at a paste-dump site rather than a real release
+/// host -- the 2018 acroread/balz/minergate AUR takeover staged its
+/// payload this way. Fires even without a same-line pipe into a shell.
 pub(crate) fn paste_site_fetch_line(line: &str) -> bool {
     const HOSTS: &[&str] = &[
         "pastebin.com/raw", "hastebin.com/raw", "hastebin.com/share",
@@ -498,24 +469,19 @@ pub(crate) fn line_of_compromised_marker(source: &str) -> Option<usize> {
     source.lines().position(compromised_marker_line).map(|i| i + 1)
 }
 
-/// Exact indicators from known, still-circulating AUR supply-chain
-/// campaigns. Goes stale as campaigns rotate names, but zero-cost and
-/// high-confidence when it fires.
+/// Exact indicators from known, still-circulating AUR campaigns. Goes
+/// stale as campaigns rotate names, but cheap and high-confidence.
 ///
-/// Background: "Atomic Arch" (June 2026) adopted orphaned AUR packages
-/// and edited PKGBUILD/`.install` hooks to pull an infostealer via
-/// npm/bun during build. A second wave (Jul-Aug 2026), anchored by a
-/// compromised `openconnect-sso`, hit 89+ other packages -- its
-/// mechanism (a `validator` binary run via `sudo`) is covered by
-/// `sudo_escalation_line` instead, since the payload binary name isn't
-/// itself a package name to match.
+/// "Atomic Arch" (June 2026) adopted orphaned packages and edited
+/// PKGBUILD/`.install` hooks to pull an infostealer via npm/bun. A
+/// second wave anchored by `openconnect-sso` hit 89+ packages -- its
+/// `validator`-via-`sudo` mechanism is covered by `sudo_escalation_line`
+/// instead.
 const KNOWN_MALICIOUS_PACKAGE_NAMES: &[&str] = &["atomic-lockfile", "js-digest", "lockfile-js"];
 
-/// Published sha256 hashes of stage-1/stage-2 payloads from the Jul/Aug
-/// 2026 openconnect-sso-anchored wave (reused tradecraft from the June
-/// 2026 Atomic Arch campaign). A PKGBUILD's `sha256sums=()` matching one
-/// of these exactly means the source it's pinning to is the known-bad
-/// payload, not just "looks suspicious".
+/// sha256 hashes of stage-1/stage-2 payloads from the openconnect-sso
+/// wave. An exact `sha256sums=()` match means known-bad, not just
+/// suspicious.
 const KNOWN_MALICIOUS_SHA256: &[&str] = &[
     "e73a35b3e75e94746428d1a207703d6335933deadee7d1d9c9d0328df7b9df77",
     "2d25d2ea313767fae5808164224cf6ad610ab09546d1e5a6f033eedbfd98a281",
