@@ -1,9 +1,5 @@
-//! Handling of /etc/emerge/world.set: the explicit-install tracking file.
-//!
-//! Split out of main.rs - covers repo-prefix resolution for world.set
-//! entries, the add/remove/regen/write operations on the file itself,
-//! custom package sets under /etc/emerge/sets.d/, and declarative
-//! provisioning from world.set (bare `emerge @world`, no -u).
+//! /etc/emerge/world.set: explicit-install tracking, custom sets, and
+//! `@world` provisioning (no -u).
 
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
@@ -14,11 +10,8 @@ use std::process::{Command, Stdio};
 
 use crate::*;
 
-/// Get the repository a package was installed from (e.g. "cachyos-extra-v3", "aur").
-///
-/// Forces LC_ALL=C since pacman's field names are locale-dependent.
-/// Tries `pacman -Qi` (installed pkg, no "Repository" line = AUR/foreign),
-/// then falls back to `pacman -Si` for not-yet-installed packages.
+/// Repo a package came from (e.g. "extra", "aur"). LC_ALL=C.
+/// Tries -Qi first, then -Si for not-yet-installed.
 pub(crate) fn get_pkg_repo(pkg: &str) -> Option<String> {
     let bare = pkg.split('/').last().unwrap_or(pkg);
 
@@ -39,7 +32,6 @@ pub(crate) fn get_pkg_repo(pkg: &str) -> Option<String> {
 
     fn first_repo(stdout: &str) -> Option<String> {
         for line in stdout.lines() {
-            // -Qi (C locale) uses "Installed From", -Si uses "Repository"
             if line.starts_with("Installed From") || line.starts_with("Repository") {
                 if let Some(val) = line.splitn(2, ':').nth(1) {
                     let r = val.trim().to_string();
@@ -50,12 +42,12 @@ pub(crate) fn get_pkg_repo(pkg: &str) -> Option<String> {
         None
     }
 
-    // 1. Local DB - authoritative for installed packages
+    // Local DB first; None = local build with no repo field.
     if let Some(stdout) = pacman_c(&["-Qi", bare]) {
-        return first_repo(&stdout);  // None here = locally built, no repo field
+        return first_repo(&stdout);
     }
 
-    // 2. Sync DB - for packages not yet installed (--select etc.)
+    // Sync DB for not-yet-installed (--select etc.)
     if let Some(stdout) = pacman_c(&["-Si", bare]) {
         return first_repo(&stdout);
     }
@@ -63,10 +55,7 @@ pub(crate) fn get_pkg_repo(pkg: &str) -> Option<String> {
     None
 }
 
-/// Format package entry for world.set.
-/// - Known repo (official/AUR overlay)  → "repo/name"
-/// - Locally built (pacman "None")       → "forced_prefix/name" if known, else "Err/name"
-/// - Not installed, not in sync DB       → bare "name"
+/// world.set entry: "repo/name", "Err/name" (local), or bare "name".
 pub(crate) fn pkg_world_entry(pkg: &str, forced_prefix: Option<&str>) -> String {
     let bare = pkg.split('/').last().unwrap_or(pkg);
     match get_pkg_repo(bare) {
@@ -81,8 +70,7 @@ pub(crate) fn pkg_world_entry(pkg: &str, forced_prefix: Option<&str>) -> String 
 
 // ── custom sets (/etc/emerge/sets.d/<name>.set, invoked as @<name>) ────────────
 
-/// Is `name` (the part after '@') safe to use as a set filename?
-/// Deliberately conservative - this becomes part of a filesystem path.
+/// Safe set name (becomes a filesystem path under sets.d/).
 pub(crate) fn valid_set_name(name: &str) -> bool {
     !name.is_empty()
         && name != "world"
@@ -90,10 +78,7 @@ pub(crate) fn valid_set_name(name: &str) -> bool {
         && name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
 }
 
-/// Read /etc/emerge/sets.d/<name>.set: one package atom per line, blank
-/// lines and '#' comments ignored. Entries are passed through the same
-/// validate_pkg() every other package name is, so a malformed set file
-/// can't smuggle a flag-looking token into an aura/pacman invocation.
+/// Read sets.d/<name>.set (one atom/line, # comments; validate_pkg each).
 pub(crate) fn read_custom_set(name: &str) -> Result<Vec<String>> {
     let path = format!("{}/{}.set", SETS_DIR, name);
 
@@ -122,11 +107,7 @@ pub(crate) fn read_custom_set(name: &str) -> Result<Vec<String>> {
     Ok(pkgs)
 }
 
-/// Read a `--batchinstall <FILE>` list: same format as a custom set (one
-/// package atom per line, blank lines and '#' comments ignored, each
-/// entry run through validate_pkg()) but from an arbitrary caller-given
-/// path instead of a fixed SETS_DIR entry - so it works for a one-off
-/// list that was never registered as `@<name>`.
+/// Read a --batchinstall list (same format as a custom set, any path).
 pub(crate) fn read_batch_file(path: &str) -> Result<Vec<String>> {
     if !is_safe_path(path) {
         bail!("{} is a symlink - refusing to read", path);
@@ -153,8 +134,7 @@ pub(crate) fn read_batch_file(path: &str) -> Result<Vec<String>> {
     Ok(pkgs)
 }
 
-/// List every custom set under SETS_DIR (bare names, no ".set", no '@'),
-/// sorted. Used by `--list-sets` and by shell completion for `@<TAB>`.
+/// Bare set names under SETS_DIR, sorted (--list-sets / completion).
 pub(crate) fn list_custom_sets() -> Vec<String> {
     let mut names = Vec::new();
     if let Ok(entries) = fs::read_dir(SETS_DIR) {
@@ -173,26 +153,9 @@ pub(crate) fn list_custom_sets() -> Vec<String> {
 
 // ── declarative provisioning from world.set (bare `emerge @world`) ─────────────
 
-/// `emerge @world` with no `-u`: install whatever world.set lists that
-/// isn't on this system yet. Unlike `-u @world`, never touches an
-/// already-installed package and never consults sync DBs on its own --
-/// it's for "this machine is missing packages world.set says it should
-/// have" (fresh install, or one that fell behind a tracked world.set).
-///
-/// The recorded repo prefix decides install method: official-repo via
-/// `aura -S`, `aur/` via `aura -A` (with the usual scan). `abs/` entries
-/// were built locally and can't be reproduced unattended, so they're
-/// always just listed (needs `emerge <pkg> --abs` by hand).
-///
-/// Entries with no resolvable prefix: a bare entry (nothing could be
-/// determined when written) always goes through normal resolution
-/// (official repos, then AUR). An `Err/` entry (installed, but from an
-/// unidentifiable source) is only listed by default -- pass
-/// `err_install` to resolve it too.
-///
-/// Anything installed this way gets its world.set entry corrected to
-/// the real resolved prefix. Returns Ok(true) if everything resolvable
-/// installed cleanly (or this was --pretend), Ok(false) on failure.
+/// Provision missing packages from world.set (bare `@world`, no -u).
+/// Prefix picks the source; `abs/` is listed only; bare always resolved;
+/// `Err/` only with err_install. Fixes world.set prefixes on success.
 pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, err_install: bool, no_sandbox: bool, skip_srcinfo_regen: bool, deep: bool, unshare_net_build: bool) -> Result<bool> {
     println!("{} Provisioning system from world.set...", ">>>".green().bold());
 
@@ -218,7 +181,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
         return Ok(true);
     }
 
-    // Packages already on this system are left alone entirely.
+    // Already installed → skip.
     let installed: HashSet<String> = Command::new(PACMAN_BIN)
         .arg("-Qq")
         .stdout(Stdio::piped())
@@ -237,9 +200,8 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
     let mut official_missing: Vec<String> = Vec::new();
     let mut aur_missing: Vec<String> = Vec::new();
     let mut abs_missing: Vec<String> = Vec::new();
-    // Installed from somewhere unidentifiable (Err/) - only listed unless --err-install.
+    // Err/: list only unless --err-install. Bare: always retry.
     let mut err_missing: Vec<String> = Vec::new();
-    // No prefix at all (not installed, no repo found when written) - always retried.
     let mut bare_missing: Vec<String> = Vec::new();
 
     for entry in &entries {
@@ -264,16 +226,13 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
         }
     }
 
-    // Bare entries always get a normal-resolution attempt; Err/ entries
-    // only join in when --err-install is passed.
+    // Bare always resolved; Err/ only with --err-install.
     let mut to_resolve: Vec<String> = bare_missing.clone();
     if err_install {
         to_resolve.extend(err_missing.iter().cloned());
     }
 
-    // Resolve up front (official repos vs. AUR) so the plan below reflects
-    // where each package will actually come from, instead of a generic
-    // "unknown" bucket.
+    // Resolve bare/Err so the plan shows real sources.
     let mut resolved_official: Vec<String> = Vec::new();
     let mut resolved_aur: Vec<String> = Vec::new();
     if !to_resolve.is_empty() {
@@ -282,7 +241,6 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
         resolved_aur = missing;
     }
 
-    // Err/ entries left un-attempted this run (only relevant without --err-install).
     let unresolved_listed: Vec<String> = if err_install { Vec::new() } else { err_missing.clone() };
 
     let total = official_missing.len() + aur_missing.len() + abs_missing.len()
@@ -336,10 +294,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
     if !aur_missing.is_empty() {
         println!("{} Installing {} AUR package(s)...", ">>>".green().bold(), aur_missing.len());
         scan_aur_pkgbuilds_or_abort(&aur_missing);
-        // aur_install() builds+installs via the bwrap-isolated path
-        // (see packages.rs) and, unlike the old `aura -A`, always leaves
-        // the explicit bit set on success - no separate mark_asexplicit()
-        // call needed here the way the old `aura -A` path required.
+        // aur_install sets explicit on success; no mark_asexplicit needed.
         if !aur_install(&aur_missing, false, ask, false, false, false, no_sandbox, skip_srcinfo_regen, deep, unshare_net_build, false) {
             overall_ok = false;
             eprintln!(">>> Warning: some AUR package(s) failed to install.");
@@ -355,8 +310,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
         if verbose { args.push("--verbose"); }
         if !ask { args.push("--noconfirm"); }
         if run_cmd(SUDO_BIN, &args, &resolved_official) {
-            // Now that the real repo is known, fix the world.set entry
-            // (it was previously Err/<name> or a bare <name>).
+            // Fix world.set prefix now that the real repo is known.
             if let Err(e) = add_to_world_set(&resolved_official, None) {
                 eprintln!(">>> Warning: package(s) installed but world.set was not updated: {:#}", e);
             }
@@ -408,9 +362,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
 
 // ── world.set ─────────────────────────────────────────────────────────────────
 
-/// Re-resolve repository prefixes for every package in world.set.
-/// Reads current entries, calls get_pkg_repo() for each, rewrites the file.
-/// Useful after locale fixes, repo migrations, or manual edits.
+/// Re-resolve repo prefixes for every world.set entry.
 pub(crate) fn regen_world_set() -> Result<()> {
     println!("{} Regenerating world.set repository prefixes...", ">>>".green().bold());
 
@@ -433,8 +385,7 @@ pub(crate) fn regen_world_set() -> Result<()> {
 
     for entry in &entries {
         let bare = entry.split('/').last().unwrap_or(entry);
-        // See regen_set() below for why we pass the existing abs/aur
-        // prefix through as a fallback instead of None.
+        // Keep abs/aur prefix if re-resolution can't find a live repo.
         let old_prefix = entry.split('/').next().filter(|p| *p == "abs" || *p == "aur");
         let new_entry = pkg_world_entry(bare, old_prefix);
         if &new_entry != entry {
@@ -455,13 +406,8 @@ pub(crate) fn regen_world_set() -> Result<()> {
     Ok(())
 }
 
-/// Re-resolve repository prefixes for every entry in a custom set file
-/// (`/etc/emerge/sets.d/<name>.set`) -- same idea as `regen_world_set()`.
-///
-/// By default (`sort == false`) preserves the file as-is: line order,
-/// `#` comments, blank-line grouping -- just re-resolves each package's
-/// prefix in place. `sort == true` (`--regen-sort`) instead collapses it
-/// to a flat, deduped, alphabetical list, dropping comments/grouping.
+/// Re-resolve prefixes in a custom set. sort=true also alphabetizes
+/// (drops comments/blank-line grouping).
 pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
     println!("{} Regenerating prefixes for @{}...", ">>>".green().bold(), name);
 
@@ -484,12 +430,9 @@ pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
     }
 
     let mut changed = 0usize;
-    // Line-for-line rewrite used when `sort == false`: comments and blank
-    // lines are copied through untouched, package lines get their prefix
-    // patched in place.
+    // sort=false: rewrite in place (keep comments/blanks).
     let mut rewritten: Vec<String> = Vec::new();
-    // Package entries only (post re-resolution, in original order), used
-    // as the input to `--regen-sort`.
+    // Package entries only (input for --regen-sort).
     let mut pkg_entries: Vec<String> = Vec::new();
 
     for raw in &raw_lines {
@@ -505,11 +448,7 @@ pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
         }
 
         let bare = trimmed.split('/').last().unwrap_or(trimmed);
-        // Preserve an existing abs/aur prefix as a fallback if
-        // re-resolution can't find a live repo - otherwise a regen
-        // collapses a known-origin entry down to a generic, henceforth
-        // indistinguishable "Err/<name>". See regen_world_set() for the
-        // same fix on world.set proper.
+        // Keep abs/aur if re-resolution misses (same as regen_world_set).
         let old_prefix = trimmed.split('/').next().filter(|p| *p == "abs" || *p == "aur");
         let new_entry = pkg_world_entry(bare, old_prefix);
         if new_entry != trimmed {
@@ -590,13 +529,12 @@ pub(crate) fn add_to_world_set(packages: &[String], forced_prefix: Option<&str>)
         bail!("{} is a symlink - refusing to read", WORLD_SET_FILE);
     }
 
-    // current_set keyed by bare package name → full "repo/name" or "name" entry
+    // bare name → full "repo/name" entry
     let mut current_set: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     if let Ok(file) = fs::File::open(WORLD_SET_FILE) {
         for line in io::BufReader::new(file).lines().map_while(Result::ok) {
             let trimmed = line.trim().to_string();
             if !trimmed.is_empty() && validate_pkg(&trimmed) {
-                // bare name is the part after the last '/'
                 let bare = trimmed.split('/').last().unwrap_or(&trimmed).to_string();
                 current_set.insert(bare, trimmed);
             }
@@ -607,8 +545,7 @@ pub(crate) fn add_to_world_set(packages: &[String], forced_prefix: Option<&str>)
     for pkg in packages {
         let bare = pkg.split('/').last().unwrap_or(pkg).to_string();
         let entry = pkg_world_entry(&bare, forced_prefix);
-        // Always overwrite: re-resolves repo on every install so stale entries
-        // (e.g. "aur/nano" left from a locale-parsing bug) get corrected.
+        // Overwrite so stale prefixes get corrected.
         let stale = current_set.get(&bare).map(|e| e != &entry).unwrap_or(true);
         if stale {
             current_set.insert(bare, entry);
@@ -630,7 +567,6 @@ pub(crate) fn remove_from_world_set(packages: &[String]) -> Result<()> {
         bail!("{} is a symlink - refusing to read", WORLD_SET_FILE);
     }
 
-    // key = bare name, value = full entry
     let mut current_set: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     if let Ok(file) = fs::File::open(WORLD_SET_FILE) {
         for line in io::BufReader::new(file).lines().map_while(Result::ok) {
@@ -644,7 +580,6 @@ pub(crate) fn remove_from_world_set(packages: &[String]) -> Result<()> {
 
     let mut changed = false;
     for pkg in packages {
-        // match on bare name regardless of whether user passed "repo/pkg" or "pkg"
         let bare = pkg.split('/').last().unwrap_or(pkg).to_string();
         if current_set.remove(&bare).is_some() {
             changed = true;
@@ -659,16 +594,9 @@ pub(crate) fn remove_from_world_set(packages: &[String]) -> Result<()> {
 }
 
 
-// ── --resume state ───────────────────────────────────────────────────────────
-//
-// Persists the exact argv-equivalent (flags + resolved package list) of the
-// last non-pretend install/@world update, so `emerge --resume` can literally
-// replay it rather than just running a blind `pacman -Syu`. Cleared on
-// success; left in place on failure/interruption so the next --resume picks
-// up where things left off.
+// --resume: argv of the last non-pretend install; cleared on success.
 
-/// Save the given argv-style tokens as the resumable state. Best-effort -
-/// a failure here shouldn't abort the (already in-progress) real operation.
+/// Save resume argv (best-effort; failure must not abort the real op).
 pub(crate) fn save_resume_state(args: &[String]) {
     if !is_safe_path(RESUME_TMP) || !is_safe_path(RESUME_FILE) {
         eprintln!(">>> Warning: refusing to save resume state - symlink detected");
@@ -706,13 +634,12 @@ pub(crate) fn save_resume_state(args: &[String]) {
         .status();
 }
 
-/// Drop the saved resume state - call after a fully successful operation.
+/// Clear resume state after a fully successful operation.
 pub(crate) fn clear_resume_state() {
     let _ = Command::new(SUDO_BIN).args([RM_BIN, "-f", RESUME_FILE]).status();
 }
 
-/// Load the saved resume state, if any. Returns None if there's nothing to
-/// resume (file missing, empty, or a symlink we refuse to follow).
+/// Load resume argv, if any.
 pub(crate) fn load_resume_state() -> Option<Vec<String>> {
     if !is_safe_path(RESUME_FILE) {
         return None;
@@ -727,14 +654,7 @@ pub(crate) fn load_resume_state() -> Option<Vec<String>> {
     if lines.is_empty() { None } else { Some(lines) }
 }
 
-// ── --undo (last action) state ─────────────────────────────────────────────
-//
-// Remembers the most recent successful install or unmerge so `emerge --undo`
-// can reverse it. Deliberately narrow in scope: install-undo only ever
-// covers packages recorded as brand new (never an upgrade/reinstall), and
-// unmerge-undo just reinstalls the removed atoms via the normal path - it
-// can't restore an exact prior version if that's no longer current in the
-// repo/AUR. Only one step of history is kept, same as --resume.
+// --undo: one step of install/unmerge history (no version snapshot for -u).
 
 pub(crate) enum LastAction {
     Install,
@@ -752,9 +672,7 @@ impl LastAction {
     }
 }
 
-/// Save the kind of action plus the affected atoms as the undoable state.
-/// Best-effort - a failure here shouldn't abort the (already completed)
-/// real operation, it just means `--undo` won't have anything to work with.
+/// Save undo state (best-effort).
 pub(crate) fn save_last_action(kind: LastAction, atoms: &[String]) {
     if atoms.is_empty() { return; }
     if !is_safe_path(LASTACTION_TMP) || !is_safe_path(LASTACTION_FILE) {
@@ -794,13 +712,12 @@ pub(crate) fn save_last_action(kind: LastAction, atoms: &[String]) {
         .status();
 }
 
-/// Drop the saved undo state - call once `--undo` has acted on it, so the
-/// same action can't be replayed a second time.
+/// Clear undo state after --undo acts on it.
 pub(crate) fn clear_last_action() {
     let _ = Command::new(SUDO_BIN).args([RM_BIN, "-f", LASTACTION_FILE]).status();
 }
 
-/// Load the saved undo state, if any: (kind tag, affected atoms).
+/// Load undo state: (kind tag, atoms).
 pub(crate) fn load_last_action() -> Option<(String, Vec<String>)> {
     if !is_safe_path(LASTACTION_FILE) {
         return None;
@@ -824,7 +741,6 @@ pub(crate) fn write_world_set(packages: &[String]) -> Result<()> {
         bail!("Refusing to write: {} is a symlink", WORLD_SET_FILE);
     }
 
-    // Remove stale tmp file
     let _ = Command::new(SUDO_BIN)
         .args([RM_BIN, "-f", WORLD_SET_TMP])
         .status();

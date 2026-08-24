@@ -18,20 +18,11 @@ mod bash_ast;
 mod sandbox;
 mod aur;
 
-/// Shared HTTP GET, replacing scattered `curl` subprocess calls across
-/// aur.rs/security.rs/news.rs/packages.rs. Typed errors, no `curl`
-/// binary dependency. Plain blocking I/O -- matches the rest of the
-/// codebase, no async runtime elsewhere.
+/// Shared blocking HTTP GET (replaces curl subprocesses). None on any failure.
 mod http {
     use std::time::Duration;
 
-    /// GET `url`, returning the body as text, or `None` on any failure.
-    /// Mirrors `curl -sfL --max-time <timeout_secs>`: non-2xx is a
-    /// failure (`ureq` does this itself), redirects are followed
-    /// automatically, and the timeout bounds the whole request, not
-    /// just the connect phase. Every distinct failure mode collapses to
-    /// `None` since every caller already treated "couldn't fetch" as
-    /// one case -- skip this pkg, fall back, nothing to check.
+    /// GET body as text, or None (non-2xx / timeout / network).
     pub(crate) fn get(url: &str, timeout_secs: u64) -> Option<String> {
         let agent = ureq::AgentBuilder::new()
             .timeout(Duration::from_secs(timeout_secs))
@@ -63,21 +54,15 @@ pub(crate) const MAKEPKG_BIN: &str = "/usr/bin/makepkg";
 pub(crate) const PKGCTL_BIN: &str = "/usr/bin/pkgctl";
 pub(crate) const VERCMP_BIN: &str = "/usr/bin/vercmp";
 pub(crate) const GPG_BIN: &str = "/usr/bin/gpg";
-/// Keyserver used for automatic/suggested PGP key imports (--abs). Same
-/// SKS-successor pool most distro tooling defaults to.
 pub(crate) const PGP_KEYSERVER: &str = "keyserver.ubuntu.com";
-
-/// Base URL for Arch Linux packaging repos on GitLab
 pub(crate) const ABS_GITLAB_BASE: &str = "https://gitlab.archlinux.org/archlinux/packaging/packages";
 
 // ── Files ─────────────────────────────────────────────────────────────────────
 
 pub(crate) const WORLD_SET_FILE:  &str = "/etc/emerge/world.set";
-/// Directory for custom package sets: /etc/emerge/sets.d/<name>.set,
-/// invoked on the command line as `@<name>` (e.g. `@game-kit`).
+/// Custom sets: /etc/emerge/sets.d/<name>.set → `@<name>`.
 pub(crate) const SETS_DIR: &str = "/etc/emerge/sets.d";
-// AUR/ABS build roots moved to per-user cache dirs -- see
-// packages::aur_build_base()/abs_build_base().
+// AUR/ABS build roots: packages::aur_build_base()/abs_build_base().
 pub(crate) const WORLD_SET_TMP:  &str = "/etc/emerge/world.set.tmp";
 pub(crate) const RESUME_FILE: &str = "/etc/emerge/resume.state";
 pub(crate) const RESUME_TMP:  &str = "/etc/emerge/resume.state.tmp";
@@ -222,7 +207,7 @@ struct Cli {
     #[arg(long)]
     sync: bool,
 
-    /// Force-refresh all databases even if up to date (like pacman -Syy)
+    /// Force-refresh databases (pacman -Syy)
     #[arg(long)]
     refresh: bool,
 
@@ -246,125 +231,79 @@ struct Cli {
     #[arg(short = 'a', long = "ask")]
     ask: bool,
 
-    /// Keeps the sudo timestamp warm for the whole run, so a long
-    /// operation only prompts once instead of stalling mid-build.
-    /// Primes synchronously up front, then refreshes every 60s in the
-    /// background. Pure convenience -- every `sudo` command still works
-    /// normally if the timestamp lapses anyway.
+    /// Keep sudo timestamp warm (refresh every 60s) for long runs
     #[arg(long = "sudoloop")]
     sudoloop: bool,
 
-    /// Install as dependency (no world.set)
+    /// Install as dependency (skip world.set)
     #[arg(short = '1', long = "oneshot")]
     oneshot: bool,
 
-    /// Explicitly force AUR only
+    /// Force AUR only
     #[arg(long = "aur")]
     aur: bool,
 
-    /// Report-only PKGBUILD/.install audit: fetches/reads the same
-    /// files the normal scanner checks, prints findings, but never
-    /// builds or installs. Exits non-zero on any finding, usable in a
-    /// script. AUR- and --install-pkgbuild-only for now.
+    /// Audit PKGBUILD/.install only (no build); non-zero on findings
     #[arg(long = "scan")]
     scan: bool,
 
-    /// With `-u`: also checks every installed `-git`/`-hg`/`-svn`/`-bzr`
-    /// package's upstream directly (`git ls-remote`), catching drift
-    /// plain `-u` misses since it only compares the AUR page's recorded
-    /// version. git-only for now; other VCS types are silently skipped.
-    /// See `--check-devel` for the read-only version.
+    /// With `-u`: also rebuild -git/-hg/-svn/-bzr whose upstream moved
     #[arg(long = "devel")]
     devel: bool,
 
-    /// Report which installed `-git`/`-hg`/`-svn`/`-bzr` AUR packages
-    /// have upstream commits beyond what's currently installed - without
-    /// rebuilding or installing anything. Same upstream check as
-    /// `-u --devel`, just report-only; run `emerge -u --devel` afterward
-    /// to actually rebuild what it flags.
+    /// Report devel packages with upstream drift (no rebuild)
     #[arg(long = "check-devel")]
     check_devel: bool,
 
-    /// Also resolves and builds AUR-only dependencies recursively,
-    /// instead of stopping to ask. Off by default: a plain --aur build
-    /// stops with an error on an AUR-only dependency rather than
-    /// silently building an unreviewed tree. Implies --aur.
+    /// Recursively build AUR-only deps (implies --aur)
     #[arg(long = "aur-deep", alias = "aur-full")]
     aur_deep: bool,
 
-    /// Only use official repos: never search or install from the AUR
+    /// Official repos only (never AUR)
     #[arg(long = "only-repos")]
     only_repos: bool,
 
-    /// Build from ABS (Arch Build System) source
+    /// Build from ABS source
     #[arg(long = "abs")]
     abs: bool,
 
-    /// Skip PGP signature checks when building from ABS (passes --skippgpcheck to makepkg)
+    /// Skip PGP checks on ABS builds (--skippgpcheck)
     #[arg(long = "skippgp")]
     skippgp: bool,
 
-    /// Automatically imports missing PGP keys via a trusted keyserver
-    /// before --abs builds, without prompting
+    /// Auto-import missing PGP keys before --abs builds
     #[arg(long = "autopgp")]
     autopgp: bool,
 
-    /// Disables the bwrap sandbox for --abs builds, falling back to
-    /// plain `makepkg -si` unisolated from the system. By default the
-    /// build functions run in a namespace with no real $HOME and no
-    /// write access outside the build dir.
+    /// Disable bwrap; plain unisolated makepkg
     #[arg(long = "no-sandbox")]
     no_sandbox: bool,
 
-    /// Cuts network access for the actual build()/check()/package()
-    /// step (no effect with --no-sandbox). By default network stays
-    /// shared throughout, since some PKGBUILDs (unvendored `cargo
-    /// build`/`go build`) need it mid-compile. With this flag,
-    /// downloading declared sources still gets network; the build
-    /// itself runs fully isolated, so unaudited network use there fails
-    /// loudly instead of succeeding quietly.
+    /// No network during build()/check()/package() (prepare still has net)
     #[arg(long = "unshare-net-build")]
     unshare_net_build: bool,
 
-    /// Opens PKGBUILD in $EDITOR before building -- the real checkout
-    /// that will be built, not a separate copy. Top-level only, not for
-    /// a recursive dependency or batch paths (@world, --aur -u).
-    ///
-    /// After saving, `.SRCINFO` regenerates automatically so a
-    /// dependency edit takes effect. Pass --skip-srcinfo-regen to skip
-    /// that and keep the pre-edit `.SRCINFO`.
+    /// Edit PKGBUILD in $EDITOR before build (top-level only; regenerates .SRCINFO)
     #[arg(long = "edit")]
     edit: bool,
 
-    /// Disables the automatic `.SRCINFO` regeneration `--edit` does
-    /// after saving. No effect without `--edit`.
+    /// With --edit: do not regenerate .SRCINFO after save
     #[arg(long = "skip-srcinfo-regen")]
     skip_srcinfo_regen: bool,
 
-    /// Shows the PKGBUILD about to be built and asks for confirmation
-    /// -- a diff against the last-shown copy when cached, full file
-    /// otherwise. Declining offers to open it in $EDITOR instead of
-    /// skipping outright. Runs after --edit if both are set. Same
-    /// top-level-only restriction as --edit.
+    /// Show/diff PKGBUILD and confirm before build (top-level only)
     #[arg(long = "pkgbuild-view")]
     pkgbuild_view: bool,
 
-    /// Builds and installs an arbitrary local PKGBUILD checkout through
-    /// the normal pipeline (scanner + bwrap sandbox) instead of a bare
-    /// `makepkg -i`. PATH must contain a PKGBUILD. Combines with
-    /// --pkgbuild-view, --skippgp, --no-sandbox, --unshare-net-build,
-    /// --skip-srcinfo-regen, -a/--ask, -1/--oneshot; not compatible
-    /// with any package/@set argument, --aur, or --abs. Recorded in
-    /// world.set with the "Err/" prefix (source unknown - see world.set's
-    /// own doc comment) unless --oneshot is also given.
+    /// Build+install local PKGBUILD dir (scanner + bwrap); world.set Err/ unless -1
     #[arg(long = "install-pkgbuild", value_name = "PATH", value_hint = clap::ValueHint::DirPath)]
     install_pkgbuild: Option<String>,
 
-    /// Verbose output / detailed info in search mode (-sv = pacman -Si / AUR info)
+    /// Verbose / detailed search info (-sv)
     #[arg(short = 'v', long = "verbose")]
     verbose: bool,
 
-    /// Do not reinstall if already installed (pacman --needed)
+    /// Do not reinstall if present (pacman --needed)
     #[arg(short = 'n', long = "noreplace")]
     noreplace: bool,
 
@@ -381,91 +320,71 @@ struct Cli {
     #[arg(short = 'e', long = "emptytree")]
     emptytree: bool,
 
-    /// Resume a previously interrupted merge
+    /// Resume interrupted merge
     #[arg(long = "resume")]
     resume: bool,
 
-    /// Skip the first package in the resume list
+    /// Skip first package on resume
     #[arg(long = "skipfirst")]
     skipfirst: bool,
 
-    /// Undoes the last install, unmerge, or full-system upgrade. Install
-    /// undo removes only brand-new packages; unmerge undo reinstalls
-    /// what was removed. A full-system upgrade is NOT reversible here --
-    /// no pre-upgrade snapshot is taken; use pacman's log/cache to
-    /// downgrade manually. One step of history, best-effort.
+    /// Undo last install/unmerge (one step; -u not reversible)
     #[arg(long = "undo")]
     undo: bool,
 
-    /// Remove packages not in world.set (prune)
+    /// Remove packages not in world.set
     #[arg(long = "prune")]
     prune: bool,
 
-    /// Regenerate package metadata cache (regen)
+    /// Regenerate package metadata cache
     #[arg(long = "regen")]
     regen: bool,
 
-    /// Re-resolve repository prefixes for all packages in world.set
+    /// Re-resolve repo prefixes in world.set
     #[arg(long = "regen-world")]
     regen_world: bool,
 
-    /// Re-resolve repository prefixes for all packages in a custom set,
-    /// e.g. `--regen-sets @game-kit` or `--regen-sets game-kit`
+    /// Re-resolve prefixes in a custom set (`@game-kit` or `game-kit`)
     #[arg(long = "regen-sets", value_name = "SET")]
     regen_sets: Option<String>,
 
-    /// Modifier for --regen-sets: also alphabetically re-sort the set file
-    /// (dropping '#' comments and blank-line grouping in the process). By
-    /// itself --regen-sets only patches repository prefixes in place and
-    /// leaves line order, comments, and blank lines untouched. This flag
-    /// is an addition to --regen-sets, not an alternative - it has no
-    /// effect on its own.
+    /// With --regen-sets: also sort the file (drops comments/grouping)
     #[arg(long = "regen-sort", requires = "regen_sets")]
     regen_sort: bool,
 
-    /// When provisioning from world.set/a custom set, "Err/"-prefixed
-    /// entries (source unknown) are normally listed and skipped. With
-    /// this flag they're installed through the normal procedure instead.
+    /// On @world: also install Err/ (unknown-source) entries
     #[arg(long = "err-install")]
     err_install: bool,
 
-    /// One-time migration: seed world.set from every currently
-    /// explicitly-installed package (pacman -Qeq), for systems that
-    /// predate world.set tracking
+    /// Seed world.set from pacman -Qeq (one-time migration)
     #[arg(long = "regen-world-from-explicit")]
     regen_world_from_explicit: bool,
 
-    /// Search package descriptions (--searchdesc)
+    /// Search package descriptions
     #[arg(long = "searchdesc")]
     searchdesc: bool,
 
-    /// Explicitly add packages to world.set (--select)
+    /// Add to world.set without installing
     #[arg(long = "select")]
     select: bool,
 
-    /// Remove packages from world.set without unmerging (--deselect)
+    /// Remove from world.set without unmerging
     #[arg(long = "deselect")]
     deselect: bool,
 
-    /// Show verbose slot/conflict info (informational)
+    /// Verbose slot/conflict info (informational)
     #[arg(long = "verbose-conflicts")]
     verbose_conflicts: bool,
 
-    /// List available @sets: @world, @preserved-rebuild, and every
-    /// /etc/emerge/sets.d/*.set file (as @<name>). Also used by shell
-    /// completion to offer set names after '@'.
+    /// List available @sets (also for shell completion)
     #[arg(long = "list-sets")]
     list_sets: bool,
 
-    /// Deletes the persistent source cache (VCS sources cached across
-    /// runs for incremental fetches) and exits. Grows unbounded with
-    /// more -git packages built; no pacman/sudo needed.
+    /// Wipe persistent VCS source cache and exit
     #[arg(long = "clean-source-cache")]
     clean_source_cache: bool,
 
-    /// Mass-installs from a plain-text list: one atom per line, same
-    /// format as a custom set but from any path, no pre-registration
-    /// needed. Folded into the normal package list, so all flags apply.
+    /// Mass-install from a text list (same format as a custom set)
     #[arg(long = "batchinstall", value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
     batchinstall: Option<String>,
 
@@ -1688,23 +1607,7 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // 4. Depclean (orphans) - pacman's own leaf-orphan detection
-    //    (`pacman -Qttdq`), with one guard: anything the user has
-    //    explicitly asked for via world.set is protected even if pacman's
-    //    dependency graph currently also sees it as a dependency of
-    //    something else (e.g. another package happens to also depend on
-    //    it). world.set is the source of truth for "wanted"; depclean
-    //    should never silently rip out something that's in it.
-    //
-    //    Single -t ("unrequired") is conservative: it excludes anything
-    //    that's merely an *optional* dependency of another installed
-    //    package (e.g. exo would be skipped here just because xdg-utils
-    //    optionally uses it, even with zero hard reverse-dependencies).
-    //    Doubling it (-tt / here as part of -Qttdq) makes pacman ignore
-    //    optional-for relationships too - the world.set filter right
-    //    below is what actually keeps this safe, the same way Gentoo's
-    //    own --depclean doesn't spare a package just because *something*
-    //    could optionally use it, only because it's in world.
+    // 4. Depclean: pacman -Qttdq, but never remove world.set entries.
     if cli.depclean {
         println!(">>> Calculating dependencies... done!");
         println!(">>> Checking for orphaned packages...");
@@ -1750,9 +1653,7 @@ fn run() -> anyhow::Result<()> {
                 println!("Total: {} orphaned package(s) to remove", orphans.len());
                 println!();
 
-                // pacman rejects -n/--nosave together with --print, and
-                // --nosave is meaningless for a dry run anyway (nothing gets
-                // removed, so there's nothing to skip saving configs for).
+                // --print and --nosave conflict; nosave N/A on dry run.
                 let mut pacman_args = if cli.pretend {
                     vec!["-Rs", "--print"]
                 } else {
@@ -1762,10 +1663,7 @@ fn run() -> anyhow::Result<()> {
                     pacman_args.push("--noconfirm");
                 }
 
-                // --print never touches the system, so it doesn't need root -
-                // running it through sudo anyway just makes `-p` (pretend)
-                // prompt for a password to print a list, which defeats the
-                // point of a dry run.
+                // --print needs no root (avoid sudo password on dry run).
                 if cli.pretend {
                     run_cmd(PACMAN_BIN, &pacman_args, &orphans);
                 } else {
@@ -1792,9 +1690,7 @@ fn run() -> anyhow::Result<()> {
         println!();
         println!("{} These are the packages that would be unmerged:", ">>>".green().bold());
         println!();
-        // Full repo/name atoms, captured while we still have the repo info
-        // (it's gone once the package is actually removed) - used to
-        // record this unmerge for `emerge --undo`.
+        // Capture repo/name before removal for --undo.
         let mut unmerge_atoms: Vec<String> = Vec::new();
         for p in &target_pkgs {
             let bare = p.split('/').last().unwrap_or(p);
@@ -1837,8 +1733,6 @@ fn run() -> anyhow::Result<()> {
             pacman_args.push("--verbose");
         }
 
-        // --print never touches the system, so it doesn't need root (same
-        // pattern as --depclean above).
         let success = if cli.pretend {
             run_cmd(PACMAN_BIN, &pacman_args, &target_pkgs)
         } else {
@@ -1874,11 +1768,7 @@ fn run() -> anyhow::Result<()> {
 
         let mut success: bool;
         let mut installed_infos: Vec<PkgInfo> = Vec::new();
-        // Names that turned out not to exist anywhere (official repos nor
-        // AUR). Collected across whichever branch below runs, then
-        // reported once at the end - a batch install must still land
-        // everything that *does* resolve instead of failing outright
-        // because one name in the middle was a typo or got pulled.
+        // Missing from repos+AUR (report at end; rest still install).
         let mut not_found: Vec<String> = Vec::new();
 
         if cli.abs {
@@ -1901,8 +1791,6 @@ fn run() -> anyhow::Result<()> {
             success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.skip_srcinfo_regen, cli.aur_deep, cli.unshare_net_build, cli.pkgbuild_view);
             if success { installed_infos = pkg_infos; }
         } else {
-            // Probe official repos safely against partial matches -- one
-            // unmatched name no longer drags everything into an AUR search.
             let (official_infos, missing) = probe_official_split(&target_pkgs);
 
             if missing.is_empty() {
@@ -1916,8 +1804,6 @@ fn run() -> anyhow::Result<()> {
                 success = run_cmd(SUDO_BIN, &off_args, &target_pkgs);
                 if success { installed_infos = official_infos; }
             } else if cli.only_repos {
-                // --only-repos: skip unresolved names with a warning
-                // rather than aborting -- matched packages still install.
                 eprintln!(
                     ">>> Warning: --only-repos is set; the following package(s) were not \
                     found in official repos and will be skipped (AUR was not searched):"
@@ -1947,11 +1833,8 @@ fn run() -> anyhow::Result<()> {
                 if off_success {
                     installed_infos = official_infos;
                 }
-                // Some names never resolved -- surface as overall
-                // failure even though the found ones installed cleanly.
-                success = false;
+                success = false; // partial success overall
             } else if official_infos.is_empty() {
-                // Nothing found officially at all - search AUR for everything.
                 println!(
                     ">>> Not found in official repos. Searching AUR for '{}'...",
                     missing.join(", ")
@@ -1973,7 +1856,7 @@ fn run() -> anyhow::Result<()> {
                 success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.skip_srcinfo_regen, cli.aur_deep, cli.unshare_net_build, cli.pkgbuild_view);
                 if success { installed_infos = pkg_infos; }
             } else {
-                // Mixed case: some packages are official, some need the AUR.
+                // Mixed: official + AUR.
                 println!(
                     ">>> Not found in official repos: '{}'. Searching AUR...",
                     missing.join(", ")
@@ -2027,19 +1910,14 @@ fn run() -> anyhow::Result<()> {
 
         if !cli.pretend {
             if !installed_infos.is_empty() {
-                // installed_infos was resolved before the real install --
-                // catch up to what actually landed on disk.
                 refresh_installed_versions(&mut installed_infos);
                 print_emerge_completed(&installed_infos);
             }
 
             if !cli.oneshot {
                 if cli.abs {
-                    // abs_install() doesn't populate installed_infos.
                     if success {
                         println!("{} Auto-cleaning packages...", ">>>".green().bold());
-                        // Force explicit even if pacman installed it as a
-                        // dependency first, so world.set and pacman agree.
                         mark_asexplicit(&target_pkgs);
                         if let Err(e) = add_to_world_set(&target_pkgs, Some("abs")) {
                             eprintln!(">>> Warning: package(s) built but world.set was not updated: {:#}", e);
@@ -2047,16 +1925,13 @@ fn run() -> anyhow::Result<()> {
                     }
                 } else if !installed_infos.is_empty() {
                     println!("{} Auto-cleaning packages...", ">>>".green().bold());
-                    // installed_infos includes every pulled-in dependency,
-                    // fine for display but wrong for world.set -- only
-                    // what was actually requested (target_pkgs) belongs.
+                    // world.set only gets explicitly requested names.
                     let target_bare: HashSet<String> = target_pkgs.iter()
                         .map(|p| p.split('/').last().unwrap_or(p).to_string())
                         .collect();
                     let explicit_infos: Vec<&PkgInfo> = installed_infos.iter()
                         .filter(|p| target_bare.contains(&p.name))
                         .collect();
-                    // Split official vs AUR so they get different world.set prefixes
                     let official_names: Vec<String> = explicit_infos.iter()
                         .filter(|p| p.repo != "aur")
                         .map(|p| p.name.clone())
@@ -2071,18 +1946,13 @@ fn run() -> anyhow::Result<()> {
                         }
                     }
                     if !aur_names.is_empty() {
-                        // Belt-and-suspenders -- aur_install() already sets
-                        // explicit on success.
                         mark_asexplicit(&aur_names);
                         if let Err(e) = add_to_world_set(&aur_names, Some("aur")) {
                             eprintln!(">>> Warning: package(s) installed but world.set was not updated: {:#}", e);
                         }
                     }
 
-                    // Anything not in target_bare was pulled in as a
-                    // dependency, excluded from world.set above -- force
-                    // its install-reason to "dependency" too, so
-                    // `--depclean` can pick it up once nothing needs it.
+                    // Transitive deps → asdeps so depclean can see them.
                     let dep_only_names: Vec<String> = installed_infos.iter()
                         .filter(|p| !target_bare.contains(&p.name))
                         .map(|p| p.name.clone())
@@ -2098,7 +1968,6 @@ fn run() -> anyhow::Result<()> {
                 std::process::exit(1);
             } else {
                 clear_resume_state();
-                // Record only what actually got installed, not what was skipped
                 let new_names: Vec<String> = installed_infos.iter()
                     .filter(|p| p.status == "N")
                     .map(|p| p.name.clone())
@@ -2110,8 +1979,7 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
-    // `emerge <pkg> @world` (no -u): named packages are installed above;
-    // now provision anything else world.set still lists as missing.
+    // After named pkgs: provision remaining world.set misses.
     if provision_after_install && !cli.pretend {
         println!();
         if !provision_from_world_set(cli.pretend, cli.ask, cli.verbose, cli.err_install, cli.no_sandbox, cli.skip_srcinfo_regen, cli.aur_deep, cli.unshare_net_build)? {

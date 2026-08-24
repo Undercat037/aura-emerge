@@ -33,15 +33,12 @@ pub(crate) struct AurPkgInfo {
 }
 
 /// Shallow-clones `<AUR_BASE_URL>/<pkgbase>.git` into `dest_root/<pkgbase>`.
-/// Returns the clone path, or `None` on any git failure (network or a
-/// genuinely nonexistent pkgbase -- not distinguished, since callers
-/// fall back to an RPC lookup either way).
+/// Returns `None` on any git failure (network or nonexistent pkgbase --
+/// not distinguished, callers fall back to an RPC lookup either way).
 ///
 /// `dest_root` should be owned exclusively by this run (see
-/// `packages::aur_build_base()`/`abs_build_base()`'s wipe-on-start) --
-/// if `target` already exists that's a caller bug, not a normal miss,
-/// so it's reported distinctly on stderr rather than masquerading as
-/// an AUR miss further up the call chain.
+/// `packages::aur_build_base()`/`abs_build_base()`'s wipe-on-start), so a
+/// pre-existing `target` is a caller bug and gets its own stderr message.
 pub(crate) fn clone_repo(pkgbase: &str, dest_root: &Path) -> Option<PathBuf> {
     let url = format!("{}/{}.git", AUR_BASE_URL, pkgbase);
     let target = dest_root.join(pkgbase);
@@ -63,11 +60,8 @@ pub(crate) fn clone_repo(pkgbase: &str, dest_root: &Path) -> Option<PathBuf> {
         Err(_) => false,
     };
     if !ok {
-        // Surface git's own stderr at a low volume rather than
-        // discarding it -- a genuine "repository not found" (bad/unknown
-        // pkgbase, the expected/common case) looks very different from a
-        // network timeout or TLS failure, and telling those apart used
-        // to require re-running with `git clone` by hand.
+        // Surface git's stderr (quietly) so a network/TLS failure isn't
+        // indistinguishable from a plain "repository not found".
         if let Ok(o) = &output {
             let stderr = String::from_utf8_lossy(&o.stderr);
             let stderr = stderr.trim();
@@ -77,16 +71,10 @@ pub(crate) fn clone_repo(pkgbase: &str, dest_root: &Path) -> Option<PathBuf> {
         }
         return None;
     }
-    // AUR's git backend happily "clones" successfully (exit 0) for a name
-    // that was never actually pushed as a package -- it just hands back an
-    // empty, zero-commit repo with no PKGBUILD in it. Treat that the same
-    // as "package doesn't exist" rather than letting the bogus empty clone
-    // limp downstream into a much more confusing failure several layers
-    // later (missing .SRCINFO, then "could not read PKGBUILD: No such
-    // file or directory"). Clean up the empty dir too, since dest_root is
-    // a fixed, reused-across-runs path (packages::aur_build_base()) -- leaving it
-    // behind would otherwise sit there as a stale, empty trap for the
-    // next run.
+    // AUR's git backend "clones" successfully (exit 0) even for a name
+    // never pushed as a package -- an empty repo, no PKGBUILD. Treat that
+    // as "doesn't exist" instead of a confusing failure downstream, and
+    // remove the empty dir so it doesn't linger in the reused dest_root.
     if !target.join("PKGBUILD").is_file() {
         let _ = std::fs::remove_dir_all(&target);
         return None;
@@ -94,24 +82,18 @@ pub(crate) fn clone_repo(pkgbase: &str, dest_root: &Path) -> Option<PathBuf> {
     Some(target)
 }
 
-/// Looks up a package name's real `pkgbase` via the official AUR RPC --
-/// only needed for split packages, where the requested name (e.g.
-/// `gcc6-libs`) isn't the git repo/branch name (`gcc6`). `None` on any
-/// network/parse failure or if the name doesn't exist on the AUR at all.
+/// Looks up a package name's real `pkgbase` via the AUR RPC -- needed
+/// for split packages, where the name (e.g. `gcc6-libs`) isn't the git
+/// repo name (`gcc6`). `None` on failure or if the name doesn't exist.
 pub(crate) fn lookup_pkgbase(pkg: &str) -> Option<String> {
     let url = format!("{}?v=5&type=info&arg[]={}", AUR_RPC_INFO_URL, urlencode(pkg));
     let body = crate::http::get(&url, 10)?;
     extract_json_string_field(&body, "PackageBase")
 }
 
-/// Batched AUR RPC `info` lookup -- replaces parsing `aura -Ai <pkg>`
-/// stdout one package at a time. Chunks the request at `RPC_INFO_BATCH`
-/// names per call (the RPC caps how many `arg[]=` params it'll accept),
-/// so this is at most a handful of round-trips even for a large
-/// `@world` upgrade. Silently skips a chunk that fails (network hiccup,
-/// timeout) rather than failing the whole batch -- callers treat a name
-/// missing from the result as "not found"/"skip", same as an aura -Ai
-/// miss did before.
+/// Batched AUR RPC `info` lookup, chunked at `RPC_INFO_BATCH` names per
+/// call (the RPC caps `arg[]=` params). A failed chunk is silently
+/// skipped; callers treat a missing name as "not found"/"skip".
 pub(crate) fn rpc_info(names: &[String]) -> Vec<AurPkgInfo> {
     let mut out = Vec::new();
     for chunk in names.chunks(RPC_INFO_BATCH) {
@@ -126,13 +108,9 @@ pub(crate) fn rpc_info(names: &[String]) -> Vec<AurPkgInfo> {
     out
 }
 
-/// AUR RPC `search`, either by package name (`by_desc = false`) or by
-/// name+description (`by_desc = true`) -- replaces `aura -As`/`aura -Ss`
-/// (AUR half) and `aura --searchdesc` (AUR half) output parsing.
-/// Empty/no-match results in an empty Vec, same as a real miss; `None`
-/// is never returned since an empty result list already communicates
-/// "no results" to callers, and there's nothing more specific a caller
-/// would do differently for a network failure vs a genuine zero-match.
+/// AUR RPC `search`, by name (`by_desc = false`) or name+description
+/// (`by_desc = true`). Always returns a Vec, empty on no-match or
+/// failure -- callers don't need to tell those apart.
 pub(crate) fn rpc_search(term: &str, by_desc: bool) -> Vec<AurPkgInfo> {
     let by = if by_desc { "name-desc" } else { "name" };
     let url = format!("{}/{}?v=5&by={}", AUR_RPC_SEARCH_URL, urlencode(term), by);
@@ -147,19 +125,16 @@ fn http_get(url: &str) -> Option<String> {
 }
 
 /// Resolves a requested package name to (clone directory, real pkgbase).
-/// Tries a direct clone by the given name first -- the common case, since
-/// most AUR packages aren't split and the name given usually already is
-/// the pkgbase -- and only falls back to an RPC round-trip if that fails,
-/// to look up the real pkgbase for a split-package child name.
+/// Tries a direct clone first (the common case, name == pkgbase), and
+/// only falls back to an RPC lookup for split-package child names.
 pub(crate) fn clone_or_resolve(pkg: &str, dest_root: &Path) -> Option<(PathBuf, String)> {
     if let Some(dir) = clone_repo(pkg, dest_root) {
         return Some((dir, pkg.to_string()));
     }
     let pkgbase = lookup_pkgbase(pkg)?;
     if pkgbase == pkg {
-        // Already tried this exact name above and it failed -- this is a
-        // real clone failure (network, repo gone), not a split-package
-        // name mismatch, so retrying it won't help.
+        // Already tried this name above -- a real failure, not a
+        // split-package mismatch, so retrying won't help.
         return None;
     }
     let dir = clone_repo(&pkgbase, dest_root)?;
@@ -167,14 +142,12 @@ pub(crate) fn clone_or_resolve(pkg: &str, dest_root: &Path) -> Option<(PathBuf, 
 }
 
 /// Minimal `.SRCINFO` reader: sums `depends`/`makedepends`/`checkdepends`
-/// (bare key + `_<current_arch>`-suffixed variant) across all sections,
-/// strips version constraints (`foo>=1.2` -> `foo`), dedupes. Other
-/// arches' suffixes are excluded -- they'd hand `pacman -S` names that
-/// don't exist on this machine.
+/// (bare + `_<current_arch>` variants) across all sections, strips version
+/// constraints (`foo>=1.2` -> `foo`), dedupes. Other arches' suffixes are
+/// excluded since they don't exist on this machine.
 ///
-/// `.SRCINFO` is static/generated (`makepkg --printsrcinfo`), so reading
-/// it never executes anything, unlike PKGBUILD itself. `None` only if
-/// the file can't be read; an empty-but-present file yields `Some(vec![])`.
+/// `.SRCINFO` is generated/static, so reading it never executes anything.
+/// `None` only on read failure; an empty file yields `Some(vec![])`.
 pub(crate) fn srcinfo_dependencies(path: &Path, current_arch: &str) -> Option<Vec<String>> {
     let text = std::fs::read_to_string(path).ok()?;
     let mut out = Vec::new();
@@ -186,9 +159,8 @@ pub(crate) fn srcinfo_dependencies(path: &Path, current_arch: &str) -> Option<Ve
         if !matches!(base_key, "depends" | "makedepends" | "checkdepends") {
             continue;
         }
-        // Either the bare key, or arch-suffixed for exactly this machine's
-        // arch -- e.g. accept "depends" and "depends_x86_64" when
-        // current_arch == "x86_64", but skip "depends_aarch64".
+        // Bare key, or arch-suffixed for this machine only (e.g. accept
+        // "depends_x86_64" when current_arch == "x86_64", skip others).
         if key != base_key && key != format!("{base_key}_{current_arch}") {
             continue;
         }
@@ -211,11 +183,10 @@ pub(crate) fn srcinfo_pkgbase(path: &Path) -> Option<String> {
     })
 }
 
-/// Every `pkgname = ...` value declared in a `.SRCINFO` file - usually
-/// one, but a split package declares several. Used by `--install-pkgbuild`
-/// to figure out what to record in world.set after a local build, since
-/// there's no AUR/ABS resolution step to have already produced that name
-/// list the way there is for every other install path.
+/// Every `pkgname = ...` value in a `.SRCINFO` file - usually one, but
+/// several for a split package. Used by `--install-pkgbuild` to record
+/// world.set entries after a local build (no AUR/ABS resolution step
+/// to source that list from, unlike every other install path).
 pub(crate) fn srcinfo_pkgnames(path: &Path) -> Option<Vec<String>> {
     let text = std::fs::read_to_string(path).ok()?;
     let names: Vec<String> = text
@@ -230,9 +201,8 @@ pub(crate) fn srcinfo_pkgnames(path: &Path) -> Option<Vec<String>> {
 }
 
 fn urlencode(s: &str) -> String {
-    // AUR package names are restricted to alnum + a small punctuation set
-    // (-, _, ., @, +) -- none of that needs escaping in a query string, so
-    // this is deliberately minimal rather than a general percent-encoder.
+    // Minimal on purpose: AUR names only use alnum + -_.@+, none of
+    // which need escaping in a query string.
     s.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '@' | '+') {
@@ -244,10 +214,9 @@ fn urlencode(s: &str) -> String {
         .collect()
 }
 
-/// Parses the `"results":[...]` array of an AUR RPC `info`/`search`
-/// response into `AurPkgInfo`s. Skips any object missing a `Name` (there
-/// shouldn't be one, but this is minimal hand-rolled parsing, not a real
-/// JSON parser -- bailing per-object on a shape surprise beats guessing).
+/// Parses the `"results":[...]` array of an AUR RPC response into
+/// `AurPkgInfo`s. Skips objects missing `Name` (hand-rolled parsing,
+/// not a real JSON parser -- bail per-object rather than guess).
 fn parse_pkg_results(json: &str) -> Vec<AurPkgInfo> {
     let Some(array_body) = extract_results_array(json) else { return Vec::new() };
     split_json_objects(array_body)
@@ -347,9 +316,8 @@ fn extract_json_number_field(json: &str, field: &str) -> Option<f64> {
     tail[..end].trim().parse().ok()
 }
 
-/// Extracts a field's raw (un-typed) value slice, e.g. `null` or `1700000000`
-/// for `OutOfDate` -- enough to distinguish "null" from "set" without
-/// needing to know in advance whether it's a number or a literal.
+/// Extracts a field's raw value slice (e.g. `null` or `1700000000` for
+/// `OutOfDate`) -- enough to tell "null" from "set" without knowing the type.
 fn extract_json_raw_field(json: &str, field: &str) -> Option<String> {
     let needle = format!("\"{}\":", field);
     let start = json.find(&needle)? + needle.len();
@@ -358,11 +326,8 @@ fn extract_json_raw_field(json: &str, field: &str) -> Option<String> {
     Some(tail[..end].trim().to_string())
 }
 
-/// Extracts a `"Field":"value"` string from a flat JSON blob -- covers
-/// the string fields this module needs (`PackageBase`, `Name`,
-/// `Description`, ...) without a JSON dependency. Honors `\"`/`\\`
-/// escapes while scanning for the closing quote. `null` (e.g. an absent
-/// `Maintainer`) is treated as absent, same as a missing field.
+/// Extracts a `"Field":"value"` string from a flat JSON blob without a
+/// JSON dependency. Honors `\"`/`\\` escapes. `null` is treated as absent.
 fn extract_json_string_field(json: &str, field: &str) -> Option<String> {
     let needle = format!("\"{}\":", field);
     let start = json.find(&needle)? + needle.len();
@@ -387,9 +352,8 @@ fn extract_json_string_field(json: &str, field: &str) -> Option<String> {
     Some(decode_entities_json(raw))
 }
 
-/// Decodes the JSON string escapes the AUR RPC actually emits
-/// (`\"`, `\\`, `\/`, `\n`, `\t`, `\uXXXX`) -- not a general JSON-string
-/// decoder, just enough for package names/descriptions/URLs.
+/// Decodes the JSON escapes the AUR RPC actually emits (`\" \\ \/ \n \t
+/// \uXXXX`) -- not a general decoder, just enough for this data.
 fn decode_entities_json(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars();

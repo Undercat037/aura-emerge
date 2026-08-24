@@ -1,34 +1,12 @@
-//! AST-based structural checks for the PKGBUILD scanner, on top of
-//! tree-sitter-bash.
-//!
-//! The line-based heuristics in `security.rs` are cheap but pure text
-//! matching, so they miss anything that doesn't literally contain the
-//! grepped substring: `curl ... | s""h` (concatenation evaluates to
-//! `sh` at runtime, no literal "sh" on the line), `# sudo ./validator`
-//! or `makedepends=('sudo')` (structurally not a `command` node, so no
-//! comment/array-literal carve-out needed here).
-//!
-//! Each function parses with tree-sitter-bash and walks the real tree.
-//! `None` covers both "not found" and "couldn't parse" -- callers in
-//! `security.rs` fall back to the line-based heuristic either way
-//! (`.or_else(...)`), so a parse failure only loses extra precision,
-//! never drops the check.
-//!
-//! Command names are only matched when statically known (`resolve_word`
-//! bails on any unresolved `$expansion`/`$(...)`) -- a command invoked
-//! through a variable (`$RUNNER ./validator`) is a real blind spot here,
-//! as with any static analysis.
+//! AST structural checks for the PKGBUILD scanner (tree-sitter-bash).
+//! Catches evasions line heuristics miss (concatenation, quoting, env
+//! wrappers). `None` = not found or parse fail; callers fall back via
+//! `.or_else(...)`. Only matches statically known command names.
 
 use tree_sitter::Node;
 
 fn parse(source: &str) -> Option<tree_sitter::Tree> {
     let mut parser = tree_sitter::Parser::new();
-    // tree-sitter 0.22+ moved grammar crates off a raw `extern "C"`
-    // language-getter function and onto a `LanguageFn` static (the
-    // `tree-sitter-language` crate's abstraction, meant to decouple a
-    // grammar's own release cadence from the core `tree-sitter` crate's
-    // ABI) -- `LANGUAGE.into()` converts that into the `Language` value
-    // `set_language` wants, which itself now takes it by reference.
     let language: tree_sitter::Language = tree_sitter_bash::LANGUAGE.into();
     parser.set_language(&language).ok()?;
     parser.parse(source, None)
@@ -44,11 +22,7 @@ fn find_descendants<'a>(node: Node<'a>, kind: &str, out: &mut Vec<Node<'a>>) {
     }
 }
 
-/// Resolves a `word` / `raw_string` ('...') / `string` ("...") /
-/// `concatenation` node to a literal string. Returns `None` if the value
-/// depends on anything dynamic (an `expansion` or `command_substitution`
-/// inside a double-quoted string) - we never guess at a value we can't
-/// actually determine statically.
+/// Resolve word/string/concatenation to a literal. `None` if dynamic.
 fn resolve_word(node: Node, src: &[u8]) -> Option<String> {
     match node.kind() {
         "word" => Some(node.utf8_text(src).ok()?.to_string()),
@@ -77,8 +51,7 @@ fn resolve_word(node: Node, src: &[u8]) -> Option<String> {
     }
 }
 
-/// Statically-known command name of a `command` node (lowercased), or
-/// `None` if it's built from an unresolved expansion.
+/// Static command name (lowercased), or None if expanded.
 fn command_name_of(command_node: Node, src: &[u8]) -> Option<String> {
     let mut cursor = command_node.walk();
     let name_node = command_node.children(&mut cursor).find(|c| c.kind() == "command_name")?;
@@ -99,12 +72,7 @@ const SHELL_NAMES: &[&str] = &["sh", "bash", "zsh", "dash", "ash"];
 const FETCHERS: &[&str] = &["curl", "wget"];
 const ESCALATORS: &[&str] = &["sudo", "pkexec", "doas"];
 
-/// Structural equivalent of `curl_pipe_shell_line`: a `pipeline` node
-/// where some earlier command resolves to curl/wget and the last command
-/// resolves to a shell - survives quoting (`| "sh"`, `| 'sh'`),
-/// concatenation (`| s""h`), absolute paths (`| /bin/sh`), and `env`
-/// wrappers (`| env bash`, `| env -S sh`) uniformly, instead of needing a
-/// separate carve-out for each.
+/// AST: curl/wget piped into a shell (handles quoting, concat, env, abs paths).
 pub(crate) fn curl_pipe_shell(source: &str) -> Option<usize> {
     let tree = parse(source)?;
     let src = source.as_bytes();
@@ -124,8 +92,7 @@ pub(crate) fn curl_pipe_shell(source: &str) -> Option<usize> {
         }
         let last = commands[commands.len() - 1];
         if let Some(name) = command_name_of(last, src) {
-            // `env sh` / `env -S bash`: the real interpreter is the first
-            // non-flag argument to env, not "env" itself.
+            // env wrapper: real interpreter is first non-flag arg.
             let effective = if name == "env" {
                 let mut c3 = last.walk();
                 let arg_words: Vec<Node> = last.children(&mut c3).filter(|c| c.kind() == "word").collect();
@@ -143,11 +110,7 @@ pub(crate) fn curl_pipe_shell(source: &str) -> Option<usize> {
     None
 }
 
-/// Does `cmd` resolve, possibly through an `env`/`env -S` wrapper, to one
-/// of `SHELL_NAMES`? The "is the last stage of this pipeline a shell"
-/// half of `curl_pipe_shell`, factored out so `decode_pipe_shell` below
-/// can reuse it instead of duplicating the env-unwrap/quoting/
-/// concatenation handling.
+/// True if cmd is a shell (incl. via env wrapper). Shared by decode_pipe_shell.
 fn command_is_shell(cmd: Node, src: &[u8]) -> bool {
     let Some(name) = command_name_of(cmd, src) else { return false };
     let effective = if name == "env" {
@@ -160,17 +123,9 @@ fn command_is_shell(cmd: Node, src: &[u8]) -> bool {
     effective.is_some_and(|eff| SHELL_NAMES.contains(&basename(&eff)))
 }
 
-/// Command names that decode/obfuscate an inline payload rather than fetch
-/// one over the network -- the base64/hex analog of `FETCHERS`, checked by
-/// `decode_pipe_shell`.
 const DECODERS: &[&str] = &["base64", "xxd"];
 
-/// All of `cmd`'s arguments (everything but the command name itself),
-/// statically resolved to strings -- an argument built from something
-/// dynamic is just dropped rather than bailing the whole command, since a
-/// flag check only needs to see the *literal* flags to reach a confident
-/// "yes" and dropping one unresolved argument can't turn a real "yes" into
-/// a false "no".
+/// Static arg words of cmd (dynamic args dropped, not a whole-command bail).
 fn command_arg_words(cmd: Node, src: &[u8]) -> Vec<String> {
     let mut cursor = cmd.walk();
     cmd.children(&mut cursor)
@@ -179,13 +134,7 @@ fn command_arg_words(cmd: Node, src: &[u8]) -> Vec<String> {
         .collect()
 }
 
-/// Structural equivalent of `base64_pipe_shell_line`/`xxd_pipe_shell_line`:
-/// a `pipeline` node where an earlier command is `base64` with a
-/// `-d`/`--decode` flag, or `xxd` with both a `-r` and a `-p` flag
-/// (combined or separate, either order), and the last command resolves to
-/// a shell -- same env-wrapper/quoting/concatenation handling as
-/// `curl_pipe_shell`, via `command_is_shell`. Same obfuscation role as
-/// curl|sh, just decoding an inline-stashed blob instead of fetching one.
+/// AST: base64 -d / xxd -r -p piped into a shell.
 pub(crate) fn decode_pipe_shell(source: &str) -> Option<usize> {
     let tree = parse(source)?;
     let src = source.as_bytes();
@@ -227,13 +176,7 @@ pub(crate) fn decode_pipe_shell(source: &str) -> Option<usize> {
     None
 }
 
-/// Structural equivalent of `source_process_subst_line`: a `source` (or
-/// `.`) command whose argument is a `process_substitution` (`<(...)`)
-/// containing a curl/wget command anywhere inside it -- the process-
-/// substitution cousin of `eval_remote_exec` (command substitution,
-/// `$(...)`) and `curl_pipe_shell` (a literal pipe): the fetched script is
-/// read straight out of the substitution by `source`/`.`, with neither a
-/// pipe nor a `$(...)` for those other two checks to key on.
+/// AST: `source <(curl/wget ...)` / `. <(...)`.
 pub(crate) fn source_process_subst_remote(source: &str) -> Option<usize> {
     let tree = parse(source)?;
     let src = source.as_bytes();
@@ -257,10 +200,7 @@ pub(crate) fn source_process_subst_remote(source: &str) -> Option<usize> {
     None
 }
 
-/// Structural equivalent of `eval_remote_exec_line`: an `eval` command
-/// whose arguments contain a `command_substitution` that itself contains
-/// a curl/wget command anywhere inside it, however it's nested (piped,
-/// wrapped, etc.) - not just "the line contains `$(` and `curl`".
+/// AST: `eval "$(curl/wget ...)"` (any nesting inside the substitution).
 pub(crate) fn eval_remote_exec(source: &str) -> Option<usize> {
     let tree = parse(source)?;
     let src = source.as_bytes();
@@ -284,10 +224,7 @@ pub(crate) fn eval_remote_exec(source: &str) -> Option<usize> {
     None
 }
 
-/// Structural equivalent of `sudo_escalation_line`: an actual `command`
-/// node whose name is sudo/pkexec/doas. Comments and array literals
-/// (`makedepends=('sudo')`) are structurally not `command` nodes at all,
-/// so they're excluded for free instead of needing their own check.
+/// AST: real sudo/pkexec/doas command (not depends arrays or comments).
 pub(crate) fn sudo_escalation(source: &str) -> Option<usize> {
     let tree = parse(source)?;
     let src = source.as_bytes();
@@ -303,9 +240,7 @@ pub(crate) fn sudo_escalation(source: &str) -> Option<usize> {
     None
 }
 
-/// Structural equivalent of `python_inline_exec_line`: a python/python3
-/// command invoked with `-c` whose argument string statically resolves
-/// and contains `exec(`/`eval(`/`os.system(`/`subprocess.`/`os.popen(`.
+/// AST: python -c with exec/eval/os.system/subprocess/os.popen.
 pub(crate) fn python_inline_exec(source: &str) -> Option<usize> {
     let tree = parse(source)?;
     let src = source.as_bytes();
@@ -338,24 +273,8 @@ pub(crate) fn python_inline_exec(source: &str) -> Option<usize> {
 
 const DEP_ARRAY_NAMES: &[&str] = &["depends", "makedepends", "checkdepends"];
 
-/// Statically resolves `depends=(...)`/`makedepends=(...)`/
-/// `checkdepends=(...)` (bare + `_<current_arch>`-suffixed) to a flat,
-/// deduped list of bare package names for `pacman -S`, used by
-/// `packages::build_with_sandbox` to install deps before any
-/// PKGBUILD-authored code runs -- outside the sandbox entirely, since
-/// it's just pacman resolving names.
-///
-/// Version constraints (`foo>=1.2`) are trimmed to the bare name --
-/// pacman does its own constraint checking.
-///
-/// Returns `None` (fall back to the unsandboxed path) if the file
-/// doesn't parse, a dependency array isn't a plain array literal
-/// (`depends=$deps`), or any element is dynamic (`$var`, `$(cmd)`). A
-/// partially resolved list is worse than an honest "can't tell" -- a
-/// silently-dropped dependency can fail confusingly well after the
-/// sandboxed step already ran.
-///
-/// A different arch's suffixed array is simply skipped, not a bail.
+/// Static depends/makedepends/checkdepends (+ arch suffix) for pacman -S.
+/// Strips version constraints. `None` if unparseable/dynamic (don't guess).
 pub(crate) fn pkgbuild_dependencies(source: &str, current_arch: &str) -> Option<Vec<String>> {
     let tree = parse(source)?;
     let src = source.as_bytes();
@@ -375,9 +294,7 @@ pub(crate) fn pkgbuild_dependencies(source: &str, current_arch: &str) -> Option<
             continue;
         }
         let Some(array_node) = children.iter().find(|c| c.kind() == "array") else {
-            // e.g. depends=$foo / depends="$foo" -- not a literal array,
-            // can't be trusted statically.
-            return None;
+            return None; // not a literal array
         };
         found_any_array = true;
         let mut c2 = array_node.walk();
@@ -385,7 +302,7 @@ pub(crate) fn pkgbuild_dependencies(source: &str, current_arch: &str) -> Option<
             if matches!(el.kind(), "(" | ")") {
                 continue;
             }
-            let raw = resolve_word(el, src)?; // bails to None on any dynamic element
+            let raw = resolve_word(el, src)?;
             let bare = raw.split(['<', '>', '=']).next().unwrap_or(&raw);
             if !bare.is_empty() {
                 out.push(bare.to_string());
@@ -394,34 +311,15 @@ pub(crate) fn pkgbuild_dependencies(source: &str, current_arch: &str) -> Option<
     }
 
     if !found_any_array {
-        // No depends/makedepends/checkdepends array present at all --
-        // that's a legitimate "no declared dependencies", distinct from
-        // "couldn't parse" (handled by the `parse(source)?` above).
-        return Some(Vec::new());
+        return Some(Vec::new()); // no dep arrays at all
     }
     out.sort();
     out.dedup();
     Some(out)
 }
 
-/// A `command_substitution` (`$(...)` or backtick) reachable from a
-/// genuinely top-level PKGBUILD statement -- i.e. *not* inside any
-/// `function_definition`'s body.
-///
-/// Different from every other check here: those look for a dangerous
-/// *command*; this one cares *when* it runs. Top-level code executes
-/// the instant the file is sourced -- by `makepkg --printsrcinfo`,
-/// `updpkgsums`, any AUR helper's metadata read -- nowhere near the
-/// bwrap sandbox that isolates `build()`/`prepare()`. A function body,
-/// by contrast, only runs when makepkg explicitly calls it, so this
-/// walks the tree skipping into `function_definition`s.
-///
-/// Caught for real: a `pkgdesc` copy-pasted from GitHub markdown kept
-/// its code-span backticks (`` `bwrap` ``) -- inside a double-quoted
-/// string that's still live command substitution, so `makepkg
-/// --printsrcinfo` alone ran the literal `bwrap` command. Nothing else
-/// in this file catches it -- not curl|sh, not eval, not sudo -- it's
-/// *any* command substitution somewhere makepkg doesn't expect one.
+/// Top-level command substitution (`$(...)` / backticks) outside function
+/// bodies — runs on source (e.g. makepkg --printsrcinfo), not in the sandbox.
 pub(crate) fn top_level_command_substitution(source: &str) -> Option<usize> {
     let tree = parse(source)?;
     let root = tree.root_node();
@@ -439,11 +337,7 @@ pub(crate) fn top_level_command_substitution(source: &str) -> Option<usize> {
     None
 }
 
-/// Same walk as `find_descendants`, but never recurses into a
-/// `function_definition`'s subtree - used by `top_level_command_substitution`
-/// so a legitimate `pkgver() { git describe ...; }` (only ever executed
-/// when makepkg explicitly calls `pkgver`, not on a bare `source`) is
-/// never mistaken for top-level code.
+/// Like find_descendants, but skips function_definition bodies.
 fn find_descendants_skip_functions<'a>(node: Node<'a>, kind: &str, out: &mut Vec<Node<'a>>) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {

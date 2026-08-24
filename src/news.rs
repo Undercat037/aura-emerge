@@ -1,18 +1,12 @@
-//! Arch Linux news feed - a Gentoo-`eselect news`-style notification system.
-//!
-//! Fetches the RSS feed (archlinux.org/feeds/news/) via the shared
-//! http.rs GET helper and does hand-rolled tag extraction (no XML
-//! crate - the feed format is stable/simple enough).
-//!
-//! Read/unread state lives in ~/.cache/aura-emerge/news.state, not
-//! /etc/emerge - it's pure UI state, no need for root just to browse.
+//! Arch Linux news (eselect-news style). RSS via http helper, hand-rolled
+//! tag parse. Read state in ~/.cache/aura-emerge/news.state (no root).
 
 use colored::Colorize;
 use std::fs;
 use std::io::Write;
 
 const NEWS_FEED_URL: &str = "https://archlinux.org/feeds/news/";
-/// Longest we'll show in the list view before truncating.
+/// Cap for list view.
 const LIST_LIMIT: usize = 30;
 
 pub(crate) struct NewsItem {
@@ -23,14 +17,10 @@ pub(crate) struct NewsItem {
     pub guid: String,
 }
 
-// ── Fetch ────────────────────────────────────────────────────────────────────
-
 fn fetch_feed() -> Option<String> {
     let text = crate::http::get(NEWS_FEED_URL, 10)?;
     if text.trim().is_empty() { None } else { Some(text) }
 }
-
-// ── Tiny hand-rolled RSS parsing ────────────────────────────────────────────
 
 fn split_items(xml: &str) -> Vec<&str> {
     let mut items = Vec::new();
@@ -47,8 +37,7 @@ fn split_items(xml: &str) -> Vec<&str> {
     items
 }
 
-/// Extract the text content of `<tag ...>content</tag>` from a block.
-/// Tolerates attributes on the opening tag (e.g. `<guid isPermaLink="false">`).
+/// Text of `<tag ...>content</tag>` (tolerates attributes on open tag).
 fn extract_tag(block: &str, tag: &str) -> Option<String> {
     let open_needle = format!("<{}", tag);
     let mut search_from = 0;
@@ -57,7 +46,7 @@ fn extract_tag(block: &str, tag: &str) -> Option<String> {
         let start = search_from + rel;
         let after = &block[start + open_needle.len()..];
         let next_char = after.chars().next()?;
-        // Guard against e.g. "<title" also matching inside "<titleFoo".
+        // Avoid matching "<title" inside "<titleFoo".
         if next_char != '>' && next_char != '/' && !next_char.is_whitespace() {
             search_from = start + open_needle.len();
             continue;
@@ -76,7 +65,7 @@ fn decode_entities(s: &str) -> String {
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&apos;", "'")
-        .replace("&amp;", "&") // must run last, or "&amp;lt;" etc. double-decode
+        .replace("&amp;", "&") // last, avoid double-decode
 }
 
 fn strip_tags(s: &str) -> String {
@@ -109,8 +98,7 @@ pub(crate) fn parse_news(xml: &str) -> Vec<NewsItem> {
         .collect()
 }
 
-/// "Tue, 21 Jul 2026 13:01:46 +0000" -> "21 Jul 2026". Falls back to the
-/// raw string if it doesn't look like RFC 822.
+/// RFC 822 date → "21 Jul 2026"; else raw string.
 fn short_date(pub_date: &str) -> String {
     let parts: Vec<&str> = pub_date.split_whitespace().collect();
     if parts.len() >= 4 {
@@ -119,8 +107,6 @@ fn short_date(pub_date: &str) -> String {
         pub_date.to_string()
     }
 }
-
-// ── Read-state cache (~/.cache/aura-emerge/news.state) ─────────────────────
 
 fn state_path() -> Option<std::path::PathBuf> {
     let home = std::env::var("HOME").ok()?;
@@ -159,11 +145,7 @@ fn save_read_guids(guids: &std::collections::HashSet<String>) {
     }
 }
 
-/// Best-effort unread-item count for a heads-up before `-u` runs, so a
-/// breaking-change notice gets caught before the user blindly upgrades
-/// past it. Quiet on any failure - returns `None` rather than erroring,
-/// since a missed warning should never block an upgrade. Read-only, so
-/// safe to call on every `-u` regardless of pretend.
+/// Unread count for a pre-`-u` heads-up. `None` on failure (never blocks upgrade).
 pub(crate) fn unread_count_quiet() -> Option<usize> {
     let xml = fetch_feed()?;
     let mut items = parse_news(&xml);
@@ -174,11 +156,7 @@ pub(crate) fn unread_count_quiet() -> Option<usize> {
     Some(items.iter().filter(|it| !read.contains(&it.guid)).count())
 }
 
-// ── Command entry point ─────────────────────────────────────────────────────
-
-/// `arg` is the raw value of `--news`: "" for bare `--news`, "all" to
-/// dismiss everything currently in the feed, or a 1-based index to read
-/// one item in full and mark it as read.
+/// `--news` arg: "" = list, "all" = mark all read, N = show item N.
 pub(crate) fn run_news(arg: &str) {
     println!("{} Fetching Arch Linux news...", ">>>".green().bold());
     let Some(xml) = fetch_feed() else {
