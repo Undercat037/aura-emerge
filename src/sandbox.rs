@@ -1,77 +1,39 @@
-//! Bubblewrap (bwrap) sandbox for the untrusted parts of a build:
-//! `pkgver()` / `prepare()` / `build()` / `check()` / `package()` as
-//! defined in an AUR/ABS `PKGBUILD`.
+//! Bubblewrap (bwrap) sandbox for the untrusted PKGBUILD functions:
+//! `pkgver()`/`prepare()`/`build()`/`check()`/`package()`.
 //!
-//! The static scanner in security.rs/bash_ast.rs is a blocklist: it
-//! catches known-bad patterns *before* anything runs, but a PKGBUILD it
-//! doesn't flag still gets to execute arbitrary shell as the build user.
-//! This module is the second, independent layer for that case: whatever
-//! the scanner missed only ever runs inside a namespace that can't see
-//! the real $HOME (no ssh keys, no gpg secret keyring, no browser
-//! profile, no other projects on disk) and can't write anywhere outside
-//! its own throwaway build directory.
+//! The static scanner (security.rs/bash_ast.rs) is a blocklist -- a
+//! PKGBUILD it misses still runs arbitrary shell as the build user.
+//! This is the second layer: whatever slips past runs in a namespace
+//! that can't see the real $HOME (no ssh/gpg/browser secrets, no other
+//! projects) and can't write outside its own throwaway build dir.
 //!
-//! Deliberately NOT covered here: dependency installation and the final
-//! `pacman -U`. Both need real root and a real view of the live system,
-//! and neither one runs a single line of PKGBUILD-authored code (it's
-//! just pacman resolving/installing package names) -- so both stay
-//! outside the jail and run the normal, trusted way. Only the shell
-//! functions the PKGBUILD itself defines run inside bwrap. See
-//! `packages::build_with_sandbox` for how the three (or, with
-//! `--unshare-net-build`, four) steps are wired together.
+//! NOT covered: dependency install and the final `pacman -U` -- both
+//! need real root, neither runs PKGBUILD code, so both stay outside
+//! the jail. See `packages::build_with_sandbox` for how it's wired up.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub(crate) const BWRAP_BIN: &str = "/usr/bin/bwrap";
 
-/// Scratch $HOME handed to the sandboxed build. Not the real one -- a
-/// malicious `prepare()`/`build()` should find nothing here worth
-/// stealing or tampering with.
+/// Scratch $HOME for the sandboxed build -- not the real one, so a
+/// malicious `prepare()`/`build()` finds nothing worth stealing.
 const SANDBOX_HOME: &str = "/tmp/aura-emerge-sandbox-home";
 
 pub(crate) fn bwrap_available() -> bool {
     Path::new(BWRAP_BIN).exists()
 }
 
-/// Fixes the `rustup could not choose a version of cargo to run,
-/// because ... no default is configured` failure a sandboxed `build()`
-/// hits for any PKGBUILD that shells out to `cargo`/`rustc` on a
-/// rustup-managed toolchain (reported against aura-emerge's own
-/// PKGBUILD, which builds itself with `cargo build --release`).
+/// Fixes "rustup could not choose a version of cargo to run" in a
+/// sandboxed `build()`: rustup's `$RUSTUP_HOME` (default
+/// `$HOME/.rustup`) is now empty under the fake `$HOME`, so it can't
+/// find its settings, even though the shims/toolchain are still
+/// reachable via `--ro-bind /`. Fix: `--setenv RUSTUP_HOME` back to its
+/// real path.
 ///
-/// rustup keeps its default-toolchain setting and installed toolchains
-/// under `$RUSTUP_HOME` (`$HOME/.rustup` unless overridden), and its
-/// `cargo`/`rustc` shims on `$PATH` (`$HOME/.cargo/bin`, inherited by
-/// the sandboxed process same as any other `$PATH` entry -- `$HOME`
-/// itself has no bearing on that lookup). The fake, empty `$HOME` set
-/// above for the sandbox doesn't hide the real toolchain files -- they
-/// stay reachable at their real absolute path under the whole-
-/// filesystem `--ro-bind /` -- it just changes where rustup's own
-/// `$HOME`-relative default now points, to a `$RUSTUP_HOME` that's
-/// empty. Same shims, same installed toolchain on disk, but rustup can
-/// no longer find its own settings, so it refuses to guess.
-///
-/// Fix: explicitly `--setenv RUSTUP_HOME` back to wherever it *really*
-/// resolves outside the sandbox (the user's own override if
-/// `$RUSTUP_HOME` is set, `$HOME/.rustup` otherwise) so rustup finds
-/// its real `settings.toml` and installed toolchains again. No new
-/// bind rule needed -- that path is already exposed read-only by the
-/// `--ro-bind /` above, which is exactly right here: a build only ever
-/// needs to *use* an already-installed toolchain, never to install or
-/// modify one.
-///
-/// `$CARGO_HOME` deliberately does NOT get the same treatment: unlike
-/// `~/.rustup`, `~/.cargo` can hold a real secret
-/// (`~/.cargo/credentials.toml`, a crates.io publish token), and this
-/// module's whole premise is that a hostile `build()` shouldn't get
-/// read access to anything under the real `$HOME` worth stealing.
-/// Instead it's pointed at a fresh, writable directory inside
-/// `build_dir` (already the one writable exception carved out above) --
-/// cargo treats a missing/empty `CARGO_HOME` as "start a new registry
-/// cache here" and works fine, it just re-fetches the crates.io index
-/// and dependencies into this sandboxed cache instead of reusing the
-/// user's real one.
+/// `$CARGO_HOME` is NOT restored the same way -- `~/.cargo` can hold a
+/// real secret (`credentials.toml`), so it gets a fresh writable dir
+/// inside `build_dir` instead; cargo just re-fetches deps into it.
 fn rustup_env(build_dir: &Path) -> Vec<(String, String)> {
     let mut env = Vec::new();
 
@@ -94,60 +56,28 @@ fn rustup_env(build_dir: &Path) -> Vec<(String, String)> {
     env
 }
 
-/// Builds the `bwrap ... -- makepkg ...` command that runs the
-/// build-time PKGBUILD functions in an isolated user/mount/pid/ipc/uts
-/// namespace.
+/// Builds the `bwrap ... -- makepkg ...` command running the build-time
+/// PKGBUILD functions in an isolated namespace.
 ///
-/// `build_dir` is the *only* path inside the jail that's writable --
-/// it's where the AUR/ABS checkout already lives, so makepkg's own
-/// $srcdir/$pkgdir (both subdirectories of it by default) are writable
-/// for free without needing their own bind rules.
+/// `build_dir` is the only writable path -- it's the AUR/ABS checkout,
+/// so makepkg's own $srcdir/$pkgdir are writable for free.
 ///
-/// `extra_dest_dirs` covers the case where the user's own makepkg.conf
-/// (`PKGDEST`/`SRCDEST`/`SRCPKGDEST`/`BUILDDIR`) points *outside*
-/// `build_dir`, plus aura-emerge's own default persistent `SRCDEST`
-/// source cache when the user hasn't set one -- see
-/// `packages::resolve_dest_dirs`/`packages::source_cache_dir`, which
-/// compute this list against the real, unsandboxed makepkg.conf
-/// resolution (system + user config, real `$HOME`). Each `(var, path)` pair gets
-/// its own writable bind at that same absolute path inside the jail, so
-/// the write the user actually configured still lands where they
-/// expect, plus a matching `--setenv` so the sandboxed makepkg -- whose
-/// own config resolution runs against the fake `$HOME` below, which
-/// hides any *user-level* makepkg.conf that set it in the first place --
-/// picks up the same value rather than silently falling back to
-/// makepkg's own default (`build_dir`).
+/// `extra_dest_dirs`: any `PKGDEST`/`SRCDEST`/`SRCPKGDEST`/`BUILDDIR`
+/// resolved outside `build_dir` (see `packages::resolve_dest_dirs`),
+/// each gets its own writable bind + matching `--setenv`, since the
+/// sandboxed makepkg can't see the user-level config that set it.
+/// Known gap: a differing `/etc/makepkg.conf` value (visible in the
+/// jail) still wins over our `--setenv` -- rare in practice.
 ///
-/// Known gap: if `/etc/makepkg.conf` itself (visible inside the jail,
-/// unlike user-level config) *also* sets one of these to something
-/// different from what was resolved outside, its `source`d assignment
-/// runs after this function's `--setenv` and wins. Rare in practice --
-/// Arch ships these commented out by default in `/etc/makepkg.conf`,
-/// and a machine actively relying on *both* a system-wide and a
-/// diverging user-level override for the same variable would be an
-/// unusual setup on its own.
+/// `net`: whether this call gets `--share-net`. Callers using
+/// `--unshare-net-build` pass `true` for the `prepare()`/download phase
+/// (verified `source=()` entries -- the legitimate use of network
+/// here), `false` for `build()`/`check()`/`package()`, so anything
+/// reaching for the network outside the declared sources (e.g. `cargo
+/// build` hitting crates.io mid-compile) fails loudly instead of
+/// succeeding quietly.
 ///
-/// Network stays shared (`--share-net`) by default since source downloads
-/// still need it; everything else (`--unshare-all`: user, ipc, pid, net,
-/// uts, cgroup -- net is then optionally re-added by --share-net) is
-/// torn down. Pass `net = false` to leave it torn down instead -- see
-/// `net`'s own doc below for what that actually isolates and what it
-/// doesn't.
-///
-/// `caller_args` should NOT include `-s`/`--syncdeps` or `-i`/`--install`
-/// -- see the module doc for why those two stay outside the sandbox.
-///
-/// `net`: whether this specific invocation gets `--share-net`. Callers
-/// building with `--unshare-net-build` (see `packages::build_with_sandbox`)
-/// pass `true` for the download/extract/`prepare()` phase (`makepkg
-/// --nobuild`) -- those are the declared, checksum/PGP-verified
-/// `source=()` entries, the legitimate/audited use of the network here --
-/// and `false` for the actual `build()`/`check()`/`package()` phase
-/// (`makepkg --noextract`), so a build step that reaches for the network
-/// *outside* the declared source list (an unvendored `cargo build`
-/// resolving crates.io mid-compile is exactly the case that prompted
-/// this) fails loudly instead of quietly succeeding with unaudited
-/// traffic from the untrusted part of the build.
+/// `caller_args` must NOT include `-s`/`-i` -- see module doc.
 pub(crate) fn sandboxed_makepkg(
     makepkg_bin: &str,
     build_dir: &Path,
@@ -169,48 +99,37 @@ pub(crate) fn sandboxed_makepkg(
     if net {
         cmd.arg("--share-net");
     }
-    // Whole real filesystem, read-only: build() still needs to see
-    // /usr, /etc/makepkg.conf, toolchains, etc. -- it just can't touch
-    // any of it.
+    // Whole real fs, read-only: build() needs to see /usr, makepkg.conf,
+    // toolchains, etc., just can't touch any of it.
     cmd.args(["--ro-bind", "/", "/"]);
-    // Everything below MUST come AFTER the ro-bind above, not before:
-    // bwrap applies bind rules in argument order, so a rule issued
-    // earlier for a path under "/" gets silently clobbered by the later
-    // "--ro-bind / /" once that runs. That bit us twice already:
-    //   - "--proc /proc" / "--dev /dev" issued before the ro-bind meant
-    //     the sandbox's /proc and /dev were actually the host's real
-    //     ones, read-only -- hence "/dev/null: Permission denied".
-    //   - "--tmpfs /tmp" issued before the ro-bind meant /tmp was
-    //     read-only too, breaking the mkdir for the fake $HOME mount
-    //     point under it, further down.
+    // Everything below MUST stay after this ro-bind (bwrap applies bind
+    // rules in order; an earlier rule under "/" gets clobbered by it).
+    // Bit us before: --proc/--dev too early -> host's real read-only
+    // /proc,/dev ("Permission denied"); --tmpfs /tmp too early -> /tmp
+    // read-only, breaking the fake-$HOME mkdir below.
     cmd.args(["--proc", "/proc"]);
     cmd.args(["--dev", "/dev"]);
     cmd.args(["--tmpfs", "/tmp"]);
     // The one writable exception: the build's own directory.
     cmd.args(["--bind", &build_dir_s, &build_dir_s]);
-    // Any configured PKGDEST/SRCDEST/SRCPKGDEST/BUILDDIR that lives
-    // outside build_dir gets its own writable bind + matching env var,
-    // best-effort-created first since a fresh destination directory
-
-    // (e.g. a PKGDEST nobody's built into yet) may not exist yet.
+    // Any configured PKGDEST/SRCDEST/SRCPKGDEST/BUILDDIR outside
+    // build_dir gets its own writable bind + env var (best-effort
+    // created first, since it may not exist yet).
     for (var, path) in extra_dest_dirs {
         let _ = std::fs::create_dir_all(path);
         let path_s = path.to_string_lossy().to_string();
         cmd.args(["--bind", &path_s, &path_s]);
         cmd.args(["--setenv", *var, &path_s]);
     }
-    // Isolated, empty $HOME -- overrides whatever the "/" ro-bind above
-    // would otherwise expose at this path.
+    // Isolated, empty $HOME -- overrides what the "/" ro-bind exposes here.
     cmd.args(["--tmpfs", &fake_home_s]);
     cmd.args(["--setenv", "HOME", &fake_home_s]);
     cmd.args(["--unsetenv", "XDG_CONFIG_HOME"]);
     cmd.args(["--unsetenv", "XDG_CACHE_HOME"]);
 
-    // Read-only PGP public keyring so source-signature verification
-    // (already primed by ensure_pgp_keys() outside the sandbox, before
-    // this runs) keeps working. Read-only means a compromised build
-    // script can see imported public keys but can't plant a trusted key
-    // of its own or touch anything under the real ~/.gnupg.
+    // Read-only PGP keyring (imported by ensure_pgp_keys() outside the
+    // sandbox) so signature verification still works, but a compromised
+    // build can't plant its own key or touch the real ~/.gnupg.
     if let Some(gnupg) = real_gnupg_home {
         if gnupg.exists() {
             let dest = fake_home.join(".gnupg");
@@ -220,8 +139,7 @@ pub(crate) fn sandboxed_makepkg(
         }
     }
 
-    // rustup: see `rustup_env`'s doc comment for why this needs its own
-    // handling on top of the fake $HOME above.
+    // rustup: see rustup_env's doc comment.
     for (k, v) in rustup_env(build_dir) {
         cmd.args(["--setenv", &k, &v]);
     }

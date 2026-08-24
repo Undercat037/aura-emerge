@@ -1,30 +1,23 @@
 //! AST-based structural checks for the PKGBUILD scanner, on top of
 //! tree-sitter-bash.
 //!
-//! The line-based heuristics in `security.rs` are a cheap first pass, but
-//! they're pure text matching and can be evaded by anything that doesn't
-//! literally contain the substring being grepped for:
-//!   - `curl ... | s""h` (bash string concatenation - evaluates to `sh` at
-//!     runtime, but no line contains the literal text "sh" after the pipe)
-//!   - `curl ... | /bin/sh` (absolute path instead of a bare shell name -
-//!     fixed on the line-based side too, but the AST handles it for free)
-//!   - `# sudo ./validator` or `makedepends=('sudo')` (both need their own
-//!     explicit "am I a comment / am I inside an array literal" carve-out
-//!     in a line-based check; here they're structurally not a `command`
-//!     node at all, so no carve-out is needed)
+//! The line-based heuristics in `security.rs` are cheap but pure text
+//! matching, so they miss anything that doesn't literally contain the
+//! grepped substring: `curl ... | s""h` (concatenation evaluates to
+//! `sh` at runtime, no literal "sh" on the line), `# sudo ./validator`
+//! or `makedepends=('sudo')` (structurally not a `command` node, so no
+//! comment/array-literal carve-out needed here).
 //!
-//! Each function here parses the source with tree-sitter-bash and walks
-//! the real syntax tree. They return `None` both on "didn't find it" and
-//! on "couldn't parse it" - callers in `security.rs` fall back to the
-//! corresponding line-based heuristic in that case (`.or_else(...)`), so a
-//! parse failure never silently drops a check, it just loses the extra
-//! precision for that one file.
+//! Each function parses with tree-sitter-bash and walks the real tree.
+//! `None` covers both "not found" and "couldn't parse" -- callers in
+//! `security.rs` fall back to the line-based heuristic either way
+//! (`.or_else(...)`), so a parse failure only loses extra precision,
+//! never drops the check.
 //!
-//! Command names are only ever matched when they're statically known
-//! (`resolve_word` bails to `None` on anything containing an unresolved
-//! `$expansion` or `$(command_substitution)`) - a command invoked through
-//! a variable (`$RUNNER ./validator`) is a real blind spot here, same as
-//! it would be for any static analysis, and isn't claimed to be covered.
+//! Command names are only matched when statically known (`resolve_word`
+//! bails on any unresolved `$expansion`/`$(...)`) -- a command invoked
+//! through a variable (`$RUNNER ./validator`) is a real blind spot here,
+//! as with any static analysis.
 
 use tree_sitter::Node;
 
@@ -345,33 +338,24 @@ pub(crate) fn python_inline_exec(source: &str) -> Option<usize> {
 
 const DEP_ARRAY_NAMES: &[&str] = &["depends", "makedepends", "checkdepends"];
 
-/// Statically resolves `depends=(...)`, `makedepends=(...)`, and
-/// `checkdepends=(...)` array literals -- both the bare name and its
-/// `_<current_arch>`-suffixed variant (e.g. `depends_x86_64` when
-/// `current_arch` is `"x86_64"`) -- to a flat, deduplicated list of bare
-/// package names for handing straight to `pacman -S` (used by the
-/// sandboxed build path in `packages::build_with_sandbox` to install
-/// dependencies *before* any PKGBUILD-authored code runs, and entirely
-/// outside the sandbox, since that step is just pacman resolving package
-/// names -- no PKGBUILD function is ever invoked to get there).
+/// Statically resolves `depends=(...)`/`makedepends=(...)`/
+/// `checkdepends=(...)` (bare + `_<current_arch>`-suffixed) to a flat,
+/// deduped list of bare package names for `pacman -S`, used by
+/// `packages::build_with_sandbox` to install deps before any
+/// PKGBUILD-authored code runs -- outside the sandbox entirely, since
+/// it's just pacman resolving names.
 ///
-/// Version constraints (`foo>=1.2`, `foo=1.2-3`, `foo<1.0`) are trimmed
-/// to the bare package name, since that's all `pacman -S` needs and
-/// pacman does its own constraint checking against the target it picks.
+/// Version constraints (`foo>=1.2`) are trimmed to the bare name --
+/// pacman does its own constraint checking.
 ///
-/// Returns `None` -- "don't trust this, caller should fall back to the
-/// unsandboxed path" -- if the file doesn't parse, or if any dependency
-/// array (bare or arch-suffixed-for-this-machine) is assigned from
-/// something that isn't a plain array literal (`depends=$deps`,
-/// `depends="$foo"`), or if any element inside one depends on something
-/// dynamic (`$var`, `$(cmd)`). A partially resolved dependency list is
-/// worse than an honest "can't tell", since a build that's missing a
-/// dependency the scanner silently skipped can fail in confusing ways
-/// well after the sandboxed step already ran.
+/// Returns `None` (fall back to the unsandboxed path) if the file
+/// doesn't parse, a dependency array isn't a plain array literal
+/// (`depends=$deps`), or any element is dynamic (`$var`, `$(cmd)`). A
+/// partially resolved list is worse than an honest "can't tell" -- a
+/// silently-dropped dependency can fail confusingly well after the
+/// sandboxed step already ran.
 ///
-/// A *different* arch's suffixed array (e.g. `depends_aarch64` while
-/// running on `x86_64`) is simply not this machine's concern and is
-/// skipped entirely -- it neither contributes entries nor forces a bail.
+/// A different arch's suffixed array is simply skipped, not a bail.
 pub(crate) fn pkgbuild_dependencies(source: &str, current_arch: &str) -> Option<Vec<String>> {
     let tree = parse(source)?;
     let src = source.as_bytes();
@@ -420,34 +404,24 @@ pub(crate) fn pkgbuild_dependencies(source: &str, current_arch: &str) -> Option<
     Some(out)
 }
 
-/// A `command_substitution` (`$(...)` or backtick `` `...` ``) reachable
-/// from a genuinely top-level PKGBUILD statement -- i.e. one that is
-/// *not* inside any `function_definition`'s body.
+/// A `command_substitution` (`$(...)` or backtick) reachable from a
+/// genuinely top-level PKGBUILD statement -- i.e. *not* inside any
+/// `function_definition`'s body.
 ///
-/// Why this matters, and why it's structurally different from every
-/// other check in this file: those all look for a dangerous *command*
-/// (curl|sh, sudo, eval, ...) -- this one doesn't care what the command
-/// is, it cares *when* it runs. Top-level PKGBUILD code executes the
-/// instant the file is sourced, by anything: `makepkg --printsrcinfo`,
-/// `makepkg -si`, `updpkgsums`, an AUR helper's own metadata read, even
-/// aura-emerge's own `.SRCINFO` regen -- none of which go anywhere near
-/// `build()`/`prepare()` or the bwrap sandbox that isolates those. A
-/// `pkgver()`/`build()`/etc. function body, by contrast, only runs when
-/// makepkg explicitly calls that function -- merely sourcing the file to
-/// read `pkgdesc` never executes it -- so this walks the tree skipping
-/// into any `function_definition`, deliberately not flagging the exact
-/// same construct there.
+/// Different from every other check here: those look for a dangerous
+/// *command*; this one cares *when* it runs. Top-level code executes
+/// the instant the file is sourced -- by `makepkg --printsrcinfo`,
+/// `updpkgsums`, any AUR helper's metadata read -- nowhere near the
+/// bwrap sandbox that isolates `build()`/`prepare()`. A function body,
+/// by contrast, only runs when makepkg explicitly calls it, so this
+/// walks the tree skipping into `function_definition`s.
 ///
-/// Caught this for real: a `pkgdesc` copy-pasted from a GitHub markdown
-/// description kept its code-span backticks (`` `bwrap` ``) - inside a
-/// double-quoted bash string those are still live command substitution,
-/// so merely running `makepkg --printsrcinfo` executed the literal
-/// command `bwrap` (no args) the moment the string was evaluated,
-/// nowhere near any `build()` step or sandbox. Nothing else in this file
-/// would have caught that: it's not curl|sh, not eval, not sudo, not any
-/// specific dangerous command name - it's *any* command substitution
-/// somewhere makepkg does not expect one, including a plain string field
-/// nobody thinks to review as "code".
+/// Caught for real: a `pkgdesc` copy-pasted from GitHub markdown kept
+/// its code-span backticks (`` `bwrap` ``) -- inside a double-quoted
+/// string that's still live command substitution, so `makepkg
+/// --printsrcinfo` alone ran the literal `bwrap` command. Nothing else
+/// in this file catches it -- not curl|sh, not eval, not sudo -- it's
+/// *any* command substitution somewhere makepkg doesn't expect one.
 pub(crate) fn top_level_command_substitution(source: &str) -> Option<usize> {
     let tree = parse(source)?;
     let root = tree.root_node();

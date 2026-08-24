@@ -76,14 +76,12 @@ pub(crate) fn status_colored(status: &str) -> String {
 // ── Explicit / dependency flag helpers ──────────────────────────────────────
 
 /// Force the given packages to be flagged as explicitly installed via
-/// `pacman -D --asexplicit`. Used after AUR/ABS installs (where the
-/// install path - aura/makepkg - doesn't always leave the explicit bit
-/// set the way a plain `pacman -S` would) and by `--select`, so world.set
-/// membership and pacman's own bookkeeping never disagree.
+/// `pacman -D --asexplicit`. Used after AUR/ABS installs (which don't
+/// always set the explicit bit the way `pacman -S` does) and by
+/// `--select`, so world.set and pacman's bookkeeping never disagree.
 ///
-/// Best-effort: silently no-ops for names that aren't actually installed
-/// (e.g. `--select` on a package not yet pulled in) - that's an expected,
-/// non-error case, not something worth warning about.
+/// Best-effort: silently no-ops for names not actually installed --
+/// expected, not an error.
 pub(crate) fn mark_asexplicit(pkgs: &[String]) {
     let bare: Vec<String> = pkgs.iter()
         .map(|p| p.split('/').last().unwrap_or(p).to_string())
@@ -203,16 +201,12 @@ pub(crate) fn probe_official_split(pkgs: &[String]) -> (Vec<PkgInfo>, Vec<String
 /// Fetch AUR package info via the official AUR RPC, split into resolved
 /// hits and names AUR genuinely doesn't have.
 ///
-/// A single batched `aur::rpc_info()` call replaces what used to be one
-/// `aura -Ai <pkg>` subprocess per name -- `aura -Ai` exited successfully
-/// with empty stdout for a name AUR doesn't know about (it never failed
-/// the command), so the split here works the same way: a name missing
-/// from the RPC result set is "not found", not an error. This returns a
-/// PkgInfo only for names the RPC actually described; everything else
-/// comes back in the second Vec so the caller can drop it from the
-/// install args and report it instead of silently failing the whole
-/// batch (a batch install of 10 packages where one no longer exists
-/// should still install the other 9).
+/// A single batched `aur::rpc_info()` call replaces one `aura -Ai <pkg>`
+/// subprocess per name; a name missing from the RPC result is "not
+/// found", not an error, same as `aura -Ai`'s empty-stdout success
+/// case. Everything not described comes back in the second Vec so the
+/// caller can drop it and report it instead of failing the whole batch
+/// (10 packages, one gone -- the other 9 should still install).
 pub(crate) fn resolve_aur_split(pkgs: &[String]) -> (Vec<PkgInfo>, Vec<String>) {
     let infos = crate::aur::rpc_info(pkgs);
     let by_name: HashMap<&str, &crate::aur::AurPkgInfo> =
@@ -280,17 +274,14 @@ pub(crate) fn print_emerge_emerging(pkgs: &[PkgInfo]) {
 /// Re-query the version pacman actually has on disk for each package,
 /// in place.
 ///
-/// `installed_infos` is built from `resolve_aur_split`/`probe_official`
-/// *before* the real install runs - for AUR targets specifically, that's
-/// before `aura -A` does its git pull, so if upstream pushes a new
-/// PKGBUILD version between resolution and build (exactly what happens
-/// on a fast-moving -git-style package, or just unlucky timing), the
-/// version aura-emerge planned against is already stale by the time the
-/// build finishes. pacman/aura install whatever the freshly-pulled
-/// PKGBUILD says regardless, so the display should catch up to that,
-/// not the other way around. Called right after a successful install,
-/// before `print_emerge_completed` - best-effort: a `pacman -Q` miss
-/// just leaves the planned version in place rather than erroring out.
+/// `installed_infos` is built before the real install runs -- for AUR
+/// targets, before `aura -A`'s git pull, so if upstream pushes a new
+/// PKGBUILD version in between (common on -git-style packages), the
+/// planned version is already stale by the time the build finishes.
+/// pacman/aura install whatever the freshly-pulled PKGBUILD says
+/// regardless, so the display should catch up. Called right after a
+/// successful install, before `print_emerge_completed`; best-effort -- a
+/// `pacman -Q` miss just leaves the planned version in place.
 pub(crate) fn refresh_installed_versions(pkgs: &mut [PkgInfo]) {
     for p in pkgs.iter_mut() {
         let out = Command::new(PACMAN_BIN)
@@ -459,16 +450,14 @@ pub(crate) fn ensure_pgp_keys(pkgbuild_path: &std::path::Path, autopgp: bool) {
 
 /// Which isolation mechanism is available for the untrusted part of a
 /// build (`pkgver()/prepare()/build()/check()/package()`). `pkgctl
-/// build`'s own systemd-nspawn chroot used to be tried first here, but
-/// it syncs/bootstraps a whole fresh root filesystem per invocation --
-/// a single corrupted mirror download during that bootstrap is enough
-/// to fail an otherwise-unrelated single-package build. That cost isn't
-/// worth what it buys over `bwrap` (which reuses the real, already-live
-/// filesystem read-only instead of rebuilding one), so `bwrap` is now
-/// the primary sandbox and `pkgctl` is only ever invoked for `pkgctl
-/// repo clone` (see `abs_install`), never `pkgctl build`. `None` (no
-/// isolation at all) remains the last-resort fallback when bubblewrap
-/// isn't installed, or when `--no-sandbox` is passed explicitly.
+/// build`'s systemd-nspawn chroot was tried first, but it bootstraps a
+/// whole fresh rootfs per invocation -- one corrupted mirror download
+/// can fail an unrelated single-package build. Not worth it over
+/// `bwrap` (reuses the real filesystem read-only instead of rebuilding
+/// one), so `bwrap` is now primary and `pkgctl` is only used for
+/// `pkgctl repo clone` (see `abs_install`), never `pkgctl build`. `None`
+/// is the last-resort fallback when bubblewrap is missing or
+/// `--no-sandbox` is passed.
 #[derive(Clone, Copy, PartialEq)]
 enum BuildIsolation {
     Bwrap,
@@ -494,18 +483,16 @@ fn choose_build_isolation(no_sandbox: bool) -> BuildIsolation {
 }
 
 /// Checks whether a bare package name is satisfiable without touching
-/// the AUR at all -- either present in a synced official repo, or
-/// already installed locally (covers a previously-built-from-AUR
-/// package too, so a shared dependency across runs isn't rebuilt).
-/// Used by `resolve_and_build_aur` to decide whether a `.SRCINFO`
-/// dependency needs to be recursively resolved as an AUR package.
+/// the AUR -- present in a synced official repo, or already installed
+/// locally (covers a previously-built-from-AUR package too, so a shared
+/// dependency isn't rebuilt). Used by `resolve_and_build_aur` to decide
+/// whether a `.SRCINFO` dependency needs recursive AUR resolution.
 ///
-/// Deliberately doesn't mean "already satisfied, nothing to install" --
-/// `zlib` being a real synced package makes this `true` even when
-/// `zlib-ng-compat` (which `Provides`+`Conflicts` it) is what's actually
-/// installed. That distinction is `already_satisfied`'s job, used at the
-/// `pacman -S` step in `build_with_sandbox` instead of here -- see its
-/// doc comment for why the two checks can't be merged into one.
+/// Doesn't mean "already satisfied, nothing to install" -- `zlib` being
+/// a real synced package makes this `true` even when `zlib-ng-compat`
+/// (which `Provides`+`Conflicts` it) is actually installed. That's
+/// `already_satisfied`'s job instead -- see its doc for why the two
+/// checks can't merge.
 fn is_satisfiable_without_aur(name: &str) -> bool {
     let bare = name.split(['<', '>', '=']).next().unwrap_or(name);
     let synced = Command::new(PACMAN_BIN).args(["-Si", bare]).stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
@@ -514,90 +501,63 @@ fn is_satisfiable_without_aur(name: &str) -> bool {
 }
 
 /// Whether pacman already considers a `depends=()`/`makedepends=()`
-/// entry (`name`, which may carry a version constraint like `foo>=1.2`)
-/// satisfied on this system right now -- via an exact installed match,
-/// *or* via some other installed package's `provides=()`. This is
-/// `pacman -T`/`--deptest`, the same provides- and version-aware check
-/// makepkg's own `-s` syncdeps step uses internally to decide what
-/// actually needs installing.
+/// entry satisfied right now -- via an exact installed match, or
+/// another installed package's `provides=()`. This is `pacman -T`, the
+/// same provides/version-aware check makepkg's own `-s` syncdeps uses.
 ///
-/// This is the check that was missing and caused a real conflict: a
-/// PKGBUILD's plain `depends=(zlib)` with `zlib-ng-compat` (which
-/// `provides=(zlib)` and `conflicts=(zlib)`, a common pattern for
-/// Arch's zlib-ng-as-drop-in-replacement packages) already installed
-/// used to sail straight through `is_satisfiable_without_aur` (`zlib`
-/// *is* a real synced package -- that check has no opinion on what's
-/// actually installed right now) and get queued for a literal
-/// `pacman -S zlib`, which pacman then refuses because of the
-/// `Conflicts`. Filtering the `pacman -S` list through this first means
-/// an already-provides-satisfied dependency is skipped entirely instead
-/// of being force-installed into a fight it can't win.
+/// The check that was missing and caused a real conflict: a plain
+/// `depends=(zlib)` with `zlib-ng-compat` (which `provides`+`conflicts`
+/// zlib) already installed used to sail through
+/// `is_satisfiable_without_aur` (zlib is a real synced package -- that
+/// check has no opinion on what's installed) and get queued for a
+/// literal `pacman -S zlib`, which pacman then refused over the
+/// `Conflicts`. Filtering through this first skips an
+/// already-provides-satisfied dependency instead of force-installing it
+/// into a fight it can't win.
 fn already_satisfied(name: &str) -> bool {
     Command::new(PACMAN_BIN).args(["-T", name]).stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
 }
 
 /// Recursively resolves and builds an AUR package `pkg`, building
-/// whatever `.SRCINFO`-declared dependencies of it aren't satisfiable
-/// from the official repos or already installed (i.e. other AUR
-/// packages) first. `building` guards against dependency cycles;
-/// `built` caches already-built pkgbases so a dependency shared by more
-/// than one package in the same run isn't built twice. Returns the
-/// tarball path(s) built for `pkg` itself (so a *parent* call can
-/// install them via `pacman -U` before its own bwrap build -- see
-/// `install_local_tarballs`), or `None` on any failure -- a missing
-/// dependency is a hard stop, never a guess.
+/// unsatisfiable `.SRCINFO` dependencies first. `building` guards
+/// against cycles; `built` caches already-built pkgbases so a shared
+/// dependency isn't built twice. Returns the tarball path(s) built for
+/// `pkg` itself (so a parent call can `pacman -U` them before its own
+/// bwrap build -- see `install_local_tarballs`), or `None` on any
+/// failure -- a missing dependency is a hard stop, never a guess.
 ///
-/// Each resolved pkgbase is run through the same PKGBUILD scanner
-/// (`security::scan_aur_pkgbuilds_or_abort`) used for top-level targets
-/// before its build starts -- recursively-pulled-in dependencies get
-/// exactly the same scrutiny as something the user typed directly.
+/// Each resolved pkgbase gets the same PKGBUILD scan as a top-level
+/// target before its build starts.
 ///
-/// `edit`/`is_top_level`: opens `$EDITOR` on this clone's PKGBUILD
-/// before building, but only when both are true -- i.e. never for a
-/// recursively-resolved dependency (`is_top_level` is hardcoded `false`
-/// on the recursive call below), regardless of what `edit` is.
-/// `skip_srcinfo_regen` only matters together with those two -- see
-/// `maybe_regen_srcinfo`.
+/// `edit`/`is_top_level`: opens `$EDITOR` only when both are true --
+/// never for a recursive dependency (`is_top_level` is hardcoded
+/// `false` there). `skip_srcinfo_regen` only matters with those two --
+/// see `maybe_regen_srcinfo`.
 
-/// Regenerates `<dir>/.SRCINFO` from a just-edited `PKGBUILD` via
+/// Regenerates `<dir>/.SRCINFO` from a just-edited PKGBUILD via
 /// `makepkg --printsrcinfo`, unless `skip_srcinfo_regen` is set.
 ///
-/// This is the one place aura-emerge *does* re-execute PKGBUILD content
-/// after an edit -- `--printsrcinfo` sources the whole file (global-scope
-/// code included, not just the `pkgver`/`prepare`/`build`/etc. functions
-/// the bwrap sandbox isolates later), which is exactly the risk
-/// `bash_ast.rs`'s doc comment and `srcinfo_dependencies`'s doc comment
-/// (in `aur.rs`) describe for parsing an *arbitrary* AUR PKGBUILD instead
-/// of just reading its checked-in `.SRCINFO`. The difference here is
-/// trust, not mechanism: this only ever runs against content the person
-/// running `--edit` just wrote themselves, in their own `$EDITOR`, and
-/// only after `verify_local_clone_or_rescan` has already re-scanned that
-/// exact content and let it through (that call happens before this one
-/// at both call sites, and aborts on a real finding before we get here)
-/// -- so by the time this runs, both the static scanner and the person's
-/// own review have already had a look at what's about to be sourced.
-/// `skip_srcinfo_regen` exists for anyone who'd rather do the
-/// review-then-regenerate step manually instead, e.g. to inspect the
-/// generated `.SRCINFO` before it's used.
+/// The one place aura-emerge does re-execute PKGBUILD content after an
+/// edit -- `--printsrcinfo` sources the whole file, the risk
+/// `bash_ast.rs`'s and `srcinfo_dependencies`'s (aur.rs) doc comments
+/// describe for parsing an arbitrary PKGBUILD. The difference here is
+/// trust: this only runs against content the person just wrote in
+/// their own `$EDITOR`, after `verify_local_clone_or_rescan` already
+/// re-scanned and passed it. `skip_srcinfo_regen` exists for a manual
+/// review-then-regenerate workflow instead.
 ///
-/// Best-effort and never fatal: a failure here is a warning, and the
-/// build continues against whatever `.SRCINFO` was already on disk
-/// (the old, pre-this-feature behavior) -- a stale dependency list is
-/// recoverable (worst case: the exact "edited PKGBUILD but the fix
-/// didn't take" conflict this was added for), aborting the whole build
-/// over a `--printsrcinfo` hiccup would not be.
+/// Best-effort, never fatal: a failure is a warning, and the build
+/// continues against the `.SRCINFO` already on disk -- a stale
+/// dependency list is recoverable, aborting the whole build over a
+/// `--printsrcinfo` hiccup would not be.
 /// Best-effort defensive reset after handing the terminal to `$EDITOR`.
-/// Some editors/colorschemes (nvim with a "true color" theme is the
-/// common one, especially on kitty/wezterm/foot) set the terminal's
-/// default foreground/background/cursor color via OSC 10/11/12 and
-/// don't always restore them on exit -- if that happens, our own
-/// perfectly-correctly-emitted `.yellow().bold()`/`.green().bold()`
-/// ANSI codes right after can end up looking colorless, because the
-/// terminal's idea of "default color" got silently remapped. `\x1b[0m`
-/// resets SGR (bold/color) state; the three OSC resets ask the terminal
-/// to drop any override back to its own default fg/bg/cursor color.
-/// All four are no-ops on a terminal that never had anything to reset,
-/// so this is safe to call unconditionally.
+/// Some editors (nvim with a true-color theme, especially on
+/// kitty/wezterm/foot) set the terminal's default fg/bg/cursor via OSC
+/// 10/11/12 and don't always restore them, making our own correct
+/// `.yellow().bold()` codes look colorless afterward. `\x1b[0m` resets
+/// SGR state; the OSC resets drop any override back to default. All
+/// four are no-ops on an unaffected terminal, safe to call
+/// unconditionally.
 fn reset_terminal_colors_after_editor() {
     print!("\x1b[0m\x1b]110\x07\x1b]111\x07\x1b]112\x07");
     let _ = std::io::Write::flush(&mut std::io::stdout());
@@ -639,16 +599,13 @@ fn pkgbuild_view_cache_path(pkgbase: &str) -> Option<std::path::PathBuf> {
 }
 
 /// `--pkgbuild-view`: show the PKGBUILD about to be built for a
-/// directly-requested (top-level) package - a diff against the
-/// last-shown copy of this pkgbase when one's cached (see
-/// `pkgbuild_view_cache_path`), the full file otherwise - and ask for
+/// directly-requested (top-level) package -- a diff against the last-
+/// shown copy when cached, the full file otherwise -- and ask for
 /// confirmation before the build starts. Declining offers to open it in
-/// $EDITOR right there instead of just failing the package outright.
+/// `$EDITOR` instead of just failing the package outright.
 ///
-/// Only ever called for a top-level target (never a recursively-pulled
-/// AUR-only dependency), same restriction `--edit` already applies and
-/// for the same reason: nobody wants a prompt for every transitive dep
-/// of the one thing they actually asked for.
+/// Only called for a top-level target, same restriction `--edit`
+/// already applies -- nobody wants a prompt for every transitive dep.
 pub(crate) fn pkgbuild_view_step(pkgbase: &str, dir: &std::path::Path) -> PkgbuildViewOutcome {
     let pkgbuild_path = dir.join("PKGBUILD");
     let Ok(current) = fs::read_to_string(&pkgbuild_path) else {
@@ -972,14 +929,12 @@ fn resolve_and_build_aur(
 
 /// Root directory AUR builds happen under, mirroring `abs_build_base()`.
 ///
-/// Lives under the user's own cache dir (`$XDG_CACHE_HOME` or
+/// Lives under the user's cache dir (`$XDG_CACHE_HOME` or
 /// `~/.cache/aura-emerge/build/aur`), not the old shared
-/// `/var/tmp/aura-emerge-aur` -- `/var/tmp` is a sticky, multi-user
-/// directory, and every other bit of this tool's persistent state
-/// already lives under `~/.cache/aura-emerge` (see `source_cache_dir`,
-/// news.rs's read-state cache). Falls back to the old `/var/tmp` path
-/// only if neither `$XDG_CACHE_HOME` nor `$HOME` is set at all, rather
-/// than failing outright.
+/// `/var/tmp/aura-emerge-aur` -- `/var/tmp` is sticky/multi-user, and
+/// every other bit of persistent state already lives under
+/// `~/.cache/aura-emerge`. Falls back to `/var/tmp` only if neither
+/// `$XDG_CACHE_HOME` nor `$HOME` is set.
 pub(crate) fn aur_build_base() -> std::path::PathBuf {
     build_base_dir("aur")
 }
@@ -1004,21 +959,15 @@ fn build_base_dir(name: &str) -> std::path::PathBuf {
 }
 
 /// Wipes an AUR_BUILD_BASE/ABS_BUILD_BASE-style tree. Falls back to
-/// `sudo rm -rf` if the plain removal fails.
+/// `sudo rm -rf` if plain removal fails.
 ///
-/// Why a plain `remove_dir_all` can fail here even though the tree is
-/// entirely owned by the invoking user: a PKGBUILD's `package()` step
-/// runs for real even inside fakeroot -- fakeroot only fakes *ownership*
-/// reporting back to `stat`/`chown`, it does not intercept `chmod`. A
-/// package that installs something with a restrictive mode
-/// (`install -d -m 700 ...`, a build tool that marks its own output
-/// read-only, etc.) leaves a real, non-writable file or directory
-/// behind, and removing an entry needs write permission on its *parent*
-/// directory -- so the same user who owns everything here can still get
-/// `Permission denied` trying to clean it up. Reaching for `sudo` (used
-/// elsewhere in this file for the same class of trusted, no-PKGBUILD-
-/// code-involved operation) is simpler and more honest than silently
-/// poking at permission bits ourselves first.
+/// Why a plain `remove_dir_all` can fail on a user-owned tree: `package()`
+/// runs for real even inside fakeroot -- fakeroot fakes ownership
+/// reporting, not `chmod`. A restrictive mode (`install -d -m 700 ...`)
+/// leaves a real non-writable entry behind, and removing it needs write
+/// permission on its parent -- so even the owning user can hit
+/// `Permission denied`. `sudo` (used elsewhere for this class of
+/// trusted operation) is simpler than poking at permission bits first.
 fn clear_build_base(dir: &std::path::Path) -> std::io::Result<()> {
     if let Err(e) = std::fs::remove_dir_all(dir) {
         let dir_s = dir.to_string_lossy().to_string();
@@ -1155,40 +1104,33 @@ pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
     all_ok
 }
 
-/// Upgrades every foreign (AUR-or-local) installed package that's newer
-/// in the AUR than what's installed -- replaces `aura -Au`. "Foreign"
-/// here means `pacman -Qm` (installed but not in a synced official repo),
-/// which is also what `aura -Au` itself worked from; a package installed
-/// from ABS shows up here too and is silently skipped once the AUR RPC
-/// doesn't know its name (no separate ABS-upgrade path exists yet).
+/// Upgrades every foreign (AUR-or-local) installed package newer in the
+/// AUR than what's installed -- replaces `aura -Au`. "Foreign" means
+/// `pacman -Qm` (installed but not in a synced repo); an ABS-installed
+/// package shows up here too and is silently skipped once the AUR RPC
+/// doesn't know its name (no separate ABS-upgrade path yet).
 ///
-/// `pretend` prints the would-upgrade list and returns without touching
-/// anything (mirrors `aura -Au --dryrun`). Real runs delegate the actual
-/// build+install to `aur_install()` -- the same bwrap-sandboxed
-/// path used for a fresh AUR install, so an upgrade gets exactly the same
-/// isolation and PKGBUILD scanning as `emerge --aur <pkg>` does.
+/// `pretend` prints the would-upgrade list without touching anything
+/// (mirrors `aura -Au --dryrun`). Real runs delegate to `aur_install()`
+/// -- the same bwrap-sandboxed path as a fresh AUR install.
 // ── --devel / --check-devel: upstream drift check for -git/-hg/-svn/-bzr ───
 
-/// Whether `name` looks like an Arch "devel package" by the usual
-/// naming convention. Only `-git` sources are actually parsed today (see
-/// `extract_git_source_url`) - `-hg`/`-svn`/`-bzr` packages are still
-/// recognized here so they show up as "couldn't determine" rather than
-/// being silently invisible, but their upstream isn't actually checked
-/// yet.
+/// Whether `name` looks like an Arch "devel package" by naming
+/// convention. Only `-git` sources are actually parsed (see
+/// `extract_git_source_url`) -- `-hg`/`-svn`/`-bzr` are recognized so
+/// they show as "couldn't determine" rather than invisible, but aren't
+/// checked yet.
 fn is_devel_pkg(name: &str) -> bool {
     ["-git", "-hg", "-svn", "-bzr"].iter().any(|suf| name.ends_with(suf))
 }
 
-/// Very small best-effort extraction of the first `git+` VCS source URL
-/// out of a PKGBUILD's `source=()` array text. Deliberately not full
-/// bash parsing (this project only does that for the security scanner's
-/// AST pass in bash_ast.rs) - a miss here just means the devel check is
-/// skipped for that package, same as any other "couldn't determine"
-/// case, so a wrong or partial parse costs nothing.
+/// Small best-effort extraction of the first `git+` VCS source URL from
+/// a PKGBUILD's `source=()` array text. Not full bash parsing (only the
+/// AST pass in bash_ast.rs does that) -- a miss just skips the devel
+/// check for that package, so a wrong or partial parse costs nothing.
 ///
-/// Returns `(url, branch)`; `branch` is `Some` only when a `#branch=...`
-/// fragment was present in the source entry (`git ls-remote` checks the
-/// remote's `HEAD` otherwise, i.e. its default branch).
+/// Returns `(url, branch)`; `branch` is `Some` only when `#branch=...`
+/// was present (otherwise `git ls-remote` checks the default branch).
 fn extract_git_source_url(pkgbuild_src: &str) -> Option<(String, Option<String>)> {
     let idx = pkgbuild_src.find("git+")?;
     let rest = &pkgbuild_src[idx + "git+".len()..];
@@ -1511,28 +1453,24 @@ fn install_local_tarballs(tarballs: &[String], ask: bool, mark_asdeps: bool) -> 
 }
 
 /// Runs the untrusted PKGBUILD-defined functions (`pkgver`/`prepare`/
-/// `build`/`check`/`package`) for the package rooted at `build_dir`
-/// through the bwrap sandbox in `sandbox.rs`, then installs the result
-/// the normal, trusted way. See that module's doc comment for why the
-/// three steps below are split the way they are.
+/// `build`/`check`/`package`) for the package at `build_dir` through
+/// the bwrap sandbox in `sandbox.rs`, then installs the result the
+/// normal, trusted way. See that module's doc for why the three steps
+/// below are split this way.
 ///
-/// `aur_dep_tarballs` are already-built AUR-only dependencies (from a
-/// recursive `resolve_and_build_aur()` call on this pkg's own
-/// `.SRCINFO`) -- installed straight from disk via `pacman -U` before
-/// anything else, since `pacman -S` below has no way to find them.
-/// Pass `&[]` for a plain ABS build with no local AUR dependencies.
+/// `aur_dep_tarballs` are already-built AUR-only dependencies, installed
+/// via `pacman -U` before anything else since `pacman -S` can't find
+/// them. Pass `&[]` for a plain ABS build with no local AUR deps.
 ///
-/// `unshare_net_build`: when set, step 2 (the actual sandboxed build)
-/// splits into two separate bwrap invocations instead of one -- see the
-/// comment right before step 2 for why and how.
+/// `unshare_net_build`: when set, step 2 (the sandboxed build) splits
+/// into two bwrap invocations instead of one -- see the comment before
+/// step 2.
 ///
-/// Returns `false` on any failure. Dependency resolution prefers
-/// `.SRCINFO` when the checkout has one (see step 1a below); only when
-/// that's absent and the PKGBUILD's dependency arrays can't be
-/// statically resolved either (dynamic elements, non-literal
-/// assignment, ...) does this fall back to the plain unsandboxed
-/// `makepkg -si` path for this one package rather than guessing at a
-/// partial dependency list.
+/// Returns `false` on failure. Dependency resolution prefers `.SRCINFO`
+/// when present; only when that's absent and the PKGBUILD's dependency
+/// arrays can't be statically resolved either does this fall back to
+/// plain unsandboxed `makepkg -si` for this one package rather than
+/// guessing at a partial dependency list.
 fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, oneshot: bool, skippgp: bool, aur_dep_tarballs: &[String], unshare_net_build: bool) -> bool {
     let pkgbuild_src = match fs::read_to_string(build_dir.join("PKGBUILD")) {
         Ok(s) => s,
@@ -1748,23 +1686,18 @@ fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, one
 
 /// Every `*.pkg.tar.*` file this build actually produced.
 ///
-/// Searches `PKGDEST` (resolved the same way `resolve_dest_dirs`/
-/// `sandboxed_makepkg` bind it into the sandbox) when the user has one
-/// configured outside `build_dir` -- that's where makepkg actually
-/// writes the package in that case, so searching `build_dir` alone (the
-/// old behavior) found nothing and got reported as "produced no package
-/// file" even though the build succeeded. Falls back to `build_dir`
-/// itself, makepkg's own default when `PKGDEST` isn't set.
+/// Searches `PKGDEST` (resolved the same way it's bound into the
+/// sandbox) when the user has one configured outside `build_dir` --
+/// that's where makepkg actually writes it, so searching `build_dir`
+/// alone used to find nothing and report "produced no package file"
+/// even on a successful build. Falls back to `build_dir` itself,
+/// makepkg's default when `PKGDEST` isn't set.
 ///
-/// Unlike `build_dir` -- a freshly-cloned checkout each run (see the
-/// stale-dir cleanup in `abs_install`/`aur_install`), so nothing stale
-/// can be sitting in there -- a configured `PKGDEST` is a persistent
-/// directory the user reuses across every build, and very likely
-/// already has unrelated `*.pkg.tar.*` files in it from earlier runs.
-/// `not_before` (the caller's best timestamp for "just before this
-/// build started", with a couple seconds of slack for coarse filesystem
-/// mtime resolution) filters those out so only what this build just
-/// wrote gets picked up.
+/// Unlike `build_dir` (freshly cloned each run, so nothing stale sits
+/// there), a configured `PKGDEST` is reused across builds and likely
+/// already has unrelated files in it. `not_before` (the caller's
+/// timestamp for just before this build started, with slack for coarse
+/// mtime resolution) filters those out.
 fn find_built_packages(build_dir: &std::path::Path, not_before: std::time::SystemTime) -> Vec<String> {
     let search_dir = extra_makepkg_dest_dirs(build_dir)
         .into_iter()
@@ -2021,23 +1954,19 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
 
 // ── --install-pkgbuild: install an arbitrary local PKGBUILD checkout ──────────
 
-/// `--install-pkgbuild <PATH>`: build and install a local PKGBUILD checkout
-/// through the normal emerge pipeline (scanner + bwrap sandbox) instead
-/// of a bare, unaudited `makepkg -si` - the same trust model as an AUR
-/// clone, just pointed at a directory the caller already has on disk
-/// instead of one we `git clone`d ourselves.
+/// `--install-pkgbuild <PATH>`: build and install a local PKGBUILD
+/// checkout through the normal emerge pipeline (scanner + bwrap
+/// sandbox) instead of a bare, unaudited `makepkg -si` -- same trust
+/// model as an AUR clone, just pointed at a directory already on disk.
 ///
-/// Unlike `aur_install`/`abs_install`, there's no AUR RPC lookup or
-/// `pkgctl repo clone` step: `path` is trusted to already be a real
-/// PKGBUILD checkout, and this function's only job is to run it through
-/// the same scan → (optional view/edit) → dependency-aware sandboxed
-/// build → install sequence every other install path uses.
+/// Unlike `aur_install`/`abs_install`, no AUR RPC lookup or `pkgctl repo
+/// clone`: `path` is trusted to be a real checkout already, and this
+/// just runs it through the same scan -> (optional view/edit) ->
+/// sandboxed build -> install sequence every other path uses.
 ///
-/// Returns the `.SRCINFO`-declared `pkgname`(s) actually built on
-/// success (for the caller to record in world.set with the "Err/" prefix
-/// - see `world_set::pkg_world_entry`'s doc comment on why that prefix
-/// exists specifically for "a genuinely local build with no traceable
-/// origin"), or `None` on any failure.
+/// Returns the `.SRCINFO`-declared `pkgname`(s) built on success (for
+/// the caller to record in world.set with the "Err/" prefix -- see
+/// `world_set::pkg_world_entry`), or `None` on failure.
 pub(crate) fn pkgbuild_local_install(
     path: &std::path::Path,
     ask: bool,
@@ -2218,20 +2147,16 @@ pub(crate) fn current_arch() -> String {
 }
 
 /// makepkg destination-directory overrides (`PKGDEST`/`SRCDEST`/
-/// `SRCPKGDEST`/`BUILDDIR`) that resolve to somewhere *outside*
-/// `build_dir` -- `sandboxed_makepkg`'s base `--bind build_dir build_dir`
-/// only makes `build_dir` itself writable inside the jail, so a
-/// configured destination elsewhere (a `~/.makepkg.conf` with e.g.
-/// `PKGDEST=$HOME/pkgs`, a common setup) would otherwise fail to write
-/// once the build actually finishes -- see `sandbox::sandboxed_makepkg`'s
-/// doc comment for how each pair returned here gets bound+exported into
-/// the jail.
+/// `SRCPKGDEST`/`BUILDDIR`) resolving to somewhere outside `build_dir`
+/// -- `sandboxed_makepkg`'s base bind only makes `build_dir` writable in
+/// the jail, so a configured destination elsewhere (`PKGDEST=$HOME/pkgs`
+/// in `~/.makepkg.conf`, a common setup) would otherwise fail to write.
+/// See `sandbox::sandboxed_makepkg` for how each pair gets bound/exported.
 ///
-/// Deliberately doesn't inject the default source-cache SRCDEST itself
-/// (see `source_cache_dir`/`resolve_dest_dirs` below) -- this function's
-/// job is strictly "what did the *user* configure", which
-/// `build_with_sandbox`'s log message relies on to only mention
-/// makepkg.conf when makepkg.conf is actually why a dir is being bound.
+/// Doesn't inject the default source-cache SRCDEST itself (see
+/// `source_cache_dir`/`resolve_dest_dirs`) -- this is strictly "what did
+/// the user configure", which the caller's log message relies on to
+/// only mention makepkg.conf when that's actually why a dir is bound.
 pub(crate) fn extra_makepkg_dest_dirs(build_dir: &std::path::Path) -> Vec<(&'static str, std::path::PathBuf)> {
     let vars = read_makepkg_vars();
     ["PKGDEST", "SRCDEST", "SRCPKGDEST", "BUILDDIR"]
@@ -2251,32 +2176,26 @@ pub(crate) fn extra_makepkg_dest_dirs(build_dir: &std::path::Path) -> Vec<(&'sta
 }
 
 /// Persistent home for `SRCDEST` when the user hasn't configured their
-/// own in makepkg.conf (the common case -- Arch ships it commented out).
-/// `None` only if `$HOME` can't be determined at all.
+/// own in makepkg.conf (the common case -- Arch ships it commented
+/// out). `None` only if `$HOME` can't be determined.
 ///
-/// Why this exists: without an explicit, *stable* SRCDEST, makepkg
-/// downloads VCS sources (`git+`/`hg+`/`svn+`/`bzr+` entries, i.e. every
-/// `-git`/`-hg`/`-svn` AUR package) straight into `$srcdir` under
-/// `build_dir` -- which both `aur_install` and `abs_install` `rm -rf`
-/// at the start of every run (see `AUR_BUILD_BASE`/`ABS_BUILD_BASE`
-/// cleanup). That means a package with large upstream repos gets
-/// re-cloned from scratch on every single run, including a bare retry
-/// after a build failure that happened *after* the clone already
-/// finished (a two-repo, 700+ MiB `-git` package whose `prepare()` died
-/// is exactly what prompted adding this).
+/// Why: without a stable SRCDEST, makepkg downloads VCS sources
+/// (`git+`/`hg+`/`svn+`/`bzr+`, i.e. every `-git`/`-hg`/`-svn` AUR
+/// package) into `$srcdir` under `build_dir` -- which both
+/// `aur_install`/`abs_install` `rm -rf` at the start of every run. A
+/// package with a large upstream repo gets re-cloned from scratch every
+/// run, even on a bare retry after a build failure that happened after
+/// the clone finished.
 ///
-/// Pointing SRCDEST here instead fixes that for free: makepkg's own VCS
-/// handling already keeps a local mirror clone under `$SRCDEST/<dir>`
-/// and does an incremental `git fetch`/`hg pull`/etc. against it on
-/// every subsequent build instead of a fresh clone, as long as SRCDEST
-/// resolves to the same path every time -- which it now does, since
-/// this is intentionally outside `build_dir`/`AUR_BUILD_BASE`/
-/// `ABS_BUILD_BASE` and therefore survives their wipes.
+/// Pointing SRCDEST here fixes that for free: makepkg's own VCS
+/// handling keeps a local mirror clone under `$SRCDEST/<dir>` and does
+/// an incremental fetch/pull on every subsequent build instead of a
+/// fresh clone, as long as SRCDEST resolves to the same path every time
+/// -- which it now does, since this is outside `build_dir`/
+/// `AUR_BUILD_BASE`/`ABS_BUILD_BASE` and survives their wipes.
 ///
-/// Non-VCS sources (plain tarball/file `source=()` entries) benefit
-/// less -- makepkg already checksums those against `sha256sums`/etc.
-/// and skips re-downloading an unchanged file it finds here, so this is
-/// mostly free reuse for those too, just not the main motivation.
+/// Non-VCS sources benefit less -- makepkg already checksums and skips
+/// re-downloading an unchanged file here too, just not the main motivation.
 pub(crate) fn source_cache_dir() -> Option<std::path::PathBuf> {
     if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
         if !xdg.is_empty() {

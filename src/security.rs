@@ -1,44 +1,28 @@
 //! AUR PKGBUILD safety scanner.
 //!
-//! Runs automatically before every AUR install: fetches each package's raw
-//! PKGBUILD from the AUR cgit mirror and greps for common red-flag patterns
-//! seen in malicious/compromised PKGBUILDs. Not a substitute for reading it
-//! yourself - just a cheap tripwire against obvious tricks. On any hit,
-//! install is blocked until the user types an explicit "y".
+//! Runs automatically before every AUR install: fetches each package's
+//! raw PKGBUILD from the AUR cgit mirror and greps for red-flag
+//! patterns seen in malicious/compromised PKGBUILDs. Not a substitute
+//! for reading it yourself -- a cheap tripwire against obvious tricks.
+//! Any hit blocks install until the user types an explicit "y".
 //!
-//! Covers three disclosed 2026 AUR supply-chain campaigns specifically (in
-//! addition to the generic curl|sh/base64/xxd/chmod-777/raw-IP/paste-site/
-//! process-substitution/top-level-command-substitution heuristics): "Atomic Arch" (June 11-12, adopted 400+ orphaned packages,
-//! npm/bun-delivered infostealer), the openconnect-sso-anchored wave
-//! (late July-early August, at least 89 named packages, a `validator`
-//! binary run via `sudo` mid-build, reused Tor-backed second-stage
-//! delivery), and the follow-on early-August wave that shipped the
-//! payload as a bundled ELF binary disguised under a generic build-tool
-//! name (`linter`/`hasher`/`minifier`/etc., confirmed on 27+ packages
-//! including archutil, boringssl-git and icloudpd via the aur-general
-//! mailing list on 30 Jul 2026, with community-reported totals climbing
-//! past 100-200 in the following days) - see `sudo_escalation_line`,
-//! `onion_address_line`, `decoy_tool_binary_line`,
-//! `KNOWN_COMPROMISED_AUR_PACKAGES`, and `KNOWN_MALICIOUS_SHA256` below.
-//! Arch responded by disabling AUR adoption (30 Jul), then all AUR pushes
-//! (1 Aug), and reopened pushes with a maintainer-approval gate on
-//! adoption on 11 Aug 2026 - per-machine risk from an already-built
-//! package doesn't go away just because pushes reopened, so every check
-//! below stays on regardless of upstream's current lockdown state.
+//! Beyond generic heuristics (curl|sh, base64/xxd, chmod-777, raw-IP,
+//! paste-site, process/command substitution), specifically covers three
+//! disclosed 2026 AUR supply-chain campaigns: "Atomic Arch" (June,
+//! adopted orphaned packages, npm/bun infostealer), the
+//! openconnect-sso-anchored wave (Jul-Aug, `validator` binary run via
+//! `sudo`, Tor-backed second stage), and the early-August wave shipping
+//! payload as a bundled ELF disguised as a generic build tool. See
+//! `sudo_escalation_line`, `onion_address_line`, `decoy_tool_binary_line`,
+//! `KNOWN_COMPROMISED_AUR_PACKAGES`, `KNOWN_MALICIOUS_SHA256` below.
+//! Arch locked down AUR pushes/adoption through Aug 2026, but per-machine
+//! risk from an already-built package doesn't depend on upstream's
+//! current lockdown state, so every check here stays on regardless.
 
 use colored::Colorize;
 use std::io::{self, Write};
 
 use crate::*;
-
-// ── AUR PKGBUILD safety scanner ─────────────────────────────────────────────
-//
-// Runs automatically before every AUR install. Fetches each package's raw
-// PKGBUILD from the AUR cgit mirror and greps for common red-flag patterns
-// seen in malicious/compromised PKGBUILDs. Not a substitute for reading it
-// yourself - just a cheap tripwire against obvious tricks.
-//
-// On any hit, install is blocked until the user types an explicit "y".
 
 /// Download a raw file from a package's AUR git tree via cgit (e.g.
 /// "PKGBUILD" or a referenced ".install" hook). Returns None on any
@@ -80,15 +64,13 @@ pub(crate) fn parse_install_filename(pkgbuild_text: &str) -> Option<String> {
     None
 }
 
-/// Same as `parse_install_filename`, but additionally resolves a
-/// `$pkgname`/`${pkgname}` or `$pkgbase`/`${pkgbase}` reference against the
-/// PKGBUILD's own declared value. Most real PKGBUILDs write
-/// `install=${pkgname}.install` rather than repeating the literal name -
-/// the plain literal parser returns that unresolved string, the fetch
-/// against it 404s, and the install hook silently never gets scanned at
-/// all. Returns `None` if the value still contains an unresolved `$` after
-/// substitution (e.g. `pkgname` declared as an array in a split package)
-/// rather than fetching a garbage filename.
+/// Same as `parse_install_filename`, but also resolves a
+/// `$pkgname`/`$pkgbase` reference against the PKGBUILD's own declared
+/// value. Most real PKGBUILDs write `install=${pkgname}.install` --
+/// without this, the fetch against the unresolved literal 404s and the
+/// install hook silently never gets scanned. Returns `None` if a `$`
+/// remains unresolved after substitution (e.g. `pkgname` as an array in
+/// a split package) rather than fetching a garbage filename.
 pub(crate) fn resolve_install_filename(pkgbuild_text: &str) -> Option<String> {
     let raw = parse_install_filename(pkgbuild_text)?;
     if !raw.contains('$') {
@@ -108,23 +90,17 @@ pub(crate) fn resolve_install_filename(pkgbuild_text: &str) -> Option<String> {
     }
 }
 
-/// Strips a trailing `# comment` from a raw `key=value` remainder, the
-/// way bash actually would - not just "everything after `key=`" the way
-/// this file used to treat it. Two failure modes that produced before
-/// this fix: an inline-commented `install=${pkgname}.install   # ...`
-/// resolved to a garbage filename with the comment text glued onto the
-/// end, so the `.install` hook silently never got read or scanned at
-/// all (caught via a real repro: a Cyrillic comment on that exact line
-/// left the file completely unscanned, no error, no warning - it just
-/// quietly wasn't there); a `pkgdesc="... # not a comment"` could have
-/// been truncated at the `#` if this didn't handle quoting.
+/// Strips a trailing `# comment` from a raw `key=value` remainder the
+/// way bash actually would, not just "everything after `key=`". Fixes
+/// two bugs: an inline-commented `install=${pkgname}.install   # ...`
+/// used to resolve to a garbage filename with the comment glued on,
+/// silently leaving the `.install` hook unscanned; a
+/// `pkgdesc="... # not a comment"` could get truncated at the `#`.
 ///
-/// bash's own rule: `#` starts a comment only when it begins a new word
-/// (preceded by whitespace, or the very start of the remainder) - a `#`
-/// stuck directly onto other characters isn't one. A quoted value
-/// (`'...'`/`"..."`) takes priority and is returned whole up to its
-/// matching close quote, `#` inside it or not - `pkgdesc="a #1 thing"`
-/// keeps its `#`, same as bash would.
+/// bash's rule: `#` starts a comment only at the start of a new word
+/// (preceded by whitespace or nothing) -- stuck onto other characters,
+/// it isn't one. A quoted value takes priority and is returned whole up
+/// to its matching close quote, `#` inside it or not.
 fn strip_trailing_comment(rest: &str) -> &str {
     let trimmed = rest.trim_start();
     let lead_ws = rest.len() - trimmed.len();
@@ -253,14 +229,11 @@ fn pipes_into_shell(lower_line: &str) -> bool {
     ["sh", "bash", "zsh", "source", "."].contains(&basename)
 }
 
-/// `base64 -d ... | sh` / `base64 --decode ... | bash` - the base64-encoded
-/// analog of curl|sh: instead of fetching a script from the network, the
-/// payload is base64-encoded and stashed directly in the PKGBUILD, then
-/// decoded and piped straight into a shell. `base64_decode_line` above
-/// already flags any bare `base64 -d` (possible obfuscated payload, but
-/// maybe just written to a file for later); this is the strictly worse
-/// case where the decoded bytes run immediately with no chance to inspect
-/// them first, so it gets its own explicit, higher-signal call-out.
+/// `base64 -d ... | sh` -- the base64-encoded analog of curl|sh: payload
+/// stashed encoded in the PKGBUILD, decoded, piped straight to a shell.
+/// `base64_decode_line` already flags any bare `base64 -d`; this is the
+/// strictly worse case (decoded bytes run immediately, no inspection),
+/// so it gets its own higher-signal call-out.
 pub(crate) fn base64_pipe_shell_line(line: &str) -> bool {
     let l = line.trim();
     if l.starts_with('#') {
@@ -471,14 +444,13 @@ pub(crate) fn line_of_hex_escape_payload(source: &str) -> Option<usize> {
     source.lines().position(hex_escape_payload_line).map(|i| i + 1)
 }
 
-/// A download/fetch aimed at a paste-dump site rather than a proper
-/// release/source host. Legitimate PKGBUILDs essentially never pull build
-/// inputs from a paste site; historically this is exactly how the 2018
-/// acroread/balz/minergate AUR takeover staged its payload - a `curl`
-/// straight to a Pastebin raw URL, piped into the persistence script.
-/// Distinct from the generic curl-pipe-shell check: this fires even when
-/// the fetched content isn't piped directly into a shell on the same line
-/// (e.g. saved to a file and `source`d or `exec`'d later).
+/// A download aimed at a paste-dump site rather than a proper
+/// release/source host. Legitimate PKGBUILDs essentially never do this;
+/// the 2018 acroread/balz/minergate AUR takeover staged its payload this
+/// way (`curl` to a Pastebin raw URL, piped into a persistence script).
+/// Distinct from the curl-pipe-shell check: fires even if the fetched
+/// content isn't piped into a shell on the same line (saved to a file
+/// and `source`d/`exec`'d later, say).
 pub(crate) fn paste_site_fetch_line(line: &str) -> bool {
     const HOSTS: &[&str] = &[
         "pastebin.com/raw", "hastebin.com/raw", "hastebin.com/share",
@@ -527,21 +499,16 @@ pub(crate) fn line_of_compromised_marker(source: &str) -> Option<usize> {
 }
 
 /// Exact indicators from known, still-circulating AUR supply-chain
-/// campaigns. Will go stale as campaigns rotate names, but it's a
-/// zero-cost, high-confidence check when it does fire.
+/// campaigns. Goes stale as campaigns rotate names, but zero-cost and
+/// high-confidence when it fires.
 ///
-/// Background: the "Atomic Arch" campaign (disclosed June 11-12, 2026)
-/// adopted 400+ orphaned AUR packages and edited PKGBUILD/`.install`
-/// hooks to pull in an infostealer via npm/bun during the build.
-///
-/// A second, distinct wave hit the AUR in late July/early August 2026,
-/// anchored by a compromised `openconnect-sso` package (report: 30 Jul
-/// 2026) and at least 89 other publicly-corroborated package names -
-/// Arch disabled AUR package adoption and then all pushes while handling
-/// it. That wave's reported mechanism (a binary named `validator` run via
-/// `sudo` mid-build) is covered by `sudo_escalation_line` above rather
-/// than by name here, since the payload binary name isn't itself a
-/// package name to match against.
+/// Background: "Atomic Arch" (June 2026) adopted orphaned AUR packages
+/// and edited PKGBUILD/`.install` hooks to pull an infostealer via
+/// npm/bun during build. A second wave (Jul-Aug 2026), anchored by a
+/// compromised `openconnect-sso`, hit 89+ other packages -- its
+/// mechanism (a `validator` binary run via `sudo`) is covered by
+/// `sudo_escalation_line` instead, since the payload binary name isn't
+/// itself a package name to match.
 const KNOWN_MALICIOUS_PACKAGE_NAMES: &[&str] = &["atomic-lockfile", "js-digest", "lockfile-js"];
 
 /// Published sha256 hashes of stage-1/stage-2 payloads from the Jul/Aug
@@ -587,29 +554,22 @@ pub(crate) fn line_of_known_malicious_package(source: &str) -> Option<(usize, &'
     None
 }
 
-/// `pkgbase`s publicly confirmed as taken over and shipping the malicious
-/// ELF payload in the early-August 2026 wave (see `decoy_tool_binary_line`
-/// below for the mechanism). Source: aur-general mailing list thread "AUR
-/// Malware that still presents as of now (30 July 2026, 22:00 UTC)"
-/// (message P4WIRHTFNH2YZWQHGBAKQWX5YOAFIDLY, posted by user Saren), plus
-/// `openconnect-sso` itself (the wave's anchor package, confirmed by Arch
-/// DevOps/IFIN) and `storageexplorer-bin` (a hidden 43 KB `optimizer` ELF
-/// reported 11 Aug 2026, inert only because of a PKGBUILD ordering quirk -
-/// treated as compromised, not benign, since that's one corrected push
-/// away from armed).
+/// `pkgbase`s publicly confirmed as taken over in the early-August 2026
+/// wave (see `decoy_tool_binary_line` for the mechanism). Source:
+/// aur-general mailing list report (30 Jul 2026), plus `openconnect-sso`
+/// itself (the wave's anchor, confirmed by Arch DevOps) and
+/// `storageexplorer-bin` (hidden ELF payload, inert only by a PKGBUILD
+/// ordering quirk -- treated as compromised, not benign).
 ///
-/// This is a target-package-name blocklist, deliberately separate from
-/// `KNOWN_MALICIOUS_PACKAGE_NAMES` above: that list matches names *pulled
-/// in* via a foreign package manager mid-build (the Atomic Arch
-/// mechanism); this one matches the AUR package the user is *directly
-/// trying to install* being itself one of the ones known to have been
-/// hijacked outright. Checked against `pkgbase`/`pkgname`, not PKGBUILD
-/// file content - see `is_known_compromised_package`.
+/// A target-package-name blocklist, separate from
+/// `KNOWN_MALICIOUS_PACKAGE_NAMES`: that one matches names pulled in
+/// mid-build via a foreign package manager; this one matches the AUR
+/// package being installed itself being a known-hijacked one. Checked
+/// against `pkgbase`/`pkgname`, not file content -- see
+/// `is_known_compromised_package`.
 ///
-/// Same staleness caveat as `KNOWN_MALICIOUS_PACKAGE_NAMES`: campaigns add
-/// new victims faster than any static list can track, so absence from
-/// this list is not a clean bill of health - `decoy_tool_binary_line`
-/// below is the generic, non-name-based backstop for this same campaign.
+/// Same staleness caveat: absence from this list isn't a clean bill of
+/// health -- `decoy_tool_binary_line` is the generic backstop.
 const KNOWN_COMPROMISED_AUR_PACKAGES: &[&str] = &[
     "openconnect-sso",
     "archutil",
@@ -673,11 +633,10 @@ fn known_compromised_package_finding(name: &str) -> Option<(String, Finding)> {
     })
 }
 
-/// Generic-sounding filenames the early-August 2026 wave used to disguise
-/// its ELF payload as an innocuous build helper (see module doc). Kept
-/// separate from any name-based package blocklist on purpose: attackers
-/// rotate which packages they hit far faster than they'll rotate this
-/// specific naming trick, so this heuristic should keep paying off against
+/// Generic-sounding filenames the early-August 2026 wave used to
+/// disguise its ELF payload as an innocuous build helper. Kept separate
+/// from any package-name blocklist: attackers rotate hit packages far
+/// faster than this naming trick, so it should keep paying off against
 /// packages not yet on `KNOWN_COMPROMISED_AUR_PACKAGES`.
 const DECOY_TOOL_BINARY_NAMES: &[&str] = &[
     "linter", "hasher", "minifier", "validator", "converter", "indexer",
@@ -686,16 +645,13 @@ const DECOY_TOOL_BINARY_NAMES: &[&str] = &[
     "optimizer", "merger",
 ];
 
-/// A line that both (a) installs a file with executable permissions
-/// (`install -Dm755` / `-m755` / `chmod +x`) and (b) names its target as
-/// one of `DECOY_TOOL_BINARY_NAMES` under a `bin`-ish destination (or has
-/// no path separator at all, e.g. a bare `install -Dm755 validator
-/// "$pkgdir/usr/bin/validator"`). Suspicious, not confirmed-IOC: plenty of
-/// legitimate packages genuinely ship a tool called `validator` or
-/// `parser`, so this only prompts review, same as the other heuristics -
-/// it just happens to be a very good prompt right now, since this is
-/// exactly the disguise the early-August 2026 wave used across every
-/// package in `KNOWN_COMPROMISED_AUR_PACKAGES`.
+/// A line that both installs a file with executable permissions
+/// (`install -Dm755`/`chmod +x`) and names its target as one of
+/// `DECOY_TOOL_BINARY_NAMES` under a `bin`-ish destination. Suspicious,
+/// not confirmed-IOC: plenty of legitimate packages ship a tool called
+/// `validator` or `parser`, so this only prompts review -- it's just a
+/// very good prompt right now, since it's exactly the disguise the
+/// early-August 2026 wave used across `KNOWN_COMPROMISED_AUR_PACKAGES`.
 pub(crate) fn decoy_tool_binary_line(line: &str) -> bool {
     let l = line.trim();
     if l.starts_with('#') {
@@ -766,14 +722,11 @@ pub(crate) fn line_of_foreign_pkg_manager_install(source: &str) -> Option<usize>
 }
 
 /// `sudo`/`pkexec`/`doas` invoked from inside a PKGBUILD/.install script.
-/// `makepkg` deliberately builds as an unprivileged user so a malicious
-/// `build()`/`package()` can't touch the system directly - a script that
-/// escalates privileges itself is a structural red flag, not just a crude
-/// pattern. This is exactly the mechanism reported in the late-July/early-
-/// August 2026 AUR wave anchored by the compromised `openconnect-sso`
-/// package: the malicious update added a binary named `validator` and ran
-/// it via `sudo` during packaging, crossing from build-time execution into
-/// privileged execution.
+/// `makepkg` deliberately builds as an unprivileged user, so a script
+/// escalating privileges itself is a structural red flag, not just a
+/// crude pattern -- this is exactly the mechanism from the Jul-Aug 2026
+/// `openconnect-sso` wave: a binary named `validator` run via `sudo`
+/// during packaging.
 pub(crate) fn sudo_escalation_line(line: &str) -> bool {
     let l = line.trim();
     if l.starts_with('#') {
@@ -895,14 +848,12 @@ pub(crate) fn line_of_openssl_decrypt(source: &str) -> Option<usize> {
 }
 
 /// Line-based fallback for `bash_ast::top_level_command_substitution`,
-/// used only if the AST parse itself fails. Tracks brace depth as a
-/// crude "am I inside a function body" proxy - real PKGBUILDs always
-/// write `name() {` and `}` on their own lines (or at least start/end a
-/// line), so counting `{`/`}` per line and only flagging while at
-/// depth 0 catches the common case without needing a real parser. A
-/// line that itself opens a function (ends with `{`, e.g. `pkgver() {`)
-/// is never flagged even at depth 0 - the *body* starting on the next
-/// line is what depth-tracking protects, not that line itself.
+/// used only if the AST parse fails. Tracks brace depth as a crude
+/// "inside a function body" proxy -- real PKGBUILDs always write
+/// `name() {`/`}` on their own lines, so counting `{`/`}` per line and
+/// flagging only at depth 0 catches the common case without a real
+/// parser. A line that itself opens a function (`pkgver() {`) is never
+/// flagged -- it's the body starting after it that depth-tracking guards.
 pub(crate) fn top_level_command_substitution_line(source: &str) -> Option<usize> {
     let mut depth: i32 = 0;
     for (i, line) in source.lines().enumerate() {
@@ -919,14 +870,13 @@ pub(crate) fn top_level_command_substitution_line(source: &str) -> Option<usize>
     None
 }
 
-/// How confident a finding is. `Suspicious` covers generic, crude-but-common
-/// heuristics (curl|sh, base64 -d, chmod 777, raw IP, hex-escape payload) -
-/// each a real reason to look twice but each with plausible false positives.
-/// `ConfirmedIoc` is reserved for an exact-match indicator of compromise
-/// against a specific, disclosed AUR supply-chain campaign (e.g. Atomic
+/// How confident a finding is. `Suspicious` covers generic heuristics
+/// (curl|sh, base64 -d, chmod 777, raw IP) -- real reasons to look
+/// twice, but with plausible false positives. `ConfirmedIoc` is an
+/// exact-match indicator against a specific disclosed campaign (Atomic
 /// Arch/June 2026, or the 2018 acroread/balz/minergate takeover), with
-/// essentially no false-positive risk, so it gets a louder alert. The
-/// specific campaign is always named in the finding's own message.
+/// essentially no false-positive risk, so it gets a louder alert -- the
+/// campaign is always named in the finding's message.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Severity {
     Suspicious,
@@ -1091,18 +1041,17 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
     findings
 }
 
-/// Fetch + scan the PKGBUILD (and any referenced `.install` hook) for
-/// every package about to be installed from the AUR. On any finding,
-/// print it and require an explicit "y" to continue; anything else aborts.
+/// Fetch + scan the PKGBUILD (and any `.install` hook) for every package
+/// about to be installed from the AUR. Any finding prints and requires
+/// an explicit "y" to continue; anything else aborts.
 ///
-/// Files that couldn't be fetched are silently skipped, not treated as a
-/// hit - this only adds friction on actual findings, never on lookup failures.
+/// Files that fail to fetch are silently skipped, not treated as a hit
+/// -- friction only on actual findings, never lookup failures.
 ///
-/// Returns what was actually fetched per pkgbase (only for entries where
-/// the PKGBUILD fetch succeeded), so a caller that's about to build from
-/// a fresh `git clone` of the same pkgbase can diff the clone against
-/// what was scanned here instead of re-fetching and re-scanning
-/// unconditionally -- see `verify_local_clone_or_rescan`.
+/// Returns what was fetched per pkgbase (only successful fetches), so a
+/// caller building from a fresh `git clone` can diff it against what
+/// was scanned here instead of re-fetching -- see
+/// `verify_local_clone_or_rescan`.
 pub(crate) fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) -> std::collections::HashMap<String, FetchedSource> {
     let mut any_findings = false;
     let mut fetched: std::collections::HashMap<String, FetchedSource> = std::collections::HashMap::new();
@@ -1198,23 +1147,19 @@ pub(crate) struct FetchedSource {
     pub install: Option<(String, String)>,
 }
 
-/// Re-checks the *actual* git checkout that's about to be built against
-/// whatever was already scanned in `scan_aur_pkgbuilds_or_abort`.
+/// Re-checks the *actual* git checkout about to be built against what
+/// was already scanned in `scan_aur_pkgbuilds_or_abort`.
 ///
-/// The cgit scan and the `git clone` are two separate fetches of what's
-/// supposed to be the same content -- normally identical, but nothing
-/// guarantees that: a maintainer (or a hijacked account) can push a
-/// change to the AUR repo in the window between them, and cgit's cache
-/// can lag behind the git remote too. Comparing byte-for-byte against
-/// what `prefetched` holds (when available) means the common case costs
-/// nothing extra, while an actual mismatch gets the exact same
-/// finding/prompt treatment as the pre-clone scan -- just against the
-/// clone that will really be built, with a note that it differs from
-/// what was already reviewed.
+/// The cgit scan and the `git clone` are two separate fetches of
+/// supposedly the same content -- normally identical, but a maintainer
+/// (or hijacked account) can push a change in the window between them,
+/// or cgit's cache can lag. Comparing byte-for-byte against `prefetched`
+/// (when available) costs nothing in the common case, while a real
+/// mismatch gets the same finding/prompt treatment as the pre-clone
+/// scan, noting it differs from what was reviewed.
 ///
-/// `prefetched: None` (fetch failed earlier, or this pkgbase was never
-/// pre-scanned at all, e.g. resolved via a split-package alias) always
-/// forces a full local scan rather than assuming "no finding" by default.
+/// `prefetched: None` (earlier fetch failed, or pkgbase was never
+/// pre-scanned) always forces a full local scan, never assumes "clean".
 pub(crate) fn verify_local_clone_or_rescan(pkgbase: &str, dir: &std::path::Path, prefetched: Option<&FetchedSource>) {
     let Ok(local_pkgbuild) = std::fs::read_to_string(dir.join("PKGBUILD")) else {
         // Can't read what was just cloned -- the build step right after
@@ -1383,16 +1328,14 @@ pub(crate) fn scan_report_local(label: &str, dir: &std::path::Path) -> bool {
 
 /// Print one alert block in the emerge-style `>>> ===...` box.
 ///
-/// Both severities now share the same red/orange scheme (previously
-/// yellow-only for a generic heuristic hit vs red/orange for a
-/// confirmed IOC match) -- a heuristic hit is still worth stopping for,
-/// so it shouldn't read as visually "less serious" than a confirmed
-/// one. `is_atomic` is kept in the signature only so callers don't need
+/// Both severities now share the red/orange scheme (previously
+/// yellow-only for a heuristic hit vs red/orange for a confirmed IOC) --
+/// a heuristic hit is still worth stopping for, shouldn't read as "less
+/// serious". `is_atomic` stays in the signature so callers don't need
 /// to change; it no longer affects rendering.
 ///
-/// Each finding line names the file and line it fired on; the block ends
-/// with a way to go read each referenced file in full -- a cgit link for
-/// `SourceOrigin::Cgit`, or the on-disk path for `SourceOrigin::LocalClone`.
+/// Each finding names the file/line it fired on; the block ends with a
+/// way to read each file in full -- cgit link or on-disk path.
 pub(crate) fn print_finding_block(pkg: &str, headline: &str, findings: &[&(String, Finding)], is_atomic: bool, origin: SourceOrigin) {
     let bar = "===================================";
     let arrow_str = ">>>";

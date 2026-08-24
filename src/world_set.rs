@@ -174,37 +174,25 @@ pub(crate) fn list_custom_sets() -> Vec<String> {
 // ── declarative provisioning from world.set (bare `emerge @world`) ─────────────
 
 /// `emerge @world` with no `-u`: install whatever world.set lists that
-/// isn't already on this system. Unlike the `-u @world` full upgrade,
-/// this never touches a package that's already installed and never
-/// consults the sync databases on its own - it's meant for "this machine
-/// is missing packages world.set says it should have" (a fresh install,
-/// or one that fell behind a dotfiles-tracked world.set), not for
-/// upgrading what's already there.
+/// isn't on this system yet. Unlike `-u @world`, never touches an
+/// already-installed package and never consults sync DBs on its own --
+/// it's for "this machine is missing packages world.set says it should
+/// have" (fresh install, or one that fell behind a tracked world.set).
 ///
-/// Each entry's recorded repo prefix decides how it gets installed:
-/// official-repo entries go through `aura -S`, `aur/` entries through
-/// `aura -A` (with the usual PKGBUILD scan first). `abs/` entries were
-/// locally built from ABS and can't be reproduced unattended, so they're
-/// always listed and skipped (needs `emerge <pkg> --abs` by hand).
+/// The recorded repo prefix decides install method: official-repo via
+/// `aura -S`, `aur/` via `aura -A` (with the usual scan). `abs/` entries
+/// were built locally and can't be reproduced unattended, so they're
+/// always just listed (needs `emerge <pkg> --abs` by hand).
 ///
-/// Entries with no resolvable prefix come in two flavors, handled
-/// differently:
-/// - A bare entry with *no* prefix at all means nothing could be
-///   determined about it when it was written (not installed, not in any
-///   sync DB at the time) - there's nothing to lose by just trying the
-///   normal install path (official repos first, AUR on a miss), so this
-///   always happens.
-/// - An `Err/` entry means the package *is* installed, just from a
-///   source pacman/aura couldn't identify (e.g. built by hand outside
-///   aura-emerge). That's a bit more suspect, so by default these are
-///   only listed; pass `err_install` (the CLI's `--err-install`) to have them
-///   go through the same normal-resolution path instead.
+/// Entries with no resolvable prefix: a bare entry (nothing could be
+/// determined when written) always goes through normal resolution
+/// (official repos, then AUR). An `Err/` entry (installed, but from an
+/// unidentifiable source) is only listed by default -- pass
+/// `err_install` to resolve it too.
 ///
-/// Whatever gets installed this way has its world.set entry corrected to
-/// the real resolved prefix, since `Err/`/bare was never accurate.
-///
-/// Returns Ok(true) if everything resolvable installed cleanly (or this
-/// was a --pretend run), Ok(false) if something failed.
+/// Anything installed this way gets its world.set entry corrected to
+/// the real resolved prefix. Returns Ok(true) if everything resolvable
+/// installed cleanly (or this was --pretend), Ok(false) on failure.
 pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, err_install: bool, no_sandbox: bool, skip_srcinfo_regen: bool, deep: bool, unshare_net_build: bool) -> Result<bool> {
     println!("{} Provisioning system from world.set...", ">>>".green().bold());
 
@@ -468,16 +456,12 @@ pub(crate) fn regen_world_set() -> Result<()> {
 }
 
 /// Re-resolve repository prefixes for every entry in a custom set file
-/// (`/etc/emerge/sets.d/<name>.set`), the same idea as `regen_world_set()`
-/// but for a set instead of world.set.
+/// (`/etc/emerge/sets.d/<name>.set`) -- same idea as `regen_world_set()`.
 ///
-/// By default (`sort == false`) this preserves the file exactly as
-/// written: line order, `#` comments, and blank-line grouping all survive
-/// - each package line just has its repo prefix re-resolved in place.
-/// Pass `sort == true` (the `--regen-sort` flag) to instead collapse the
-/// file down to a flat, deduplicated, alphabetically sorted list of
-/// entries - which, unavoidably, drops the comments and blank-line
-/// grouping, since there's nothing sensible to sort them relative to.
+/// By default (`sort == false`) preserves the file as-is: line order,
+/// `#` comments, blank-line grouping -- just re-resolves each package's
+/// prefix in place. `sort == true` (`--regen-sort`) instead collapses it
+/// to a flat, deduped, alphabetical list, dropping comments/grouping.
 pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
     println!("{} Regenerating prefixes for @{}...", ">>>".green().bold(), name);
 

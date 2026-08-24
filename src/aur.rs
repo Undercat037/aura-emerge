@@ -1,13 +1,10 @@
 //! Direct AUR interaction: git-clones a package's AUR repo and reads its
 //! `.SRCINFO` for dependencies, replacing the `aura -A` build/install
-//! path (see `packages::aur_install` / `resolve_and_build_aur` for the
-//! orchestration that uses this).
+//! path (see `packages::aur_install` / `resolve_and_build_aur`).
 //!
-//! Deliberately talks to the *official* AUR (`aur.archlinux.org`) for
-//! both the git clone and the RPC lookup, rather than the third-party
-//! `faur.fosskers.ca` mirror `aura` itself uses -- one fewer trusted
-//! party in the chain for a tool whose whole point is being
-//! security-conscious about what runs during a build.
+//! Talks to the *official* AUR (`aur.archlinux.org`), not the
+//! third-party `faur.fosskers.ca` mirror `aura` uses -- one fewer
+//! trusted party for a tool that cares about build security.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -36,17 +33,15 @@ pub(crate) struct AurPkgInfo {
 }
 
 /// Shallow-clones `<AUR_BASE_URL>/<pkgbase>.git` into `dest_root/<pkgbase>`.
-/// Returns the clone path on success, `None` on any git failure (network,
-/// or the name genuinely isn't a pkgbase -- the two aren't distinguished
-/// here since callers fall back to an RPC lookup either way).
+/// Returns the clone path, or `None` on any git failure (network or a
+/// genuinely nonexistent pkgbase -- not distinguished, since callers
+/// fall back to an RPC lookup either way).
 ///
-/// `dest_root` is expected to be a directory `clone_repo`'s caller owns
-/// exclusively for this run (see `packages::aur_build_base()`/
-/// `abs_build_base()`'s wipe-on-start) -- if `target` already exists, that's a
-/// caller-side bug (stale wipe, or the same pkgbase cloned twice in one
-/// run), not a normal "package doesn't exist" case. Reported distinctly
-/// on stderr so it doesn't masquerade as an AUR miss several call-frames
-/// up in `clone_or_resolve()`/`resolve_and_build_aur()`.
+/// `dest_root` should be owned exclusively by this run (see
+/// `packages::aur_build_base()`/`abs_build_base()`'s wipe-on-start) --
+/// if `target` already exists that's a caller bug, not a normal miss,
+/// so it's reported distinctly on stderr rather than masquerading as
+/// an AUR miss further up the call chain.
 pub(crate) fn clone_repo(pkgbase: &str, dest_root: &Path) -> Option<PathBuf> {
     let url = format!("{}/{}.git", AUR_BASE_URL, pkgbase);
     let target = dest_root.join(pkgbase);
@@ -172,19 +167,14 @@ pub(crate) fn clone_or_resolve(pkg: &str, dest_root: &Path) -> Option<(PathBuf, 
 }
 
 /// Minimal `.SRCINFO` reader: sums `depends`/`makedepends`/`checkdepends`
-/// -- both the bare key and its `_<current_arch>`-suffixed variant (e.g.
-/// `depends_x86_64` when `current_arch` is `"x86_64"`) -- across every
-/// section in the file, strips version constraints (`foo>=1.2` -> `foo`),
-/// and dedupes. A different arch's suffix (`depends_aarch64` on an
-/// x86_64 machine) is deliberately excluded -- summing every arch
-/// unconditionally would hand `pacman -S` package names that don't even
-/// exist for this machine.
+/// (bare key + `_<current_arch>`-suffixed variant) across all sections,
+/// strips version constraints (`foo>=1.2` -> `foo`), dedupes. Other
+/// arches' suffixes are excluded -- they'd hand `pacman -S` names that
+/// don't exist on this machine.
 ///
-/// `.SRCINFO` is a static, checked-in, generated file (`makepkg
-/// --printsrcinfo`) -- reading it never executes anything, unlike parsing
-/// `PKGBUILD` itself. Returns `None` only if the file can't be read at
-/// all (missing `.SRCINFO` is rare but not unheard of in a malformed/very
-/// old AUR repo) -- an empty-but-present file correctly yields `Some(vec![])`.
+/// `.SRCINFO` is static/generated (`makepkg --printsrcinfo`), so reading
+/// it never executes anything, unlike PKGBUILD itself. `None` only if
+/// the file can't be read; an empty-but-present file yields `Some(vec![])`.
 pub(crate) fn srcinfo_dependencies(path: &Path, current_arch: &str) -> Option<Vec<String>> {
     let text = std::fs::read_to_string(path).ok()?;
     let mut out = Vec::new();
@@ -368,15 +358,11 @@ fn extract_json_raw_field(json: &str, field: &str) -> Option<String> {
     Some(tail[..end].trim().to_string())
 }
 
-/// Extracts a single `"Field":"value"` string from a flat JSON blob --
-/// enough for the handful of string fields (`PackageBase`, `Name`,
-/// `Description`, ...) this module needs out of the AUR RPC response,
-/// without pulling in a JSON dependency for it. Honors `\"`/`\\` escapes
-/// while scanning for the closing quote (needed for `Description`, which
-/// routinely contains apostrophes/quotes) and decodes the small set of
-/// escape sequences the AUR RPC actually emits. `null` (used for e.g. an
-/// absent `Maintainer`) is treated as absent, same as a missing field.
-/// Bails to `None` if the field isn't present as a string value.
+/// Extracts a `"Field":"value"` string from a flat JSON blob -- covers
+/// the string fields this module needs (`PackageBase`, `Name`,
+/// `Description`, ...) without a JSON dependency. Honors `\"`/`\\`
+/// escapes while scanning for the closing quote. `null` (e.g. an absent
+/// `Maintainer`) is treated as absent, same as a missing field.
 fn extract_json_string_field(json: &str, field: &str) -> Option<String> {
     let needle = format!("\"{}\":", field);
     let start = json.find(&needle)? + needle.len();

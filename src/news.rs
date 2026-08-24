@@ -1,16 +1,11 @@
 //! Arch Linux news feed - a Gentoo-`eselect news`-style notification system.
 //!
-//! Fetches the official RSS feed (https://archlinux.org/feeds/news/) via
-//! the shared http.rs GET helper, same approach as the AUR PKGBUILD
-//! fetcher in security.rs, and does a small hand-rolled tag extraction (no
-//! XML crate in the dependency tree - the feed's structure is stable and
-//! simple enough that this is fine, same spirit as the pattern-matching in
-//! security.rs).
+//! Fetches the RSS feed (archlinux.org/feeds/news/) via the shared
+//! http.rs GET helper and does hand-rolled tag extraction (no XML
+//! crate - the feed format is stable/simple enough).
 //!
-//! Read/unread state is tracked per-user in ~/.cache/aura-emerge/news.state
-//! (NOT under /etc/emerge - unlike world.set/resume.state/lastaction.state,
-//! this is pure UI state with no system-wide meaning, so it shouldn't need
-//! root just to browse the news).
+//! Read/unread state lives in ~/.cache/aura-emerge/news.state, not
+//! /etc/emerge - it's pure UI state, no need for root just to browse.
 
 use colored::Colorize;
 use std::fs;
@@ -164,17 +159,11 @@ fn save_read_guids(guids: &std::collections::HashSet<String>) {
     }
 }
 
-/// Best-effort unread-item count, for a heads-up before `-u` runs - the
-/// actual point of a Gentoo-style news system: catching a breaking-change
-/// notice (kernel scheme change, driver package rename, manual-intervention
-/// migration, ...) *before* the user blindly upgrades past it, not just
-/// having it sit there for whenever they happen to remember `--news`.
-///
-/// Deliberately quiet on any failure (network hiccup, feed format hiccup,
-/// no $HOME, ...) - returns `None` rather than erroring, since a missed
-/// warning here should never be the thing that blocks an upgrade the user
-/// asked for. Read-state is only ever consulted, never written, so this is
-/// side-effect free and safe to call on every `-u` regardless of pretend.
+/// Best-effort unread-item count for a heads-up before `-u` runs, so a
+/// breaking-change notice gets caught before the user blindly upgrades
+/// past it. Quiet on any failure - returns `None` rather than erroring,
+/// since a missed warning should never block an upgrade. Read-only, so
+/// safe to call on every `-u` regardless of pretend.
 pub(crate) fn unread_count_quiet() -> Option<usize> {
     let xml = fetch_feed()?;
     let mut items = parse_news(&xml);

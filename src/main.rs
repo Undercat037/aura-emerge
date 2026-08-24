@@ -18,15 +18,13 @@ mod bash_ast;
 mod sandbox;
 mod aur;
 
-/// Shared HTTP GET, replacing the `curl -sfL --max-time N` subprocess
-/// calls that used to be scattered across aur.rs/security.rs/news.rs/
-/// packages.rs. One `ureq`-backed call instead of four `Command::new
-/// ("curl")` sites: no dependency on a `curl` binary being installed,
-/// real typed errors instead of parsed exit codes, one place to touch
-/// if the timeout/redirect/TLS story ever changes. Still a plain
-/// blocking call, matching every other bit of I/O in this codebase
-/// (`Command::output()` blocks too) -- no async runtime anywhere else
-/// here, so reqwest+tokio would be more machinery for the same result.
+/// Shared HTTP GET, replacing the scattered `curl -sfL --max-time N`
+/// subprocess calls across aur.rs/security.rs/news.rs/packages.rs. One
+/// `ureq`-backed call instead: no dependency on a `curl` binary, typed
+/// errors instead of parsed exit codes, one place to touch for
+/// timeout/redirect/TLS changes. Still plain blocking I/O, matching the
+/// rest of the codebase -- no async runtime elsewhere, so tokio would
+/// be extra machinery for nothing.
 mod http {
     use std::time::Duration;
 
@@ -698,14 +696,13 @@ fn print_help() {
     println!("Author: Undercat037");
 }
 
-// ── Shell completion: dynamic @set support ─────────────────────────────────────
+// ── Shell completion: dynamic @set support ──────────────────────────────
 //
-// clap_complete's generated script only knows the flags declared at build
-// time - it has no idea what's in /etc/emerge/sets.d/ on the machine it
-// ends up installed on. This appends a small, shell-specific snippet after
-// the generated script that shells out to `emerge --list-sets` (world,
-// preserved-rebuild, and every sets.d/*.set) whenever the word being
-// completed starts with '@', so `emerge @<TAB>` offers real set names.
+// clap_complete's generated script doesn't know what's in
+// /etc/emerge/sets.d/ on the target machine. This appends a
+// shell-specific snippet that shells out to `emerge --list-sets`
+// whenever the completed word starts with '@', so `emerge @<TAB>`
+// offers real set names.
 
 fn print_set_completion_glue(shell: Shell) {
     match shell {
@@ -808,20 +805,15 @@ fn build_resume_args(cli: &Cli, target_pkgs: &[String], has_world: bool) -> Vec<
 
 // ── --sudoloop: keep the sudo timestamp cache warm ─────────────────────────
 
-/// Prime sudo synchronously (so the one password prompt happens now,
-/// before any other output) then spawn a background thread that refreshes
-/// the timestamp (`sudo -v`, no output, no prompt expected) every 60s for
-/// as long as the process lives. Fire-and-forget: the thread is simply
-/// killed along with every other thread whenever the process exits (this
-/// codebase already leans on plain `std::process::exit()` throughout, so
-/// there's no graceful-shutdown convention to hook into, and none is
-/// needed here - a `sudo -v` that never gets to run one more time changes
-/// nothing).
+/// Prime sudo synchronously (so the password prompt happens now, before
+/// other output), then spawn a background thread refreshing the
+/// timestamp (`sudo -v`) every 60s for the process's life. Fire-and-
+/// forget: killed along with every thread on exit, same as the rest of
+/// this codebase's plain `std::process::exit()` -- nothing to clean up.
 ///
-/// Returns false (and prints nothing itself - caller decides how loud to
-/// be) if the initial `sudo -v` fails, e.g. wrong password or sudoers
-/// denies it outright, so the caller can warn and continue without the
-/// loop rather than silently pretending it's active.
+/// Returns false (prints nothing -- caller decides how loud to be) if
+/// the initial `sudo -v` fails, so the caller can warn and continue
+/// without the loop instead of pretending it's active.
 fn start_sudoloop() -> bool {
     let primed = Command::new(SUDO_BIN)
         .arg("-v")
