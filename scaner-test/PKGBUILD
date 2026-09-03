@@ -1,4 +1,4 @@
-# Фиктивный malicious PKGBUILD — тест сканера aura-emerge.
+# Фиктивный malicious PKGBUILD - тест сканера aura-emerge.
 # НЕ source'ить и НЕ запускать makepkg здесь: строка [1] выполнится сразу.
 pkgname=scaner-test-therandtxt
 pkgver=1.0.0

@@ -74,9 +74,8 @@ sudo nvim /etc/makepkg.conf
 
 ```bash
 emerge neovim                              # офіційні репо, при відсутності - AUR
-emerge neovim-git --aur                    # лише AUR (без рекурсії AUR-залежностей)
-emerge foo-git --aur --aur-deep            # також рекурсивно зібрати AUR-only залежності (--aur-full)
-emerge foo-git --aur --aur-deep --sudoloop # те саме, але тримати sudo «теплим» протягом усієї рекурсивної збірки
+emerge neovim-git --aur                    # лише AUR (AUR-only залежності збираються рекурсивно завжди)
+emerge foo-git --aur --sudoloop            # те саме, але тримати sudo «теплим» протягом усієї рекурсивної збірки
 emerge neovim --only-repos                 # лише офіційні репо, без AUR
 emerge neovim --abs                        # зібрати з ABS (pkgctl), у пісочниці bwrap
 emerge neovim --abs --no-sandbox           # ABS без пісочниці (звичайний makepkg -si)
@@ -292,7 +291,7 @@ emerge --news all    # позначити всі як прочитані
 
 Перед кожним встановленням з AUR завантажується «сирий» `PKGBUILD` (і `.install`-хук) з cgit і сканується у два шари:
 
-1. **AST** (`tree-sitter-bash`) - `curl|sh`, `base64`/`xxd | sh`, `source <(curl …)`, `eval "$(curl …)"`, `sudo`/`pkexec`/`doas`, python inline-exec, top-level command substitution (`` `...` `` / `$(...)` поза тілами функцій — напр. markdown-бектейки в `pkgdesc`) тощо. Тривіальні текстові обходи (конкатенація рядків, абсолютні шляхи, `env`) не проходять.
+1. **AST** (`tree-sitter-bash`) - `curl|sh`, `base64`/`xxd | sh`, `source <(curl …)`, `eval "$(curl …)"`, `sudo`/`pkexec`/`doas`, python inline-exec, top-level command substitution (`` `...` `` / `$(...)` поза тілами функцій - напр. markdown-бектейки в `pkgdesc`) тощо. Тривіальні текстові обходи (конкатенація рядків, абсолютні шляхи, `env`) не проходять.
 2. **Текстові евристики** - `chmod 777`, «сирі» IP, сторонні пакетні менеджери (`npm install …`), paste-сайти, `.onion`, відомі IOC (Atomic Arch, openconnect-sso, `compromised.txt` з 2018 тощо).
 
 Знахідки: `Suspicious` або `ConfirmedIoc`. Спрацювання не блокує жорстко - показує файл/рядок, посилання на cgit, запит `Continue anyway? [y/N]`.
@@ -328,8 +327,7 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `-1` | Встановити як залежність (oneshot) |
 | `-v` | Детальний вивід |
 | `-n` | Не перевстановлювати (noreplace) |
-| `--aur` | Примусово AUR |
-| `--aur-deep` / `--aur-full` | Рекурсивно зібрати AUR-only залежності (неявно вмикає `--aur`) |
+| `--aur` | Примусово AUR (AUR-only залежності завжди резолвляться і збираються рекурсивно) |
 | `--only-repos` | Лише офіційні репо |
 | `--abs` | Зібрати з ABS (`pkgctl`), у пісочниці bwrap |
 | `--no-sandbox` | Вимкнути bwrap для AUR/ABS |

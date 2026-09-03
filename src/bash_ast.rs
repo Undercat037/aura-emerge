@@ -319,7 +319,7 @@ pub(crate) fn pkgbuild_dependencies(source: &str, current_arch: &str) -> Option<
 }
 
 /// Top-level command substitution (`$(...)` / backticks) outside function
-/// bodies — runs on source (e.g. makepkg --printsrcinfo), not in the sandbox.
+/// bodies - runs on source (e.g. makepkg --printsrcinfo), not in the sandbox.
 pub(crate) fn top_level_command_substitution(source: &str) -> Option<usize> {
     let tree = parse(source)?;
     let root = tree.root_node();

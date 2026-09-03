@@ -73,9 +73,8 @@ See [GCC optimization flags](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options
 
 ```bash
 emerge neovim                              # official repos, falls back to AUR
-emerge neovim-git --aur                    # AUR only (no recursive AUR deps)
-emerge foo-git --aur --aur-deep            # also recursively build AUR-only deps (--aur-full)
-emerge foo-git --aur --aur-deep --sudoloop # same, but keep sudo warm through the whole recursive build
+emerge neovim-git --aur                    # AUR only (AUR-only deps built recursively)
+emerge foo-git --aur --sudoloop            # same, but keep sudo warm through the whole recursive build
 emerge neovim --only-repos                 # official repos only, never touch AUR
 emerge neovim --abs                        # build from ABS (pkgctl), in bwrap sandbox
 emerge neovim --abs --no-sandbox           # ABS without sandbox (plain makepkg -si)
@@ -291,7 +290,7 @@ emerge --news all    # mark all as read
 
 Before every AUR install, the raw `PKGBUILD` (and any `.install` hook) is fetched from cgit and scanned in two layers:
 
-1. **AST** (`tree-sitter-bash`) - `curl|sh`, `base64`/`xxd | sh`, `source <(curl …)`, `eval "$(curl …)"`, `sudo`/`pkexec`/`doas`, python inline-exec, top-level command substitution (`` `...` `` / `$(...)` outside function bodies — e.g. leftover markdown backticks in `pkgdesc`), etc. Trivial text evasions (string concatenation, absolute paths, `env` wrappers) do not slip through.
+1. **AST** (`tree-sitter-bash`) - `curl|sh`, `base64`/`xxd | sh`, `source <(curl …)`, `eval "$(curl …)"`, `sudo`/`pkexec`/`doas`, python inline-exec, top-level command substitution (`` `...` `` / `$(...)` outside function bodies - e.g. leftover markdown backticks in `pkgdesc`), etc. Trivial text evasions (string concatenation, absolute paths, `env` wrappers) do not slip through.
 2. **Line heuristics** - `chmod 777`, raw IPv4 literals, foreign package managers (`npm install …`), paste sites, `.onion` addresses, known IOCs (Atomic Arch, openconnect-sso, 2018 `compromised.txt`, …).
 
 Findings are `Suspicious` or `ConfirmedIoc`. A hit does not hard-block - it prints the file/line, a cgit link, and asks `Continue anyway? [y/N]`.
@@ -328,8 +327,7 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `-1` | Install as dependency (oneshot) |
 | `-v` | Verbose output |
 | `-n` | Do not reinstall if present (noreplace) |
-| `--aur` | Force AUR |
-| `--aur-deep` / `--aur-full` | Also recursively build AUR-only dependencies (implies `--aur`) |
+| `--aur` | Force AUR (AUR-only dependencies are always resolved and built recursively) |
 | `--only-repos` | Official repos only |
 | `--abs` | Build from ABS (`pkgctl`), in bwrap sandbox |
 | `--no-sandbox` | Disable bwrap for AUR/ABS |

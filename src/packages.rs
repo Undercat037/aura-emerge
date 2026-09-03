@@ -663,7 +663,6 @@ fn resolve_and_build_aur(
     is_top_level: bool,
     skip_srcinfo_regen: bool,
     isolation: BuildIsolation,
-    deep: bool,
     unshare_net_build: bool,
     building: &mut HashSet<String>,
     built: &mut HashMap<String, Vec<String>>,
@@ -745,19 +744,8 @@ fn resolve_and_build_aur(
         if already_satisfied(dep) || is_satisfiable_without_aur(dep) {
             continue;
         }
-        if !deep {
-            // --aur without --aur-deep: error on AUR-only deps.
-            eprintln!(
-                "{} '{}' depends on '{}', which is only available from the AUR -- re-run with {} to also build AUR-only dependencies.",
-                ">>> Error:".red().bold(),
-                pkgbase,
-                dep,
-                "--aur-deep".cyan()
-            );
-            building.remove(&pkgbase);
-            return None;
-        }
-        match resolve_and_build_aur(dep, build_root, ask, skippgp, true, false, false, skip_srcinfo_regen, isolation, deep, unshare_net_build, building, built, false) {
+        // AUR-only deps are always resolved and built recursively.
+        match resolve_and_build_aur(dep, build_root, ask, skippgp, true, false, false, skip_srcinfo_regen, isolation, unshare_net_build, building, built, false) {
             Some(mut tars) => aur_dep_tarballs.append(&mut tars),
             None => {
                 eprintln!(
@@ -854,7 +842,7 @@ fn clear_build_base(dir: &std::path::Path) -> std::io::Result<()> {
 /// (`bwrap` -> unsandboxed `makepkg -si`, see `choose_build_isolation`)
 /// instead of shelling out to `aura -A`. `pkgctl` is not involved here
 /// at all -- only `--abs` ever calls it, and only for `repo clone`.
-pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, no_sandbox: bool, skip_srcinfo_regen: bool, deep: bool, unshare_net_build: bool, pkgbuild_view: bool) -> bool {
+pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, no_sandbox: bool, skip_srcinfo_regen: bool, unshare_net_build: bool, pkgbuild_view: bool) -> bool {
     if !std::path::Path::new("/usr/bin/git").exists() {
         eprintln!("{} required binary not found: /usr/bin/git", ">>> Fatal:".red().bold());
         return false;
@@ -922,7 +910,7 @@ pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
             pkg.green().bold()
         );
         println!();
-        if resolve_and_build_aur(pkg, &build_base, ask, skippgp, oneshot, edit, true, skip_srcinfo_regen, isolation, deep, unshare_net_build, &mut building, &mut built, pkgbuild_view).is_none() {
+        if resolve_and_build_aur(pkg, &build_base, ask, skippgp, oneshot, edit, true, skip_srcinfo_regen, isolation, unshare_net_build, &mut building, &mut built, pkgbuild_view).is_none() {
             all_ok = false;
         }
     }
@@ -1140,7 +1128,7 @@ pub(crate) fn check_devel_all() -> bool {
     true
 }
 
-pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbox: bool, skip_srcinfo_regen: bool, deep: bool, unshare_net_build: bool, devel: bool) -> bool {
+pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbox: bool, skip_srcinfo_regen: bool, unshare_net_build: bool, devel: bool) -> bool {
     let foreign = match Command::new(PACMAN_BIN)
         .args(["-Qm"])
         .env("LC_ALL", "C")
@@ -1247,7 +1235,7 @@ pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbo
     }
 
     let upgrade_names: Vec<String> = to_upgrade.iter().map(|(n, _, _)| n.clone()).collect();
-    aur_install(&upgrade_names, false, ask, false, skippgp, false, no_sandbox, skip_srcinfo_regen, deep, unshare_net_build, false)
+    aur_install(&upgrade_names, false, ask, false, skippgp, false, no_sandbox, skip_srcinfo_regen, unshare_net_build, false)
 }
 
 /// Installs already-built `*.pkg.tar.*` files directly via `pacman -U`

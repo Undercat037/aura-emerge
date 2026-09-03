@@ -156,7 +156,7 @@ pub(crate) fn list_custom_sets() -> Vec<String> {
 /// Provision missing packages from world.set (bare `@world`, no -u).
 /// Prefix picks the source; `abs/` is listed only; bare always resolved;
 /// `Err/` only with err_install. Fixes world.set prefixes on success.
-pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, err_install: bool, no_sandbox: bool, skip_srcinfo_regen: bool, deep: bool, unshare_net_build: bool) -> Result<bool> {
+pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, err_install: bool, no_sandbox: bool, skip_srcinfo_regen: bool, unshare_net_build: bool) -> Result<bool> {
     println!("{} Provisioning system from world.set...", ">>>".green().bold());
 
     if !is_safe_path(WORLD_SET_FILE) {
@@ -295,7 +295,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
         println!("{} Installing {} AUR package(s)...", ">>>".green().bold(), aur_missing.len());
         scan_aur_pkgbuilds_or_abort(&aur_missing);
         // aur_install sets explicit on success; no mark_asexplicit needed.
-        if !aur_install(&aur_missing, false, ask, false, false, false, no_sandbox, skip_srcinfo_regen, deep, unshare_net_build, false) {
+        if !aur_install(&aur_missing, false, ask, false, false, false, no_sandbox, skip_srcinfo_regen, unshare_net_build, false) {
             overall_ok = false;
             eprintln!(">>> Warning: some AUR package(s) failed to install.");
         }
@@ -326,7 +326,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
             ">>>".green().bold(), resolved_aur.len()
         );
         scan_aur_pkgbuilds_or_abort(&resolved_aur);
-        if aur_install(&resolved_aur, false, ask, false, false, false, no_sandbox, skip_srcinfo_regen, deep, unshare_net_build, false) {
+        if aur_install(&resolved_aur, false, ask, false, false, false, no_sandbox, skip_srcinfo_regen, unshare_net_build, false) {
             if let Err(e) = add_to_world_set(&resolved_aur, Some("aur")) {
                 eprintln!(">>> Warning: package(s) installed but world.set was not updated: {:#}", e);
             }

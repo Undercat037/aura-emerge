@@ -229,7 +229,7 @@ pub(crate) fn line_of_xxd_pipe_shell(source: &str) -> Option<usize> {
     source.lines().position(xxd_pipe_shell_line).map(|i| i + 1)
 }
 
-/// source/`.` of <(curl/wget ...) — process-subst remote exec.
+/// source/`.` of <(curl/wget ...) - process-subst remote exec.
 pub(crate) fn source_process_subst_line(line: &str) -> bool {
     let l = line.trim();
     if l.starts_with('#') {
@@ -270,7 +270,7 @@ pub(crate) fn line_of_chmod_777(source: &str) -> Option<usize> {
     source.lines().position(chmod_777_line).map(|i| i + 1)
 }
 
-/// Bare IPv4 literal (legit builds use domains). FP: version "1.2.3.4" — review only.
+/// Bare IPv4 literal (legit builds use domains). FP: version "1.2.3.4" - review only.
 pub(crate) fn line_has_raw_ipv4(source: &str) -> bool {
     let bytes = source.as_bytes();
     let is_boundary = |c: Option<u8>| !matches!(c, Some(b) if b.is_ascii_digit() || b == b'.');
@@ -459,7 +459,7 @@ pub(crate) fn line_of_known_malicious_package(source: &str) -> Option<(usize, &'
 
 /// Known-hijacked AUR pkgbases (early-Aug 2026 + openconnect-sso,
 /// storageexplorer-bin). Target package name, not mid-build deps.
-/// Absence ≠ clean — decoy_tool_binary_line is the generic backstop.
+/// Absence ≠ clean - decoy_tool_binary_line is the generic backstop.
 const KNOWN_COMPROMISED_AUR_PACKAGES: &[&str] = &[
     "openconnect-sso",
     "archutil",
@@ -554,22 +554,60 @@ pub(crate) fn line_of_decoy_tool_binary(source: &str) -> Option<usize> {
     source.lines().position(decoy_tool_binary_line).map(|i| i + 1)
 }
 
+/// npm/bun/yarn flags confirmed to take a value (so e.g. `--cache
+/// "$srcdir/npm-cache"` isn't mistaken for installing a package named
+/// after the cache path). Only add a flag here once verified -- an
+/// unverified *boolean* flag added by mistake would let a malicious
+/// PKGBUILD hide a real package behind it (`npm install --foo evil-pkg`
+/// skips `evil-pkg` as `--foo`'s "value" while real npm still installs
+/// it). Missing a real value-taking flag just means an extra prompt.
+const NPM_VALUE_TAKING_FLAGS: &[&str] = &["--cache", "--registry", "--prefix", "--tag"];
+
+/// Same idea, pip's own documented value-taking flags.
+const PIP_VALUE_TAKING_FLAGS: &[&str] = &[
+    "--index-url", "--extra-index-url", "--find-links", "--cache-dir",
+    "--target", "-r", "--requirement", "-c", "--constraint",
+];
+
 /// npm/bun/pip install of a named external package (Atomic Arch pattern).
-/// Bare `npm ci` is fine. FP: legit global CLI installs — review only.
+/// Bare `npm ci`/`npm install` (no package arg, just flags) is fine --
+/// that installs from an existing package.json/requirements.txt, the
+/// normal way a JS/Python project pulls in its own declared
+/// dependencies mid-build. FP: legit global CLI installs - review only.
 pub(crate) fn foreign_pkg_manager_install_line(line: &str) -> bool {
-    const PATTERNS: &[&str] = &[
-        "npm install ", "npm i ", "bun install ", "bun add ",
-        "yarn add ", "pip install ", "pip3 install ", "gem install ",
+    // gem has no verified value-taking-flag list, so every `-`-prefixed
+    // token there is (safely) assumed boolean.
+    const PATTERNS: &[(&str, &[&str])] = &[
+        ("npm install ", NPM_VALUE_TAKING_FLAGS),
+        ("npm i ", NPM_VALUE_TAKING_FLAGS),
+        ("bun install ", NPM_VALUE_TAKING_FLAGS),
+        ("bun add ", NPM_VALUE_TAKING_FLAGS),
+        ("yarn add ", NPM_VALUE_TAKING_FLAGS),
+        ("pip install ", PIP_VALUE_TAKING_FLAGS),
+        ("pip3 install ", PIP_VALUE_TAKING_FLAGS),
+        ("gem install ", &[]),
     ];
     let l = line.trim();
     if l.starts_with('#') {
         return false;
     }
     let lower = l.to_lowercase();
-    for p in PATTERNS {
+    for (p, value_flags) in PATTERNS {
         if let Some(idx) = lower.find(p) {
             let rest = &l[idx + p.len()..];
-            let first_pkg_tok = rest.split_whitespace().find(|t| !t.starts_with('-'));
+            let mut tokens = rest.split_whitespace().peekable();
+            let mut first_pkg_tok = None;
+            while let Some(tok) = tokens.next() {
+                if tok.starts_with('-') {
+                    let flag = tok.split('=').next().unwrap_or(tok);
+                    if !tok.contains('=') && value_flags.contains(&flag) {
+                        tokens.next(); // consume this flag's value
+                    }
+                    continue;
+                }
+                first_pkg_tok = Some(tok);
+                break;
+            }
             if let Some(tok) = first_pkg_tok {
                 if !tok.starts_with('.') && !tok.starts_with('/') {
                     return true;
@@ -627,7 +665,7 @@ pub(crate) fn line_of_onion_address(source: &str) -> Option<usize> {
     source.lines().position(onion_address_line).map(|i| i + 1)
 }
 
-/// eval "$(curl/wget ...)" / backticks — remote code without a pipe.
+/// eval "$(curl/wget ...)" / backticks - remote code without a pipe.
 /// Bare eval of local vars is fine and not flagged.
 pub(crate) fn eval_remote_exec_line(line: &str) -> bool {
     let l = line.trim();
@@ -806,7 +844,7 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
         findings.push(Finding {
             line,
             severity: Severity::Suspicious,
-            message: "installs a named external package via npm/bun/yarn/pip/gem mid-build - the mechanism the Atomic Arch AUR campaign used to smuggle in its payload".to_string(),
+            message: "installs a named external package via npm/bun/yarn/pip/gem mid-build - worth a quick check that the package name is one you'd expect; this general technique (not necessarily this specific package) is how the Atomic Arch AUR campaign smuggled in its payload".to_string(),
         });
     }
     if let Some(line) = crate::bash_ast::sudo_escalation(source).or_else(|| line_of_sudo_escalation(source)) {
@@ -878,14 +916,53 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
     findings
 }
 
-/// Pre-install AUR scan: any finding needs explicit "y". Fetch fail ≠ hit.
-/// Returns successful fetches for verify_local_clone_or_rescan.
+/// Per-process memo so a pkgbase already scanned earlier in this run
+/// (main.rs's pre-check, `aur_install`'s pre-scan, and the per-pkgbase
+/// check in `resolve_and_build_aur` all call this) isn't re-fetched and
+/// re-prompted for the same unchanged finding.
+struct ScanMemo {
+    fetched: std::collections::HashMap<String, FetchedSource>,
+    confirmed: std::collections::HashSet<String>,
+}
+
+fn scan_memo() -> &'static std::sync::Mutex<ScanMemo> {
+    static MEMO: std::sync::OnceLock<std::sync::Mutex<ScanMemo>> = std::sync::OnceLock::new();
+    MEMO.get_or_init(|| {
+        std::sync::Mutex::new(ScanMemo {
+            fetched: std::collections::HashMap::new(),
+            confirmed: std::collections::HashSet::new(),
+        })
+    })
+}
+
+/// Pre-install AUR scan: any *new* finding needs explicit "y". Fetch
+/// fail ≠ hit. Returns fetches (fresh or memoized) for
+/// verify_local_clone_or_rescan.
 pub(crate) fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) -> std::collections::HashMap<String, FetchedSource> {
-    let mut any_findings = false;
     let mut fetched: std::collections::HashMap<String, FetchedSource> = std::collections::HashMap::new();
+    let mut to_scan: Vec<String> = Vec::new();
+    {
+        let memo = scan_memo().lock().unwrap();
+        for pkg in pkgs {
+            if let Some(f) = memo.fetched.get(pkg) {
+                fetched.insert(pkg.clone(), f.clone());
+            } else {
+                to_scan.push(pkg.clone());
+            }
+        }
+    }
+
+    if to_scan.is_empty() {
+        // Every package here was already scanned earlier in this run
+        // (and, if flagged, already confirmed) -- nothing new to say.
+        return fetched;
+    }
+
+    let mut per_pkg_findings: std::collections::HashMap<String, Vec<(String, Finding)>> =
+        std::collections::HashMap::new();
     println!("{} Scanning AUR PKGBUILDs and .install hooks for suspicious patterns...", ">>>".green().bold());
 
-    for pkg in pkgs {
+    for pkg in &to_scan {
         let pkgbuild_src = match fetch_aur_pkgbuild(pkg) {
             Some(s) => s,
             None => continue,
@@ -916,13 +993,33 @@ pub(crate) fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) -> std::collections::
             );
         }
 
-        fetched.insert(pkg.clone(), FetchedSource { pkgbuild: pkgbuild_src, install });
+        let source = FetchedSource { pkgbuild: pkgbuild_src, install };
+        fetched.insert(pkg.clone(), source.clone());
+        scan_memo().lock().unwrap().fetched.insert(pkg.clone(), source);
 
-        if pkg_findings.is_empty() {
-            continue;
+        if !pkg_findings.is_empty() {
+            per_pkg_findings.insert(pkg.clone(), pkg_findings);
         }
-        any_findings = true;
+    }
 
+    if per_pkg_findings.is_empty() {
+        return fetched;
+    }
+
+    // Only print/prompt about packages not already confirmed earlier
+    // in this run -- a package that triggered the same finding a
+    // moment ago and got a "y" doesn't need asking again.
+    let already_confirmed = scan_memo().lock().unwrap().confirmed.clone();
+    let flagged_pkgs: Vec<&String> = to_scan.iter()
+        .filter(|p| per_pkg_findings.contains_key(p.as_str()) && !already_confirmed.contains(p.as_str()))
+        .collect();
+
+    if flagged_pkgs.is_empty() {
+        return fetched;
+    }
+
+    for pkg in &flagged_pkgs {
+        let pkg_findings = &per_pkg_findings[pkg.as_str()];
         let atomic: Vec<&(String, Finding)> = pkg_findings.iter()
             .filter(|(_, f)| f.severity == Severity::ConfirmedIoc)
             .collect();
@@ -941,17 +1038,13 @@ pub(crate) fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) -> std::collections::
         }
     }
 
-    if !any_findings {
-        return fetched;
-    }
-
     eprintln!();
     eprintln!(
         "{} One or more AUR packages have PKGBUILD/.install content matching \
         known-suspicious patterns. Review them yourself before proceeding:",
         ">>>".red().bold()
     );
-    for pkg in pkgs {
+    for pkg in &flagged_pkgs {
         eprintln!("    https://aur.archlinux.org/cgit/aur.git/tree/PKGBUILD?h={}", pkg);
     }
     eprint!("{} Continue anyway? [y/N] ", ">>>".yellow().bold());
@@ -965,10 +1058,16 @@ pub(crate) fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) -> std::collections::
         std::process::exit(1);
     }
 
+    let mut memo = scan_memo().lock().unwrap();
+    for pkg in &flagged_pkgs {
+        memo.confirmed.insert((*pkg).clone());
+    }
+
     fetched
 }
 
 /// Prefetched PKGBUILD (+ optional .install) from cgit scan.
+#[derive(Clone)]
 pub(crate) struct FetchedSource {
     pub pkgbuild: String,
     pub install: Option<(String, String)>,
@@ -1393,6 +1492,18 @@ package() {
         assert!(!is_foreign_pkg_manager_install("npm install ."));
         assert!(!is_foreign_pkg_manager_install("npm install --production"));
         assert!(!is_foreign_pkg_manager_install("yarn add ./vendor/local-pkg"));
+        // Value-taking flags: the flag's argument isn't the package name.
+        assert!(!is_foreign_pkg_manager_install("npm install --cache \"$srcdir/npm-cache\""));
+        assert!(!is_foreign_pkg_manager_install("pip install -r requirements.txt"));
+        // A real named package after a value-taking flag must still be caught.
+        assert!(is_foreign_pkg_manager_install("npm install --registry https://registry.npmjs.org left-pad"));
+        assert!(is_foreign_pkg_manager_install("npm install -g typescript"));
+        // Regression: a flag NOT in the verified value-taking list must
+        // never eat the next token, or a real package name could hide
+        // behind it (e.g. a boolean flag wrongly treated as value-taking).
+        assert!(is_foreign_pkg_manager_install("npm install --global-style evil-pkg"));
+        assert!(is_foreign_pkg_manager_install("npm install --save-exact evil-pkg"));
+        assert!(is_foreign_pkg_manager_install("pip install --user evil-pkg"));
     }
 
     #[test]
