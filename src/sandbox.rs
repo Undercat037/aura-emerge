@@ -75,7 +75,9 @@ fn rustup_env(build_dir: &Path) -> Vec<(String, String)> {
 /// here), `false` for `build()`/`check()`/`package()`, so anything
 /// reaching for the network outside the declared sources (e.g. `cargo
 /// build` hitting crates.io mid-compile) fails loudly instead of
-/// succeeding quietly.
+/// succeeding quietly. `false` still gets a working loopback (see the
+/// `lo`-up shim below) since `fakeroot` needs it for its chown/chmod
+/// emulation in `package()` -- no route to the host or outside either way.
 ///
 /// `caller_args` must NOT include `-s`/`-i` -- see module doc.
 pub(crate) fn sandboxed_makepkg(
@@ -98,6 +100,21 @@ pub(crate) fn sandboxed_makepkg(
     ]);
     if net {
         cmd.arg("--share-net");
+    }
+    // bwrap's own new user namespace grants the process full capabilities
+    // within it, even at a non-root uid. That mismatch (uid != 0, caps
+    // non-empty) makes glibc treat every exec in here as AT_SECURE, which
+    // silently drops LD_PRELOAD -- so fakeroot's libfakeroot.so (which
+    // package() runs under) never loads, package()'s chown/chmod calls
+    // hit the kernel for real, and fail with EINVAL on any owner this
+    // namespace has no mapping for ("cp: cannot preserve ownership").
+    // Dropping all capabilities removes the mismatch, restores LD_PRELOAD,
+    // and hardens the sandbox besides -- untrusted PKGBUILD code has no
+    // business holding any capability. `net: false` gets CAP_NET_ADMIN
+    // back just for bringing up `lo` below.
+    cmd.args(["--cap-drop", "ALL"]);
+    if !net {
+        cmd.args(["--cap-add", "CAP_NET_ADMIN"]);
     }
     // Whole real fs, read-only: build() needs to see /usr, makepkg.conf,
     // toolchains, etc., just can't touch any of it.
@@ -146,7 +163,18 @@ pub(crate) fn sandboxed_makepkg(
 
     cmd.args(["--chdir", &build_dir_s]);
     cmd.arg("--");
-    cmd.arg(makepkg_bin);
-    cmd.args(caller_args);
+    if net {
+        cmd.arg(makepkg_bin);
+        cmd.args(caller_args);
+    } else {
+        // With `net: false` the namespace's own `lo` starts DOWN. Some
+        // fakeroot builds use TCP-loopback IPC, which needs it. Bring it
+        // up first -- loopback only, still no outside route. "$0" "$@"
+        // (not string interpolation) keeps this injection-safe.
+        cmd.arg("/bin/sh");
+        cmd.args(["-c", "ip link set lo up >/dev/null 2>&1; exec \"$0\" \"$@\""]);
+        cmd.arg(makepkg_bin);
+        cmd.args(caller_args);
+    }
     cmd
 }
