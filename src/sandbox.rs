@@ -56,6 +56,69 @@ fn rustup_env(build_dir: &Path) -> Vec<(String, String)> {
     env
 }
 
+/// Fixes "cp: cannot preserve ownership: Invalid argument" in `package()`
+/// (confirmed with strace): `package()` runs under `fakeroot`, which looks
+/// like uid/gid 0 and, for every file, still issues a *real*
+/// `fchownat(..., 0, 0, ...)` alongside its faked bookkeeping. Outside
+/// bwrap that fails EPERM (0 is valid, we just lack CAP_CHOWN) and
+/// coreutils treats EPERM as an expected "can't preserve ownership" and
+/// only warns. Inside bwrap's user namespace, which maps only the real
+/// caller's uid/gid, 0 has *no* mapping at all, so it's EINVAL instead --
+/// coreutils doesn't tolerate that, so `package()` dies.
+///
+/// `bwrap --uid 0 --gid 0` on the whole sandbox would dodge this, but
+/// makepkg refuses outright to run at EUID 0 (`--asroot` is long gone).
+/// So only `fakeroot`'s own subprocess gets remapped: this writes a
+/// same-named `fakeroot` shim ahead of the real one on `$PATH` (makepkg
+/// resolves it via `type -p`) that re-execs the real `fakeroot` inside
+/// its own nested bwrap layer with `--uid 0 --gid 0`. makepkg itself
+/// keeps running as the ordinary uid; only fakeroot's world becomes
+/// uid-0-shaped, giving `fchownat(0, 0)` a real mapping to no-op against.
+/// No real privilege gained -- 0 there is still just a label for the same
+/// unprivileged caller.
+///
+/// Returns the shim's directory (to prepend to `$PATH`), or `None` if it
+/// couldn't be written (falls back to plain fakeroot -- pre-existing
+/// EINVAL failure mode, not a new hole).
+fn fakeroot_shim_dir(build_dir: &Path, extra_dest_dirs: &[(&str, PathBuf)]) -> Option<PathBuf> {
+    let real_fakeroot = std::env::var("PATH")
+        .unwrap_or_default()
+        .split(':')
+        .map(|dir| Path::new(dir).join("fakeroot"))
+        .find(|p| p.is_file())
+        .unwrap_or_else(|| PathBuf::from("/usr/bin/fakeroot"));
+
+    let shim_dir = build_dir.join(".aura-emerge-sandbox-fakeroot-shim");
+    std::fs::create_dir_all(&shim_dir).ok()?;
+    let shim_path = shim_dir.join("fakeroot");
+
+    // Fresh nested mount namespace, so build_dir/extra_dest_dirs need
+    // re-binding writable or package() just hits read-only. /dev needs
+    // its own --dev-bind (not folded into "/"): plain --bind is nodev,
+    // which turns /dev/null into an inert regular file.
+    let mut inner_binds = format!("--ro-bind / / --dev-bind /dev /dev --bind {0} {0}", shq(build_dir));
+    for (_, path) in extra_dest_dirs {
+        inner_binds.push_str(&format!(" --bind {0} {0}", shq(path)));
+    }
+
+    let script = format!(
+        "#!/bin/sh\nexec {} --unshare-user --uid 0 --gid 0 {} -- {} \"$@\"\n",
+        BWRAP_BIN,
+        inner_binds,
+        shq(&real_fakeroot),
+    );
+    std::fs::write(&shim_path, script).ok()?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&shim_path, std::fs::Permissions::from_mode(0o755)).ok()?;
+    Some(shim_dir)
+}
+
+/// Quotes a path for the shim's shell script (our own paths, not
+/// attacker input, but cheap to be safe anyway).
+fn shq(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', r"'\''"))
+}
+
 /// Builds the `bwrap ... -- makepkg ...` command running the build-time
 /// PKGBUILD functions in an isolated namespace.
 ///
@@ -76,8 +139,10 @@ fn rustup_env(build_dir: &Path) -> Vec<(String, String)> {
 /// reaching for the network outside the declared sources (e.g. `cargo
 /// build` hitting crates.io mid-compile) fails loudly instead of
 /// succeeding quietly. `false` still gets a working loopback (see the
-/// `lo`-up shim below) since `fakeroot` needs it for its chown/chmod
-/// emulation in `package()` -- no route to the host or outside either way.
+/// `lo`-up shim below): some `fakeroot` builds use TCP-loopback IPC
+/// between `fakeroot` and its `faked` daemon -- unrelated to the
+/// chown/EINVAL issue `fakeroot_shim_dir` fixes, but cheap to cover too.
+/// No route to the host or outside either way.
 ///
 /// `caller_args` must NOT include `-s`/`-i` -- see module doc.
 pub(crate) fn sandboxed_makepkg(
@@ -101,17 +166,9 @@ pub(crate) fn sandboxed_makepkg(
     if net {
         cmd.arg("--share-net");
     }
-    // bwrap's own new user namespace grants the process full capabilities
-    // within it, even at a non-root uid. That mismatch (uid != 0, caps
-    // non-empty) makes glibc treat every exec in here as AT_SECURE, which
-    // silently drops LD_PRELOAD -- so fakeroot's libfakeroot.so (which
-    // package() runs under) never loads, package()'s chown/chmod calls
-    // hit the kernel for real, and fail with EINVAL on any owner this
-    // namespace has no mapping for ("cp: cannot preserve ownership").
-    // Dropping all capabilities removes the mismatch, restores LD_PRELOAD,
-    // and hardens the sandbox besides -- untrusted PKGBUILD code has no
-    // business holding any capability. `net: false` gets CAP_NET_ADMIN
-    // back just for bringing up `lo` below.
+    // Untrusted PKGBUILD code has no business holding any capability, so
+    // strip them all; `net: false` gets CAP_NET_ADMIN back just for
+    // bringing up `lo` below.
     cmd.args(["--cap-drop", "ALL"]);
     if !net {
         cmd.args(["--cap-add", "CAP_NET_ADMIN"]);
@@ -159,6 +216,13 @@ pub(crate) fn sandboxed_makepkg(
     // rustup: see rustup_env's doc comment.
     for (k, v) in rustup_env(build_dir) {
         cmd.args(["--setenv", &k, &v]);
+    }
+
+    // fakeroot shim: see fakeroot_shim_dir's doc comment.
+    if let Some(shim_dir) = fakeroot_shim_dir(build_dir, extra_dest_dirs) {
+        let real_path = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_string());
+        let sandboxed_path = format!("{}:{}", shim_dir.display(), real_path);
+        cmd.args(["--setenv", "PATH", &sandboxed_path]);
     }
 
     cmd.args(["--chdir", &build_dir_s]);
