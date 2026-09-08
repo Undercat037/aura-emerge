@@ -141,7 +141,8 @@ emerge --batchinstall pkgs.txt --aur -a     # combine with any other flag
 - fake `$HOME` (no SSH keys, GPG secret keyring, browser profile);
 - writes only inside the build directory (plus configured `PKGDEST` / `SRCDEST` / `SRCPKGDEST` / `BUILDDIR`);
 - network shared by default (`--share-net`);
-- other namespaces (user / IPC / PID / UTS / cgroup) torn down.
+- other namespaces (user / IPC / PID / UTS / cgroup) torn down;
+- `package()`'s `fakeroot` runs in its own nested, uid-0-mapped `bwrap` (fixes `fchownat` failing under a plain user namespace); the shim script for it lives under `/var/tmp`, outside the writable build dir, so `prepare()`/`build()` can't tamper with it before `package()` runs it.
 
 This is a **second, independent layer** on top of the [PKGBUILD scanner](#security-pkgbuild-scanning): the scanner blocks *known* bad patterns before anything runs; the sandbox contains whatever it missed.
 
@@ -291,7 +292,7 @@ emerge --news all    # mark all as read
 Before every AUR install, the raw `PKGBUILD` (and any `.install` hook) is fetched from cgit and scanned in two layers:
 
 1. **AST** (`tree-sitter-bash`) - `curl|sh`, `base64`/`xxd | sh`, `source <(curl …)`, `eval "$(curl …)"`, `sudo`/`pkexec`/`doas`, python inline-exec, `sh`/`bash`/`dash`/`ash` `-c` with suspicious payload, top-level command substitution (`` `...` `` / `$(...)` outside function bodies - e.g. leftover markdown backticks in `pkgdesc`), etc. Trivial text evasions (string concatenation, absolute paths, `env` wrappers) do not slip through.
-2. **Line heuristics** - `chmod 777`, raw IPv4 literals, foreign package managers (`npm install …`), paste sites, `.onion` addresses, known IOCs (Atomic Arch, openconnect-sso, 2018 `compromised.txt`, …).
+2. **Line heuristics** - `chmod 777`, raw IPv4 literals, foreign package managers (`npm install …`), paste sites, `.onion` addresses, anti-sandbox/anti-debugger probes (`TracerPid`, `LD_PRELOAD`/`LD_LIBRARY_PATH`), known IOCs (Atomic Arch, openconnect-sso, 2018 `compromised.txt`, …).
 
 Findings are `Suspicious` or `ConfirmedIoc`. A hit does not hard-block - it prints the file/line, a cgit link, and asks `Continue anyway? [y/N]`.
 

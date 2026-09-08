@@ -1281,6 +1281,10 @@ fn install_local_tarballs(tarballs: &[String], ask: bool, mark_asdeps: bool) -> 
 /// plain unsandboxed `makepkg -si` for this one package rather than
 /// guessing at a partial dependency list.
 fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, oneshot: bool, skippgp: bool, aur_dep_tarballs: &[String], unshare_net_build: bool) -> bool {
+    // Cleans up the fakeroot shim's scratch dir (now outside build_dir,
+    // see sandbox::FAKEROOT_SHIM_ROOT) on every exit path below.
+    let _fakeroot_shim_guard = crate::sandbox::FakerootShimGuard::new(build_dir);
+
     let pkgbuild_src = match fs::read_to_string(build_dir.join("PKGBUILD")) {
         Ok(s) => s,
         Err(e) => {

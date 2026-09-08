@@ -554,6 +554,50 @@ pub(crate) fn line_of_decoy_tool_binary(source: &str) -> Option<usize> {
     source.lines().position(decoy_tool_binary_line).map(|i| i + 1)
 }
 
+/// Anti-sandbox / anti-debugger fingerprinting: checking `TracerPid` in
+/// `/proc/self/status`, or probing whether `LD_PRELOAD`/`LD_LIBRARY_PATH`
+/// are set, is how malware checks whether it's being watched (a
+/// debugger, strace, or a sandbox like ours) before deciding whether to
+/// misbehave. Not tied to a specific disclosed campaign, so Suspicious.
+///
+/// FP note: legitimate builds sometimes *export* these vars for their
+/// own linking needs (`export` lines are excluded). `/proc/self/status`
+/// and `TracerPid` have no legitimate PKGBUILD use, so a bare reference
+/// is enough on its own.
+pub(crate) fn sandbox_evasion_line(line: &str) -> bool {
+    let l = line.trim();
+    if l.starts_with('#') {
+        return false;
+    }
+    let lower = l.to_lowercase();
+
+    if lower.contains("tracerpid") || lower.contains("/proc/self/status") {
+        return true;
+    }
+
+    // Only flag LD_PRELOAD/LD_LIBRARY_PATH when the line *reads back*
+    // the variable to branch on it, not when it merely sets one.
+    let mentions_ld_var = lower.contains("ld_preload") || lower.contains("ld_library_path");
+    if !mentions_ld_var || lower.trim_start().starts_with("export ") {
+        return false;
+    }
+    lower.contains("-n \"$")
+        || lower.contains("-z \"$")
+        || lower.contains("printenv")
+        || lower.contains("grep")
+        || lower.contains("env |")
+        || lower.contains("env|")
+}
+
+#[cfg(test)]
+pub(crate) fn has_sandbox_evasion(source: &str) -> bool {
+    source.lines().any(sandbox_evasion_line)
+}
+
+pub(crate) fn line_of_sandbox_evasion(source: &str) -> Option<usize> {
+    source.lines().position(sandbox_evasion_line).map(|i| i + 1)
+}
+
 /// npm/bun/yarn flags confirmed to take a value (so e.g. `--cache
 /// "$srcdir/npm-cache"` isn't mistaken for installing a package named
 /// after the cache path). Only add a flag here once verified -- an
@@ -955,6 +999,13 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
             line,
             severity: Severity::Suspicious,
             message: "installs an executable under a generic build-tool name (linter/hasher/minifier/validator/...) - the payload-disguise technique used across the early-August 2026 AUR wave (see KNOWN_COMPROMISED_AUR_PACKAGES)".to_string(),
+        });
+    }
+    if let Some(line) = line_of_sandbox_evasion(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "checks TracerPid/proc-self-status or probes LD_PRELOAD/LD_LIBRARY_PATH - common anti-debugger/anti-sandbox fingerprinting".to_string(),
         });
     }
     findings
@@ -1440,6 +1491,30 @@ package() {
         // actually calls that function) must NOT flag.
         let pkgver_func = "pkgname=foo\npkgver() {\n  cd \"$srcdir\"\n  git describe --long | sed 's/^v//'\n}\n";
         assert!(scan_pkgbuild_source(pkgver_func).is_empty());
+    }
+
+    #[test]
+    fn sandbox_evasion_detected() {
+        assert!(has_sandbox_evasion("grep TracerPid /proc/self/status"));
+        assert!(has_sandbox_evasion("cat /proc/self/status | grep -i tracer"));
+        assert!(has_sandbox_evasion(r#"if [ -n "$LD_PRELOAD" ]; then exit 0; fi"#));
+        assert!(has_sandbox_evasion("env | grep -i ld_library_path"));
+        assert!(has_sandbox_evasion(r#"if printenv LD_PRELOAD >/dev/null; then quit; fi"#));
+        // Commented out - must not flag.
+        assert!(!has_sandbox_evasion("# check TracerPid in /proc/self/status"));
+        // Legitimate: setting the var for the build's own linking, not
+        // reading it back to branch on - must not flag.
+        assert!(!has_sandbox_evasion(r#"export LD_LIBRARY_PATH="$srcdir/lib:$LD_LIBRARY_PATH""#));
+        assert!(!has_sandbox_evasion(r#"export LD_PRELOAD="$srcdir/libfakeasan.so""#));
+        // Unrelated use of "env" - must not flag.
+        assert!(!has_sandbox_evasion("env FOO=bar ./configure"));
+    }
+
+    #[test]
+    fn sandbox_evasion_flagged_in_full_scan() {
+        let src = "pkgname=foo\nbuild() {\n  if grep -q TracerPid /proc/self/status; then\n    return 0\n  fi\n  do_real_payload\n}\n";
+        let findings = scan_pkgbuild_source(src);
+        assert!(findings.iter().any(|f| f.message.contains("TracerPid") || f.message.contains("anti-debugger")));
     }
 
     #[test]

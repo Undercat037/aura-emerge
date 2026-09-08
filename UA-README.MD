@@ -142,7 +142,8 @@ emerge --batchinstall pkgs.txt --aur -a     # поєднується з будь
 - фейковий `$HOME` (немає SSH-ключів, GPG secret keyring, профілю браузера);
 - запис лише в директорію збірки (+ налаштовані `PKGDEST` / `SRCDEST` / `SRCPKGDEST` / `BUILDDIR`);
 - мережа спільна за замовчуванням (`--share-net`);
-- решта просторів імен (user / IPC / PID / UTS / cgroup) знищена.
+- решта просторів імен (user / IPC / PID / UTS / cgroup) знищена;
+- `fakeroot` для `package()` працює у власному вкладеному `bwrap` з uid 0 (лагодить `fchownat` у звичайному user namespace); скрипт-шим для нього лежить у `/var/tmp`, поза директорією збірки, щоб `prepare()`/`build()` не могли підмінити його до запуску `package()`.
 
 Це **другий, незалежний рівень** поверх [сканера PKGBUILD](#безпека-сканування-pkgbuild): сканер блокує *відомі* погані патерни до запуску, пісочниця обмежує наслідки того, що він пропустив.
 
@@ -292,7 +293,7 @@ emerge --news all    # позначити всі як прочитані
 Перед кожним встановленням з AUR завантажується «сирий» `PKGBUILD` (і `.install`-хук) з cgit і сканується у два шари:
 
 1. **AST** (`tree-sitter-bash`) - `curl|sh`, `base64`/`xxd | sh`, `source <(curl …)`, `eval "$(curl …)"`, `sudo`/`pkexec`/`doas`, python inline-exec, `sh`/`bash`/`dash`/`ash` `-c` з підозрілим payload, top-level command substitution (`` `...` `` / `$(...)` поза тілами функцій - напр. markdown-бектейки в `pkgdesc`) тощо. Тривіальні текстові обходи (конкатенація рядків, абсолютні шляхи, `env`) не проходять.
-2. **Текстові евристики** - `chmod 777`, «сирі» IP, сторонні пакетні менеджери (`npm install …`), paste-сайти, `.onion`, відомі IOC (Atomic Arch, openconnect-sso, `compromised.txt` з 2018 тощо).
+2. **Текстові евристики** - `chmod 777`, «сирі» IP, сторонні пакетні менеджери (`npm install …`), paste-сайти, `.onion`, зонди anti-sandbox/anti-debugger (`TracerPid`, `LD_PRELOAD`/`LD_LIBRARY_PATH`), відомі IOC (Atomic Arch, openconnect-sso, `compromised.txt` з 2018 тощо).
 
 Знахідки: `Suspicious` або `ConfirmedIoc`. Спрацювання не блокує жорстко - показує файл/рядок, посилання на cgit, запит `Continue anyway? [y/N]`.
 

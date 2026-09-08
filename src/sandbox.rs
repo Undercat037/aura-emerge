@@ -20,6 +20,15 @@ pub(crate) const BWRAP_BIN: &str = "/usr/bin/bwrap";
 /// malicious `prepare()`/`build()` finds nothing worth stealing.
 const SANDBOX_HOME: &str = "/tmp/aura-emerge-sandbox-home";
 
+/// Root for the fakeroot shim's scratch dir. Not `/tmp` (masked inside
+/// the sandbox by `--tmpfs /tmp`) and not `build_dir` (writable by the
+/// untrusted `prepare()`/`build()` that runs before `package()` invokes
+/// the shim). `/var/tmp` is untouched by any bind rule below, so it's
+/// visible read-only inside the sandbox as a side effect of the
+/// whole-root `--ro-bind / /` -- a compromised build() can't tamper
+/// with it.
+const FAKEROOT_SHIM_ROOT: &str = "/var/tmp";
+
 pub(crate) fn bwrap_available() -> bool {
     Path::new(BWRAP_BIN).exists()
 }
@@ -56,6 +65,38 @@ fn rustup_env(build_dir: &Path) -> Vec<(String, String)> {
     env
 }
 
+/// Deterministic per-build-dir, per-process scratch dir for the
+/// fakeroot shim, rooted at `FAKEROOT_SHIM_ROOT`. Deterministic so the
+/// fetch/build/package `sandboxed_makepkg` calls reuse one dir instead
+/// of littering a fresh one each time; the pid keeps two concurrent
+/// builds of the same package from colliding.
+fn fakeroot_shim_scratch_dir(build_dir: &Path) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    build_dir.hash(&mut hasher);
+    std::process::id().hash(&mut hasher);
+    Path::new(FAKEROOT_SHIM_ROOT).join(format!(".aura-emerge-sandbox-fakeroot-shim-{:x}", hasher.finish()))
+}
+
+/// RAII cleanup for the fakeroot shim's scratch dir -- it lives outside
+/// `build_dir` now, so something has to delete it explicitly. Construct
+/// one at the top of `build_with_sandbox` so every exit path cleans up.
+pub(crate) struct FakerootShimGuard {
+    dir: PathBuf,
+}
+
+impl FakerootShimGuard {
+    pub(crate) fn new(build_dir: &Path) -> Self {
+        Self { dir: fakeroot_shim_scratch_dir(build_dir) }
+    }
+}
+
+impl Drop for FakerootShimGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
 /// Fixes "cp: cannot preserve ownership: Invalid argument" in `package()`
 /// (confirmed with strace): `package()` runs under `fakeroot`, which looks
 /// like uid/gid 0 and, for every file, still issues a *real*
@@ -80,6 +121,11 @@ fn rustup_env(build_dir: &Path) -> Vec<(String, String)> {
 /// Returns the shim's directory (to prepend to `$PATH`), or `None` if it
 /// couldn't be written (falls back to plain fakeroot -- pre-existing
 /// EINVAL failure mode, not a new hole).
+///
+/// Written outside `build_dir` (see `FAKEROOT_SHIM_ROOT`) so `prepare()`/
+/// `build()` -- which run first, in the same outer sandbox -- have no
+/// writable path to this script and can't replace it before fakeroot
+/// execs it.
 fn fakeroot_shim_dir(build_dir: &Path, extra_dest_dirs: &[(&str, PathBuf)]) -> Option<PathBuf> {
     let real_fakeroot = std::env::var("PATH")
         .unwrap_or_default()
@@ -88,7 +134,7 @@ fn fakeroot_shim_dir(build_dir: &Path, extra_dest_dirs: &[(&str, PathBuf)]) -> O
         .find(|p| p.is_file())
         .unwrap_or_else(|| PathBuf::from("/usr/bin/fakeroot"));
 
-    let shim_dir = build_dir.join(".aura-emerge-sandbox-fakeroot-shim");
+    let shim_dir = fakeroot_shim_scratch_dir(build_dir);
     std::fs::create_dir_all(&shim_dir).ok()?;
     let shim_path = shim_dir.join("fakeroot");
 
@@ -101,8 +147,12 @@ fn fakeroot_shim_dir(build_dir: &Path, extra_dest_dirs: &[(&str, PathBuf)]) -> O
         inner_binds.push_str(&format!(" --bind {0} {0}", shq(path)));
     }
 
+    // --die-with-parent: this nested bwrap doesn't outlive the outer
+    // makepkg if it's killed. --new-session: matches the outer
+    // sandbox's own flag, cutting off TIOCSTI and other terminal-based
+    // escapes from a compromised fakeroot child.
     let script = format!(
-        "#!/bin/sh\nexec {} --unshare-user --uid 0 --gid 0 {} -- {} \"$@\"\n",
+        "#!/bin/sh\nexec {} --unshare-user --die-with-parent --new-session --uid 0 --gid 0 {} -- {} \"$@\"\n",
         BWRAP_BIN,
         inner_binds,
         shq(&real_fakeroot),

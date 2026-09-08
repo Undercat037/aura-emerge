@@ -24,11 +24,13 @@ build() {
   printf '\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90' >/tmp/sc # [13] hex-escape payload
   chmod -R 777 /tmp/evil                                     # [14] chmod 777
   sudo ./validator --setup                                   # [15] эскалация (механизм openconnect-sso волны)
-  npm install atomic-lockfile                                # [16]+[17] foreign PM + IOC Atomic Arch
+  if grep -q TracerPid /proc/self/status; then exit 0; fi    # [16] anti-sandbox: TracerPid-проба
+  if [ -n "$LD_PRELOAD" ]; then exit 0; fi                    # [17] anti-sandbox: LD_PRELOAD-проба
+  npm install atomic-lockfile                                # [18]+[19] foreign PM + IOC Atomic Arch
 }
 
 package() {
   cd "$srcdir"
   make DESTDIR="$pkgdir" install
-  install -Dm755 "$srcdir/minifier" "$pkgdir/usr/bin/minifier" # [18] decoy-tool-binary (волна начала августа)
+  install -Dm755 "$srcdir/minifier" "$pkgdir/usr/bin/minifier" # [20] decoy-tool-binary (волна начала августа)
 }
