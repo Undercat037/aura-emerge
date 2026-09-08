@@ -714,6 +714,43 @@ pub(crate) fn line_of_python_inline_exec(source: &str) -> Option<usize> {
     source.lines().position(python_inline_exec_line).map(|i| i + 1)
 }
 
+/// sh/bash/dash/ash -c with suspicious payload (fallback if AST misses).
+pub(crate) fn shell_c_line(line: &str) -> bool {
+    let l = line.trim();
+    if l.starts_with('#') {
+        return false;
+    }
+    let lower = l.to_lowercase();
+    let has_shell_c = lower.contains("sh -c")
+        || lower.contains("bash -c")
+        || lower.contains("dash -c")
+        || lower.contains("ash -c")
+        || lower.contains("zsh -c")
+        || lower.contains("/bin/sh -c")
+        || lower.contains("/bin/bash -c")
+        || lower.contains("/usr/bin/sh -c")
+        || lower.contains("/usr/bin/bash -c");
+    if !has_shell_c {
+        return false;
+    }
+    lower.contains("base64")
+        || lower.contains("eval")
+        || lower.contains("curl")
+        || lower.contains("wget")
+        || lower.contains("/dev/tcp")
+        || lower.contains("mkfifo")
+        || lower.contains("python -c")
+        || lower.contains("python3 -c")
+        || lower.contains("perl -e")
+        || lower.contains("openssl")
+        || lower.contains("xxd")
+        || lower.len() > 160
+}
+
+pub(crate) fn line_of_shell_c(source: &str) -> Option<usize> {
+    source.lines().position(shell_c_line).map(|i| i + 1)
+}
+
 /// openssl decrypt at build time (obfuscated payload; needs baked-in key).
 pub(crate) fn openssl_decrypt_line(line: &str) -> bool {
     let l = line.trim();
@@ -873,6 +910,13 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
             line,
             severity: Severity::Suspicious,
             message: "python -c snippet execs/evals content inline - a python-flavored obfuscated-execution pattern".to_string(),
+        });
+    }
+    if let Some(line) = crate::bash_ast::shell_c_exec(source).or_else(|| line_of_shell_c(source)) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "sh/bash -c with suspicious payload (possible obfuscated execution hidden inside -c string)".to_string(),
         });
     }
     if let Some(line) = line_of_openssl_decrypt(source) {
