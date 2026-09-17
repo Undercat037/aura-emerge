@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="repo-files/Logo128x128.svg" width="120" alt="aura-emerge logo">
+  <img src="repo-files/Logo-128x128.svg" width="128" alt="aura-emerge logo">
 </div>
 
 # aura-emerge
