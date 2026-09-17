@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="repo-files/Logo128x128.svg" width="120" alt="aura-emerge logo">
+</div>
+
 # aura-emerge
 [en](README.MD) | ua
 

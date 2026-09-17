@@ -1,4 +1,9 @@
+<div align="center">
+  <img src="repo-files/Logo128x128.svg" width="120" alt="aura-emerge logo">
+</div>
+
 # aura-emerge
+
 en | [ua](UA-README.MD)
 
 > A standalone Gentoo-style `emerge` package manager for Arch Linux - installs from official repos, the AUR, and ABS; scans PKGBUILDs for supply-chain attack patterns before building; and runs untrusted build steps inside a `bwrap` sandbox.
