@@ -1,9 +1,10 @@
 <div align="center">
   <img src="repo-files/Logo-128x128.svg" width="128" alt="aura-emerge logo">
-</div>
 
-# aura-emerge
+# Aura-Emerge Secure Package Manager
+
 [en](README.MD) | ua
+</div>
 
 > Автономний ПМ у стилі Gentoo `emerge` для Arch Linux - встановлює з офіційних репозиторіїв, AUR та ABS, сканує PKGBUILD на ознаки атак на ланцюг постачання перед збіркою і виконує недовірені кроки збірки всередині пісочниці `bwrap`.
 
