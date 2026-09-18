@@ -1,0 +1,45 @@
+/* Imports */
+@import url('https://fonts.googleapis.com/css2?family=Allerta+Stencil&display=swap');
+
+/* Class */
+.allerta-font {
+  font-family: "Allerta Stencil", sans-serif;
+  font-weight: 400;
+  font-style: normal;
+}
+
+.logo-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+
+
+
+
+/* Tags */
+body {
+  background-color: #0D1117;
+}
+h1 {
+  color: #dedede;
+}
+h2 {
+  color: #dedede;
+}
+h3 {
+  color: #dedede;
+}
+h4 {
+  color: #dedede;
+}
+h5 {
+  color: #dedede;
+}
+h6 {
+  color: #dedede;
+}
+p {
+  color: #dedede;
+}
