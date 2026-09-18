@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="misc/logo/logo-128x128.svg" width="128" alt="aura-emerge logo">
+  <img src="misc/logo/slash-logo-128x128.svg" width="128" alt="aura-emerge logo">
 
 # Aura-Emerge Secure Package Manager
 
