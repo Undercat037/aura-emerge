@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="repo-files/Logo-128x128.svg" width="128" alt="aura-emerge logo">
+  <img src="misc/logo/testificate.svg" width="128" alt="aura-emerge logo">
 
 # Aura-Emerge Secure Package Manager
 
@@ -73,7 +73,7 @@ sudo nvim /etc/makepkg.conf
 
 Довідка: [прапори оптимізації GCC](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html), [параметри кодогенерації rustc](https://doc.rust-lang.org/rustc/codegen-options/index.html).
 
-[**→ Приклад makepkg.conf**](repo-files/makepkg.conf)
+[**→ Приклад makepkg.conf**](misc/makepkg.conf)
 
 ## Використання
 

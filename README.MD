@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="repo-files/Logo-128x128.svg" width="128" alt="aura-emerge logo">
+  <img src="misc/logo/logo-128x128.svg" width="128" alt="aura-emerge logo">
 
 # Aura-Emerge Secure Package Manager
 
@@ -72,7 +72,7 @@ sudo nvim /etc/makepkg.conf
 
 See [GCC optimization flags](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html) and [rustc codegen options](https://doc.rust-lang.org/rustc/codegen-options/index.html).
 
-[**→ Example makepkg.conf**](repo-files/makepkg.conf)
+[**→ Example makepkg.conf**](misc/makepkg.conf)
 
 ## Usage
 
