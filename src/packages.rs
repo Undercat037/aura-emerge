@@ -103,6 +103,43 @@ pub(crate) fn mark_asdeps(pkgs: &[String]) {
         .status();
 }
 
+/// Whether the package is installed right now. Used after a partial
+/// `--keep-going` batch, where a failed transaction can still have
+/// landed something.
+pub(crate) fn is_installed(name: &str) -> bool {
+    Command::new(PACMAN_BIN)
+        .args(["-Q", name])
+        .env("LC_ALL", "C")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Materializes emerge.toml's build flags as a makepkg.conf and returns
+/// its path, for `makepkg --config`.
+///
+/// Why a generated file instead of environment variables: makepkg
+/// *sources* makepkg.conf, and a plain `CFLAGS=...` assignment in there
+/// overwrites whatever the environment had. So exporting CFLAGS at
+/// makepkg would be silently discarded a second later. The generated
+/// file sources the system config first and then overrides it, which
+/// puts our values last in the only order that counts.
+///
+/// Written to the sandbox scratch directory rather than the build
+/// directory -- see `sandbox::scratch_dir`. `None` when emerge.toml
+/// sets no build flags, which leaves makepkg's own config lookup
+/// untouched.
+fn makepkg_conf_override(build_dir: &std::path::Path) -> Option<String> {
+    let text = crate::config::makepkg_override_conf(crate::runtime::config())?;
+    let dir = crate::sandbox::scratch_dir(build_dir);
+    fs::create_dir_all(&dir).ok()?;
+    let path = dir.join("makepkg.conf");
+    fs::write(&path, text).ok()?;
+    Some(path.to_string_lossy().to_string())
+}
+
 /// Probe official repos via -Sp --print-format. Some(infos) or None.
 pub(crate) fn probe_official(pkgs: &[String]) -> Option<Vec<PkgInfo>> {
     let mut args = vec!["-Sp", "--print-format", "%n %v", "--color", "never"];
@@ -673,6 +710,22 @@ fn resolve_and_build_aur(
         return Some(cached.clone());
     }
 
+    // Checked here, not just at the command line, so recursive AUR
+    // deps can't smuggle a masked package in either.
+    if let Some(entry) = crate::mask::find(pkg, Some("aur")) {
+        eprintln!(
+            "{} '{}' is masked by {}{}",
+            ">>> Error:".red().bold(),
+            pkg,
+            entry.describe(),
+            if is_top_level { "" } else { " (pulled in as a dependency)" }
+        );
+        if let Some(reason) = &entry.reason {
+            eprintln!("    reason: {}", reason);
+        }
+        return None;
+    }
+
     let Some((dir, pkgbase)) = crate::aur::clone_or_resolve(pkg, build_root) else {
         eprintln!("{} '{}' not found in the AUR", ">>> Error:".red().bold(), pkg);
         return None;
@@ -912,6 +965,17 @@ pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
         println!();
         if resolve_and_build_aur(pkg, &build_base, ask, skippgp, oneshot, edit, true, skip_srcinfo_regen, isolation, unshare_net_build, &mut building, &mut built, pkgbuild_view).is_none() {
             all_ok = false;
+            crate::runtime::record_failure(pkg, "AUR build failed");
+            let left = bare.len() - (i + 1);
+            if !crate::runtime::keep_going() && left > 0 {
+                eprintln!(
+                    "{} stopping after the first failure - {} package(s) not attempted. Pass {} to build the rest and get a summary at the end.",
+                    ">>> Error:".red().bold(),
+                    left,
+                    "--keep-going".cyan()
+                );
+                break;
+            }
         }
     }
 
@@ -1217,6 +1281,24 @@ pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbo
         }
     }
 
+    // --exclude and the mask hold a package at its installed version,
+    // same as `pacman --ignore` does for the official half.
+    let mut held: Vec<String> = Vec::new();
+    to_upgrade.retain(|(name, _, _)| {
+        if crate::runtime::is_excluded(name) {
+            held.push(format!("{} (--exclude)", name));
+            return false;
+        }
+        if let Some(entry) = crate::mask::find(name, Some("aur")) {
+            held.push(format!("{} (masked by {})", name, entry.describe()));
+            return false;
+        }
+        true
+    });
+    if !held.is_empty() {
+        println!(">>> {} AUR package(s) held back: {}", held.len(), held.join(", "));
+    }
+
     if to_upgrade.is_empty() {
         println!(">>> No AUR packages out of date.");
         return true;
@@ -1356,6 +1438,24 @@ fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, one
     if !ask { makepkg_args.push("--noconfirm"); }
     if skippgp { makepkg_args.push("--skippgpcheck"); }
 
+    // emerge.toml's build flags, added before makepkg_args is cloned
+    // for the --nobuild/--noextract split below so both halves get it.
+    let conf_override = makepkg_conf_override(build_dir);
+    if let Some(path) = &conf_override {
+        println!(
+            "{} applying build flags from {}",
+            ">>>".green().bold(),
+            crate::runtime::config()
+                .files
+                .iter()
+                .map(|f| f.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        makepkg_args.push("--config");
+        makepkg_args.push(path.as_str());
+    }
+
     let real_gnupg = std::env::var("HOME").ok().map(|h| std::path::PathBuf::from(h).join(".gnupg"));
     let (extra_dest_dirs, default_source_cache) = resolve_dest_dirs(build_dir);
     let user_configured: Vec<&str> = extra_dest_dirs
@@ -1486,10 +1586,49 @@ fn find_built_packages(build_dir: &std::path::Path, not_before: std::time::Syste
 /// is passed, when bwrap isn't installed, or as the fallback for a
 /// PKGBUILD whose dependencies couldn't be statically resolved.
 fn legacy_makepkg_si(build_dir: &std::path::Path, ask: bool, oneshot: bool, skippgp: bool) -> bool {
+    // Also cleans up the generated makepkg.conf below (same scratch
+    // dir; the sandboxed path has its own guard, this one needs its own).
+    let _scratch_guard = crate::sandbox::FakerootShimGuard::new(build_dir);
+
     let mut makepkg_args = vec!["-si"];
     if !ask    { makepkg_args.push("--noconfirm"); }
     if oneshot { makepkg_args.push("--asdeps"); }
     if skippgp { makepkg_args.push("--skippgpcheck"); }
+
+    let conf_override = makepkg_conf_override(build_dir);
+    if let Some(path) = &conf_override {
+        makepkg_args.push("--config");
+        makepkg_args.push(path.as_str());
+        // Unsandboxed, makepkg sources the user's own makepkg.conf
+        // *after* ours, so a var set there wins over emerge.toml --
+        // warn about it. (Can't happen inside the sandbox: $HOME is an
+        // empty tmpfs.) Read the user's file directly, not through
+        // read_makepkg_vars() (which merges with the system config and
+        // would flag CFLAGS on every machine).
+        let user_conf = user_makepkg_conf_path();
+        let user_text = std::fs::read_to_string(&user_conf).unwrap_or_default();
+        let assigns = |key: &str| {
+            user_text.lines().any(|l| {
+                let l = l.trim();
+                !l.starts_with('#') && l.starts_with(key) && l[key.len()..].starts_with('=')
+            })
+        };
+        let overlap: Vec<&str> = crate::runtime::config()
+            .build_vars
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .filter(|k| assigns(k))
+            .collect();
+        if !overlap.is_empty() {
+            eprintln!(
+                "{} building without the sandbox, so {} from {} takes precedence over emerge.toml for: {}",
+                ">>> Warning:".yellow().bold(),
+                "makepkg.conf".bold(),
+                user_conf,
+                overlap.join(", ")
+            );
+        }
+    }
 
     let mut cmd = Command::new(MAKEPKG_BIN);
     cmd.args(&makepkg_args).current_dir(build_dir);
@@ -1520,6 +1659,14 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
         let bare = pkg.split('/').last().unwrap_or(pkg);
         if !validate_pkg(bare) || bare.contains('/') {
             eprintln!(">>> Error: invalid package name '{}' - skipping", bare);
+            return None;
+        }
+        if let Some(entry) = crate::mask::find(bare, Some("abs")) {
+            eprintln!("{} '{}' is masked by {}", ">>> Error:".red().bold(), bare, entry.describe());
+            if let Some(reason) = &entry.reason {
+                eprintln!("    reason: {}", reason);
+            }
+            crate::runtime::record_failure(bare, "masked");
             return None;
         }
         let version = abs_get_version(bare);
@@ -1670,6 +1817,18 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
                 eprintln!(">>> Or retry with --autopgp (auto-import) or --skippgp (bypass checks).");
             }
             all_ok = false;
+            crate::runtime::record_failure(&info.name, "ABS build failed");
+            let left = pkg_infos.len() - (i + 1);
+            if !crate::runtime::keep_going() && left > 0 {
+                eprintln!(
+                    "{} stopping after the first failure - {} package(s) not attempted. Pass {} to build the rest and get a summary at the end.",
+                    ">>> Error:".red().bold(),
+                    left,
+                    "--keep-going".cyan()
+                );
+                let _ = std::fs::remove_dir_all(&pkg_dir);
+                break;
+            }
         }
 
         let _ = std::fs::remove_dir_all(&pkg_dir);
@@ -1891,6 +2050,38 @@ pub(crate) fn resolve_dest_dirs(build_dir: &std::path::Path) -> (Vec<(&'static s
     (dirs, default_cache)
 }
 
+/// emerge.toml's `[build]` vars, shell-expanded through the same
+/// generated makepkg.conf that `--config` hands to makepkg, so `--info`
+/// shows what a build actually gets (e.g. `CXXFLAGS="$CFLAGS ..."`
+/// resolved against emerge.toml's own `CFLAGS`, not the raw config text).
+fn effective_build_vars(cfg: &crate::config::Config) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let Some(conf) = crate::config::makepkg_override_conf(cfg) else { return map };
+
+    let mut dump = String::new();
+    for key in crate::config::BUILD_VARS {
+        dump.push_str(&format!("echo \"{key}=${{{key}[*]}}\"\n"));
+    }
+    let script = format!("{conf}\n{dump}");
+
+    if let Ok(output) = Command::new(BASH_BIN)
+        .arg("-c")
+        .arg(&script)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+    {
+        if output.status.success() {
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                if let Some((k, v)) = line.split_once('=') {
+                    map.insert(k.to_string(), v.to_string());
+                }
+            }
+        }
+    }
+    map
+}
+
 /// makepkg.conf vars (system + user overrides), via bash source.
 pub(crate) fn read_makepkg_vars() -> HashMap<String, String> {
     let watched = [
@@ -2091,6 +2282,43 @@ pub(crate) fn print_system_info() {
     for key in ["CARCH", "CHOST", "CFLAGS", "CXXFLAGS", "LDFLAGS", "RUSTFLAGS",
                 "MAKEFLAGS", "OPTIONS", "BUILDENV", "PKGEXT"] {
         println!("{}=\"{}\"", key, get(key));
+    }
+    println!();
+
+    // emerge.toml, printed after makepkg.conf so the two read in the
+    // order they actually apply.
+    let cfg = crate::runtime::config();
+    if cfg.files.is_empty() {
+        println!(
+            "emerge.toml: none found ({}, {})",
+            crate::config::SYSTEM_CONF,
+            crate::config::user_conf_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "~/.config/emerge/emerge.toml".to_string())
+        );
+    } else {
+        println!(
+            "emerge.toml: {}",
+            cfg.files.iter().map(|f| f.display().to_string()).collect::<Vec<_>>().join(" -> ")
+        );
+        if !cfg.default_flags.is_empty() {
+            println!("    EMERGE_DEFAULT_OPTS=\"{}\"", cfg.default_flags.join(" "));
+        }
+        // Resolved by actually sourcing the generated makepkg.conf, not
+        // printed as written -- a value like CXXFLAGS="$CFLAGS ..." is
+        // only meaningful once $CFLAGS itself is expanded.
+        let resolved = effective_build_vars(cfg);
+        for (key, _) in &cfg.build_vars {
+            let shown = resolved.get(key).cloned().unwrap_or_else(|| "?".to_string());
+            println!("    {}=\"{}\"  (overrides makepkg.conf)", key, shown);
+        }
+    }
+
+    let masks = crate::mask::masks();
+    if masks.is_empty() {
+        println!("mask: no entries ({})", crate::mask::MASK_FILE);
+    } else {
+        println!("mask: {} entry(ies) ({}, {}/)", masks.len(), crate::mask::MASK_FILE, crate::mask::MASK_DIR);
     }
     println!();
 

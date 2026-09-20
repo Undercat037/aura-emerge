@@ -33,6 +33,14 @@ pub(crate) fn bwrap_available() -> bool {
     Path::new(BWRAP_BIN).exists()
 }
 
+/// Per-build scratch dir, for files makepkg should read but the
+/// untrusted `prepare()`/`build()` shouldn't be able to rewrite (the
+/// fakeroot shim, and the generated makepkg.conf carrying emerge.conf's
+/// build flags). Cleaned up by `FakerootShimGuard`.
+pub(crate) fn scratch_dir(build_dir: &Path) -> PathBuf {
+    fakeroot_shim_scratch_dir(build_dir)
+}
+
 /// Fixes "rustup could not choose a version of cargo to run" in a
 /// sandboxed `build()`: rustup's `$RUSTUP_HOME` (default
 /// `$HOME/.rustup`) is now empty under the fake `$HOME`, so it can't

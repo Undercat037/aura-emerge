@@ -26,6 +26,12 @@ makepkg -si
 <details>
 <summary><h3>Manual/makepkg (Unstable)</h3></summary>
 
+### Make
+```bash
+git clone https://github.com/Undercat037/aura-emerge.git
+cd aura-emerge
+make install
+```
 ### Manual build
 ```bash
 git clone https://github.com/Undercat037/aura-emerge.git
@@ -74,12 +80,78 @@ See [GCC optimization flags](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options
 
 [**→ Example makepkg.conf**](misc/makepkg.conf)
 
+## emerge.toml
+
+`/etc/emerge/emerge.toml` (and `~/.config/emerge/emerge.toml` for per-user overrides) is aura-emerge's own config file, separate from `makepkg.conf` - the Gentoo `make.conf` split between `EMERGE_DEFAULT_OPTS` and `CFLAGS` in one file. System file first, then the user one; last file to set a key wins.
+
+```bash
+sudo nvim /etc/emerge/emerge.toml
+```
+
+```toml
+# Flags spliced into every invocation, before whatever's typed on the
+# command line (which always wins on a conflict). Disable for one run
+# with --ignore-default-opts.
+EMERGE_DEFAULT_OPTS = ["--pkgbuild-view", "--unshare-net-build"]
+
+# Build flags, applied via a generated makepkg.conf (makepkg --config) -
+# override /etc/makepkg.conf without touching it.
+[build]
+CFLAGS = "-march=native -O2 -pipe"
+CXXFLAGS = "$CFLAGS"
+RUSTFLAGS = "-C target-cpu=native"
+MAKEFLAGS = "-j$(nproc)"
+NINJAFLAGS = "-j$(nproc)"
+OPTIONS = ["strip", "docs", "!debug", "lto"]
+BUILDENV = ["!distcc", "color", "check", "!sign"]
+```
+
+Recognized keys: `EMERGE_DEFAULT_OPTS` at the top level, and in `[build]`: `CFLAGS`, `CXXFLAGS`, `CPPFLAGS`, `LDFLAGS`, `RUSTFLAGS`, `MAKEFLAGS`, `NINJAFLAGS`, `BUILDENV`, `OPTIONS`. Build keys are also accepted at the top level, outside `[build]`.
+
+Scalars and lists are interchangeable everywhere - a list is joined with spaces, a string is split on them. Values are shell-expanded when makepkg sources the generated config, so `-j$(nproc)` works, and so does a reference to another key set above it, like `CXXFLAGS = "$CFLAGS"`; a TOML literal string (`'\$FOO'`) keeps a dollar sign literal.
+
+`EMERGE_DEFAULT_OPTS` only accepts modifier flags (an allowlist: `--ask`, `--verbose`, `--devel`, `--tree`, `--searchdesc`, `--exclude=<atom>`, and similar - see the [example file](misc/emerge.toml)) - it can't turn every run into `--unmerge`. Conflicting pairs (`--aur`/`--abs`, `--aur`/`--only-repos`, `--no-sandbox`/`--unshare-net-build`, `--skippgp`/`--autopgp`, `--select`/`--deselect`) are rejected if both end up set, whether typed or from the config; a config default that conflicts with something typed on the command line is dropped instead, since the command line is the more specific intent. `--abs` and `--only-repos` are **not** a conflict - ABS builds an official-repo package from its own source, so the two agree.
+
+`--info` shows what was read and the effective, shell-expanded value of each override.
+
+[**→ Example emerge.toml**](misc/emerge.toml)
+
+## Mask (/etc/emerge/mask)
+
+Portage's `package.mask`, for Arch atoms: packages this machine never installs, checked even as a transitive AUR dependency and even when requested by name. One entry per line in `/etc/emerge/mask` or `/etc/emerge/mask.d/*.mask`, `*` glob allowed, optional repo prefix, optional trailing `# reason`:
+
+```
+ayugram-desktop-bin            # specific package, any source
+aur/*-bin                      # never install AUR -bin packages
+*-git                          # no devel packages on this box
+extra/nano                     # specific package from a specific repo
+```
+
+A masked package hard-stops the request - not a prompt, no override flag. Separate from `--exclude` below: a mask is a standing, persistent decision; `--exclude` is scoped to one run.
+
+## --exclude / --keep-going
+
+`--exclude <atom>` (repeatable, or comma-separated) leaves a package out of the current run - like `--exclude` in Portage. Applies to installs, `-u` (via `pacman --ignore`), `@world` provisioning, `--depclean`/`--prune` (protects from removal), and `--revdep-rebuild`.
+
+```bash
+emerge -u --exclude linux --exclude aur/ayugram-desktop-bin   # upgrade everything except these
+emerge --exclude firefox @world                               # provision, skip firefox even if missing
+```
+
+`--keep-going` doesn't stop a batch (`@world`, `-u`, `--batchinstall`, multi-package installs) at the first failure - it keeps going, collects what failed, and prints a summary at the end with a non-zero exit. `--resume` after a `--keep-going` run retries only the packages that failed, not the whole batch.
+
+```bash
+emerge -u --keep-going                # full upgrade, don't stop on one bad AUR package
+emerge --batchinstall pkgs.txt --keep-going
+emerge --resume                       # retries just what failed last time
+```
+
 ## Usage
 
 ```bash
 emerge neovim                              # official repos, falls back to AUR
 emerge neovim-git --aur                    # AUR only (AUR-only deps built recursively)
-emerge foo-git --aur --sudoloop            # same, but keep sudo warm through the whole recursive build
+emerge ayugram-desktop-bin --aur --sudoloop   # same, but keep sudo warm through the whole recursive build
 emerge neovim --only-repos                 # official repos only, never touch AUR
 emerge neovim --abs                        # build from ABS (pkgctl), in bwrap sandbox
 emerge neovim --abs --no-sandbox           # ABS without sandbox (plain makepkg -si)
@@ -137,6 +209,10 @@ emerge @preserved-rebuild -p               # pretend: list only
 emerge @preserved-rebuild -a               # ask before each pacman prompt
 emerge --batchinstall pkgs.txt              # mass-install from a list file
 emerge --batchinstall pkgs.txt --aur -a     # combine with any other flag
+emerge -u --exclude linux                   # upgrade, hold one package back
+emerge -u --keep-going                      # upgrade, don't stop on the first failure
+emerge --revdep-rebuild                     # find + fix broken library links
+emerge --revdep-rebuild -p                  # same, list only
 ```
 
 ## Sandbox
@@ -224,6 +300,17 @@ emerge --check-devel     # just report which ones moved, no rebuild
 ## @preserved-rebuild
 
 Arch has no preserved-libs tracking. `@preserved-rebuild` collects every installed package’s declared dependencies (`pacman -Qi`), feeds the deduplicated list to `pacman -T`, and offers to reinstall unsatisfied ones via `pacman -S --asdeps` (so they don’t look “explicit” and get vacuumed into world.set by a later `--regen-world-from-explicit`).
+
+## --revdep-rebuild
+
+Not the same check as `@preserved-rebuild` above, which only sees *declared* dependencies via `pacman -T`. `--revdep-rebuild` reads installed ELF files directly (`DT_NEEDED`, `DT_RPATH`/`DT_RUNPATH`) and finds binaries linking against a `.so` that no longer exists - the classic post-`openssl`/`icu`/`boost`-bump breakage Gentoo handles via preserved-libs and Arch doesn't, out of the box.
+
+Foreign (AUR/local) packages get rebuilt through the normal sandboxed path; official-repo packages can't be rebuilt on a binary distro, so their missing libraries are looked up in the file database (`pacman -F`) and the packages that provide them are offered for install instead. `--exclude` and the [mask](#mask-etcemergemask) both apply.
+
+```bash
+emerge --revdep-rebuild       # scan, then ask before fixing anything
+emerge --revdep-rebuild -p    # scan only, list what's broken
+```
 
 ## world.set
 
@@ -365,6 +452,10 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `--clean-source-cache` | Wipe persistent VCS source cache |
 | `--batchinstall <FILE>` | Mass-install from a package list file |
 | `--list-sets` | List available `@sets` |
+| `--exclude <ATOM>` | Leave a package out of this run (repeatable/comma-separated) |
+| `--keep-going` | Don't stop a batch at the first failure; summarize at the end |
+| `--revdep-rebuild` | Find + fix binaries linking against a missing library |
+| `--ignore-default-opts` | Ignore `EMERGE_DEFAULT_OPTS` from emerge.toml for this run |
 | `-h` / `--help` | Help |
 | `-V` / `--version` | Version |
 

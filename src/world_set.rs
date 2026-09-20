@@ -153,6 +153,23 @@ pub(crate) fn list_custom_sets() -> Vec<String> {
 
 // ── declarative provisioning from world.set (bare `emerge @world`) ─────────────
 
+/// Drops packages `--exclude`/the mask cover, recording each in `held`.
+/// Provisioning shouldn't abort over one masked entry -- it should
+/// skip it and provision the rest.
+fn hold_back(list: &mut Vec<String>, repo: Option<&str>, held: &mut Vec<String>) {
+    list.retain(|name| {
+        if crate::runtime::is_excluded(name) {
+            held.push(format!("{} (--exclude)", name));
+            return false;
+        }
+        if let Some(entry) = crate::mask::find(name, repo) {
+            held.push(format!("{} (masked by {})", name, entry.describe()));
+            return false;
+        }
+        true
+    });
+}
+
 /// Provision missing packages from world.set (bare `@world`, no -u).
 /// Prefix picks the source; `abs/` is listed only; bare always resolved;
 /// `Err/` only with err_install. Fixes world.set prefixes on success.
@@ -226,6 +243,18 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
         }
     }
 
+    // Applied per source so a repo-prefixed mask entry only fires
+    // against that source, and before the plan is printed.
+    let mut held: Vec<String> = Vec::new();
+    hold_back(&mut official_missing, None, &mut held);
+    hold_back(&mut aur_missing, Some("aur"), &mut held);
+    hold_back(&mut abs_missing, Some("abs"), &mut held);
+    hold_back(&mut bare_missing, None, &mut held);
+    hold_back(&mut err_missing, None, &mut held);
+    if !held.is_empty() {
+        println!(">>> {} world.set entry(ies) held back: {}", held.len(), held.join(", "));
+    }
+
     // Bare always resolved; Err/ only with --err-install.
     let mut to_resolve: Vec<String> = bare_missing.clone();
     if err_install {
@@ -285,9 +314,15 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
         let mut args: Vec<&str> = vec![PACMAN_BIN, "-S", "--needed"];
         if verbose { args.push("--verbose"); }
         if !ask { args.push("--noconfirm"); }
-        if !run_cmd(SUDO_BIN, &args, &official_missing) {
+        if !crate::pacman_install(&args, &official_missing) {
             overall_ok = false;
             eprintln!(">>> Warning: some official-repo package(s) failed to install.");
+            if !crate::runtime::keep_going() {
+                eprintln!(
+                    ">>> Stopping here; pass --keep-going to continue with the rest of world.set."
+                );
+                return Ok(false);
+            }
         }
     }
 
@@ -298,6 +333,12 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
         if !aur_install(&aur_missing, false, ask, false, false, false, no_sandbox, skip_srcinfo_regen, unshare_net_build, false) {
             overall_ok = false;
             eprintln!(">>> Warning: some AUR package(s) failed to install.");
+            if !crate::runtime::keep_going() {
+                eprintln!(
+                    ">>> Stopping here; pass --keep-going to continue with the rest of world.set."
+                );
+                return Ok(false);
+            }
         }
     }
 
@@ -309,7 +350,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
         let mut args: Vec<&str> = vec![PACMAN_BIN, "-S", "--needed"];
         if verbose { args.push("--verbose"); }
         if !ask { args.push("--noconfirm"); }
-        if run_cmd(SUDO_BIN, &args, &resolved_official) {
+        if crate::pacman_install(&args, &resolved_official) {
             // Fix world.set prefix now that the real repo is known.
             if let Err(e) = add_to_world_set(&resolved_official, None) {
                 eprintln!(">>> Warning: package(s) installed but world.set was not updated: {:#}", e);
@@ -317,6 +358,9 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
         } else {
             overall_ok = false;
             eprintln!(">>> Warning: some previously-unresolved package(s) failed to install from official repos.");
+            if !crate::runtime::keep_going() {
+                return Ok(false);
+            }
         }
     }
 

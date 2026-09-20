@@ -17,6 +17,10 @@ mod news;
 mod bash_ast;
 mod sandbox;
 mod aur;
+mod config;
+mod runtime;
+mod mask;
+mod revdep;
 
 /// Shared blocking HTTP GET (replaces curl subprocesses). None on any failure.
 mod http {
@@ -64,6 +68,8 @@ pub(crate) const WORLD_SET_FILE:  &str = "/etc/emerge/world.set";
 pub(crate) const SETS_DIR: &str = "/etc/emerge/sets.d";
 // AUR/ABS build roots: packages::aur_build_base()/abs_build_base().
 pub(crate) const WORLD_SET_TMP:  &str = "/etc/emerge/world.set.tmp";
+/// Never-install list; see `mask.rs`.
+pub(crate) const MASK_FILE: &str = mask::MASK_FILE;
 pub(crate) const RESUME_FILE: &str = "/etc/emerge/resume.state";
 pub(crate) const RESUME_TMP:  &str = "/etc/emerge/resume.state.tmp";
 pub(crate) const LASTACTION_FILE: &str = "/etc/emerge/lastaction.state";
@@ -78,8 +84,10 @@ pub(crate) const UNAME_BIN: &str = "/usr/bin/uname";
 /// Longer DESCRIPTION section for the man page (clap_mangen) - the plain
 /// `///` doc comment on `Cli` below is used for the one-line NAME/about.
 const LONG_ABOUT: &str = "\
-aura-emerge is a Gentoo-style emerge wrapper for Arch Linux, driving pacman \
-directly and the AUR (git clone + bwrap-sandboxed build) itself. \
+aura-emerge is a standalone Gentoo-style emerge front end for Arch Linux: it drives \
+pacman directly for official-repo packages, and builds AUR and ABS packages itself \
+(git clone/checkout, a PKGBUILD supply-chain scan, then a bwrap-sandboxed build) \
+rather than shelling out to another AUR helper. \
 It tracks every explicitly requested package in /etc/emerge/world.set, independent \
 of whatever pacman's own dependency graph currently looks like.\n\n\
 Three operations that look similar are kept deliberately distinct: refreshing the \
@@ -139,26 +147,26 @@ NEWS
     ~/.cache/aura-emerge/news.state (per-user, no root required).
 
 EXAMPLES
-    emerge neovim                  Install (official repos, falls back to AUR)
-    emerge neovim-git --aur        Install explicitly from the AUR (the
-                                    named package(s) plus any AUR-only
-                                    dependencies, resolved recursively)
-    emerge foo --pkgbuild-view     Review the PKGBUILD (diff on rebuilds)
-                                    and confirm before it's built
-    emerge foo --scan              Audit the PKGBUILD/.install only - no
-                                    build, no install, exits non-zero on
-                                    any finding
+    emerge neovim                   Install (official repos, falls back to AUR)
+    emerge neovim-git --aur         Install explicitly from the AUR (the
+                                     named package(s) plus any AUR-only
+                                     dependencies, resolved recursively)
+    emerge foo --pkgbuild-view      Review the PKGBUILD (diff on rebuilds)
+                                     and confirm before it's built
+    emerge foo --scan               Audit the PKGBUILD/.install only - no
+                                     build, no install, exits non-zero on
+                                     any finding
     emerge --install-pkgbuild ./pkg  Build+install a local PKGBUILD checkout
-                                    through the normal scanner+sandbox path
-    emerge --batchinstall list.txt Install every package atom listed in
-                                    list.txt, one per line
+                                     through the normal scanner+sandbox path
+    emerge --batchinstall list.txt  Install every package atom listed in
+                                     list.txt, one per line
     emerge -u --devel               Upgrade, and also rebuild installed
-                                    -git/-hg/-svn/-bzr packages whose
-                                    upstream has moved
+                                     -git/-hg/-svn/-bzr packages whose
+                                     upstream has moved
     emerge --check-devel            Report which -git/-hg/-svn/-bzr
-                                    packages are behind upstream, without
-                                    rebuilding anything
-    emerge @world                  Provision this machine from world.set
+                                     packages are behind upstream, without
+                                     rebuilding anything
+    emerge @world                   Provision this machine from world.set
     emerge -u @world                Upgrade the whole system
     emerge @game-kit                Install a custom set
     emerge --prune                  Remove anything not tracked in world.set
@@ -167,17 +175,44 @@ EXAMPLES
     emerge --news all               Dismiss all news notifications
 
 FILES
-    /etc/emerge/world.set                  Explicitly-installed packages
-    /etc/emerge/sets.d/*.set               Custom package sets
-    /etc/emerge/resume.state               Saved state for --resume
-    ~/.cache/aura-emerge/pkgbuild-view/    Last-shown PKGBUILDs (for --pkgbuild-view diffs)
-    ~/.cache/aura-emerge/devel.state       Last-checked upstream refs (--devel/--check-devel)
-    ~/.cache/aura-emerge/news.state        Read/unread Arch news items
+    /etc/emerge/world.set                   Explicitly-installed packages
+    /etc/emerge/sets.d/*.set                Custom package sets
+    /etc/emerge/emerge.toml                 Default flags (EMERGE_DEFAULT_OPTS) and
+                                            build-env overrides (CFLAGS, MAKEFLAGS, ...)
+    ~/.config/emerge/emerge.toml            Same, per-user; last file to set a key wins
+    /etc/emerge/mask                        Packages never installed (see mask.d/ below)
+    /etc/emerge/mask.d/*.mask               Additional mask files, same format
+    /etc/emerge/resume.state                Saved state for --resume
+    /etc/emerge/lastaction.state            Last install/unmerge step, for --undo
+    ~/.cache/aura-emerge/pkgbuild-view/     Last-shown PKGBUILDs (for --pkgbuild-view diffs)
+    ~/.cache/aura-emerge/devel.state        Last-checked upstream refs (--devel/--check-devel)
+    ~/.cache/aura-emerge/news.state         Read/unread Arch news items
+    ~/.cache/aura-emerge/build/aur/         AUR build checkouts (git clone, scanned, then
+                                            built inside the bwrap sandbox)
+    ~/.cache/aura-emerge/build/abs/         ABS build checkouts, same pipeline as AUR
+    ~/.cache/aura-emerge/sources/           Default SRCDEST -- VCS/source cache that
+                                            survives build-dir wipes; overridden by a
+                                            SRCDEST set in makepkg.conf
+    All ~/.cache paths honor $XDG_CACHE_HOME when set.
+
+INSTALLATION
+    Built with `cargo build --release`; the resulting binary is installed as
+    /usr/bin/emerge, with /usr/bin/portageq symlinked to it so it can also
+    answer as the portageq shim.
+
+    Everything below is generated straight from this Cli definition at
+    install time (never hand-edited, so none of it can drift from
+    --help):
+        /usr/share/man/man1/emerge.1                       emerge --gen-manpage
+        /usr/share/bash-completion/completions/emerge      emerge --gen-completions bash
+        /usr/share/zsh/site-functions/_emerge              emerge --gen-completions zsh
+        /usr/share/fish/vendor_completions.d/emerge.fish   emerge --gen-completions fish
 
 AUTHOR
     Undercat037 <https://github.com/Undercat037/aura-emerge>";
 
-/// Portage-like wrapper for Arch Linux, driving pacman and the AUR directly
+/// A standalone Gentoo-style emerge package manager for Arch Linux - installs from official repos, the AUR, and ABS; scans PKGBUILDs for supply-chain attack patterns before building; and runs untrusted build steps inside a bwrap sandbox.
+
 #[derive(Parser, Debug)]
 #[command(
     name = "emerge",
@@ -395,6 +430,8 @@ struct Cli {
     #[arg(long = "noconfmem")]              noconfmem: bool,
     #[arg(long = "color")]                  color: Option<String>,
     #[arg(long = "columns")]               columns: bool,
+
+    /// Ignore EMERGE_DEFAULT_OPTS from emerge.toml for this run
     #[arg(long = "ignore-default-opts")]    ignore_default_opts: bool,
 
     // Dependency / graph control
@@ -403,11 +440,21 @@ struct Cli {
     #[arg(short = 't', long = "tree")]      tree: bool,
     #[arg(long = "complete-graph")]         complete_graph: bool,
     #[arg(long = "changed-use")]            changed_use: bool,
-    #[arg(long = "keep-going")]             keep_going: bool,
     #[arg(long = "backtrack")]              backtrack: Option<u32>,
     #[arg(long = "jobs")]                   jobs: Option<u32>,
     #[arg(long = "load-average")]           load_average: Option<f32>,
-    #[arg(long = "exclude")]                exclude: Option<String>,
+
+    /// Don't stop a batch at the first failure; report failures at the end
+    #[arg(long = "keep-going")]
+    keep_going: bool,
+
+    /// Leave a package out of this run (repeatable, or comma-separated)
+    #[arg(long = "exclude", value_name = "ATOM", action = clap::ArgAction::Append)]
+    exclude: Vec<String>,
+
+    /// Rebuild packages whose binaries link against a missing library
+    #[arg(long = "revdep-rebuild")]
+    revdep_rebuild: bool,
 
     // Binary pkg flags (emerge -k/-K/-g/-G/-b/-B)
     #[arg(short = 'k', long = "usepkg")]          usepkg: bool,
@@ -606,6 +653,102 @@ fn validate_packages(packages: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// Normalizes `--exclude`: repeatable, comma-separated, and compared
+/// bare, so `--exclude extra/nano,firefox --exclude aur/foo` is three
+/// names. Invalid entries are reported and dropped.
+fn collect_excludes(raw: &[String]) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for entry in raw {
+        for token in entry.split(',') {
+            let token = token.trim();
+            if token.is_empty() {
+                continue;
+            }
+            if !validate_pkg(token) {
+                eprintln!(">>> Warning: invalid --exclude entry (skipped): {}", token);
+                continue;
+            }
+            out.insert(token.split('/').last().unwrap_or(token).to_string());
+        }
+    }
+    out
+}
+
+/// `pacman -S` for a whole batch, with the `--keep-going` retry.
+/// pacman installs a batch as one transaction, so one unresolvable
+/// package means nothing gets installed. Without --keep-going this is
+/// just `run_cmd`; with it, failed batches retry one package at a time.
+pub(crate) fn pacman_install(args: &[&str], names: &[String]) -> bool {
+    if run_cmd(SUDO_BIN, args, names) {
+        return true;
+    }
+    if !runtime::keep_going() || names.len() < 2 {
+        return false;
+    }
+    println!(
+        "{} batch install failed - --keep-going set, retrying {} package(s) individually...",
+        ">>>".yellow().bold(),
+        names.len()
+    );
+    let mut all_ok = true;
+    for name in names {
+        if !run_cmd(SUDO_BIN, args, std::slice::from_ref(name)) {
+            runtime::record_failure(name, "pacman install failed");
+            all_ok = false;
+        }
+    }
+    all_ok
+}
+
+/// Packages to hold back during `-u`: `--exclude` plus every installed
+/// package the (unprefixed) mask covers -- prefixed entries are
+/// matched in the AUR half instead, where the source is known.
+fn upgrade_ignores() -> Vec<String> {
+    let mut names: Vec<String> = runtime::get().exclude.iter().cloned().collect();
+
+    if !mask::masks().is_empty() {
+        if let Ok(out) = Command::new(PACMAN_BIN)
+            .arg("-Qq")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+        {
+            for line in String::from_utf8_lossy(&out.stdout).lines() {
+                let name = line.trim();
+                if !name.is_empty() && mask::find(name, None).is_some() {
+                    names.push(name.to_string());
+                }
+            }
+        }
+    }
+
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// After a partially failed `--keep-going` run, replaces the saved
+/// resume state with just the failed packages. False (state untouched)
+/// when nothing failed.
+fn save_failed_resume(cli: &Cli) -> bool {
+    let failed = runtime::failed_atoms();
+    if failed.is_empty() {
+        return false;
+    }
+    let bare: Vec<String> = failed
+        .iter()
+        .map(|a| a.split('/').last().unwrap_or(a).to_string())
+        .collect();
+    save_resume_state(&build_resume_args(cli, &bare, false));
+    println!(
+        "{} {} package(s) failed; `{}` will retry just those.",
+        ">>>".yellow().bold(),
+        bare.len(),
+        "emerge --resume".cyan()
+    );
+    true
+}
+
 /// Reconstructs the argv-equivalent of the current invocation for
 /// `--resume`. Excludes --pretend/--ask/--resume/--skipfirst (how to
 /// run it, not what it is).
@@ -626,6 +769,11 @@ fn build_resume_args(cli: &Cli, target_pkgs: &[String], has_world: bool) -> Vec<
     if cli.err_install     { args.push("--err-install".to_string()); }
     if cli.no_sandbox   { args.push("--no-sandbox".to_string()); }
     if cli.unshare_net_build { args.push("--unshare-net-build".to_string()); }
+    if cli.keep_going   { args.push("--keep-going".to_string()); }
+    for e in &cli.exclude {
+        args.push("--exclude".to_string());
+        args.push(e.clone());
+    }
     if has_world {
         args.push("@world".to_string());
     }
@@ -801,8 +949,18 @@ fn reset_sigpipe() {
 fn reset_sigpipe() {}
 
 fn main() {
-    if let Err(e) = run() {
+    let result = run();
+
+    // --keep-going collects rather than aborts, so the one place that
+    // sees the whole run has to be the one that reports it. Paths that
+    // abort outright have already printed their own error and exited.
+    let had_failures = runtime::print_failure_summary();
+
+    if let Err(e) = result {
         eprintln!("{} {:#}", ">>> Error:".red().bold(), e);
+        std::process::exit(1);
+    }
+    if had_failures {
         std::process::exit(1);
     }
 }
@@ -821,7 +979,19 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let cli = Cli::parse();
+    // emerge.toml, before clap: EMERGE_DEFAULT_OPTS is spliced into argv
+    // ahead of what was typed, so a typed flag always wins; conflicts
+    // (--aur/--abs, --skippgp/--autopgp, ...) are rejected here - see
+    // config::CONFLICTS.
+    let cfg = config::load();
+    let cli = Cli::parse_from(config::build_argv(&argv, &cfg));
+
+    // Everything read from deep inside the build path lands here once.
+    runtime::init(runtime::Runtime {
+        config: cfg,
+        exclude: collect_excludes(&cli.exclude),
+        keep_going: cli.keep_going,
+    });
 
     // No pacman/world.set needed -- just prints a script. Handled
     // before check_binaries() so it works in a clean chroot too.
@@ -982,18 +1152,20 @@ fn run() -> anyhow::Result<()> {
         };
     }
 
-    if cli.aur && cli.only_repos {
-        eprintln!(">>> Error: --aur and --only-repos are mutually exclusive.");
-        std::process::exit(1);
-    }
-
-    // --abs only means anything for an install (it picks the build source);
-    // search has no ABS-backed lookup, so silently accepting it here would
-    // make it look like the search got filtered when it didn't.
-    if cli.abs && (cli.search || cli.searchdesc) {
-        eprintln!(">>> Error: --abs is not valid with -s/--searchdesc (it only applies to installs).");
-        std::process::exit(1);
-    }
+    // --aur/--abs/--only-repos and the other mutually exclusive pairs are
+    // rejected up in config::build_argv, before clap ever runs, so the
+    // same table covers flags typed here and flags coming from
+    // EMERGE_DEFAULT_OPTS. Note what is deliberately *not* in that table:
+    // --abs with --only-repos. ABS builds an official-repo package from
+    // its own source, so "never the AUR" and "build it from source" are
+    // two answers to two different questions and agree with each other.
+    //
+    // --abs with a search is likewise no longer an error. ABS has no
+    // index of its own - an ABS package is an official-repo package, by
+    // the same pkgbase - so searching with --abs is a repo search, which
+    // is exactly what --only-repos does. Treating it as one beats
+    // refusing to search at all.
+    let repos_only_search = cli.only_repos || cli.abs;
 
     // Detect @world / world in package list
     let has_world = cli.packages.iter()
@@ -1062,6 +1234,44 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
+    // --exclude / mask, applied once here before any action branch.
+    // --exclude means "not this run" (dropped quietly); a masked
+    // package requested by name is an error, not a filter.
+    if !target_pkgs.is_empty() {
+        let requested = target_pkgs.len();
+        let (kept, dropped) = runtime::split_excluded(&target_pkgs);
+        runtime::report_excluded(&dropped);
+        target_pkgs = kept;
+        if target_pkgs.is_empty() && requested > 0 && !has_world {
+            println!("{} Every requested package was excluded - nothing to do.", ">>>".green().bold());
+            return Ok(());
+        }
+        if !mask::allow_explicit(&target_pkgs, None) {
+            std::process::exit(1);
+        }
+    }
+
+    // --revdep-rebuild: whole-system check, no package names, standalone
+    // like @preserved-rebuild.
+    if cli.revdep_rebuild {
+        if !target_pkgs.is_empty() {
+            eprintln!(">>> Error: --revdep-rebuild does not take package names or @sets.");
+            std::process::exit(1);
+        }
+        let ok = revdep::revdep_rebuild(
+            cli.pretend,
+            cli.ask,
+            cli.skippgp,
+            cli.no_sandbox,
+            cli.skip_srcinfo_regen,
+            cli.unshare_net_build,
+        );
+        if !ok {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
     // --scan: report-only PKGBUILD/.install audit, no build, no install.
     // AUR-only for now (fetched via cgit, same source scan_aur_pkgbuilds_or_abort
     // uses before ever cloning anything) - --abs isn't wired up yet since
@@ -1112,7 +1322,7 @@ fn run() -> anyhow::Result<()> {
             // just forwarded to pacman for the official half anyway.
             println!("{} Searching descriptions for '{}'...", ">>>".green().bold(), term);
             run_cmd(PACMAN_BIN, &["-Ss"], &target_pkgs);
-            if !cli.only_repos {
+            if !repos_only_search {
                 println!();
                 println!("{} Searching {} descriptions for '{}'...", ">>>".green().bold(), "AUR".cyan().bold(), term);
                 print_aur_search_results(&aur::rpc_search(&term, true));
@@ -1129,10 +1339,11 @@ fn run() -> anyhow::Result<()> {
                 if found {
                     println!("{} Searching for '{}'...", ">>>".green().bold(), term);
                     run_cmd(PACMAN_BIN, &["-Si"], &target_pkgs);
-                } else if cli.only_repos {
+                } else if repos_only_search {
                     println!(
-                        ">>> '{}' not found in official repos. (--only-repos set, not searching AUR)",
-                        term
+                        ">>> '{}' not found in official repos. ({} set, not searching AUR)",
+                        term,
+                        if cli.abs { "--abs" } else { "--only-repos" }
                     );
                 } else {
                     println!(
@@ -1148,7 +1359,7 @@ fn run() -> anyhow::Result<()> {
         } else {
             println!("{} Searching for '{}'...", ">>>".green().bold(), term);
             run_cmd(PACMAN_BIN, &["-Ss"], &target_pkgs);
-            if !cli.only_repos {
+            if !repos_only_search {
                 println!();
                 println!("{} Searching in {} for '{}'...", ">>>".green().bold(), "AUR".cyan().bold(), term);
                 print_aur_search_results(&aur::rpc_search(&term, false));
@@ -1262,6 +1473,8 @@ fn run() -> anyhow::Result<()> {
                     .into_iter()
                     .filter(|p| !world_bare.contains(p))
                     .collect();
+                let (to_remove, excluded) = runtime::split_excluded(&to_remove);
+                runtime::report_excluded(&excluded);
                 if to_remove.is_empty() {
                     println!(">>> Nothing to prune. All explicitly installed packages are in world.set.");
                     return Ok(());
@@ -1516,6 +1729,10 @@ fn run() -> anyhow::Result<()> {
                 clear_resume_state();
             } else {
                 eprintln!("{} not everything installed successfully.", ">>> Warning:".yellow().bold());
+                save_failed_resume(&cli);
+                if runtime::any_failures() {
+                    return Ok(());
+                }
                 std::process::exit(1);
             }
         }
@@ -1555,6 +1772,17 @@ fn run() -> anyhow::Result<()> {
         println!(">>> Calculating dependencies... done!");
         println!();
         println!(">>> Upgrading system (official repos)...");
+        // --exclude and the mask both become `pacman --ignore`.
+        let ignores = upgrade_ignores();
+        if !ignores.is_empty() {
+            println!(
+                "{} holding back {} package(s) (--exclude / {}): {}",
+                ">>>".yellow().bold(),
+                ignores.len(),
+                MASK_FILE,
+                ignores.join(", ")
+            );
+        }
         // `-Sy` (refresh) writes to the local sync db and needs root
         // regardless of `--print`. `-Su --print` (upgrade-only, no
         // refresh) reads the already-synced db instead and needs no
@@ -1570,6 +1798,10 @@ fn run() -> anyhow::Result<()> {
         if cli.verbose {
             s_args.push("--verbose");
         }
+        for name in &ignores {
+            s_args.push("--ignore");
+            s_args.push(name);
+        }
         let ok1 = if cli.pretend {
             run_cmd(PACMAN_BIN, &s_args, &[])
         } else {
@@ -1578,16 +1810,28 @@ fn run() -> anyhow::Result<()> {
             run_cmd(SUDO_BIN, &args, &[])
         };
 
-        println!(">>> Upgrading AUR packages...");
-        let ok2 = aur_upgrade_all(cli.pretend, cli.ask, cli.skippgp, cli.no_sandbox, cli.skip_srcinfo_regen, cli.unshare_net_build, cli.devel);
+        // A failed repo upgrade usually needs a human; --keep-going
+        // pushes on anyway rather than burying the error under an AUR
+        // build against a half-upgraded system.
+        let ok2 = if !ok1 && !cli.keep_going {
+            eprintln!(
+                "{} the official-repo upgrade failed - skipping the AUR upgrade. Pass {} to continue anyway.",
+                ">>> Error:".red().bold(),
+                "--keep-going".cyan()
+            );
+            false
+        } else {
+            println!(">>> Upgrading AUR packages...");
+            aur_upgrade_all(cli.pretend, cli.ask, cli.skippgp, cli.no_sandbox, cli.skip_srcinfo_regen, cli.unshare_net_build, cli.devel)
+        };
 
         println!();
         println!("{} Auto-cleaning packages...", ">>>".green().bold());
 
         if !cli.pretend {
-            if ok1 && ok2 {
+            if ok1 && ok2 && !runtime::any_failures() {
                 clear_resume_state();
-            } else {
+            } else if !save_failed_resume(&cli) {
                 eprintln!(">>> Warning: not everything upgraded cleanly - state kept for `emerge --resume`.");
             }
         }
@@ -1625,6 +1869,13 @@ fn run() -> anyhow::Result<()> {
                         }
                     }
                 }
+
+                // --exclude protects from removal as well as from
+                // installation: "leave this package out of this run"
+                // reads the same either way.
+                let (kept, dropped) = runtime::split_excluded(&orphans);
+                runtime::report_excluded(&dropped);
+                orphans = kept;
 
                 if orphans.is_empty() {
                     println!();
@@ -1788,8 +2039,15 @@ fn run() -> anyhow::Result<()> {
                 let mut off_args: Vec<&str> = vec![PACMAN_BIN, "-S"];
                 if cli.verbose { off_args.push("--verbose"); }
                 off_args.extend(&base_args);
-                success = run_cmd(SUDO_BIN, &off_args, &target_pkgs);
-                if success { installed_infos = official_infos; }
+                success = pacman_install(&off_args, &target_pkgs);
+                installed_infos = if success {
+                    official_infos
+                } else {
+                    // --keep-going retried one by one, so some of these
+                    // are on the system now; world.set below must only
+                    // hear about those.
+                    official_infos.into_iter().filter(|p| is_installed(&p.name)).collect()
+                };
             } else if cli.only_repos {
                 eprintln!(
                     ">>> Warning: --only-repos is set; the following package(s) were not \
@@ -1816,10 +2074,12 @@ fn run() -> anyhow::Result<()> {
                 let mut off_args: Vec<&str> = vec![PACMAN_BIN, "-S"];
                 if cli.verbose { off_args.push("--verbose"); }
                 off_args.extend(&base_args);
-                let off_success = run_cmd(SUDO_BIN, &off_args, &official_names);
-                if off_success {
-                    installed_infos = official_infos;
-                }
+                let off_success = pacman_install(&off_args, &official_names);
+                installed_infos = if off_success {
+                    official_infos
+                } else {
+                    official_infos.into_iter().filter(|p| is_installed(&p.name)).collect()
+                };
                 success = false; // partial success overall
             } else if official_infos.is_empty() {
                 println!(
@@ -1868,9 +2128,11 @@ fn run() -> anyhow::Result<()> {
                 let mut off_args: Vec<&str> = vec![PACMAN_BIN, "-S"];
                 if cli.verbose { off_args.push("--verbose"); }
                 off_args.extend(&base_args);
-                success = run_cmd(SUDO_BIN, &off_args, &official_names);
+                success = pacman_install(&off_args, &official_names);
                 if success {
                     installed_infos.extend(official_infos);
+                } else {
+                    installed_infos.extend(official_infos.into_iter().filter(|p| is_installed(&p.name)));
                 }
 
                 if !aur_infos.is_empty() {
@@ -1891,6 +2153,7 @@ fn run() -> anyhow::Result<()> {
             eprintln!(">>> Warning: the following package(s) were not found anywhere (official repos or AUR) and were skipped:");
             for m in &not_found {
                 eprintln!("    {}", m);
+                runtime::record_failure(m, "not found in official repos or the AUR");
             }
             success = false;
         }
@@ -1952,6 +2215,11 @@ fn run() -> anyhow::Result<()> {
 
             if !success {
                 eprintln!("{} not all requested packages were installed successfully.", ">>> Warning:".yellow().bold());
+                save_failed_resume(&cli);
+                if runtime::any_failures() {
+                    // main() prints the summary and exits non-zero.
+                    return Ok(());
+                }
                 std::process::exit(1);
             } else {
                 clear_resume_state();

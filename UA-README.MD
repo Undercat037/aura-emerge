@@ -26,6 +26,12 @@ makepkg -si
 <details>
 <summary><h3>Ручна збірка/makepkg (Нестабільна)</h3></summary>
 
+### Make
+```bash
+git clone https://github.com/Undercat037/aura-emerge.git
+cd aura-emerge
+make install
+```
 ### Ручна збірка
 ```bash
 git clone https://github.com/Undercat037/aura-emerge.git
@@ -75,12 +81,78 @@ sudo nvim /etc/makepkg.conf
 
 [**→ Приклад makepkg.conf**](misc/makepkg.conf)
 
+## emerge.toml
+
+`/etc/emerge/emerge.toml` (і `~/.config/emerge/emerge.toml` для власних налаштувань) - окремий конфіг самого aura-emerge, не `makepkg.conf`: аналог того, як Gentoo `make.conf` тримає і `EMERGE_DEFAULT_OPTS`, і `CFLAGS` в одному файлі. Спершу системний файл, потім користувацький; при збігу ключа перемагає останній.
+
+```bash
+sudo nvim /etc/emerge/emerge.toml
+```
+
+```toml
+# Прапори, які підставляються перед будь-яким запуском, до того, що
+# набрано в командному рядку (той завжди перемагає при конфлікті).
+# Вимкнути для одного запуску: --ignore-default-opts.
+EMERGE_DEFAULT_OPTS = ["--pkgbuild-view", "--unshare-net-build"]
+
+# Прапори збірки, застосовуються через згенерований makepkg.conf
+# (makepkg --config) - перевизначають /etc/makepkg.conf, не чіпаючи його.
+[build]
+CFLAGS = "-march=native -O2 -pipe"
+CXXFLAGS = "$CFLAGS"
+RUSTFLAGS = "-C target-cpu=native"
+MAKEFLAGS = "-j$(nproc)"
+NINJAFLAGS = "-j$(nproc)"
+OPTIONS = ["strip", "docs", "!debug", "lto"]
+BUILDENV = ["!distcc", "color", "check", "!sign"]
+```
+
+Розпізнавані ключі: `EMERGE_DEFAULT_OPTS` на верхньому рівні, і в `[build]`: `CFLAGS`, `CXXFLAGS`, `CPPFLAGS`, `LDFLAGS`, `RUSTFLAGS`, `MAKEFLAGS`, `NINJAFLAGS`, `BUILDENV`, `OPTIONS`. Ключі збірки приймаються також на верхньому рівні, поза `[build]`.
+
+Скаляри й списки взаємозамінні всюди - список склеюється пробілами, рядок розбивається по них. Значення розкриваються шеллом, коли makepkg читає згенерований конфіг, тож `-j$(nproc)` працює, і посилання на інший ключ вище по файлу теж - `CXXFLAGS = "$CFLAGS"`; TOML literal string (`'\$FOO'`) залишає долар буквальним.
+
+`EMERGE_DEFAULT_OPTS` приймає лише прапори-модифікатори (allowlist: `--ask`, `--verbose`, `--devel`, `--tree`, `--searchdesc`, `--exclude=<атом>` і подібні - див. [приклад файлу](misc/emerge.toml)) - перетворити кожен запуск на `--unmerge` не вийде. Конфліктні пари (`--aur`/`--abs`, `--aur`/`--only-repos`, `--no-sandbox`/`--unshare-net-build`, `--skippgp`/`--autopgp`, `--select`/`--deselect`) відхиляються, якщо обидва прапори активні - набрані вручну чи з конфігу; прапор з конфігу, що конфліктує з набраним вручну, просто відкидається, бо командний рядок - конкретніший намір. `--abs` і `--only-repos` конфліктом **не є** - ABS збирає офіційний пакунок з його ж джерела, тож ці два узгоджені.
+
+`--info` показує, що прочитано, і фактичне, розкрите шеллом значення кожного перевизначення.
+
+[**→ Приклад emerge.toml**](misc/emerge.toml)
+
+## Маска (/etc/emerge/mask)
+
+Аналог Portage `package.mask` для Arch-атомів: пакунки, які ця машина ніколи не встановлює - перевіряється навіть як транзитивна AUR-залежність і навіть при явному запиті за іменем. По одному запису на рядок у `/etc/emerge/mask` або `/etc/emerge/mask.d/*.mask`, дозволено `*`-глоб, опційний префікс репозиторію, опційна причина після `#`:
+
+```
+ayugram-desktop-bin            # конкретний пакунок, з будь-якого джерела
+aur/*-bin                      # ніколи не ставити AUR -bin пакунки
+*-git                          # devel-пакунки на цій машині не потрібні
+extra/nano                     # конкретний пакунок з конкретного репозиторію
+```
+
+Замаскований пакунок - жорстка зупинка запиту, без запитання, без прапора для обходу. Відрізняється від `--exclude` нижче: маска - постійне рішення, `--exclude` діє лише в межах одного запуску.
+
+## --exclude / --keep-going
+
+`--exclude <атом>` (повторюваний, або через кому) виключає пакунок із поточного запуску - як `--exclude` у Portage. Діє при встановленні, `-u` (через `pacman --ignore`), провізіюванні `@world`, `--depclean`/`--prune` (захищає від видалення) та `--revdep-rebuild`.
+
+```bash
+emerge -u --exclude linux --exclude aur/ayugram-desktop-bin   # оновити все, крім цих
+emerge --exclude firefox @world                               # провізіювання, пропустити firefox
+```
+
+`--keep-going` не зупиняє пакетну операцію (`@world`, `-u`, `--batchinstall`, встановлення кількох пакунків) на першій же помилці - продовжує, збирає, що не вдалося, і в кінці друкує підсумок з ненульовим кодом виходу. `--resume` після запуску з `--keep-going` повторює лише пакунки, що впали, а не весь пакет.
+
+```bash
+emerge -u --keep-going                # повне оновлення, не зупинятись на одному пакунку
+emerge --batchinstall pkgs.txt --keep-going
+emerge --resume                       # повторить лише те, що впало минулого разу
+```
+
 ## Використання
 
 ```bash
 emerge neovim                              # офіційні репо, при відсутності - AUR
 emerge neovim-git --aur                    # лише AUR (AUR-only залежності збираються рекурсивно завжди)
-emerge foo-git --aur --sudoloop            # те саме, але тримати sudo «теплим» протягом усієї рекурсивної збірки
+emerge ayugram-desktop-bin --aur --sudoloop   # те саме, але тримати sudo «теплим» протягом усієї рекурсивної збірки
 emerge neovim --only-repos                 # лише офіційні репо, без AUR
 emerge neovim --abs                        # зібрати з ABS (pkgctl), у пісочниці bwrap
 emerge neovim --abs --no-sandbox           # ABS без пісочниці (звичайний makepkg -si)
@@ -138,6 +210,10 @@ emerge @preserved-rebuild -p               # лише показати спис�
 emerge @preserved-rebuild -a               # запитувати перед кожним pacman
 emerge --batchinstall pkgs.txt              # масове встановлення зі списку
 emerge --batchinstall pkgs.txt --aur -a     # поєднується з будь-яким іншим прапором
+emerge -u --exclude linux                   # оновити, притримавши один пакунок
+emerge -u --keep-going                      # оновити, не зупинятись на першій помилці
+emerge --revdep-rebuild                     # знайти й полагодити биті лінки бібліотек
+emerge --revdep-rebuild -p                  # те саме, лише список
 ```
 
 ## Пісочниця
@@ -225,6 +301,17 @@ emerge --check-devel     # лише звіт, хто зрушив, без пер
 ## @preserved-rebuild
 
 В Arch немає відстеження preserved-libs. `@preserved-rebuild` збирає залежності кожного встановленого пакунка (`pacman -Qi`), передає список у `pacman -T` і пропонує перевстановити незадоволені через `pacman -S --asdeps` (щоб вони не виглядали «явно встановленими» і не потрапили в world.set при `--regen-world-from-explicit`).
+
+## --revdep-rebuild
+
+Не те саме, що `@preserved-rebuild` вище - та перевірка бачить лише *оголошені* залежності через `pacman -T`. `--revdep-rebuild` читає встановлені ELF-файли напряму (`DT_NEEDED`, `DT_RPATH`/`DT_RUNPATH`) і знаходить бінарники, що лінкуються на `.so`, якого вже немає - класична поломка після оновлення `openssl`/`icu`/`boost`, яку Gentoo вирішує через preserved-libs, а Arch із коробки - ні.
+
+Foreign-пакунки (AUR/локальні) пересобираються звичайним шляхом через пісочницю; офіційні пакунки на бінарному дистрибутиві пересобрати не можна, тож для них бібліотеки, яких не вистачає, шукаються у файловій базі (`pacman -F`), і пропонується встановити пакунки, що їх надають. `--exclude` і [маска](#маска-etcemergemask) також діють тут.
+
+```bash
+emerge --revdep-rebuild       # сканувати, потім запитати перед виправленням
+emerge --revdep-rebuild -p    # лише сканувати, показати биті лінки
+```
 
 ## world.set
 
@@ -365,6 +452,10 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `--clean-source-cache` | Очистити кеш VCS-джерел |
 | `--batchinstall <FILE>` | Масове встановлення зі списку пакунків |
 | `--list-sets` | Показати доступні `@sets` |
+| `--exclude <ATOM>` | Виключити пакунок з цього запуску (повторюваний/через кому) |
+| `--keep-going` | Не зупинятись на першій помилці в пакетній операції; підсумок в кінці |
+| `--revdep-rebuild` | Знайти й полагодити бінарники з бітими лінками бібліотек |
+| `--ignore-default-opts` | Ігнорувати `EMERGE_DEFAULT_OPTS` з emerge.toml для цього запуску |
 | `-h` / `--help` | Довідка |
 | `-V` / `--version` | Версія |
 

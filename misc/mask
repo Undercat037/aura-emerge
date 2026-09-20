@@ -1,0 +1,9 @@
+# /etc/emerge/mask  (one atom per line; also /etc/emerge/mask.d/*.mask)
+#
+# Packages this machine never installs - not a warning, a hard stop,
+# even as a transitive AUR dependency.
+
+ayugram-desktop-bin             # specific package, any source
+aur/*-bin                       # this box never installs AUR -bin packages
+*-git                           # no devel packages here, any source
+extra/nano                      # specific package from a specific repo
