@@ -10,7 +10,7 @@ use crate::*;
 
 // ── Package info ──────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PkgInfo {
     pub(crate) name: String,
     pub(crate) version: String,
@@ -239,25 +239,186 @@ pub(crate) fn resolve_aur_split(pkgs: &[String]) -> (Vec<PkgInfo>, Vec<String>) 
 
 // ── Emerge-style output ───────────────────────────────────────────────────────
 
-pub(crate) fn print_emerge_plan(pkgs: &[PkgInfo]) {
+/// `pkgs` is the plan to show; `requested` is what was typed on the
+/// command line -- with `tree`, anything else in `pkgs` nests under
+/// whichever package's "Depends On" names it, `emerge -t`-style.
+/// `deep`: `None` = direct deps only, `Some(0)` = every level,
+/// `Some(n)` = capped at `n` levels.
+pub(crate) fn print_emerge_plan(pkgs: &[PkgInfo], tree: bool, deep: Option<u32>, requested: &[String]) {
     println!();
     println!("{}", "These are the packages that would be merged, in order:".green().bold());
     println!();
     println!("Calculating dependencies... done!");
     println!();
-    for p in pkgs {
+
+    let requested: HashSet<&str> = requested.iter().map(|p| bare_of(p)).collect();
+    let entries: Vec<(&PkgInfo, usize)> = if tree {
+        build_plan_tree(pkgs, &requested, deep)
+    } else {
+        pkgs.iter().map(|p| (p, 0)).collect()
+    };
+
+    for (p, depth) in &entries {
         if p.status == "D" {
             println!("{} {}: downgrading package!", " *".yellow().bold(), p.name.bold());
         }
-        println!("[{}  {:<4} ] {}",
+        let prefix = if *depth == 0 { String::new() } else { format!("{}`-- ", "  ".repeat(depth - 1)) };
+        println!("[{}  {:<4} ] {}{}",
             "ebuild".green(),
             status_colored(&p.status),
+            prefix,
             format_atom(p).green().bold()
         );
     }
     println!();
     println!("{}: {} package(s)", "Total".bold(), pkgs.len());
     println!();
+}
+
+fn bare_of(p: &str) -> &str {
+    p.split('/').last().unwrap_or(p)
+}
+
+/// Per-package "Depends On", via `pacman -Si` (sync db, so this also
+/// works for a not-yet-installed package -- what the tree needs to
+/// explain why each dependency showed up in the plan).
+pub(crate) fn depends_on_map(names: &[String]) -> HashMap<String, HashSet<String>> {
+    let mut map = HashMap::new();
+    if names.is_empty() {
+        return map;
+    }
+    let out = Command::new(PACMAN_BIN)
+        .arg("-Si")
+        .args(names)
+        .env("LC_ALL", "C")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output();
+    let Ok(out) = out else { return map };
+    let text = String::from_utf8_lossy(&out.stdout);
+
+    for block in text.split("\n\n") {
+        let mut name = None;
+        let mut deps = HashSet::new();
+        let mut capturing = false;
+        for line in block.lines() {
+            if let Some((label, value)) = line.split_once(" : ") {
+                let label = label.trim();
+                capturing = label == "Depends On";
+                if label == "Name" {
+                    name = Some(value.trim().to_string());
+                } else if capturing {
+                    let value = value.trim();
+                    if value != "None" && !value.is_empty() {
+                        deps.extend(value.split_whitespace().map(strip_version_operator));
+                    }
+                }
+                continue;
+            }
+            if capturing {
+                deps.extend(line.trim().split_whitespace().map(strip_version_operator));
+            }
+        }
+        if let Some(n) = name {
+            map.insert(n, deps);
+        }
+    }
+    map
+}
+
+/// Orders `pkgs` for tree display: `requested` at depth 0, everything
+/// else nested under whichever package's "Depends On" names it --
+/// recursively when `deep`, one level otherwise. An unmatched
+/// dependency (a `provides` match, or beyond `--deep`'s reach) still
+/// shows at depth 1 -- no fabricated parent, just real information.
+///
+/// Skips `-Si` entirely when there's nothing to explain -- AUR-only
+/// installs, where the plan doesn't resolve transitive AUR deps yet,
+/// are just `pkgs == requested`.
+pub(crate) fn build_plan_tree<'a>(
+    pkgs: &'a [PkgInfo],
+    requested: &HashSet<&str>,
+    deep: Option<u32>,
+) -> Vec<(&'a PkgInfo, usize)> {
+    let (top, extra): (Vec<&PkgInfo>, Vec<&PkgInfo>) =
+        pkgs.iter().partition(|p| requested.contains(p.name.as_str()));
+    if extra.is_empty() {
+        return top.into_iter().map(|p| (p, 0)).collect();
+    }
+
+    let names: Vec<String> = pkgs.iter().map(|p| p.name.clone()).collect();
+    let deps_by_name = depends_on_map(&names);
+    // None -> direct deps, Some(0) -> unbounded, Some(n) -> capped.
+    let max_depth = match deep {
+        None => 1,
+        Some(0) => usize::MAX,
+        Some(n) => n as usize,
+    };
+    group_by_parent(top, extra, &deps_by_name, max_depth)
+}
+
+/// Split out from `build_plan_tree` so it's testable without shelling
+/// out to pacman for `deps_by_name`. DFS, not BFS: each parent is
+/// immediately followed by its own subtree, which is what makes the
+/// indentation read as a tree.
+fn group_by_parent<'a>(
+    top: Vec<&'a PkgInfo>,
+    mut remaining: Vec<&'a PkgInfo>,
+    deps_by_name: &HashMap<String, HashSet<String>>,
+    max_depth: usize,
+) -> Vec<(&'a PkgInfo, usize)> {
+    let mut out: Vec<(&PkgInfo, usize)> = Vec::new();
+    let mut placed: HashSet<&str> = HashSet::new();
+
+    for parent in &top {
+        out.push((parent, 0));
+        placed.insert(parent.name.as_str());
+        place_children(parent.name.as_str(), 0, max_depth, &mut remaining, &mut placed, deps_by_name, &mut out);
+    }
+
+    // Nothing claimed within max_depth still shows, just without a
+    // specific parent to nest under.
+    for p in remaining {
+        if placed.insert(p.name.as_str()) {
+            out.push((p, 1));
+        }
+    }
+    out
+}
+
+/// Places `parent_name`'s still-unplaced children right after it,
+/// recursing into their own children (bounded by `max_depth`). Each
+/// child is removed from `remaining` before recursing into it, so a
+/// dependency cycle in the data can't loop forever.
+fn place_children<'a>(
+    parent_name: &str,
+    parent_depth: usize,
+    max_depth: usize,
+    remaining: &mut Vec<&'a PkgInfo>,
+    placed: &mut HashSet<&'a str>,
+    deps_by_name: &HashMap<String, HashSet<String>>,
+    out: &mut Vec<(&'a PkgInfo, usize)>,
+) {
+    if parent_depth >= max_depth {
+        return;
+    }
+    let Some(deps) = deps_by_name.get(parent_name) else { return };
+
+    let mut children: Vec<&'a PkgInfo> = Vec::new();
+    let mut i = 0;
+    while i < remaining.len() {
+        if deps.contains(&remaining[i].name) && !placed.contains(remaining[i].name.as_str()) {
+            children.push(remaining.remove(i));
+        } else {
+            i += 1;
+        }
+    }
+
+    for child in children {
+        placed.insert(child.name.as_str());
+        out.push((child, parent_depth + 1));
+        place_children(child.name.as_str(), parent_depth + 1, max_depth, remaining, placed, deps_by_name, out);
+    }
 }
 
 pub(crate) fn print_emerge_emerging(pkgs: &[PkgInfo]) {
@@ -963,7 +1124,12 @@ pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
             pkg.green().bold()
         );
         println!();
-        if resolve_and_build_aur(pkg, &build_base, ask, skippgp, oneshot, edit, true, skip_srcinfo_regen, isolation, unshare_net_build, &mut building, &mut built, pkgbuild_view).is_none() {
+        let timer = crate::logbook::Timer::start();
+        let result = resolve_and_build_aur(pkg, &build_base, ask, skippgp, oneshot, edit, true, skip_srcinfo_regen, isolation, unshare_net_build, &mut building, &mut built, pkgbuild_view);
+        if result.is_some() {
+            crate::logbook::log_merge_one("aur", pkg, timer.elapsed());
+        }
+        if result.is_none() {
             all_ok = false;
             crate::runtime::record_failure(pkg, "AUR build failed");
             let left = bare.len() - (i + 1);
@@ -1800,12 +1966,15 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
             ensure_pgp_keys(&build_dir.join("PKGBUILD"), autopgp);
         }
 
+        let timer = crate::logbook::Timer::start();
         let build_ok = match isolation {
             BuildIsolation::Bwrap => build_with_sandbox(&build_dir, &info.name, ask, oneshot, skippgp, &[], unshare_net_build),
             BuildIsolation::None => legacy_makepkg_si(&build_dir, ask, oneshot, skippgp),
         };
 
-        if !build_ok {
+        if build_ok {
+            crate::logbook::log_merge_one("abs", &format_atom(info), timer.elapsed());
+        } else {
             eprintln!("{} makepkg failed for '{}'", ">>> Error:".red().bold(), info.name);
             if !skippgp {
                 eprintln!(
@@ -2329,6 +2498,18 @@ pub(crate) fn print_system_info() {
         ),
         None => println!("world.set: not found ({})", WORLD_SET_FILE),
     }
+
+    match crate::logbook::read_stats() {
+        Some(stats) if stats.merges > 0 || stats.unmerges > 0 => println!(
+            "log: {} merge(s), {} unmerge(s), {} total build time ({})",
+            stats.merges,
+            stats.unmerges,
+            crate::logbook::fmt_duration(stats.total_build_time),
+            crate::logbook::LOG_FILE
+        ),
+        Some(_) => println!("log: no events yet ({})", crate::logbook::LOG_FILE),
+        None => println!("log: not found or unreadable ({})", crate::logbook::LOG_FILE),
+    }
 }
 
 
@@ -2471,5 +2652,156 @@ pub(crate) fn preserved_rebuild(pretend: bool, ask: bool) {
     if !ask { args.push("--noconfirm"); }
     if run_cmd(SUDO_BIN, &args, &missing) {
         mark_asdeps(&missing);
+    }
+}
+#[cfg(test)]
+mod plan_tree_tests {
+    use super::*;
+
+    fn pkg(name: &str, status: &str) -> PkgInfo {
+        PkgInfo { name: name.to_string(), version: "1.0-1".to_string(), repo: "extra".to_string(), status: status.to_string() }
+    }
+
+    #[test]
+    fn no_extras_is_flat_at_depth_zero() {
+        let nano = pkg("nano", "N");
+        let vim = pkg("vim", "N");
+        let top = vec![&nano, &vim];
+        let out = group_by_parent(top, Vec::new(), &HashMap::new(), 1);
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|(_, d)| *d == 0));
+    }
+
+    #[test]
+    fn dependency_nests_under_its_declared_parent() {
+        let requested = pkg("openconnect", "N");
+        let pulled_in = pkg("gnutls", "N");
+        let top = vec![&requested];
+        let extra = vec![&pulled_in];
+        let mut deps = HashMap::new();
+        deps.insert("openconnect".to_string(), HashSet::from(["gnutls".to_string()]));
+        let out = group_by_parent(top, extra, &deps, 1);
+        assert_eq!(out, vec![(&requested, 0), (&pulled_in, 1)]);
+    }
+
+    #[test]
+    fn unattributed_dependency_still_shown_at_depth_one() {
+        // pacman resolved it (e.g. via a provides), but it isn't in
+        // anyone's literal "Depends On" -- still real info, not dropped.
+        let requested = pkg("openconnect", "N");
+        let mystery = pkg("some-provider", "N");
+        let out = group_by_parent(vec![&requested], vec![&mystery], &HashMap::new(), 1);
+        assert_eq!(out, vec![(&requested, 0), (&mystery, 1)]);
+    }
+
+    #[test]
+    fn a_dependency_is_never_placed_twice() {
+        // Two requested packages both declare the same dependency --
+        // it should nest under the first one only.
+        let a = pkg("a", "N");
+        let b = pkg("b", "N");
+        let shared = pkg("shared-lib", "N");
+        let mut deps = HashMap::new();
+        deps.insert("a".to_string(), HashSet::from(["shared-lib".to_string()]));
+        deps.insert("b".to_string(), HashSet::from(["shared-lib".to_string()]));
+        let out = group_by_parent(vec![&a, &b], vec![&shared], &deps, 1);
+        assert_eq!(out, vec![(&a, 0), (&shared, 1), (&b, 0)]);
+    }
+
+
+    #[test]
+    fn shallow_stops_at_one_level() {
+        // Without --deep: lib-a nests under app (direct dep), but
+        // lib-b (a dependency of lib-a, not of app) isn't reachable at
+        // depth 1 -- it still shows, just without a specific parent.
+        let app = pkg("app", "N");
+        let lib_a = pkg("lib-a", "N");
+        let lib_b = pkg("lib-b", "N");
+        let mut deps = HashMap::new();
+        deps.insert("app".to_string(), HashSet::from(["lib-a".to_string()]));
+        deps.insert("lib-a".to_string(), HashSet::from(["lib-b".to_string()]));
+        let out = group_by_parent(vec![&app], vec![&lib_a, &lib_b], &deps, 1);
+        assert_eq!(out, vec![(&app, 0), (&lib_a, 1), (&lib_b, 1)]);
+    }
+
+    #[test]
+    fn deep_nests_through_every_level() {
+        // With --deep (max_depth = usize::MAX): the same chain nests
+        // lib-b under lib-a, at depth 2, instead of dropping to the
+        // no-parent bucket.
+        let app = pkg("app", "N");
+        let lib_a = pkg("lib-a", "N");
+        let lib_b = pkg("lib-b", "N");
+        let mut deps = HashMap::new();
+        deps.insert("app".to_string(), HashSet::from(["lib-a".to_string()]));
+        deps.insert("lib-a".to_string(), HashSet::from(["lib-b".to_string()]));
+        let out = group_by_parent(vec![&app], vec![&lib_a, &lib_b], &deps, usize::MAX);
+        assert_eq!(out, vec![(&app, 0), (&lib_a, 1), (&lib_b, 2)]);
+    }
+
+    #[test]
+    fn deep_handles_a_dependency_cycle_without_looping() {
+        // Data shouldn't be able to happen in practice (pacman wouldn't
+        // let a installed this way), but the recursion must not hang
+        // if a's deps somehow name b and b's deps somehow name a back.
+        let app = pkg("app", "N");
+        let a = pkg("a", "N");
+        let b = pkg("b", "N");
+        let mut deps = HashMap::new();
+        deps.insert("app".to_string(), HashSet::from(["a".to_string()]));
+        deps.insert("a".to_string(), HashSet::from(["b".to_string()]));
+        deps.insert("b".to_string(), HashSet::from(["a".to_string()]));
+        let out = group_by_parent(vec![&app], vec![&a, &b], &deps, usize::MAX);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0], (&app, 0));
+    }
+
+    #[test]
+    fn depends_on_map_parses_multi_block_and_continuation_lines() {
+        let text = "\
+Repository      : extra
+Name             : openconnect
+Version          : 9.12-1
+Depends On       : gnutls  libxml2  vpnc-scripts
+
+Repository      : extra
+Name             : vim
+Version          : 9.1-1
+Depends On       : None
+";
+        // Exercise the same block-splitting/parsing this function uses,
+        // without shelling out to pacman.
+        let mut map = HashMap::new();
+        for block in text.split("\n\n") {
+            let mut name = None;
+            let mut deps = HashSet::new();
+            let mut capturing = false;
+            for line in block.lines() {
+                if let Some((label, value)) = line.split_once(" : ") {
+                    let label = label.trim();
+                    capturing = label == "Depends On";
+                    if label == "Name" {
+                        name = Some(value.trim().to_string());
+                    } else if capturing {
+                        let value = value.trim();
+                        if value != "None" && !value.is_empty() {
+                            deps.extend(value.split_whitespace().map(strip_version_operator));
+                        }
+                    }
+                    continue;
+                }
+                if capturing {
+                    deps.extend(line.trim().split_whitespace().map(strip_version_operator));
+                }
+            }
+            if let Some(n) = name {
+                map.insert(n, deps);
+            }
+        }
+        assert_eq!(
+            map.get("openconnect").unwrap(),
+            &HashSet::from(["gnutls".to_string(), "libxml2".to_string(), "vpnc-scripts".to_string()])
+        );
+        assert_eq!(map.get("vim").unwrap(), &HashSet::new());
     }
 }

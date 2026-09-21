@@ -21,6 +21,7 @@ mod config;
 mod runtime;
 mod mask;
 mod revdep;
+mod logbook;
 
 /// Shared blocking HTTP GET (replaces curl subprocesses). None on any failure.
 mod http {
@@ -151,15 +152,26 @@ EXAMPLES
     emerge neovim-git --aur         Install explicitly from the AUR (the
                                      named package(s) plus any AUR-only
                                      dependencies, resolved recursively)
-    emerge foo --pkgbuild-view      Review the PKGBUILD (diff on rebuilds)
-                                     and confirm before it's built
-    emerge foo --scan               Audit the PKGBUILD/.install only - no
-                                     build, no install, exits non-zero on
-                                     any finding
+    emerge -apt neovim-git --aur    Preview as a dependency tree before
+                                     building (-p exits before anything
+                                     installs; -a is just muscle memory
+                                     here). Add --deep to nest beyond
+                                     direct dependencies
+    emerge ayugram-desktop-bin --pkgbuild-view  Review the PKGBUILD (diff
+                                     on rebuilds) and confirm before it's
+                                     built
+    emerge ayugram-desktop-bin --scan  Audit the PKGBUILD/.install only -
+                                     no build, no install, exits non-zero
+                                     on any finding
     emerge --install-pkgbuild ./pkg  Build+install a local PKGBUILD checkout
                                      through the normal scanner+sandbox path
     emerge --batchinstall list.txt  Install every package atom listed in
                                      list.txt, one per line
+    emerge -u --exclude linux --keep-going  Upgrade everything except one
+                                     package, without stopping the batch
+                                     on the first build failure
+    emerge --revdep-rebuild         Find + fix binaries linking against a
+                                     library that no longer exists
     emerge -u --devel               Upgrade, and also rebuild installed
                                      -git/-hg/-svn/-bzr packages whose
                                      upstream has moved
@@ -184,6 +196,9 @@ FILES
     /etc/emerge/mask.d/*.mask               Additional mask files, same format
     /etc/emerge/resume.state                Saved state for --resume
     /etc/emerge/lastaction.state            Last install/unmerge step, for --undo
+    /var/log/aura-emerge.log                Append-only merge/unmerge event log, with
+                                            build time for AUR/ABS packages; stats
+                                            shown in --info
     ~/.cache/aura-emerge/pkgbuild-view/     Last-shown PKGBUILDs (for --pkgbuild-view diffs)
     ~/.cache/aura-emerge/devel.state        Last-checked upstream refs (--devel/--check-devel)
     ~/.cache/aura-emerge/news.state         Read/unread Arch news items
@@ -203,10 +218,10 @@ INSTALLATION
     Everything below is generated straight from this Cli definition at
     install time (never hand-edited, so none of it can drift from
     --help):
-        /usr/share/man/man1/emerge.1                       emerge --gen-manpage
-        /usr/share/bash-completion/completions/emerge      emerge --gen-completions bash
-        /usr/share/zsh/site-functions/_emerge              emerge --gen-completions zsh
-        /usr/share/fish/vendor_completions.d/emerge.fish   emerge --gen-completions fish
+        emerge --gen-completions bash | sudo tee /usr/share/bash-completion/completions/emerge
+        emerge --gen-completions zsh | sudo tee /usr/share/zsh/site-functions/_emerge
+        emerge --gen-completions fish | sudo tee /usr/share/fish/vendor_completions.d/emerge.fish
+        emerge --gen-manpage | sudo tee /usr/share/man/man1/emerge.1 >/dev/null
 
 AUTHOR
     Undercat037 <https://github.com/Undercat037/aura-emerge>";
@@ -337,10 +352,6 @@ struct Cli {
     noreplace: bool,
 
     // Dummy flags for compatibility
-    /// Consider the whole dependency tree
-    #[arg(short = 'D', long = "deep")]
-    deep: bool,
-
     /// Include installed pkgs with changed USE flags
     #[arg(short = 'N', long = "newuse")]
     newuse: bool,
@@ -438,6 +449,9 @@ struct Cli {
     #[arg(short = 'O', long = "nodeps")]    nodeps: bool,
     #[arg(short = 'o', long = "onlydeps")]  onlydeps: bool,
     #[arg(short = 't', long = "tree")]      tree: bool,
+    /// With -t: recurse N levels (--deep=N), or every level if bare
+    #[arg(short = 'D', long = "deep", value_name = "N", num_args = 0..=1, default_missing_value = "0", require_equals = true)]
+    deep: Option<u32>,
     #[arg(long = "complete-graph")]         complete_graph: bool,
     #[arg(long = "changed-use")]            changed_use: bool,
     #[arg(long = "backtrack")]              backtrack: Option<u32>,
@@ -524,7 +538,7 @@ fn print_help() {
     println!("   emerge < --sync | --info | --list-sets >");
     println!("   emerge --resume [ --pretend | --ask | --skipfirst ]");
     println!("   emerge --help");
-    println!("Options: -[1aCcDehNnpsuVv]");
+    println!("Options: -[1aCcDehNnpstuVv]");
     println!("          [ --abs                        ] [ --aur        ]");
     println!("          [ --skippgp                    ] [ --autopgp    ]");
     println!("          [ --only-repos                                 ]");
@@ -537,7 +551,8 @@ fn print_help() {
     println!("          [ --devel                      ] [ --sudoloop   ]");
     println!("          [ --verbose-conflicts          ] [ --with-bdeps ]");
     println!("          [ --err-install                 ] [ --regen-sort ]");
-    println!("          [ --deep                                        ]");
+    println!("          [ --deep[=N]                   ] [ --keep-going ]");
+    println!("          [ --exclude <ATOM>             ] [ --ignore-default-opts ]");
     println!("Actions:  [ --depclean  | --deselect | --prune      | --regen       ]");
     println!("          [ --resume    | --search   | --select     | --searchdesc  ]");
     println!("          [ --sync      | --unmerge  | --update     | --regen-world ]");
@@ -546,6 +561,7 @@ fn print_help() {
     println!("          [ --check-news [N|all] | --check-devel | --undo          ]");
     println!("          [ --scan <pkg...>       | --install-pkgbuild <PATH>       ]");
     println!("          [ --batchinstall <FILE> | --clean-source-cache            ]");
+    println!("          [ --revdep-rebuild                                       ]");
     println!();
     println!("   @world (no -u): install whatever's listed in /etc/emerge/world.set");
     println!("   and missing from this system - declarative provisioning, e.g. for a");
@@ -571,6 +587,17 @@ fn print_help() {
     println!("   --devel / --check-devel: catch -git/-hg/-svn/-bzr AUR packages");
     println!("   whose upstream has moved even though the AUR page's recorded");
     println!("   version hasn't. --check-devel only reports; -u --devel rebuilds.");
+    println!();
+    println!("   -t/--tree: show the plan as a dependency tree instead of a flat");
+    println!("   list (-p/--pretend to stop there). One level of nesting by");
+    println!("   default (direct deps of what you typed); add --deep to nest");
+    println!("   through however many levels the actual chain goes, or");
+    println!("   --deep=N to cap the nesting at N levels.");
+    println!();
+    println!("   --exclude <ATOM>: leave a package out of this run (repeatable,");
+    println!("   or comma-separated) - applies to installs, -u, @world, and");
+    println!("   --depclean/--prune. --keep-going: don't stop a batch at the");
+    println!("   first failure; --resume afterwards retries just what failed.");
     println!();
     println!("   For the full story behind every flag: man emerge");
     println!("   For more help consult the README: https://github.com/Undercat037/aura-emerge");
@@ -1333,24 +1360,33 @@ fn run() -> anyhow::Result<()> {
         if cli.verbose {
             if cli.aur {
                 println!("{} Searching in {} for '{}'...", ">>>".green().bold(), "AUR".cyan().bold(), term);
-                print_aur_info_results(&aur::rpc_info(&target_pkgs));
+                let info = aur::rpc_info(&target_pkgs);
+                if !info.is_empty() {
+                    print_aur_info_results(&info);
+                } else {
+                    // Not an exact name -- fuzzy search instead.
+                    print_aur_search_results(&aur::rpc_search(&term, false));
+                }
             } else {
                 let found = probe_official(&target_pkgs).is_some();
                 if found {
                     println!("{} Searching for '{}'...", ">>>".green().bold(), term);
                     run_cmd(PACMAN_BIN, &["-Si"], &target_pkgs);
-                } else if repos_only_search {
-                    println!(
-                        ">>> '{}' not found in official repos. ({} set, not searching AUR)",
-                        term,
-                        if cli.abs { "--abs" } else { "--only-repos" }
-                    );
                 } else {
-                    println!(
-                        ">>> '{}' not found in official repos, searching AUR...",
-                        term
-                    );
-                    print_aur_info_results(&aur::rpc_info(&target_pkgs));
+                    // Not an exact atom -- fall back to a real search.
+                    println!("{} Searching for '{}'...", ">>>".green().bold(), term);
+                    run_cmd(PACMAN_BIN, &["-Ss"], &target_pkgs);
+                    if !repos_only_search {
+                        println!();
+                        println!("{} Searching in {} for '{}'...", ">>>".green().bold(), "AUR".cyan().bold(), term);
+                        print_aur_search_results(&aur::rpc_search(&term, false));
+                    } else {
+                        println!(
+                            ">>> '{}' not found as an exact package. ({} set, not searching AUR)",
+                            term,
+                            if cli.abs { "--abs" } else { "--only-repos" }
+                        );
+                    }
                 }
             }
         } else if cli.aur {
@@ -1489,7 +1525,9 @@ fn run() -> anyhow::Result<()> {
                 if cli.pretend { return Ok(()); }
                 let mut args = vec![PACMAN_BIN, "-Rns"];
                 if !cli.ask { args.push("--noconfirm"); }
-                run_cmd(SUDO_BIN, &args, &to_remove);
+                if run_cmd(SUDO_BIN, &args, &to_remove) {
+                    logbook::log_unmerge(&to_remove);
+                }
             }
             Err(_) => eprintln!(">>> Error: failed to list installed packages"),
         }
@@ -1802,6 +1840,31 @@ fn run() -> anyhow::Result<()> {
             s_args.push("--ignore");
             s_args.push(name);
         }
+        // For the log line below: `pacman -Qu` doesn't know about our
+        // own --ignore, so that's subtracted to match what really upgrades.
+        let about_to_upgrade: Vec<String> = if cli.pretend {
+            Vec::new()
+        } else {
+            let ignored: HashSet<&str> = ignores.iter().map(String::as_str).collect();
+            Command::new(PACMAN_BIN)
+                .arg("-Qu")
+                .env("LC_ALL", "C")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .output()
+                .ok()
+                .map(|o| {
+                    String::from_utf8_lossy(&o.stdout)
+                        .lines()
+                        .filter_map(|l| l.split_whitespace().next())
+                        .filter(|p| !ignored.contains(p))
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        let timer = logbook::Timer::start();
         let ok1 = if cli.pretend {
             run_cmd(PACMAN_BIN, &s_args, &[])
         } else {
@@ -1809,6 +1872,9 @@ fn run() -> anyhow::Result<()> {
             args.extend(&s_args);
             run_cmd(SUDO_BIN, &args, &[])
         };
+        if ok1 && !about_to_upgrade.is_empty() {
+            logbook::log_merge_batch("repo", &about_to_upgrade, timer.elapsed());
+        }
 
         // A failed repo upgrade usually needs a human; --keep-going
         // pushes on anyway rather than burying the error under an AUR
@@ -1907,7 +1973,9 @@ fn run() -> anyhow::Result<()> {
                 } else {
                     let mut sudo_args = vec![PACMAN_BIN];
                     sudo_args.extend(pacman_args);
-                    run_cmd(SUDO_BIN, &sudo_args, &orphans);
+                    if run_cmd(SUDO_BIN, &sudo_args, &orphans) {
+                        logbook::log_unmerge(&orphans);
+                    }
                 }
             }
             Err(_) => eprintln!(">>> Error: Failed to check for orphans."),
@@ -1922,9 +1990,10 @@ fn run() -> anyhow::Result<()> {
             std::process::exit(1);
         }
 
-        println!("{} This action can remove important packages! In order to be safer, use", " *".yellow().bold());
-        println!("{} `emerge -p --depclean <atom>` to check for reverse dependencies before", " *".yellow().bold());
-        println!("{} removing packages.", " *".yellow().bold());
+        println!("{} This removes the package unconditionally, matching real emerge -C -", " *".yellow().bold());
+        println!("{} pacman's usual \"required by\" refusal and .pacsave backups are both", " *".yellow().bold());
+        println!("{} bypassed. Use `emerge -p --depclean <atom>` first to check reverse", " *".yellow().bold());
+        println!("{} dependencies if you're not sure.", " *".yellow().bold());
         println!();
         println!("{} These are the packages that would be unmerged:", ">>>".green().bold());
         println!();
@@ -1960,9 +2029,18 @@ fn run() -> anyhow::Result<()> {
         println!();
         println!("{} Unmerging {}...", ">>>".green().bold(), target_pkgs.join(", ").bold());
 
-        let mut pacman_args: Vec<&str> = vec!["-R"];
+        // Real emerge -C removes unconditionally, no "required by"
+        // refusal. pacman's -R alone won't do that, so --nodeps twice
+        // (-dd) skips dependency checks entirely, reverse included.
+        // --nosave (-n) drops the .pacsave backup pacman would otherwise
+        // leave -- Portage never kept one, it just deletes. --print and
+        // --nosave conflict (and --nosave is moot on a dry run), so
+        // --pretend gets --print instead.
+        let mut pacman_args: Vec<&str> = vec!["-R", "--nodeps", "--nodeps"];
         if cli.pretend {
             pacman_args.push("--print");
+        } else {
+            pacman_args.push("--nosave");
         }
         if !cli.ask && !cli.pretend {
             pacman_args.push("--noconfirm");
@@ -1983,6 +2061,7 @@ fn run() -> anyhow::Result<()> {
                 eprintln!(">>> Warning: package(s) unmerged but world.set was not updated: {:#}", e);
             }
             save_last_action(LastAction::Unmerge, &unmerge_atoms);
+            logbook::log_unmerge(&target_pkgs);
         }
         return Ok(());
     }
@@ -2021,7 +2100,7 @@ fn run() -> anyhow::Result<()> {
                 }
                 std::process::exit(1);
             }
-            print_emerge_plan(&pkg_infos);
+            print_emerge_plan(&pkg_infos, cli.tree, cli.deep, &target_pkgs);
             if cli.pretend { return Ok(()); }
             print_emerge_emerging(&pkg_infos);
             let found_names: Vec<String> = pkg_infos.iter().map(|p| p.name.clone()).collect();
@@ -2033,20 +2112,27 @@ fn run() -> anyhow::Result<()> {
 
             if missing.is_empty() {
                 // Everything found in official repos.
-                print_emerge_plan(&official_infos);
+                print_emerge_plan(&official_infos, cli.tree, cli.deep, &target_pkgs);
                 if cli.pretend { return Ok(()); }
                 print_emerge_emerging(&official_infos);
                 let mut off_args: Vec<&str> = vec![PACMAN_BIN, "-S"];
                 if cli.verbose { off_args.push("--verbose"); }
                 off_args.extend(&base_args);
+                let timer = logbook::Timer::start();
                 success = pacman_install(&off_args, &target_pkgs);
                 installed_infos = if success {
+                    logbook::log_merge_batch("repo", &target_pkgs, timer.elapsed());
                     official_infos
                 } else {
                     // --keep-going retried one by one, so some of these
                     // are on the system now; world.set below must only
                     // hear about those.
-                    official_infos.into_iter().filter(|p| is_installed(&p.name)).collect()
+                    let landed: Vec<PkgInfo> = official_infos.into_iter().filter(|p| is_installed(&p.name)).collect();
+                    if !landed.is_empty() {
+                        let names: Vec<String> = landed.iter().map(|p| p.name.clone()).collect();
+                        logbook::log_merge_batch("repo", &names, timer.elapsed());
+                    }
+                    landed
                 };
             } else if cli.only_repos {
                 eprintln!(
@@ -2062,7 +2148,7 @@ fn run() -> anyhow::Result<()> {
                     std::process::exit(1);
                 }
 
-                print_emerge_plan(&official_infos);
+                print_emerge_plan(&official_infos, cli.tree, cli.deep, &target_pkgs);
                 if cli.pretend {
                 // Not everything resolved -- exit non-zero for scripts.
                     std::process::exit(1);
@@ -2074,11 +2160,18 @@ fn run() -> anyhow::Result<()> {
                 let mut off_args: Vec<&str> = vec![PACMAN_BIN, "-S"];
                 if cli.verbose { off_args.push("--verbose"); }
                 off_args.extend(&base_args);
+                let timer = logbook::Timer::start();
                 let off_success = pacman_install(&off_args, &official_names);
                 installed_infos = if off_success {
+                    logbook::log_merge_batch("repo", &official_names, timer.elapsed());
                     official_infos
                 } else {
-                    official_infos.into_iter().filter(|p| is_installed(&p.name)).collect()
+                    let landed: Vec<PkgInfo> = official_infos.into_iter().filter(|p| is_installed(&p.name)).collect();
+                    if !landed.is_empty() {
+                        let names: Vec<String> = landed.iter().map(|p| p.name.clone()).collect();
+                        logbook::log_merge_batch("repo", &names, timer.elapsed());
+                    }
+                    landed
                 };
                 success = false; // partial success overall
             } else if official_infos.is_empty() {
@@ -2095,7 +2188,7 @@ fn run() -> anyhow::Result<()> {
                     }
                     std::process::exit(1);
                 }
-                print_emerge_plan(&pkg_infos);
+                print_emerge_plan(&pkg_infos, cli.tree, cli.deep, &target_pkgs);
                 if cli.pretend { return Ok(()); }
                 print_emerge_emerging(&pkg_infos);
                 let found_names: Vec<String> = pkg_infos.iter().map(|p| p.name.clone()).collect();
@@ -2119,7 +2212,7 @@ fn run() -> anyhow::Result<()> {
                     }
                     std::process::exit(1);
                 }
-                print_emerge_plan(&all_infos);
+                print_emerge_plan(&all_infos, cli.tree, cli.deep, &target_pkgs);
                 if cli.pretend { return Ok(()); }
                 print_emerge_emerging(&all_infos);
 
@@ -2128,11 +2221,20 @@ fn run() -> anyhow::Result<()> {
                 let mut off_args: Vec<&str> = vec![PACMAN_BIN, "-S"];
                 if cli.verbose { off_args.push("--verbose"); }
                 off_args.extend(&base_args);
+                let timer = logbook::Timer::start();
                 success = pacman_install(&off_args, &official_names);
                 if success {
+                    if !official_names.is_empty() {
+                        logbook::log_merge_batch("repo", &official_names, timer.elapsed());
+                    }
                     installed_infos.extend(official_infos);
                 } else {
-                    installed_infos.extend(official_infos.into_iter().filter(|p| is_installed(&p.name)));
+                    let landed: Vec<PkgInfo> = official_infos.into_iter().filter(|p| is_installed(&p.name)).collect();
+                    if !landed.is_empty() {
+                        let names: Vec<String> = landed.iter().map(|p| p.name.clone()).collect();
+                        logbook::log_merge_batch("repo", &names, timer.elapsed());
+                    }
+                    installed_infos.extend(landed);
                 }
 
                 if !aur_infos.is_empty() {

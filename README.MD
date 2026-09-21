@@ -146,6 +146,37 @@ emerge --batchinstall pkgs.txt --keep-going
 emerge --resume                       # retries just what failed last time
 ```
 
+## -t/--tree, --deep
+
+`-t`/`--tree` shows the plan (with `-p`/`--pretend`, or right before a real install) as a dependency tree instead of a flat list, `emerge -pt`-style. One level of nesting by default - what was typed at depth 0, whatever it pulled in as a dependency indented under it - attributed by cross-referencing `pacman -Si`'s "Depends On" for each requested package against everything else in the plan. Add `--deep` to nest through however many levels the actual dependency chain goes, or `--deep=N` to cap it at N levels, instead of stopping at direct deps.
+
+```bash
+emerge -apt noctalia --aur     # ask + pretend + tree: preview before building
+emerge -pt noctalia --aur --deep   # same, but nested all the way down
+emerge deepin-session --ask --tree --deep=3   # install, tree capped at 3 levels
+```
+
+```
+[ebuild  N ] noctalia-5.1.0-1.1
+[ebuild  N ] `-- libqalculate-5.12.0-1.1
+[ebuild  N ]   `-- sdbus-cpp-2.3.1-1.1
+```
+
+A dependency pacman pulled in that isn't literally named in anyone's "Depends On" (resolved via a `provides`, or beyond `--deep`'s reach) still shows, just without a specific parent to nest under - real information, not a fabricated tree. For a pure `--aur` install, the plan step doesn't resolve transitive AUR-only dependencies yet, so `-t` there is currently flat, the same as without it.
+
+## Merge/unmerge log
+
+`/var/log/aura-emerge.log` - Portage's `emerge.log`, for pacman/AUR/ABS atoms. Append-only, one line per event, written the same way other root-owned `/etc/emerge/*` state is (`sudo tee`, best-effort - a failed log write never fails the merge/unmerge that already happened).
+
+```
+2026-09-21 08:51:44  MERGE    aur    noctalia-5.1.0-1.1        (12s)
+2026-09-21 08:52:10  MERGE    aur    libqalculate-5.12.0-1.1   (9s)
+2026-09-21 09:03:02  MERGE    repo   nano-8.0-1  vim-9.1-1     (4s)
+2026-09-21 09:10:05  UNMERGE  -      old-package-2.0-1
+```
+
+Duration is only ever real: AUR/ABS packages build one at a time in this tool's own loop, so each gets its own timer; a `pacman -S`/`-Syu` transaction is one exit code for the whole batch, so that line carries every atom in it and the batch's own total, not a guessed-at split. `--info` shows a running total (merge/unmerge counts, cumulative build time).
+
 ## Usage
 
 ```bash
@@ -455,6 +486,8 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `--exclude <ATOM>` | Leave a package out of this run (repeatable/comma-separated) |
 | `--keep-going` | Don't stop a batch at the first failure; summarize at the end |
 | `--revdep-rebuild` | Find + fix binaries linking against a missing library |
+| `-t`, `--tree` | Show the plan as a dependency tree |
+| `-D`, `--deep[=N]` | With `-t`: nest N levels deep, or every level if bare |
 | `--ignore-default-opts` | Ignore `EMERGE_DEFAULT_OPTS` from emerge.toml for this run |
 | `-h` / `--help` | Help |
 | `-V` / `--version` | Version |
