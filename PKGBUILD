@@ -14,7 +14,7 @@ makedepends=('rust' 'cargo')
 conflicts=('portage' 'portage-git' 'aura-emerge')
 provides=('portageq')
 install=aura-emerge.install
-backup=('etc/emerge/world.set')
+backup=('etc/emerge/world')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/Undercat037/aura-emerge/archive/refs/heads/main.tar.gz")
 sha256sums=('SKIP')
 
@@ -49,9 +49,9 @@ package() {
   _gen_or_die man.1 --gen-manpage
   install -Dm644 man.1 "$pkgdir/usr/share/man/man1/emerge.1"
 
-  install -dm755 "$pkgdir/etc/emerge"
-  install -dm755 "$pkgdir/etc/emerge/sets.d"
-  install -Dm644 /dev/null "$pkgdir/etc/emerge/world.set"
+  install -dm755 "$pkgdir/etc/portage"
+  install -dm755 "$pkgdir/etc/portage/sets"
+  install -Dm644 /dev/null "$pkgdir/etc/portage/world"
 
   _gen_or_die comp.bash --gen-completions bash
   install -Dm644 comp.bash "$pkgdir/usr/share/bash-completion/completions/emerge"

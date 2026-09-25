@@ -1,4 +1,4 @@
-//! /etc/emerge/world.set: explicit-install tracking, custom sets, and
+//! /etc/portage/world: explicit-install tracking, custom sets, and
 //! `@world` provisioning (no -u).
 
 use anyhow::{bail, Context, Result};
@@ -55,7 +55,7 @@ pub(crate) fn get_pkg_repo(pkg: &str) -> Option<String> {
     None
 }
 
-/// world.set entry: "repo/name", "Err/name" (local), or bare "name".
+/// world entry: "repo/name", "Err/name" (local), or bare "name".
 pub(crate) fn pkg_world_entry(pkg: &str, forced_prefix: Option<&str>) -> String {
     let bare = pkg.split('/').last().unwrap_or(pkg);
     match get_pkg_repo(bare) {
@@ -68,9 +68,9 @@ pub(crate) fn pkg_world_entry(pkg: &str, forced_prefix: Option<&str>) -> String 
     }
 }
 
-// ── custom sets (/etc/emerge/sets.d/<name>.set, invoked as @<name>) ────────────
+// ── custom sets (/etc/portage/sets/<name>.set, invoked as @<name>) ────────────
 
-/// Safe set name (becomes a filesystem path under sets.d/).
+/// Safe set name (becomes a filesystem path under sets/).
 pub(crate) fn valid_set_name(name: &str) -> bool {
     !name.is_empty()
         && name != "world"
@@ -78,7 +78,7 @@ pub(crate) fn valid_set_name(name: &str) -> bool {
         && name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
 }
 
-/// Read sets.d/<name>.set (one atom/line, # comments; validate_pkg each).
+/// Read sets/<name>.set (one atom/line, # comments; validate_pkg each).
 pub(crate) fn read_custom_set(name: &str) -> Result<Vec<String>> {
     let path = format!("{}/{}.set", SETS_DIR, name);
 
@@ -151,7 +151,7 @@ pub(crate) fn list_custom_sets() -> Vec<String> {
     names
 }
 
-// ── declarative provisioning from world.set (bare `emerge @world`) ─────────────
+// ── declarative provisioning from world (bare `emerge @world`) ─────────────
 
 /// Drops packages `--exclude`/the mask cover, recording each in `held`.
 /// Provisioning shouldn't abort over one masked entry -- it should
@@ -170,11 +170,11 @@ fn hold_back(list: &mut Vec<String>, repo: Option<&str>, held: &mut Vec<String>)
     });
 }
 
-/// Provision missing packages from world.set (bare `@world`, no -u).
+/// Provision missing packages from world (bare `@world`, no -u).
 /// Prefix picks the source; `abs/` is listed only; bare always resolved;
-/// `Err/` only with err_install. Fixes world.set prefixes on success.
+/// `Err/` only with err_install. Fixes world prefixes on success.
 pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, err_install: bool, no_sandbox: bool, skip_srcinfo_regen: bool, unshare_net_build: bool) -> Result<bool> {
-    println!("{} Provisioning system from world.set...", ">>>".green().bold());
+    println!("{} Provisioning system from world...", ">>>".green().bold());
 
     if !is_safe_path(WORLD_SET_FILE) {
         bail!("{} is a symlink - refusing to read", WORLD_SET_FILE);
@@ -188,13 +188,13 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
             .filter(|l| !l.is_empty())
             .collect(),
         Err(_) => {
-            println!(">>> world.set not found - nothing to provision.");
+            println!(">>> world not found - nothing to provision.");
             return Ok(true);
         }
     };
 
     if entries.is_empty() {
-        println!(">>> world.set is empty - nothing to provision.");
+        println!(">>> world is empty - nothing to provision.");
         return Ok(true);
     }
 
@@ -252,7 +252,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
     hold_back(&mut bare_missing, None, &mut held);
     hold_back(&mut err_missing, None, &mut held);
     if !held.is_empty() {
-        println!(">>> {} world.set entry(ies) held back: {}", held.len(), held.join(", "));
+        println!(">>> {} world entry(ies) held back: {}", held.len(), held.join(", "));
     }
 
     // Bare always resolved; Err/ only with --err-install.
@@ -275,7 +275,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
     let total = official_missing.len() + aur_missing.len() + abs_missing.len()
         + unresolved_listed.len() + resolved_official.len() + resolved_aur.len();
     if total == 0 {
-        println!("{} Nothing to do - every world.set package is already installed.", ">>>".green().bold());
+        println!("{} Nothing to do - every world package is already installed.", ">>>".green().bold());
         return Ok(true);
     }
 
@@ -319,7 +319,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
             eprintln!(">>> Warning: some official-repo package(s) failed to install.");
             if !crate::runtime::keep_going() {
                 eprintln!(
-                    ">>> Stopping here; pass --keep-going to continue with the rest of world.set."
+                    ">>> Stopping here; pass --keep-going to continue with the rest of world."
                 );
                 return Ok(false);
             }
@@ -335,7 +335,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
             eprintln!(">>> Warning: some AUR package(s) failed to install.");
             if !crate::runtime::keep_going() {
                 eprintln!(
-                    ">>> Stopping here; pass --keep-going to continue with the rest of world.set."
+                    ">>> Stopping here; pass --keep-going to continue with the rest of world."
                 );
                 return Ok(false);
             }
@@ -351,9 +351,9 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
         if verbose { args.push("--verbose"); }
         if !ask { args.push("--noconfirm"); }
         if crate::pacman_install(&args, &resolved_official) {
-            // Fix world.set prefix now that the real repo is known.
+            // Fix world prefix now that the real repo is known.
             if let Err(e) = add_to_world_set(&resolved_official, None) {
-                eprintln!(">>> Warning: package(s) installed but world.set was not updated: {:#}", e);
+                eprintln!(">>> Warning: package(s) installed but world was not updated: {:#}", e);
             }
         } else {
             overall_ok = false;
@@ -372,7 +372,7 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
         scan_aur_pkgbuilds_or_abort(&resolved_aur);
         if aur_install(&resolved_aur, false, ask, false, false, false, no_sandbox, skip_srcinfo_regen, unshare_net_build, false) {
             if let Err(e) = add_to_world_set(&resolved_aur, Some("aur")) {
-                eprintln!(">>> Warning: package(s) installed but world.set was not updated: {:#}", e);
+                eprintln!(">>> Warning: package(s) installed but world was not updated: {:#}", e);
             }
         } else {
             overall_ok = false;
@@ -404,11 +404,11 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
 }
 
 
-// ── world.set ─────────────────────────────────────────────────────────────────
+// ── world ─────────────────────────────────────────────────────────────────
 
-/// Re-resolve repo prefixes for every world.set entry.
+/// Re-resolve repo prefixes for every world entry.
 pub(crate) fn regen_world_set() -> Result<()> {
-    println!("{} Regenerating world.set repository prefixes...", ">>>".green().bold());
+    println!("{} Regenerating world repository prefixes...", ">>>".green().bold());
 
     if !is_safe_path(WORLD_SET_FILE) {
         bail!("{} is a symlink - refusing to modify", WORLD_SET_FILE);
@@ -440,13 +440,13 @@ pub(crate) fn regen_world_set() -> Result<()> {
     }
 
     if changed == 0 {
-        println!("{} world.set is already up to date.", ">>>".green().bold());
+        println!("{} world is already up to date.", ">>>".green().bold());
         return Ok(());
     }
 
     updated.sort();
     write_world_set(&updated)?;
-    println!("{} world.set updated ({} entries changed).", ">>>".green().bold(), changed);
+    println!("{} world updated ({} entries changed).", ">>>".green().bold(), changed);
     Ok(())
 }
 
@@ -567,7 +567,7 @@ pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
 }
 
 pub(crate) fn add_to_world_set(packages: &[String], forced_prefix: Option<&str>) -> Result<()> {
-    println!("{} Adding to world.set...", ">>>".green().bold());
+    println!("{} Adding to world...", ">>>".green().bold());
 
     if !is_safe_path(WORLD_SET_FILE) {
         bail!("{} is a symlink - refusing to read", WORLD_SET_FILE);
@@ -605,7 +605,7 @@ pub(crate) fn add_to_world_set(packages: &[String], forced_prefix: Option<&str>)
 }
 
 pub(crate) fn remove_from_world_set(packages: &[String]) -> Result<()> {
-    println!(">>> Removing from world.set...");
+    println!(">>> Removing from world...");
 
     if !is_safe_path(WORLD_SET_FILE) {
         bail!("{} is a symlink - refusing to read", WORLD_SET_FILE);
@@ -802,7 +802,7 @@ pub(crate) fn write_world_set(packages: &[String]) -> Result<()> {
                 if let Some(mut stdin) = child.stdin.take() {
                     for pkg in packages {
                         if let Err(e) = writeln!(stdin, "{}", pkg) {
-                            eprintln!(">>> Error writing to world.set pipeline: {}", e);
+                            eprintln!(">>> Error writing to world pipeline: {}", e);
                         }
                     }
                 }
@@ -826,9 +826,9 @@ pub(crate) fn write_world_set(packages: &[String]) -> Result<()> {
         .context("sudo mv could not be spawned")?;
 
     if !status.success() {
-        bail!("sudo mv failed when finalizing world.set");
+        bail!("sudo mv failed when finalizing world");
     }
 
-    println!(">>> world.set updated.");
+    println!(">>> world updated.");
     Ok(())
 }

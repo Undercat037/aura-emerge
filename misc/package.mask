@@ -1,4 +1,4 @@
-# /etc/emerge/mask  (one atom per line; also /etc/emerge/mask.d/*.mask)
+# /etc/portage/package.mask  (one atom per line; also /etc/portage/package.mask/*.mask)
 #
 # Packages this machine never installs - not a warning, a hard stop,
 # even as a transitive AUR dependency.

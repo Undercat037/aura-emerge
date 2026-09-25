@@ -8,7 +8,7 @@ en | [ua](UA-README.MD)
 
 > A standalone Gentoo-style `emerge` package manager for Arch Linux - installs from official repos, the AUR, and ABS; scans PKGBUILDs for supply-chain attack patterns before building; and runs untrusted build steps inside a `bwrap` sandbox.
 
-Packages are tracked in a `world.set` file - install once, track forever.
+Packages are tracked in a `world` file - install once, track forever.
 
 ## Installation
 
@@ -82,10 +82,10 @@ See [GCC optimization flags](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options
 
 ## emerge.toml
 
-`/etc/emerge/emerge.toml` (and `~/.config/emerge/emerge.toml` for per-user overrides) is aura-emerge's own config file, separate from `makepkg.conf` - the Gentoo `make.conf` split between `EMERGE_DEFAULT_OPTS` and `CFLAGS` in one file. System file first, then the user one; last file to set a key wins.
+`/etc/portage/emerge.toml` (and `~/.config/emerge/emerge.toml` for per-user overrides) is aura-emerge's own config file, separate from `makepkg.conf` - the Gentoo `make.conf` split between `EMERGE_DEFAULT_OPTS` and `CFLAGS` in one file. System file first, then the user one; last file to set a key wins.
 
 ```bash
-sudo nvim /etc/emerge/emerge.toml
+sudo nvim /etc/portage/emerge.toml
 ```
 
 ```toml
@@ -116,9 +116,9 @@ Scalars and lists are interchangeable everywhere - a list is joined with spaces,
 
 [**→ Example emerge.toml**](misc/emerge.toml)
 
-## Mask (/etc/emerge/mask)
+## Mask (/etc/portage/package.mask)
 
-Portage's `package.mask`, for Arch atoms: packages this machine never installs, checked even as a transitive AUR dependency and even when requested by name. One entry per line in `/etc/emerge/mask` or `/etc/emerge/mask.d/*.mask`, `*` glob allowed, optional repo prefix, optional trailing `# reason`:
+Portage's `package.mask`, for Arch atoms: packages this machine never installs, checked even as a transitive AUR dependency and even when requested by name. One entry per line in `/etc/portage/package.mask` or `/etc/portage/package.mask/*.mask`, `*` glob allowed, optional repo prefix, optional trailing `# reason`:
 
 ```
 ayugram-desktop-bin            # specific package, any source
@@ -166,7 +166,7 @@ A dependency pacman pulled in that isn't literally named in anyone's "Depends On
 
 ## Merge/unmerge log
 
-`/var/log/aura-emerge.log` - Portage's `emerge.log`, for pacman/AUR/ABS atoms. Append-only, one line per event, written the same way other root-owned `/etc/emerge/*` state is (`sudo tee`, best-effort - a failed log write never fails the merge/unmerge that already happened).
+`/var/log/emerge.log` - Portage's `emerge.log`, for pacman/AUR/ABS atoms. Append-only, one line per event, written the same way other root-owned `/etc/portage/*` state is (`sudo tee`, best-effort - a failed log write never fails the merge/unmerge that already happened).
 
 ```
 2026-09-21 08:51:44  MERGE    aur    noctalia-5.1.0-1.1        (12s)
@@ -194,12 +194,12 @@ emerge neovim-git --aur --edit --skip-srcinfo-regen  # edit without regenerating
 emerge neovim-git --aur --unshare-net-build     # no network during build()/check()/package()
 emerge -c                                  # remove orphans (depclean)
 emerge -C neovim                           # remove package (unmerge)
-emerge @world                              # provision: install missing entries from world.set
+emerge @world                              # provision: install missing entries from world
 emerge @world --err-install                   # also retry Err/ (unknown-source) entries normally
-emerge -u @world                           # full system upgrade (repos + AUR); does not read world.set
+emerge -u @world                           # full system upgrade (repos + AUR); does not read world
 emerge -u @world --refresh                 # upgrade with forced -Syy first
 emerge --sync                              # sync package databases
-emerge @game-kit                           # custom set from /etc/emerge/sets.d/game-kit.set
+emerge @game-kit                           # custom set from /etc/portage/sets/game-kit.set
 emerge @game-kit neovim                    # sets + plain packages
 emerge --list-sets                         # list available @sets
 emerge --info                              # system info (Gentoo-style emerge --info)
@@ -219,15 +219,15 @@ emerge -s neovim --only-repos              # search official repos only
 emerge --searchdesc neovim                 # search by description
 emerge -sv neovim                          # detailed package info
 emerge -sv neovim-git --aur                # detailed info from AUR only
-emerge -1 htop                             # install as dependency (not added to world.set)
+emerge -1 htop                             # install as dependency (not added to world)
 emerge -n neovim                           # do not reinstall if present (--noreplace)
 emerge -p neovim                           # dry run
 emerge -a neovim                           # ask before acting
-emerge --select neovim                     # add to world.set without installing
-emerge --deselect neovim                   # remove from world.set without unmerging
-emerge --prune                             # remove packages not in world.set
+emerge --select neovim                     # add to world without installing
+emerge --deselect neovim                   # remove from world without unmerging
+emerge --prune                             # remove packages not in world
 emerge --regen                             # regenerate package metadata cache
-emerge --regen-world                       # re-resolve repo prefixes in world.set
+emerge --regen-world                       # re-resolve repo prefixes in world
 emerge --regen-sets @game-kit              # re-resolve prefixes for one custom set
 emerge --regen-sets @game-kit --regen-sort # same + alphabetically sort the file
 emerge --regen-world-from-explicit         # one-time migration from pacman -Qeq
@@ -279,7 +279,7 @@ If `makepkg.conf` already sets `SRCDEST`, that value is used instead.
 
 ## Batch install
 
-`--batchinstall <FILE>` reads a plain-text package list and folds it into the normal package list before anything runs - same format as a [custom set](#custom-sets) (one atom per line, `#` comments allowed), but from any path you give directly, no need to register it under `/etc/emerge/sets.d/` first.
+`--batchinstall <FILE>` reads a plain-text package list and folds it into the normal package list before anything runs - same format as a [custom set](#custom-sets) (one atom per line, `#` comments allowed), but from any path you give directly, no need to register it under `/etc/portage/sets/` first.
 
 ```
 # pkgs.txt
@@ -303,7 +303,7 @@ emerge neovim-git --aur --pkgbuild-view
 emerge neovim --abs --edit --pkgbuild-view   # edit first, then view/diff the result
 ```
 
-`--install-pkgbuild <PATH>` builds and installs an arbitrary local PKGBUILD checkout through the same pipeline as an AUR/ABS install - scanner, then the bwrap sandbox - instead of a bare, unaudited `makepkg -si`. `PATH` must contain a `PKGBUILD`; if there's no `.SRCINFO` yet, one is generated (`makepkg --printsrcinfo`, same as `--edit` does) so dependencies resolve statically. Combines with `--pkgbuild-view`, `-a`/`--ask`, `-1`/`--oneshot`, `--skippgp`, `--no-sandbox`, `--unshare-net-build`, `--skip-srcinfo-regen`; not compatible with any package/`@set` argument or `--aur`/`--abs`. Recorded in `world.set` with the `Err/` prefix (source unknown - see [world.set](#worldset)) unless `-1`/`--oneshot` is also given.
+`--install-pkgbuild <PATH>` builds and installs an arbitrary local PKGBUILD checkout through the same pipeline as an AUR/ABS install - scanner, then the bwrap sandbox - instead of a bare, unaudited `makepkg -si`. `PATH` must contain a `PKGBUILD`; if there's no `.SRCINFO` yet, one is generated (`makepkg --printsrcinfo`, same as `--edit` does) so dependencies resolve statically. Combines with `--pkgbuild-view`, `-a`/`--ask`, `-1`/`--oneshot`, `--skippgp`, `--no-sandbox`, `--unshare-net-build`, `--skip-srcinfo-regen`; not compatible with any package/`@set` argument or `--aur`/`--abs`. Recorded in `world` with the `Err/` prefix (source unknown - see [world](#worldset)) unless `-1`/`--oneshot` is also given.
 
 ```bash
 emerge --install-pkgbuild ~/src/my-pkg
@@ -330,7 +330,7 @@ emerge --check-devel     # just report which ones moved, no rebuild
 
 ## @preserved-rebuild
 
-Arch has no preserved-libs tracking. `@preserved-rebuild` collects every installed package’s declared dependencies (`pacman -Qi`), feeds the deduplicated list to `pacman -T`, and offers to reinstall unsatisfied ones via `pacman -S --asdeps` (so they don’t look “explicit” and get vacuumed into world.set by a later `--regen-world-from-explicit`).
+Arch has no preserved-libs tracking. `@preserved-rebuild` collects every installed package’s declared dependencies (`pacman -Qi`), feeds the deduplicated list to `pacman -T`, and offers to reinstall unsatisfied ones via `pacman -S --asdeps` (so they don’t look “explicit” and get vacuumed into world by a later `--regen-world-from-explicit`).
 
 ## --revdep-rebuild
 
@@ -343,9 +343,9 @@ emerge --revdep-rebuild       # scan, then ask before fixing anything
 emerge --revdep-rebuild -p    # scan only, list what's broken
 ```
 
-## world.set
+## world
 
-Path: `/etc/emerge/world.set`. Every explicitly installed package is added automatically and removed on unmerge. Editable by hand (one package per line).
+Path: `/etc/portage/world`. Every explicitly installed package is added automatically and removed on unmerge. Editable by hand (one package per line).
 
 ```
 cachyos-extra-v3/rust-analyzer
@@ -364,16 +364,16 @@ Batch installs no longer abort the whole request if one name is missing - the re
 
 ### `@world` has two meanings
 
-- **`emerge @world` (no `-u`)** - *provision*. Installs whatever `world.set` lists that isn’t already on the system; already-installed packages are left alone. Prefix decides the source. Keep `world.set` in dotfiles, clone on a fresh machine, run `emerge @world`.
-- **`emerge -u @world`** (or `emerge -u`) - *upgrade*. Upgrades everything already installed (repos + AUR). Does not read `world.set`.
+- **`emerge @world` (no `-u`)** - *provision*. Installs whatever `world` lists that isn’t already on the system; already-installed packages are left alone. Prefix decides the source. Keep `world` in dotfiles, clone on a fresh machine, run `emerge @world`.
+- **`emerge -u @world`** (or `emerge -u`) - *upgrade*. Upgrades everything already installed (repos + AUR). Does not read `world`.
 - **`emerge --sync`** - database refresh only (`-Sy` / `-Syy`).
 
 ## Custom sets
 
-`/etc/emerge/sets.d/<name>.set` is invoked as `@<name>`:
+`/etc/portage/sets/<name>.set` is invoked as `@<name>`:
 
 ```
-# /etc/emerge/sets.d/game-kit.set
+# /etc/portage/sets/game-kit.set
 steam
 lutris
 gamemode
@@ -440,7 +440,7 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `-s` | Search packages |
 | `--searchdesc` | Search by description |
 | `-sv` | Detailed package info |
-| `-u` | Full system upgrade (does not read world.set) |
+| `-u` | Full system upgrade (does not read world) |
 | `--devel` | With `-u` - also rebuild `-git`/`-hg`/`-svn`/`-bzr` packages whose upstream moved |
 | `--check-devel` | Report which devel packages have upstream changes (no rebuild) |
 | `-C` | Remove packages (unmerge) |
@@ -468,14 +468,14 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `--info` | System info |
 | `--news [N\|all]` | Arch Linux news |
 | `--check-news [N\|all]` | Alias for `--news` |
-| `--select` | Add to world.set without installing |
-| `--deselect` | Remove from world.set without unmerging |
-| `--prune` | Remove packages not in world.set |
+| `--select` | Add to world without installing |
+| `--deselect` | Remove from world without unmerging |
+| `--prune` | Remove packages not in world |
 | `--regen` | Regenerate metadata cache |
-| `--regen-world` | Re-resolve repo prefixes in world.set |
+| `--regen-world` | Re-resolve repo prefixes in world |
 | `--regen-sets <SET>` | Re-resolve prefixes for one custom set |
 | `--regen-sort` | With `--regen-sets` - also sort the file |
-| `--regen-world-from-explicit` | Migration: seed world.set from `pacman -Qeq` |
+| `--regen-world-from-explicit` | Migration: seed world from `pacman -Qeq` |
 | `--err-install` | On `@world`, also retry `Err/` entries |
 | `--resume` | Resume interrupted transaction |
 | `--skipfirst` | Skip first package on resume |

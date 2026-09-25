@@ -1,5 +1,11 @@
-//! `/etc/emerge/mask` (and `/etc/emerge/mask.d/*.mask`): packages this
-//! machine never installs, Portage's `package.mask` with Arch atoms.
+//! `/etc/portage/package.mask`: packages this machine never installs,
+//! Portage's `package.mask` with Arch atoms.
+//!
+//! Same path can be either a plain file or a directory -- exactly like
+//! real Portage's `package.mask`. As a directory, every regular file
+//! inside is read (any name, no `.mask` extension required, dotfiles
+//! skipped); as a file, it's read directly. Order across files in a
+//! directory is by filename.
 //!
 //! Separate from the PKGBUILD scanner in `security.rs`: the scanner
 //! judges code, the mask is a standing decision needing no
@@ -26,8 +32,7 @@ use std::sync::OnceLock;
 
 use colored::Colorize;
 
-pub(crate) const MASK_FILE: &str = "/etc/emerge/mask";
-pub(crate) const MASK_DIR: &str = "/etc/emerge/mask.d";
+pub(crate) const MASK_FILE: &str = "/etc/portage/package.mask";
 
 #[derive(Debug, Clone)]
 pub(crate) struct MaskEntry {
@@ -43,7 +48,7 @@ pub(crate) struct MaskEntry {
 }
 
 impl MaskEntry {
-    /// "aur/*-bin (/etc/emerge/mask:7)" for messages.
+    /// "aur/*-bin (/etc/portage/mask:7)" for messages.
     pub(crate) fn describe(&self) -> String {
         let atom = match &self.repo {
             Some(r) => format!("{}/{}", r, self.pattern),
@@ -97,16 +102,32 @@ pub(crate) fn find(name: &str, repo: Option<&str>) -> Option<&'static MaskEntry>
 }
 
 fn load() -> MaskList {
-    let mut files: Vec<PathBuf> = vec![PathBuf::from(MASK_FILE)];
-    if let Ok(entries) = std::fs::read_dir(MASK_DIR) {
-        let mut extra: Vec<PathBuf> = entries
+    let root = PathBuf::from(MASK_FILE);
+
+    // `package.mask` is either a plain file, or a directory of files
+    // (any name, dotfiles skipped) -- same as real Portage. Only one
+    // of the two shapes exists on disk at a time, so no merge needed
+    // between them; `--regen` migration is what has to decide which
+    // shape to write.
+    let files: Vec<PathBuf> = if root.is_dir() {
+        let mut extra: Vec<PathBuf> = std::fs::read_dir(&root)
+            .into_iter()
+            .flatten()
             .flatten()
             .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("mask"))
+            .filter(|p| p.is_file())
+            .filter(|p| {
+                !p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with('.'))
+                    .unwrap_or(true)
+            })
             .collect();
         extra.sort();
-        files.extend(extra);
-    }
+        extra
+    } else {
+        vec![root]
+    };
 
     let mut entries = Vec::new();
     for path in files {
@@ -234,10 +255,9 @@ pub(crate) fn report_blocked(blocked: &[(String, &MaskEntry)]) {
     }
     eprintln!();
     eprintln!(
-        "{} Edit {} (or a file under {}) to change that.",
+        "{} Edit {} (a file, or a directory of files) to change that.",
         " *".yellow().bold(),
-        MASK_FILE,
-        MASK_DIR
+        MASK_FILE
     );
 }
 

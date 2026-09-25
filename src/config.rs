@@ -1,25 +1,32 @@
-//! `/etc/emerge/emerge.toml` and `~/.config/emerge/emerge.toml`.
+//! `/etc/portage/make.conf` and `~/.config/emerge/make.conf`.
 //!
-//! Two jobs in one file, like Portage's `make.conf`:
+//! Two jobs in one file, like real Portage's `make.conf`:
 //!   * `EMERGE_DEFAULT_OPTS` -- flags spliced into argv before clap
 //!     sees it. `--ignore-default-opts` skips them for one run.
-//!   * `[build]` -- `CFLAGS`/`CXXFLAGS`/`LDFLAGS`/`RUSTFLAGS`/
-//!     `MAKEFLAGS`/`NINJAFLAGS`/`BUILDENV`/`OPTIONS`, applied via a
-//!     generated makepkg.conf passed to makepkg as `--config`.
+//!   * `CFLAGS`/`CXXFLAGS`/`LDFLAGS`/`RUSTFLAGS`/`MAKEFLAGS`/
+//!     `NINJAFLAGS`/`BUILDENV`/`OPTIONS`, applied via a generated
+//!     makepkg.conf passed to makepkg as `--config`.
 //!
-//! ```toml
-//! EMERGE_DEFAULT_OPTS = ["--pkgbuild-view", "--unshare-net-build"]
+//! Flat, bash-assignment syntax -- no `[build]` table, same as real
+//! `make.conf`:
 //!
-//! [build]
-//! CFLAGS = "-march=native -O2 -pipe"
-//! MAKEFLAGS = "-j$(nproc)"
-//! OPTIONS = ["strip", "!debug"]
+//! ```text
+//! EMERGE_DEFAULT_OPTS="--pkgbuild-view --unshare-net-build"
+//!
+//! CFLAGS="-march=native -O2 -pipe"
+//! MAKEFLAGS="-j$(nproc)"
+//! OPTIONS=(strip !debug)
 //! ```
 //!
+//! `KEY="..."` and bare `KEY=...` both allow `$`/`` ` `` to survive
+//! into the generated makepkg.conf for shell expansion at build time
+//! (so `-j$(nproc)` works). `KEY='...'` is a literal single-quoted
+//! string -- no expansion, ever, even once re-embedded in the
+//! generated file. `KEY=(a b c)` is an array; array entries may be
+//! bare or quoted. `#` starts a comment outside quotes.
+//!
 //! Scalars and lists are interchangeable: a list is joined with
-//! spaces, a string is split on them. Values are shell-expanded when
-//! makepkg sources the generated file, so `-j$(nproc)` works; a TOML
-//! literal string (`'\$FOO'`) keeps a dollar literal.
+//! spaces, a string is split on them.
 //!
 //! System file first, then the user one; last to set a key wins.
 //! Trust note: a value here becomes shell code run as the build user,
@@ -30,9 +37,9 @@ use std::path::{Path, PathBuf};
 
 use colored::Colorize;
 
-pub(crate) const SYSTEM_CONF: &str = "/etc/emerge/emerge.toml";
+pub(crate) const SYSTEM_CONF: &str = "/etc/portage/make.conf";
 
-/// Build keys understood in `[build]`.
+/// Build keys understood at the top level.
 pub(crate) const BUILD_VARS: &[&str] = &[
     "CFLAGS",
     "CXXFLAGS",
@@ -56,11 +63,16 @@ const EXPORT_VARS: &[&str] = &["NINJAFLAGS"];
 /// exactly what it is.
 const DEFAULT_FLAG_KEY: &str = "EMERGE_DEFAULT_OPTS";
 
-/// A build value: TOML string or array of strings, kept as written so
-/// arrays stay arrays in the generated makepkg.conf.
+/// A build value, kept as written so arrays stay arrays in the
+/// generated makepkg.conf.
 #[derive(Debug, Clone)]
 pub(crate) enum BuildValue {
+    /// Bare or double-quoted: `$`/`` ` `` survive for shell expansion
+    /// at build time.
     Scalar(String),
+    /// Single-quoted: literal, no expansion -- re-escaped if it ends
+    /// up back inside a double-quoted string (see `esc_double_literal`).
+    LiteralScalar(String),
     List(Vec<String>),
 }
 
@@ -68,7 +80,7 @@ impl BuildValue {
     /// One-line form, for `--info` and messages.
     pub(crate) fn display(&self) -> String {
         match self {
-            BuildValue::Scalar(s) => s.clone(),
+            BuildValue::Scalar(s) | BuildValue::LiteralScalar(s) => s.clone(),
             BuildValue::List(v) => v.join(" "),
         }
     }
@@ -76,7 +88,9 @@ impl BuildValue {
     /// Tokens, for keys makepkg holds as a bash array.
     fn tokens(&self) -> Vec<String> {
         match self {
-            BuildValue::Scalar(s) => s.split_whitespace().map(str::to_string).collect(),
+            BuildValue::Scalar(s) | BuildValue::LiteralScalar(s) => {
+                s.split_whitespace().map(str::to_string).collect()
+            }
             BuildValue::List(v) => v.clone(),
         }
     }
@@ -92,18 +106,18 @@ pub(crate) struct Config {
     pub(crate) files: Vec<PathBuf>,
 }
 
-/// `$XDG_CONFIG_HOME/emerge/emerge.toml`, else `~/.config/emerge/emerge.toml`.
+/// `$XDG_CONFIG_HOME/emerge/make.conf`, else `~/.config/emerge/make.conf`.
 pub(crate) fn user_conf_path() -> Option<PathBuf> {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         if !xdg.is_empty() {
-            return Some(PathBuf::from(xdg).join("emerge/emerge.toml"));
+            return Some(PathBuf::from(xdg).join("emerge/make.conf"));
         }
     }
     let home = std::env::var("HOME").ok()?;
     if home.is_empty() {
         return None;
     }
-    Some(PathBuf::from(home).join(".config/emerge/emerge.toml"))
+    Some(PathBuf::from(home).join(".config/emerge/make.conf"))
 }
 
 /// Reads the system config, then the user one; later wins per key.
@@ -151,89 +165,169 @@ pub(crate) fn load() -> Config {
     Config { default_flags, build_vars, files }
 }
 
+/// Stores one parsed `key = value` into `vars`/`default_flags`, or
+/// warns if `key` isn't recognized.
+fn store(
+    key: String,
+    value: BuildValue,
+    path: &Path,
+    vars: &mut HashMap<String, BuildValue>,
+    default_flags: &mut Vec<String>,
+) {
+    if key == DEFAULT_FLAG_KEY {
+        *default_flags = value.tokens();
+    } else if BUILD_VARS.contains(&key.as_str()) {
+        vars.insert(key, value);
+    } else {
+        warn(path, &key, "unknown key (ignored)");
+    }
+}
 
-/// Parses one file into the accumulators. False if it was unusable.
+/// Parses one make.conf-style file into the accumulators. False if it
+/// had a structural error (unterminated quote or array); a bad or
+/// unknown key just warns and is skipped.
 fn parse_into(
     text: &str,
     path: &Path,
     vars: &mut HashMap<String, BuildValue>,
     default_flags: &mut Vec<String>,
 ) -> bool {
-    let table: toml::Table = match text.parse() {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!(
-                "{} {}: {} - ignoring this file",
-                ">>> Warning:".yellow().bold(),
-                path.display(),
-                e.message()
-            );
-            return false;
-        }
-    };
+    let cs: Vec<char> = text.chars().collect();
+    let n = cs.len();
+    let mut i = 0;
+    let mut ok = true;
 
-    for (key, value) in &table {
-        if key == DEFAULT_FLAG_KEY {
-            match as_build_value(value) {
-                Some(v) => *default_flags = v.tokens(),
-                None => warn(path, key, "expected a string or array of strings"),
+    while i < n {
+        while i < n && cs[i].is_whitespace() {
+            i += 1;
+        }
+        if i >= n {
+            break;
+        }
+        if cs[i] == '#' {
+            while i < n && cs[i] != '\n' {
+                i += 1;
             }
             continue;
         }
-        if key == "build" {
-            match value.as_table() {
-                Some(build) => parse_build_table(build, path, vars),
-                None => warn(path, key, "expected a [build] table"),
+
+        let key_start = i;
+        while i < n && (cs[i].is_ascii_alphanumeric() || cs[i] == '_') {
+            i += 1;
+        }
+        if i == key_start {
+            warn(path, "?", "unexpected character (line skipped)");
+            while i < n && cs[i] != '\n' {
+                i += 1;
             }
+            ok = false;
             continue;
         }
-        // Tolerate build keys at the top level -- it's the obvious
-        // mistake to make, and refusing on a technicality helps nobody.
-        if BUILD_VARS.contains(&key.as_str()) {
-            match as_build_value(value) {
-                Some(v) => {
-                    vars.insert(key.clone(), v);
+        let key: String = cs[key_start..i].iter().collect();
+
+        while i < n && (cs[i] == ' ' || cs[i] == '\t') {
+            i += 1;
+        }
+        if i >= n || cs[i] != '=' {
+            warn(path, &key, "expected '=' after key (line skipped)");
+            while i < n && cs[i] != '\n' {
+                i += 1;
+            }
+            ok = false;
+            continue;
+        }
+        i += 1;
+        while i < n && (cs[i] == ' ' || cs[i] == '\t') {
+            i += 1;
+        }
+
+        if i < n && cs[i] == '(' {
+            i += 1;
+            let mut tokens = Vec::new();
+            let mut closed = false;
+            while i < n {
+                while i < n && cs[i].is_whitespace() {
+                    i += 1;
                 }
-                None => warn(path, key, "expected a string or array of strings"),
+                if i >= n {
+                    break;
+                }
+                if cs[i] == ')' {
+                    i += 1;
+                    closed = true;
+                    break;
+                }
+                if cs[i] == '#' {
+                    while i < n && cs[i] != '\n' {
+                        i += 1;
+                    }
+                    continue;
+                }
+                if cs[i] == '"' || cs[i] == '\'' {
+                    let q = cs[i];
+                    i += 1;
+                    let tok_start = i;
+                    while i < n && cs[i] != q {
+                        i += 1;
+                    }
+                    tokens.push(cs[tok_start..i].iter().collect());
+                    if i < n {
+                        i += 1;
+                    }
+                } else {
+                    let tok_start = i;
+                    while i < n && !cs[i].is_whitespace() && cs[i] != ')' {
+                        i += 1;
+                    }
+                    tokens.push(cs[tok_start..i].iter().collect());
+                }
             }
-            continue;
-        }
-        warn(path, key, "unknown key (ignored)");
-    }
-    true
-}
-
-fn parse_build_table(build: &toml::Table, path: &Path, vars: &mut HashMap<String, BuildValue>) {
-    for (key, value) in build {
-        if !BUILD_VARS.contains(&key.as_str()) {
-            warn(path, &format!("build.{}", key), "unknown build key (ignored)");
-            continue;
-        }
-        match as_build_value(value) {
-            Some(v) => {
-                vars.insert(key.clone(), v);
+            if !closed {
+                warn(path, &key, "unterminated array (missing ')')");
+                ok = false;
             }
-            None => warn(
-                path,
-                &format!("build.{}", key),
-                "expected a string or array of strings",
-            ),
-        }
-    }
-}
-
-fn as_build_value(value: &toml::Value) -> Option<BuildValue> {
-    match value {
-        toml::Value::String(s) => Some(BuildValue::Scalar(s.clone())),
-        toml::Value::Array(items) => {
-            let mut out = Vec::with_capacity(items.len());
-            for item in items {
-                out.push(item.as_str()?.to_string());
+            store(key, BuildValue::List(tokens), path, vars, default_flags);
+        } else if i < n && (cs[i] == '"' || cs[i] == '\'') {
+            let q = cs[i];
+            i += 1;
+            let val_start = i;
+            if q == '"' {
+                // `\"` doesn't end the string; anything else (`$`,
+                // `` ` ``, other backslashes) passes through raw.
+                while i < n && cs[i] != '"' {
+                    if cs[i] == '\\' && i + 1 < n {
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+            } else {
+                while i < n && cs[i] != '\'' {
+                    i += 1;
+                }
             }
-            Some(BuildValue::List(out))
+            if i >= n {
+                warn(path, &key, "unterminated quoted value");
+                ok = false;
+                let raw: String = cs[val_start..n].iter().collect();
+                let v = if q == '\'' { BuildValue::LiteralScalar(raw) } else { BuildValue::Scalar(raw) };
+                store(key, v, path, vars, default_flags);
+                break;
+            }
+            let raw: String = cs[val_start..i].iter().collect();
+            i += 1;
+            let v = if q == '\'' { BuildValue::LiteralScalar(raw) } else { BuildValue::Scalar(raw) };
+            store(key, v, path, vars, default_flags);
+        } else {
+            let val_start = i;
+            while i < n && !cs[i].is_whitespace() && cs[i] != '#' {
+                i += 1;
+            }
+            let raw: String = cs[val_start..i].iter().collect();
+            store(key, BuildValue::Scalar(raw), path, vars, default_flags);
         }
-        _ => None,
     }
+    ok
 }
 
 fn warn(path: &Path, key: &str, msg: &str) {
@@ -254,6 +348,20 @@ fn esc_double(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 8);
     for c in s.chars() {
         if c == '"' || c == '`' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Same, but for a value that came from single quotes in make.conf --
+/// `$`/`` ` `` must NOT survive into the generated double-quoted
+/// string, or a literal `$FOO` would suddenly expand.
+fn esc_double_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        if c == '\\' || c == '"' || c == '`' || c == '$' {
             out.push('\\');
         }
         out.push(c);
@@ -289,7 +397,7 @@ pub(crate) fn makepkg_override_conf(cfg: &Config) -> Option<String> {
             let tokens = value.tokens();
             if let Some(bad) = tokens.iter().find(|t| !valid_array_token(t)) {
                 eprintln!(
-                    "{} emerge.toml: {} contains an unusable entry '{}' - leaving {} as makepkg.conf has it",
+                    "{} make.conf: {} contains an unusable entry '{}' - leaving {} as makepkg.conf has it",
                     ">>> Warning:".yellow().bold(),
                     key,
                     bad,
@@ -300,7 +408,11 @@ pub(crate) fn makepkg_override_conf(cfg: &Config) -> Option<String> {
             out.push_str(&format!("{}=({})\n", key, tokens.join(" ")));
             continue;
         }
-        out.push_str(&format!("{}=\"{}\"\n", key, esc_double(&value.display())));
+        let escaped = match value {
+            BuildValue::LiteralScalar(s) => esc_double_literal(s),
+            _ => esc_double(&value.display()),
+        };
+        out.push_str(&format!("{}=\"{}\"\n", key, escaped));
         if EXPORT_VARS.contains(&key.as_str()) {
             exports.push(key.as_str());
         }
@@ -366,7 +478,7 @@ const CONFLICTS: &[(&str, &str, &str)] = &[
         "--unshare-net-build drops the build's network inside the bwrap sandbox, which --no-sandbox turns off entirely",
     ),
     ("--skippgp", "--autopgp", "one skips PGP checks, the other imports keys to satisfy them"),
-    ("--select", "--deselect", "one adds to world.set, the other removes from it"),
+    ("--select", "--deselect", "one adds to world, the other removes from it"),
 ];
 
 fn base_of(token: &str) -> &str {
@@ -526,59 +638,74 @@ mod config_tests {
     fn parse(text: &str) -> Config {
         let mut vars = HashMap::new();
         let mut flags = Vec::new();
-        assert!(parse_into(text, Path::new("test.toml"), &mut vars, &mut flags));
+        assert!(parse_into(text, Path::new("test.conf"), &mut vars, &mut flags));
         let build_vars = BUILD_VARS
             .iter()
             .filter_map(|k| vars.get(*k).map(|v| (k.to_string(), v.clone())))
             .collect();
-        Config { default_flags: flags, build_vars, files: vec![PathBuf::from("test.toml")] }
+        Config { default_flags: flags, build_vars, files: vec![PathBuf::from("test.conf")] }
     }
 
     #[test]
     fn default_flags_accept_array_and_string() {
-        let a = parse(r#"EMERGE_DEFAULT_OPTS = ["--ask", "--devel"]"#);
-        let b = parse(r#"EMERGE_DEFAULT_OPTS = "--ask --devel""#);
+        let a = parse(r#"EMERGE_DEFAULT_OPTS=(--ask --devel)"#);
+        let b = parse(r#"EMERGE_DEFAULT_OPTS="--ask --devel""#);
         assert_eq!(a.default_flags, vec!["--ask", "--devel"]);
         assert_eq!(a.default_flags, b.default_flags);
     }
 
     #[test]
-    fn build_keys_read_from_table_and_top_level() {
-        let nested = parse("[build]\nCFLAGS = \"-O2\"\n");
-        let flat = parse("CFLAGS = \"-O2\"\n");
-        assert_eq!(nested.build_vars.len(), 1);
-        assert_eq!(nested.build_vars[0].1.display(), "-O2");
-        assert_eq!(flat.build_vars[0].1.display(), "-O2");
+    fn build_keys_read_flat() {
+        let cfg = parse("CFLAGS=\"-O2\"\n");
+        assert_eq!(cfg.build_vars.len(), 1);
+        assert_eq!(cfg.build_vars[0].1.display(), "-O2");
     }
 
     #[test]
     fn scalars_and_lists_are_interchangeable() {
-        let as_list = parse(r#"[build]
-OPTIONS = ["strip", "!debug"]"#);
-        let as_string = parse(r#"[build]
-OPTIONS = "strip !debug""#);
+        let as_list = parse("OPTIONS=(strip !debug)");
+        let as_string = parse(r#"OPTIONS="strip !debug""#);
         assert_eq!(as_list.build_vars[0].1.display(), "strip !debug");
         assert_eq!(as_list.build_vars[0].1.tokens(), as_string.build_vars[0].1.tokens());
     }
 
     #[test]
+    fn bare_unquoted_scalar_works() {
+        let cfg = parse("MAKEFLAGS=-j16\n");
+        assert_eq!(cfg.build_vars[0].1.display(), "-j16");
+    }
+
+    #[test]
+    fn single_quoted_value_stays_literal_when_reembedded() {
+        let cfg = parse("CFLAGS='$FOO'\n");
+        let conf = makepkg_override_conf(&cfg).unwrap();
+        assert!(conf.contains(r#"CFLAGS="\$FOO""#));
+    }
+
+    #[test]
     fn unknown_keys_are_ignored_not_fatal() {
-        let cfg = parse("NONSENSE = \"x\"\n[build]\nALSO_NONSENSE = \"y\"\nCFLAGS = \"-O2\"\n");
+        let cfg = parse("NONSENSE=\"x\"\nALSO_NONSENSE=\"y\"\nCFLAGS=\"-O2\"\n");
         assert_eq!(cfg.build_vars.len(), 1);
         assert_eq!(cfg.build_vars[0].0, "CFLAGS");
     }
 
     #[test]
-    fn malformed_toml_is_reported_not_panicked() {
+    fn unterminated_quote_is_reported_not_panicked() {
         let mut vars = HashMap::new();
         let mut flags = Vec::new();
-        assert!(!parse_into("CFLAGS = [unclosed", Path::new("t.toml"), &mut vars, &mut flags));
-        assert!(vars.is_empty());
+        assert!(!parse_into("CFLAGS=\"unclosed\n", Path::new("t.conf"), &mut vars, &mut flags));
+    }
+
+    #[test]
+    fn unterminated_array_is_reported_not_panicked() {
+        let mut vars = HashMap::new();
+        let mut flags = Vec::new();
+        assert!(!parse_into("OPTIONS=(strip !debug\n", Path::new("t.conf"), &mut vars, &mut flags));
     }
 
     #[test]
     fn generated_conf_sources_system_then_overrides() {
-        let cfg = parse("[build]\nCFLAGS = \"-O2\"\nMAKEFLAGS = \"-j$(nproc)\"\nOPTIONS = [\"strip\", \"!debug\"]\nNINJAFLAGS = \"-j4\"\n");
+        let cfg = parse("CFLAGS=\"-O2\"\nMAKEFLAGS=\"-j$(nproc)\"\nOPTIONS=(strip !debug)\nNINJAFLAGS=\"-j4\"\n");
         let conf = makepkg_override_conf(&cfg).expect("build vars set");
         let src = conf.find("source ").expect("sources the system conf");
         // Arrays stay arrays, scalars stay quoted, $() survives.
@@ -591,13 +718,13 @@ OPTIONS = "strip !debug""#);
 
     #[test]
     fn no_build_vars_means_no_generated_conf() {
-        let cfg = parse(r#"EMERGE_DEFAULT_OPTS = ["--ask"]"#);
+        let cfg = parse(r#"EMERGE_DEFAULT_OPTS=(--ask)"#);
         assert!(makepkg_override_conf(&cfg).is_none());
     }
 
     #[test]
     fn cli_flag_wins_over_conflicting_config_default() {
-        let cfg = parse(r#"EMERGE_DEFAULT_OPTS = ["--aur"]"#);
+        let cfg = parse(r#"EMERGE_DEFAULT_OPTS=(--aur)"#);
         let argv = vec!["emerge".to_string(), "--abs".to_string(), "nano".to_string()];
         let out = build_argv(&argv, &cfg);
         assert!(!out.iter().any(|t| t == "--aur"));
@@ -606,21 +733,21 @@ OPTIONS = "strip !debug""#);
 
     #[test]
     fn config_defaults_precede_the_command_line() {
-        let cfg = parse(r#"EMERGE_DEFAULT_OPTS = ["--pkgbuild-view"]"#);
+        let cfg = parse(r#"EMERGE_DEFAULT_OPTS=(--pkgbuild-view)"#);
         let argv = vec!["emerge".to_string(), "nano".to_string()];
         assert_eq!(build_argv(&argv, &cfg), vec!["emerge", "--pkgbuild-view", "nano"]);
     }
 
     #[test]
     fn ignore_default_opts_drops_them_all() {
-        let cfg = parse(r#"EMERGE_DEFAULT_OPTS = ["--pkgbuild-view"]"#);
+        let cfg = parse(r#"EMERGE_DEFAULT_OPTS=(--pkgbuild-view)"#);
         let argv = vec!["emerge".to_string(), "--ignore-default-opts".to_string()];
         assert_eq!(build_argv(&argv, &cfg), argv);
     }
 
     #[test]
     fn action_flags_are_not_accepted_as_defaults() {
-        let cfg = parse(r#"EMERGE_DEFAULT_OPTS = ["--unmerge", "--ask"]"#);
+        let cfg = parse(r#"EMERGE_DEFAULT_OPTS=(--unmerge --ask)"#);
         let out = build_argv(&vec!["emerge".to_string()], &cfg);
         assert!(!out.iter().any(|t| t == "--unmerge"));
         assert!(out.iter().any(|t| t == "--ask"));
@@ -628,7 +755,7 @@ OPTIONS = "strip !debug""#);
 
     #[test]
     fn valued_default_flag_keeps_its_value() {
-        let cfg = parse(r#"EMERGE_DEFAULT_OPTS = ["--exclude", "linux"]"#);
+        let cfg = parse(r#"EMERGE_DEFAULT_OPTS=(--exclude linux)"#);
         let out = build_argv(&vec!["emerge".to_string(), "-u".to_string()], &cfg);
         assert_eq!(out, vec!["emerge", "--exclude", "linux", "-u"]);
     }

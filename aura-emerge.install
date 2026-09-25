@@ -1,6 +1,6 @@
 post_install() {
   ln -sf /usr/bin/emerge /usr/bin/portageq
-  install -dm755 /etc/emerge/sets.d
+  install -dm755 /etc/portage/sets
 }
 
 post_upgrade() {

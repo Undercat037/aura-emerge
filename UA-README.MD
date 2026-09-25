@@ -8,7 +8,7 @@
 
 > Автономний ПМ у стилі Gentoo `emerge` для Arch Linux - встановлює з офіційних репозиторіїв, AUR та ABS, сканує PKGBUILD на ознаки атак на ланцюг постачання перед збіркою і виконує недовірені кроки збірки всередині пісочниці `bwrap`.
 
-Керує пакунками через файл `world.set` - встановив один раз, відстежується назавжди.
+Керує пакунками через файл `world` - встановив один раз, відстежується назавжди.
 
 ## Встановлення
 
@@ -83,10 +83,10 @@ sudo nvim /etc/makepkg.conf
 
 ## emerge.toml
 
-`/etc/emerge/emerge.toml` (і `~/.config/emerge/emerge.toml` для власних налаштувань) - окремий конфіг самого aura-emerge, не `makepkg.conf`: аналог того, як Gentoo `make.conf` тримає і `EMERGE_DEFAULT_OPTS`, і `CFLAGS` в одному файлі. Спершу системний файл, потім користувацький; при збігу ключа перемагає останній.
+`/etc/portage/emerge.toml` (і `~/.config/emerge/emerge.toml` для власних налаштувань) - окремий конфіг самого aura-emerge, не `makepkg.conf`: аналог того, як Gentoo `make.conf` тримає і `EMERGE_DEFAULT_OPTS`, і `CFLAGS` в одному файлі. Спершу системний файл, потім користувацький; при збігу ключа перемагає останній.
 
 ```bash
-sudo nvim /etc/emerge/emerge.toml
+sudo nvim /etc/portage/emerge.toml
 ```
 
 ```toml
@@ -117,9 +117,9 @@ BUILDENV = ["!distcc", "color", "check", "!sign"]
 
 [**→ Приклад emerge.toml**](misc/emerge.toml)
 
-## Маска (/etc/emerge/mask)
+## Маска (/etc/portage/package.mask)
 
-Аналог Portage `package.mask` для Arch-атомів: пакунки, які ця машина ніколи не встановлює - перевіряється навіть як транзитивна AUR-залежність і навіть при явному запиті за іменем. По одному запису на рядок у `/etc/emerge/mask` або `/etc/emerge/mask.d/*.mask`, дозволено `*`-глоб, опційний префікс репозиторію, опційна причина після `#`:
+Аналог Portage `package.mask` для Arch-атомів: пакунки, які ця машина ніколи не встановлює - перевіряється навіть як транзитивна AUR-залежність і навіть при явному запиті за іменем. По одному запису на рядок у `/etc/portage/package.mask` або `/etc/portage/package.mask/*.mask`, дозволено `*`-глоб, опційний префікс репозиторію, опційна причина після `#`:
 
 ```
 ayugram-desktop-bin            # конкретний пакунок, з будь-якого джерела
@@ -167,7 +167,7 @@ emerge deepin-session --ask --tree --deep=3   # встановлення з по
 
 ## Лог merge/unmerge
 
-`/var/log/aura-emerge.log` - аналог Portage `emerge.log`, для pacman/AUR/ABS-атомів. Append-only, по одному рядку на подію, пишеться так само, як і інший root-owned стан у `/etc/emerge/*` (`sudo tee`, best-effort - невдалий запис у лог ніколи не заваляє merge/unmerge, який вже стався).
+`/var/log/emerge.log` - аналог Portage `emerge.log`, для pacman/AUR/ABS-атомів. Append-only, по одному рядку на подію, пишеться так само, як і інший root-owned стан у `/etc/portage/*` (`sudo tee`, best-effort - невдалий запис у лог ніколи не заваляє merge/unmerge, який вже стався).
 
 ```
 2026-09-21 08:51:44  MERGE    aur    noctalia-5.1.0-1.1        (12s)
@@ -195,12 +195,12 @@ emerge neovim-git --aur --edit --skip-srcinfo-regen  # редагувати бе
 emerge neovim-git --aur --unshare-net-build     # збірка без мережі на етапі build()/check()/package()
 emerge -c                                  # видалити сиріт (depclean)
 emerge -C neovim                           # видалити пакунок (unmerge)
-emerge @world                              # provision: встановити відсутнє з world.set
+emerge @world                              # provision: встановити відсутнє з world
 emerge @world --err-install                   # також спробувати записи Err/ звичайним шляхом
-emerge -u @world                           # повне оновлення (репо + AUR); world.set не читається
+emerge -u @world                           # повне оновлення (репо + AUR); world не читається
 emerge -u @world --refresh                 # оновлення з примусовим -Syy
 emerge --sync                              # синхронізувати бази
-emerge @game-kit                           # власний набір з /etc/emerge/sets.d/game-kit.set
+emerge @game-kit                           # власний набір з /etc/portage/sets/game-kit.set
 emerge @game-kit neovim                    # набори + звичайні пакунки
 emerge --list-sets                         # показати доступні @sets
 emerge --info                              # інформація про систему (як Gentoo emerge --info)
@@ -220,15 +220,15 @@ emerge -s neovim --only-repos              # пошук лише в офіцій
 emerge --searchdesc neovim                 # пошук за описом
 emerge -sv neovim                          # детальна інформація
 emerge -sv neovim-git --aur                # детальна інформація лише з AUR
-emerge -1 htop                             # як залежність (не в world.set)
+emerge -1 htop                             # як залежність (не в world)
 emerge -n neovim                           # не перевстановлювати (--noreplace)
 emerge -p neovim                           # dry run
 emerge -a neovim                           # запитати перед дією
-emerge --select neovim                     # додати до world.set без встановлення
-emerge --deselect neovim                   # прибрати з world.set без видалення
-emerge --prune                             # видалити пакунки поза world.set
+emerge --select neovim                     # додати до world без встановлення
+emerge --deselect neovim                   # прибрати з world без видалення
+emerge --prune                             # видалити пакунки поза world
 emerge --regen                             # оновити кеш метаданих
-emerge --regen-world                       # оновити префікси репо у world.set
+emerge --regen-world                       # оновити префікси репо у world
 emerge --regen-sets @game-kit              # оновити префікси для одного набору
 emerge --regen-sets @game-kit --regen-sort # те саме + сортування файлу
 emerge --regen-world-from-explicit         # одноразова міграція з pacman -Qeq
@@ -280,7 +280,7 @@ emerge --clean-source-cache   # видалити цей кеш
 
 ## Масове встановлення
 
-`--batchinstall <FILE>` читає текстовий список пакунків і додає його до звичайного списку до будь-яких дій - той самий формат, що й [власний набір](#власні-набори-sets) (один атом на рядок, `#`-коментарі дозволені), але з довільного шляху, без реєстрації в `/etc/emerge/sets.d/`.
+`--batchinstall <FILE>` читає текстовий список пакунків і додає його до звичайного списку до будь-яких дій - той самий формат, що й [власний набір](#власні-набори-sets) (один атом на рядок, `#`-коментарі дозволені), але з довільного шляху, без реєстрації в `/etc/portage/sets/`.
 
 ```
 # pkgs.txt
@@ -304,7 +304,7 @@ emerge neovim-git --aur --pkgbuild-view
 emerge neovim --abs --edit --pkgbuild-view   # спочатку edit, потім view/diff результату
 ```
 
-`--install-pkgbuild <PATH>` збирає і встановлює довільний локальний checkout PKGBUILD через той самий пайплайн, що й AUR/ABS - сканер, потім пісочниця bwrap - замість «голого» `makepkg -si`. У `PATH` має бути `PKGBUILD`; якщо немає `.SRCINFO`, він генерується (`makepkg --printsrcinfo`, як після `--edit`), щоб залежності розв’язувались статично. Поєднується з `--pkgbuild-view`, `-a`/`--ask`, `-1`/`--oneshot`, `--skippgp`, `--no-sandbox`, `--unshare-net-build`, `--skip-srcinfo-regen`; несумісний з іменами пакунків/`@set` або `--aur`/`--abs`. У `world.set` записується з префіксом `Err/` (джерело невідоме - див. [world.set](#worldset)), якщо не задано `-1`/`--oneshot`.
+`--install-pkgbuild <PATH>` збирає і встановлює довільний локальний checkout PKGBUILD через той самий пайплайн, що й AUR/ABS - сканер, потім пісочниця bwrap - замість «голого» `makepkg -si`. У `PATH` має бути `PKGBUILD`; якщо немає `.SRCINFO`, він генерується (`makepkg --printsrcinfo`, як після `--edit`), щоб залежності розв’язувались статично. Поєднується з `--pkgbuild-view`, `-a`/`--ask`, `-1`/`--oneshot`, `--skippgp`, `--no-sandbox`, `--unshare-net-build`, `--skip-srcinfo-regen`; несумісний з іменами пакунків/`@set` або `--aur`/`--abs`. У `world` записується з префіксом `Err/` (джерело невідоме - див. [world](#worldset)), якщо не задано `-1`/`--oneshot`.
 
 ```bash
 emerge --install-pkgbuild ~/src/my-pkg
@@ -331,7 +331,7 @@ emerge --check-devel     # лише звіт, хто зрушив, без пер
 
 ## @preserved-rebuild
 
-В Arch немає відстеження preserved-libs. `@preserved-rebuild` збирає залежності кожного встановленого пакунка (`pacman -Qi`), передає список у `pacman -T` і пропонує перевстановити незадоволені через `pacman -S --asdeps` (щоб вони не виглядали «явно встановленими» і не потрапили в world.set при `--regen-world-from-explicit`).
+В Arch немає відстеження preserved-libs. `@preserved-rebuild` збирає залежності кожного встановленого пакунка (`pacman -Qi`), передає список у `pacman -T` і пропонує перевстановити незадоволені через `pacman -S --asdeps` (щоб вони не виглядали «явно встановленими» і не потрапили в world при `--regen-world-from-explicit`).
 
 ## --revdep-rebuild
 
@@ -344,9 +344,9 @@ emerge --revdep-rebuild       # сканувати, потім запитати 
 emerge --revdep-rebuild -p    # лише сканувати, показати биті лінки
 ```
 
-## world.set
+## world
 
-Файл: `/etc/emerge/world.set`. Кожен явно встановлений пакунок додається автоматично, при видаленні - прибирається. Можна редагувати вручну (один пакунок на рядок).
+Файл: `/etc/portage/world`. Кожен явно встановлений пакунок додається автоматично, при видаленні - прибирається. Можна редагувати вручну (один пакунок на рядок).
 
 ```
 cachyos-extra-v3/rust-analyzer
@@ -365,16 +365,16 @@ extra/firefox
 
 ### `@world` має два значення
 
-- **`emerge @world` (без `-u`)** - *provision*. Встановлює те, чого немає з `world.set`; уже встановлене не чіпається. Префікс визначає джерело. Зручно тримати `world.set` у dotfiles і на новій машині зробити `emerge @world`.
-- **`emerge -u @world`** (або `emerge -u`) - *upgrade*. Оновлює все встановлене (репо + AUR). `world.set` не читається.
+- **`emerge @world` (без `-u`)** - *provision*. Встановлює те, чого немає з `world`; уже встановлене не чіпається. Префікс визначає джерело. Зручно тримати `world` у dotfiles і на новій машині зробити `emerge @world`.
+- **`emerge -u @world`** (або `emerge -u`) - *upgrade*. Оновлює все встановлене (репо + AUR). `world` не читається.
 - **`emerge --sync`** - лише освіження баз (`-Sy` / `-Syy`).
 
 ## Власні набори (sets)
 
-`/etc/emerge/sets.d/<name>.set` викликається як `@<name>`:
+`/etc/portage/sets/<name>.set` викликається як `@<name>`:
 
 ```
-# /etc/emerge/sets.d/game-kit.set
+# /etc/portage/sets/game-kit.set
 steam
 lutris
 gamemode
@@ -440,7 +440,7 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `-s` | Пошук пакунка |
 | `--searchdesc` | Пошук за описом |
 | `-sv` | Детальна інформація |
-| `-u` | Повне оновлення системи (world.set не читається) |
+| `-u` | Повне оновлення системи (world не читається) |
 | `--devel` | Разом із `-u` - також перезібрати `-git`/`-hg`/`-svn`/`-bzr`, чий upstream зрушив |
 | `--check-devel` | Звіт, які devel-пакунки мають зміни upstream (без перезбірки) |
 | `-C` | Видалити пакунки (unmerge) |
@@ -468,14 +468,14 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `--info` | Інформація про систему |
 | `--news [N\|all]` | Новини Arch Linux |
 | `--check-news [N\|all]` | Синонім `--news` |
-| `--select` | Додати до world.set без встановлення |
-| `--deselect` | Прибрати з world.set без видалення |
-| `--prune` | Видалити пакунки поза world.set |
+| `--select` | Додати до world без встановлення |
+| `--deselect` | Прибрати з world без видалення |
+| `--prune` | Видалити пакунки поза world |
 | `--regen` | Оновити кеш метаданих |
-| `--regen-world` | Оновити префікси репо у world.set |
+| `--regen-world` | Оновити префікси репо у world |
 | `--regen-sets <SET>` | Оновити префікси для одного набору |
 | `--regen-sort` | Разом з `--regen-sets` - відсортувати файл |
-| `--regen-world-from-explicit` | Міграція: наповнити world.set з `pacman -Qeq` |
+| `--regen-world-from-explicit` | Міграція: наповнити world з `pacman -Qeq` |
 | `--err-install` | При `@world` також пробувати записи `Err/` |
 | `--resume` | Продовжити перерваний процес |
 | `--skipfirst` | Пропустити перший пакунок при resume |

@@ -185,7 +185,7 @@ pub(crate) fn srcinfo_pkgbase(path: &Path) -> Option<String> {
 
 /// Every `pkgname = ...` value in a `.SRCINFO` file - usually one, but
 /// several for a split package. Used by `--install-pkgbuild` to record
-/// world.set entries after a local build (no AUR/ABS resolution step
+/// world entries after a local build (no AUR/ABS resolution step
 /// to source that list from, unlike every other install path).
 pub(crate) fn srcinfo_pkgnames(path: &Path) -> Option<Vec<String>> {
     let text = std::fs::read_to_string(path).ok()?;

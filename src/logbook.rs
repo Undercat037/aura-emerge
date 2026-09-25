@@ -1,8 +1,8 @@
-//! `/var/log/aura-emerge.log`: append-only, human-readable record of
+//! `/var/log/emerge.log`: append-only, human-readable record of
 //! merge/unmerge events -- Portage's `emerge.log`, for pacman/AUR/ABS
 //! atoms instead of ebuilds.
 //!
-//! Written like other root-owned `/etc/emerge/*` state from this
+//! Written like other root-owned `/etc/portage/*` state from this
 //! unprivileged process: `sudo tee`. Best-effort -- a failed write is
 //! silent, never a reason to fail (or slow down) a merge/unmerge that
 //! already happened.
@@ -24,7 +24,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-pub(crate) const LOG_FILE: &str = "/var/log/aura-emerge.log";
+pub(crate) const LOG_FILE: &str = "/var/log/emerge.log";
 const DATE_BIN: &str = "/usr/bin/date";
 
 /// Starts a build/merge timer:

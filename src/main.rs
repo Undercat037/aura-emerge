@@ -64,17 +64,17 @@ pub(crate) const ABS_GITLAB_BASE: &str = "https://gitlab.archlinux.org/archlinux
 
 // ── Files ─────────────────────────────────────────────────────────────────────
 
-pub(crate) const WORLD_SET_FILE:  &str = "/etc/emerge/world.set";
-/// Custom sets: /etc/emerge/sets.d/<name>.set → `@<name>`.
-pub(crate) const SETS_DIR: &str = "/etc/emerge/sets.d";
+pub(crate) const WORLD_SET_FILE:  &str = "/etc/portage/world";
+/// Custom sets: /etc/portage/sets/<name>.set → `@<name>`.
+pub(crate) const SETS_DIR: &str = "/etc/portage/sets";
 // AUR/ABS build roots: packages::aur_build_base()/abs_build_base().
-pub(crate) const WORLD_SET_TMP:  &str = "/etc/emerge/world.set.tmp";
+pub(crate) const WORLD_SET_TMP:  &str = "/etc/portage/world.tmp";
 /// Never-install list; see `mask.rs`.
 pub(crate) const MASK_FILE: &str = mask::MASK_FILE;
-pub(crate) const RESUME_FILE: &str = "/etc/emerge/resume.state";
-pub(crate) const RESUME_TMP:  &str = "/etc/emerge/resume.state.tmp";
-pub(crate) const LASTACTION_FILE: &str = "/etc/emerge/lastaction.state";
-pub(crate) const LASTACTION_TMP:  &str = "/etc/emerge/lastaction.state.tmp";
+pub(crate) const RESUME_FILE: &str = "/etc/portage/resume.state";
+pub(crate) const RESUME_TMP:  &str = "/etc/portage/resume.state.tmp";
+pub(crate) const LASTACTION_FILE: &str = "/etc/portage/lastaction.state";
+pub(crate) const LASTACTION_TMP:  &str = "/etc/portage/lastaction.state.tmp";
 pub(crate) const PACMAN_CONF: &str = "/etc/pacman.conf";
 pub(crate) const MAKEPKG_CONF_SYSTEM: &str = "/etc/makepkg.conf";
 pub(crate) const BASH_BIN: &str = "/usr/bin/bash";
@@ -89,11 +89,11 @@ aura-emerge is a standalone Gentoo-style emerge front end for Arch Linux: it dri
 pacman directly for official-repo packages, and builds AUR and ABS packages itself \
 (git clone/checkout, a PKGBUILD supply-chain scan, then a bwrap-sandboxed build) \
 rather than shelling out to another AUR helper. \
-It tracks every explicitly requested package in /etc/emerge/world.set, independent \
+It tracks every explicitly requested package in /etc/portage/world, independent \
 of whatever pacman's own dependency graph currently looks like.\n\n\
 Three operations that look similar are kept deliberately distinct: refreshing the \
 package databases (--sync), upgrading everything already installed (-u / -u @world), \
-and making sure this machine actually has everything world.set says it should \
+and making sure this machine actually has everything world says it should \
 (bare @world).";
 
 /// EXTRA section appended after OPTIONS in the man page - worked examples and
@@ -101,26 +101,26 @@ and making sure this machine actually has everything world.set says it should \
 const AFTER_HELP: &str = "\
 WORLD.SET AND @world
     Every package installed through the normal install path is recorded in
-    world.set as repo/name (e.g. extra/firefox, aur/ayugram-desktop-bin,
+    world as repo/name (e.g. extra/firefox, aur/ayugram-desktop-bin,
     abs/nano-custom). @world has two distinct meanings:
 
-    emerge @world (bare, no -u) -- provision. Installs whatever world.set
+    emerge @world (bare, no -u) -- provision. Installs whatever world
     lists that isn't already on this system; nothing already installed is
-    touched. Point world.set at a synced dotfiles repo and run this on a
+    touched. Point world at a synced dotfiles repo and run this on a
     freshly installed machine to pull in the whole package set in one shot.
 
     emerge -u @world (or plain emerge -u) -- upgrade. Upgrades everything
-    already installed (official repos + AUR). Does not read world.set.
+    already installed (official repos + AUR). Does not read world.
 
     emerge --sync -- just refreshes the databases, independent of the above.
 
 CUSTOM SETS
-    A file /etc/emerge/sets.d/<name>.set (one package atom per line, '#'
+    A file /etc/portage/sets/<name>.set (one package atom per line, '#'
     comments allowed) is invoked as @<name>, and can be combined with other
     sets and plain package names in the same command. --list-sets prints
     every set currently available. --regen-sets @<name> re-resolves and
     rewrites the repository prefix on every entry in that set file (same
-    idea as --regen-world, but for a custom set instead of world.set).
+    idea as --regen-world, but for a custom set instead of world).
     By default this only patches prefixes in place -- line order, '#'
     comments, and blank-line grouping are all preserved. Add --regen-sort
     to also alphabetically re-sort the file (this drops comments and
@@ -129,7 +129,7 @@ CUSTOM SETS
     standalone action -- it only does something alongside --regen-sets.
 
 UNRESOLVED (Err/) PACKAGES AND --err-install
-    An entry can end up in world.set (or get written back by --regen-world
+    An entry can end up in world (or get written back by --regen-world
     / --regen-sets) as Err/<name> when it's installed locally but its
     source repo couldn't be determined, or as a bare <name> with no prefix
     at all when it isn't installed and no repo could be found for it
@@ -178,25 +178,24 @@ EXAMPLES
     emerge --check-devel            Report which -git/-hg/-svn/-bzr
                                      packages are behind upstream, without
                                      rebuilding anything
-    emerge @world                   Provision this machine from world.set
+    emerge @world                   Provision this machine from world
     emerge -u @world                Upgrade the whole system
     emerge @game-kit                Install a custom set
-    emerge --prune                  Remove anything not tracked in world.set
+    emerge --prune                  Remove anything not tracked in world
     emerge --news                   List Arch Linux news, newest first
     emerge --news 3                 Read news item 3 in full
     emerge --news all               Dismiss all news notifications
 
 FILES
-    /etc/emerge/world.set                   Explicitly-installed packages
-    /etc/emerge/sets.d/*.set                Custom package sets
-    /etc/emerge/emerge.toml                 Default flags (EMERGE_DEFAULT_OPTS) and
+    /etc/portage/world                      Explicitly-installed packages
+    /etc/portage/sets/*.set                 Custom package sets
+    /etc/portage/make.conf                  Default flags (EMERGE_DEFAULT_OPTS) and
                                             build-env overrides (CFLAGS, MAKEFLAGS, ...)
-    ~/.config/emerge/emerge.toml            Same, per-user; last file to set a key wins
-    /etc/emerge/mask                        Packages never installed (see mask.d/ below)
-    /etc/emerge/mask.d/*.mask               Additional mask files, same format
-    /etc/emerge/resume.state                Saved state for --resume
-    /etc/emerge/lastaction.state            Last install/unmerge step, for --undo
-    /var/log/aura-emerge.log                Append-only merge/unmerge event log, with
+    ~/.config/emerge/make.conf              Same, per-user; last file to set a key wins
+    /etc/portage/package.mask               Never-install list (file, or a directory of files)
+    /etc/portage/resume.state                Saved state for --resume
+    /etc/portage/lastaction.state            Last install/unmerge step, for --undo
+    /var/log/emerge.log                     Append-only merge/unmerge event log, with
                                             build time for AUR/ABS packages; stats
                                             shown in --info
     ~/.cache/aura-emerge/pkgbuild-view/     Last-shown PKGBUILDs (for --pkgbuild-view diffs)
@@ -283,7 +282,7 @@ struct Cli {
     #[arg(long = "sudoloop")]
     sudoloop: bool,
 
-    /// Install as dependency (skip world.set)
+    /// Install as dependency (skip world)
     #[arg(short = '1', long = "oneshot")]
     oneshot: bool,
 
@@ -339,7 +338,7 @@ struct Cli {
     #[arg(long = "pkgbuild-view")]
     pkgbuild_view: bool,
 
-    /// Build+install local PKGBUILD dir (scanner + bwrap); world.set Err/ unless -1
+    /// Build+install local PKGBUILD dir (scanner + bwrap); world Err/ unless -1
     #[arg(long = "install-pkgbuild", value_name = "PATH", value_hint = clap::ValueHint::DirPath)]
     install_pkgbuild: Option<String>,
 
@@ -372,7 +371,7 @@ struct Cli {
     #[arg(long = "undo")]
     undo: bool,
 
-    /// Remove packages not in world.set
+    /// Remove packages not in world
     #[arg(long = "prune")]
     prune: bool,
 
@@ -380,7 +379,7 @@ struct Cli {
     #[arg(long = "regen")]
     regen: bool,
 
-    /// Re-resolve repo prefixes in world.set
+    /// Re-resolve repo prefixes in world
     #[arg(long = "regen-world")]
     regen_world: bool,
 
@@ -396,7 +395,7 @@ struct Cli {
     #[arg(long = "err-install")]
     err_install: bool,
 
-    /// Seed world.set from pacman -Qeq (one-time migration)
+    /// Seed world from pacman -Qeq (one-time migration)
     #[arg(long = "regen-world-from-explicit")]
     regen_world_from_explicit: bool,
 
@@ -404,11 +403,11 @@ struct Cli {
     #[arg(long = "searchdesc")]
     searchdesc: bool,
 
-    /// Add to world.set without installing
+    /// Add to world without installing
     #[arg(long = "select")]
     select: bool,
 
-    /// Remove from world.set without unmerging
+    /// Remove from world without unmerging
     #[arg(long = "deselect")]
     deselect: bool,
 
@@ -442,7 +441,7 @@ struct Cli {
     #[arg(long = "color")]                  color: Option<String>,
     #[arg(long = "columns")]               columns: bool,
 
-    /// Ignore EMERGE_DEFAULT_OPTS from emerge.toml for this run
+    /// Ignore EMERGE_DEFAULT_OPTS from make.conf for this run
     #[arg(long = "ignore-default-opts")]    ignore_default_opts: bool,
 
     // Dependency / graph control
@@ -526,7 +525,7 @@ struct Cli {
     check_news: Option<String>,
 
     /// Packages to install, '@world', '@preserved-rebuild', or a custom
-    /// set '@<name>' (read from /etc/emerge/sets.d/<name>.set)
+    /// set '@<name>' (read from /etc/portage/sets/<name>.set)
     packages: Vec<String>,
 }
 
@@ -563,7 +562,7 @@ fn print_help() {
     println!("          [ --batchinstall <FILE> | --clean-source-cache            ]");
     println!("          [ --revdep-rebuild                                       ]");
     println!();
-    println!("   @world (no -u): install whatever's listed in /etc/emerge/world.set");
+    println!("   @world (no -u): install whatever's listed in /etc/portage/world");
     println!("   and missing from this system - declarative provisioning, e.g. for a");
     println!("   freshly installed machine. Nothing already installed is touched.");
     println!();
@@ -571,7 +570,7 @@ fn print_help() {
     println!("   Gentoo `emerge -u @world` equivalent. For a plain metadata refresh");
     println!("   use --sync; --refresh forces it even if already current.");
     println!();
-    println!("   @<name>: a custom set from /etc/emerge/sets.d/<name>.set, one");
+    println!("   @<name>: a custom set from /etc/portage/sets/<name>.set, one");
     println!("   package per line (# comments allowed). Use --list-sets to see");
     println!("   what's available.");
     println!();
@@ -609,13 +608,13 @@ fn print_help() {
 //
 // Appends a shell snippet that shells out to `emerge --list-sets` when
 // completing a word starting with '@', so `emerge @<TAB>` offers real
-// set names (clap_complete alone doesn't know sets.d/'s contents).
+// set names (clap_complete alone doesn't know sets/'s contents).
 
 fn print_set_completion_glue(shell: Shell) {
     match shell {
         Shell::Bash => {
             println!("{}", r#"
-# aura-emerge: dynamic @<set> completion (world, preserved-rebuild, sets.d/*)
+# aura-emerge: dynamic @<set> completion (world, preserved-rebuild, sets/*)
 _emerge_with_sets() {
     _emerge
     local cur="${COMP_WORDS[COMP_CWORD]}"
@@ -631,7 +630,7 @@ complete -o bashdefault -o default -F _emerge_with_sets emerge 2>/dev/null \
         }
         Shell::Zsh => {
             println!("{}", r#"
-# aura-emerge: dynamic @<set> completion (world, preserved-rebuild, sets.d/*)
+# aura-emerge: dynamic @<set> completion (world, preserved-rebuild, sets/*)
 _emerge_with_sets() {
     _emerge "$@"
     if [[ "$PREFIX" == @* ]]; then
@@ -645,7 +644,7 @@ compdef _emerge_with_sets emerge
         }
         Shell::Fish => {
             println!("{}", r#"
-# aura-emerge: dynamic @<set> completion (world, preserved-rebuild, sets.d/*)
+# aura-emerge: dynamic @<set> completion (world, preserved-rebuild, sets/*)
 complete -c emerge -f -n 'string match -q "@*" -- (commandline -ct)' -a '(emerge --list-sets 2>/dev/null)'
 "#);
         }
@@ -1006,7 +1005,7 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // emerge.toml, before clap: EMERGE_DEFAULT_OPTS is spliced into argv
+    // make.conf, before clap: EMERGE_DEFAULT_OPTS is spliced into argv
     // ahead of what was typed, so a typed flag always wins; conflicts
     // (--aur/--abs, --skippgp/--autopgp, ...) are rejected here - see
     // config::CONFLICTS.
@@ -1020,7 +1019,7 @@ fn run() -> anyhow::Result<()> {
         keep_going: cli.keep_going,
     });
 
-    // No pacman/world.set needed -- just prints a script. Handled
+    // No pacman/world needed -- just prints a script. Handled
     // before check_binaries() so it works in a clean chroot too.
     if let Some(shell) = cli.gen_completions {
         let mut cmd = <Cli as clap::CommandFactory>::command();
@@ -1163,11 +1162,11 @@ fn run() -> anyhow::Result<()> {
                 if !cli.oneshot {
                     mark_asexplicit(&names);
                     // "Err/" - a genuinely local build with no traceable
-                    // origin (see world.set's own doc comment on that
+                    // origin (see world's own doc comment on that
                     // prefix); there's no AUR/ABS source to record here.
                     if let Err(e) = add_to_world_set(&names, Some("Err")) {
                         eprintln!(
-                            ">>> Warning: package(s) installed but world.set was not updated: {:#}",
+                            ">>> Warning: package(s) installed but world was not updated: {:#}",
                             e
                         );
                     }
@@ -1204,7 +1203,7 @@ fn run() -> anyhow::Result<()> {
         .any(|p| p == "@preserved-rebuild");
 
     // Any other "@name" token is a custom set - resolve it against
-    // /etc/emerge/sets.d/<name>.set (one package atom per line, '#'
+    // /etc/portage/sets/<name>.set (one package atom per line, '#'
     // comments allowed) and fold its contents into the package list, same
     // as if the user had typed every package in the file by hand.
     let mut custom_set_pkgs: Vec<String> = Vec::new();
@@ -1427,14 +1426,14 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // --regen-world: re-resolve repo prefixes for all entries in world.set
+    // --regen-world: re-resolve repo prefixes for all entries in world
     if cli.regen_world {
         regen_world_set()?;
         return Ok(());
     }
 
     // --regen-sets @<name>: same idea as --regen-world, but for one custom
-    // set under /etc/emerge/sets.d/<name>.set. Accepts either "@name" or
+    // set under /etc/portage/sets/<name>.set. Accepts either "@name" or
     // bare "name".
     if let Some(set_arg) = &cli.regen_sets {
         let name = set_arg.strip_prefix('@').unwrap_or(set_arg);
@@ -1446,14 +1445,14 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // --regen-world-from-explicit: seed world.set from every currently
+    // --regen-world-from-explicit: seed world from every currently
     // explicitly-installed package (pacman -Qeq). Meant as a one-time
-    // migration step on a system that predates world.set tracking - run
-    // it once, and `-c`'s world.set protection (below) and `--prune`
+    // migration step on a system that predates world tracking - run
+    // it once, and `-c`'s world protection (below) and `--prune`
     // start seeing the whole system instead of just what was installed
-    // through `emerge` since world.set existed.
+    // through `emerge` since world existed.
     if cli.regen_world_from_explicit {
-        println!("{} Seeding world.set from explicitly installed packages...", ">>>".green().bold());
+        println!("{} Seeding world from explicitly installed packages...", ">>>".green().bold());
         let explicit: Vec<String> = match Command::new(PACMAN_BIN).arg("-Qeq").output() {
             Ok(out) => String::from_utf8_lossy(&out.stdout)
                 .lines()
@@ -1474,9 +1473,9 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // --prune: remove installed packages not in world.set
+    // --prune: remove installed packages not in world
     if cli.prune {
-        println!("{} Pruning packages not in world.set...", ">>>".green().bold());
+        println!("{} Pruning packages not in world...", ">>>".green().bold());
         if !is_safe_path(WORLD_SET_FILE) {
             eprintln!(">>> Warning: {} is a symlink - refusing to read", WORLD_SET_FILE);
             std::process::exit(1);
@@ -1489,7 +1488,7 @@ fn run() -> anyhow::Result<()> {
                 .map(|l| l.trim().split('/').last().unwrap_or("").to_string())
                 .collect(),
             Err(_) => {
-                eprintln!(">>> Error: cannot open world.set");
+                eprintln!(">>> Error: cannot open world");
                 std::process::exit(1);
             }
         };
@@ -1512,7 +1511,7 @@ fn run() -> anyhow::Result<()> {
                 let (to_remove, excluded) = runtime::split_excluded(&to_remove);
                 runtime::report_excluded(&excluded);
                 if to_remove.is_empty() {
-                    println!(">>> Nothing to prune. All explicitly installed packages are in world.set.");
+                    println!(">>> Nothing to prune. All explicitly installed packages are in world.");
                     return Ok(());
                 }
                 println!();
@@ -1621,7 +1620,7 @@ fn run() -> anyhow::Result<()> {
                 let success = run_cmd(SUDO_BIN, &args, &bare);
                 if success {
                     if let Err(e) = remove_from_world_set(&bare) {
-                        eprintln!(">>> Warning: package(s) removed but world.set was not updated: {:#}", e);
+                        eprintln!(">>> Warning: package(s) removed but world was not updated: {:#}", e);
                     }
                     clear_last_action();
                 } else {
@@ -1655,7 +1654,7 @@ fn run() -> anyhow::Result<()> {
                     if run_cmd(SUDO_BIN, &args, &names) {
                         mark_asexplicit(&names);
                         if let Err(e) = add_to_world_set(&names, None) {
-                            eprintln!(">>> Warning: package(s) reinstalled but world.set was not updated: {:#}", e);
+                            eprintln!(">>> Warning: package(s) reinstalled but world was not updated: {:#}", e);
                         }
                     } else {
                         all_ok = false;
@@ -1671,7 +1670,7 @@ fn run() -> anyhow::Result<()> {
                     // mark_asexplicit() call needed the way `aura -A` required.
                     if aur_install(&names, false, cli.ask, false, cli.skippgp, cli.edit, cli.no_sandbox, cli.skip_srcinfo_regen, cli.unshare_net_build, false) {
                         if let Err(e) = add_to_world_set(&names, Some("aur")) {
-                            eprintln!(">>> Warning: package(s) reinstalled but world.set was not updated: {:#}", e);
+                            eprintln!(">>> Warning: package(s) reinstalled but world was not updated: {:#}", e);
                         }
                     } else {
                         all_ok = false;
@@ -1705,33 +1704,33 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // --select: explicitly add packages to world.set without installing
+    // --select: explicitly add packages to world without installing
     if cli.select {
         if target_pkgs.is_empty() {
-            eprintln!(">>> Error: specify packages to add to world.set.");
+            eprintln!(">>> Error: specify packages to add to world.");
             std::process::exit(1);
         }
         for p in &target_pkgs {
-            println!(">>> Selecting {} into world.set...", p);
+            println!(">>> Selecting {} into world...", p);
         }
         add_to_world_set(&target_pkgs, None)?;
-        // world.set now says these are explicitly wanted - mirror that onto
+        // world now says these are explicitly wanted - mirror that onto
         // pacman's own bookkeeping (no-ops for anything not yet installed).
         mark_asexplicit(&target_pkgs);
         return Ok(());
     }
 
-    // --deselect: remove packages from world.set without unmerging
+    // --deselect: remove packages from world without unmerging
     if cli.deselect {
         if target_pkgs.is_empty() {
-            eprintln!(">>> Error: specify packages to deselect from world.set.");
+            eprintln!(">>> Error: specify packages to deselect from world.");
             std::process::exit(1);
         }
         for p in &target_pkgs {
-            println!(">>> Deselecting {} from world.set (package stays installed)...", p);
+            println!(">>> Deselecting {} from world (package stays installed)...", p);
         }
         remove_from_world_set(&target_pkgs)?;
-        // Opposite of --select: no longer wanted by world.set, so demote to
+        // Opposite of --select: no longer wanted by world, so demote to
         // a dependency in pacman's bookkeeping - makes it eligible for
         // --depclean like any other transitive dependency.
         mark_asdeps(&target_pkgs);
@@ -1741,19 +1740,19 @@ fn run() -> anyhow::Result<()> {
     // 3a. Mixed: specific pkgs + @world, no -u (e.g. `emerge nano @world`)
     //     Install the named packages first (falls through to the normal
     //     install block below); once that finishes, provision anything
-    //     else still missing from world.set. See `provision_after_install`.
+    //     else still missing from world. See `provision_after_install`.
     let provision_after_install = has_world && !target_pkgs.is_empty() && !cli.update;
     if provision_after_install {
         println!(
-            "{} Installing specified packages, then provisioning the rest of world.set...",
+            "{} Installing specified packages, then provisioning the rest of world...",
             ">>>".green().bold()
         );
     }
 
     // 3b. Bare `@world`, no other packages, no -u: declarative
-    // provisioning - install whatever world.set lists that isn't already
+    // provisioning - install whatever world lists that isn't already
     // on this system, and touch nothing that already is. This is the
-    // "move world.set to a new machine and get everything back"
+    // "move world to a new machine and get everything back"
     // operation (or "make sure this machine matches what I asked for").
     // For a full system upgrade use `-u @world` / `-u` (below); for just
     // refreshing the databases, `--sync`.
@@ -1780,7 +1779,7 @@ fn run() -> anyhow::Result<()> {
     // 3. Full system upgrade - triggered by -u, with or without @world.
     // Equivalent to Gentoo's `emerge -u @world`: upgrades everything
     // already installed (official repos + AUR), it does not consult
-    // world.set at all. For -Syy use `--sync --refresh`.
+    // world at all. For -Syy use `--sync --refresh`.
     if cli.update {
         if let Some(n) = news::unread_count_quiet() {
             if n > 0 {
@@ -1904,7 +1903,7 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // 4. Depclean: pacman -Qttdq, but never remove world.set entries.
+    // 4. Depclean: pacman -Qttdq, but never remove world entries.
     if cli.depclean {
         println!(">>> Calculating dependencies... done!");
         println!(">>> Checking for orphaned packages...");
@@ -1918,7 +1917,7 @@ fn run() -> anyhow::Result<()> {
                     .filter(|s| !s.is_empty())
                     .collect();
 
-                // Filter out anything tracked in world.set.
+                // Filter out anything tracked in world.
                 if is_safe_path(WORLD_SET_FILE) {
                     if let Ok(file) = fs::File::open(WORLD_SET_FILE) {
                         let world_bare: HashSet<String> = io::BufReader::new(file)
@@ -1931,7 +1930,7 @@ fn run() -> anyhow::Result<()> {
                         orphans.retain(|p| !world_bare.contains(p));
                         let protected = before - orphans.len();
                         if protected > 0 {
-                            println!(">>> {} package(s) skipped (tracked in world.set).", protected);
+                            println!(">>> {} package(s) skipped (tracked in world).", protected);
                         }
                     }
                 }
@@ -2058,7 +2057,7 @@ fn run() -> anyhow::Result<()> {
         };
         if success && !cli.pretend {
             if let Err(e) = remove_from_world_set(&target_pkgs) {
-                eprintln!(">>> Warning: package(s) unmerged but world.set was not updated: {:#}", e);
+                eprintln!(">>> Warning: package(s) unmerged but world was not updated: {:#}", e);
             }
             save_last_action(LastAction::Unmerge, &unmerge_atoms);
             logbook::log_unmerge(&target_pkgs);
@@ -2125,7 +2124,7 @@ fn run() -> anyhow::Result<()> {
                     official_infos
                 } else {
                     // --keep-going retried one by one, so some of these
-                    // are on the system now; world.set below must only
+                    // are on the system now; world below must only
                     // hear about those.
                     let landed: Vec<PkgInfo> = official_infos.into_iter().filter(|p| is_installed(&p.name)).collect();
                     if !landed.is_empty() {
@@ -2272,12 +2271,12 @@ fn run() -> anyhow::Result<()> {
                         println!("{} Auto-cleaning packages...", ">>>".green().bold());
                         mark_asexplicit(&target_pkgs);
                         if let Err(e) = add_to_world_set(&target_pkgs, Some("abs")) {
-                            eprintln!(">>> Warning: package(s) built but world.set was not updated: {:#}", e);
+                            eprintln!(">>> Warning: package(s) built but world was not updated: {:#}", e);
                         }
                     }
                 } else if !installed_infos.is_empty() {
                     println!("{} Auto-cleaning packages...", ">>>".green().bold());
-                    // world.set only gets explicitly requested names.
+                    // world only gets explicitly requested names.
                     let target_bare: HashSet<String> = target_pkgs.iter()
                         .map(|p| p.split('/').last().unwrap_or(p).to_string())
                         .collect();
@@ -2294,13 +2293,13 @@ fn run() -> anyhow::Result<()> {
                         .collect();
                     if !official_names.is_empty() {
                         if let Err(e) = add_to_world_set(&official_names, None) {
-                            eprintln!(">>> Warning: package(s) installed but world.set was not updated: {:#}", e);
+                            eprintln!(">>> Warning: package(s) installed but world was not updated: {:#}", e);
                         }
                     }
                     if !aur_names.is_empty() {
                         mark_asexplicit(&aur_names);
                         if let Err(e) = add_to_world_set(&aur_names, Some("aur")) {
-                            eprintln!(">>> Warning: package(s) installed but world.set was not updated: {:#}", e);
+                            eprintln!(">>> Warning: package(s) installed but world was not updated: {:#}", e);
                         }
                     }
 
@@ -2336,11 +2335,11 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
-    // After named pkgs: provision remaining world.set misses.
+    // After named pkgs: provision remaining world misses.
     if provision_after_install && !cli.pretend {
         println!();
         if !provision_from_world_set(cli.pretend, cli.ask, cli.verbose, cli.err_install, cli.no_sandbox, cli.skip_srcinfo_regen, cli.unshare_net_build)? {
-            eprintln!(">>> Warning: not everything from world.set installed successfully.");
+            eprintln!(">>> Warning: not everything from world installed successfully.");
             std::process::exit(1);
         }
     }

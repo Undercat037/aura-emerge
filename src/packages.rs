@@ -117,7 +117,7 @@ pub(crate) fn is_installed(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Materializes emerge.toml's build flags as a makepkg.conf and returns
+/// Materializes make.conf's build flags as a makepkg.conf and returns
 /// its path, for `makepkg --config`.
 ///
 /// Why a generated file instead of environment variables: makepkg
@@ -128,7 +128,7 @@ pub(crate) fn is_installed(name: &str) -> bool {
 /// puts our values last in the only order that counts.
 ///
 /// Written to the sandbox scratch directory rather than the build
-/// directory -- see `sandbox::scratch_dir`. `None` when emerge.toml
+/// directory -- see `sandbox::scratch_dir`. `None` when make.conf
 /// sets no build flags, which leaves makepkg's own config lookup
 /// untouched.
 fn makepkg_conf_override(build_dir: &std::path::Path) -> Option<String> {
@@ -1604,7 +1604,7 @@ fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, one
     if !ask { makepkg_args.push("--noconfirm"); }
     if skippgp { makepkg_args.push("--skippgpcheck"); }
 
-    // emerge.toml's build flags, added before makepkg_args is cloned
+    // make.conf's build flags, added before makepkg_args is cloned
     // for the --nobuild/--noextract split below so both halves get it.
     let conf_override = makepkg_conf_override(build_dir);
     if let Some(path) = &conf_override {
@@ -1766,7 +1766,7 @@ fn legacy_makepkg_si(build_dir: &std::path::Path, ask: bool, oneshot: bool, skip
         makepkg_args.push("--config");
         makepkg_args.push(path.as_str());
         // Unsandboxed, makepkg sources the user's own makepkg.conf
-        // *after* ours, so a var set there wins over emerge.toml --
+        // *after* ours, so a var set there wins over make.conf --
         // warn about it. (Can't happen inside the sandbox: $HOME is an
         // empty tmpfs.) Read the user's file directly, not through
         // read_makepkg_vars() (which merges with the system config and
@@ -1787,7 +1787,7 @@ fn legacy_makepkg_si(build_dir: &std::path::Path, ask: bool, oneshot: bool, skip
             .collect();
         if !overlap.is_empty() {
             eprintln!(
-                "{} building without the sandbox, so {} from {} takes precedence over emerge.toml for: {}",
+                "{} building without the sandbox, so {} from {} takes precedence over make.conf for: {}",
                 ">>> Warning:".yellow().bold(),
                 "makepkg.conf".bold(),
                 user_conf,
@@ -2019,7 +2019,7 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
 /// sandboxed build -> install sequence every other path uses.
 ///
 /// Returns the `.SRCINFO`-declared `pkgname`(s) built on success (for
-/// the caller to record in world.set with the "Err/" prefix -- see
+/// the caller to record in world with the "Err/" prefix -- see
 /// `world_set::pkg_world_entry`), or `None` on failure.
 pub(crate) fn pkgbuild_local_install(
     path: &std::path::Path,
@@ -2219,10 +2219,10 @@ pub(crate) fn resolve_dest_dirs(build_dir: &std::path::Path) -> (Vec<(&'static s
     (dirs, default_cache)
 }
 
-/// emerge.toml's `[build]` vars, shell-expanded through the same
+/// make.conf's build vars, shell-expanded through the same
 /// generated makepkg.conf that `--config` hands to makepkg, so `--info`
 /// shows what a build actually gets (e.g. `CXXFLAGS="$CFLAGS ..."`
-/// resolved against emerge.toml's own `CFLAGS`, not the raw config text).
+/// resolved against make.conf's own `CFLAGS`, not the raw config text).
 fn effective_build_vars(cfg: &crate::config::Config) -> HashMap<String, String> {
     let mut map = HashMap::new();
     let Some(conf) = crate::config::makepkg_override_conf(cfg) else { return map };
@@ -2454,20 +2454,20 @@ pub(crate) fn print_system_info() {
     }
     println!();
 
-    // emerge.toml, printed after makepkg.conf so the two read in the
+    // make.conf, printed after makepkg.conf so the two read in the
     // order they actually apply.
     let cfg = crate::runtime::config();
     if cfg.files.is_empty() {
         println!(
-            "emerge.toml: none found ({}, {})",
+            "make.conf: none found ({}, {})",
             crate::config::SYSTEM_CONF,
             crate::config::user_conf_path()
                 .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "~/.config/emerge/emerge.toml".to_string())
+                .unwrap_or_else(|| "~/.config/emerge/make.conf".to_string())
         );
     } else {
         println!(
-            "emerge.toml: {}",
+            "make.conf: {}",
             cfg.files.iter().map(|f| f.display().to_string()).collect::<Vec<_>>().join(" -> ")
         );
         if !cfg.default_flags.is_empty() {
@@ -2487,16 +2487,16 @@ pub(crate) fn print_system_info() {
     if masks.is_empty() {
         println!("mask: no entries ({})", crate::mask::MASK_FILE);
     } else {
-        println!("mask: {} entry(ies) ({}, {}/)", masks.len(), crate::mask::MASK_FILE, crate::mask::MASK_DIR);
+        println!("mask: {} entry(ies) ({})", masks.len(), crate::mask::MASK_FILE);
     }
     println!();
 
     match world_set_stats() {
         Some((count, size)) => println!(
-            "world.set: {} package(s), {} bytes ({})",
+            "world: {} package(s), {} bytes ({})",
             count, size, WORLD_SET_FILE
         ),
-        None => println!("world.set: not found ({})", WORLD_SET_FILE),
+        None => println!("world: not found ({})", WORLD_SET_FILE),
     }
 
     match crate::logbook::read_stats() {

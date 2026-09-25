@@ -8,20 +8,6 @@
 //! longer exists. Gentoo hides this behind preserved-libs; here it's
 //! "rebuild it once you notice", automated.
 //!
-//! How it works:
-//!   1. `pacman -Qlq`, narrowed to directories binaries/libs live in.
-//!   2. Each file's ELF header is parsed directly (`DT_NEEDED`,
-//!      `DT_RPATH`/`DT_RUNPATH`) instead of shelling out to `ldd` --
-//!      faster on a whole-system sweep, and doesn't hand an untrusted
-//!      binary to the loader.
-//!   3. A `DT_NEEDED` that resolves to nothing in the library search
-//!      path (`/etc/ld.so.conf*` + `$ORIGIN`-expanded runpath) is broken.
-//!   4. Broken files are mapped to packages via one batched `pacman -Qo`.
-//!   5. Foreign (AUR/local) packages get rebuilt normally; repo
-//!      packages can't be rebuilt on a binary distro, so the missing
-//!      sonames are looked up in the file database (`pacman -F`) and
-//!      their providers offered for install instead.
-//!
 //! Known limits: wrong-arch libraries at the right path count as
 //! present, `dlopen()`ed plugins are invisible, and files replaced
 //! outside pacman are judged on what's on disk now.
@@ -398,7 +384,7 @@ fn providers_of(soname: &str) -> Vec<String> {
         .lines()
         .map(|l| l.trim())
         .filter(|l| !l.is_empty())
-        // -Fq prints "repo/name"; world.set and pacman -S both take the
+        // -Fq prints "repo/name"; world and pacman -S both take the
         // bare name, and the repo is visible in the report anyway.
         .map(|l| l.split('/').last().unwrap_or(l).to_string())
         .filter(|l| !l.is_empty())
