@@ -80,12 +80,12 @@ See [GCC optimization flags](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options
 
 [**→ Example makepkg.conf**](misc/makepkg.conf)
 
-## emerge.toml
+## make.conf
 
-`/etc/portage/emerge.toml` (and `~/.config/emerge/emerge.toml` for per-user overrides) is aura-emerge's own config file, separate from `makepkg.conf` - the Gentoo `make.conf` split between `EMERGE_DEFAULT_OPTS` and `CFLAGS` in one file. System file first, then the user one; last file to set a key wins.
+`/etc/portage/make.conf` (and `~/.config/emerge/make.conf` for per-user overrides) is aura-emerge's own config file, separate from `makepkg.conf` - the Gentoo `make.conf` split between `EMERGE_DEFAULT_OPTS` and `CFLAGS` in one file. System file first, then the user one; last file to set a key wins.
 
 ```bash
-sudo nvim /etc/portage/emerge.toml
+sudo nvim /etc/portage/make.conf
 ```
 
 ```toml
@@ -110,11 +110,11 @@ Recognized keys: `EMERGE_DEFAULT_OPTS` at the top level, and in `[build]`: `CFLA
 
 Scalars and lists are interchangeable everywhere - a list is joined with spaces, a string is split on them. Values are shell-expanded when makepkg sources the generated config, so `-j$(nproc)` works, and so does a reference to another key set above it, like `CXXFLAGS = "$CFLAGS"`; a TOML literal string (`'\$FOO'`) keeps a dollar sign literal.
 
-`EMERGE_DEFAULT_OPTS` only accepts modifier flags (an allowlist: `--ask`, `--verbose`, `--devel`, `--tree`, `--searchdesc`, `--exclude=<atom>`, and similar - see the [example file](misc/emerge.toml)) - it can't turn every run into `--unmerge`. Conflicting pairs (`--aur`/`--abs`, `--aur`/`--only-repos`, `--no-sandbox`/`--unshare-net-build`, `--skippgp`/`--autopgp`, `--select`/`--deselect`) are rejected if both end up set, whether typed or from the config; a config default that conflicts with something typed on the command line is dropped instead, since the command line is the more specific intent. `--abs` and `--only-repos` are **not** a conflict - ABS builds an official-repo package from its own source, so the two agree.
+`EMERGE_DEFAULT_OPTS` only accepts modifier flags (an allowlist: `--ask`, `--verbose`, `--devel`, `--tree`, `--searchdesc`, `--exclude=<atom>`, and similar - see the [example file](misc/make.conf)) - it can't turn every run into `--unmerge`. Conflicting pairs (`--aur`/`--abs`, `--aur`/`--only-repos`, `--no-sandbox`/`--unshare-net-build`, `--skippgp`/`--autopgp`, `--select`/`--deselect`) are rejected if both end up set, whether typed or from the config; a config default that conflicts with something typed on the command line is dropped instead, since the command line is the more specific intent. `--abs` and `--only-repos` are **not** a conflict - ABS builds an official-repo package from its own source, so the two agree.
 
 `--info` shows what was read and the effective, shell-expanded value of each override.
 
-[**→ Example emerge.toml**](misc/emerge.toml)
+[**→ Example make.conf**](misc/make.conf)
 
 ## Mask (/etc/portage/package.mask)
 
@@ -488,7 +488,7 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `--revdep-rebuild` | Find + fix binaries linking against a missing library |
 | `-t`, `--tree` | Show the plan as a dependency tree |
 | `-D`, `--deep[=N]` | With `-t`: nest N levels deep, or every level if bare |
-| `--ignore-default-opts` | Ignore `EMERGE_DEFAULT_OPTS` from emerge.toml for this run |
+| `--ignore-default-opts` | Ignore `EMERGE_DEFAULT_OPTS` from make.conf for this run |
 | `-h` / `--help` | Help |
 | `-V` / `--version` | Version |
 

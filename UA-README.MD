@@ -81,12 +81,12 @@ sudo nvim /etc/makepkg.conf
 
 [**→ Приклад makepkg.conf**](misc/makepkg.conf)
 
-## emerge.toml
+## make.conf
 
-`/etc/portage/emerge.toml` (і `~/.config/emerge/emerge.toml` для власних налаштувань) - окремий конфіг самого aura-emerge, не `makepkg.conf`: аналог того, як Gentoo `make.conf` тримає і `EMERGE_DEFAULT_OPTS`, і `CFLAGS` в одному файлі. Спершу системний файл, потім користувацький; при збігу ключа перемагає останній.
+`/etc/portage/make.conf` (і `~/.config/emerge/make.conf` для власних налаштувань) - окремий конфіг самого aura-emerge, не `makepkg.conf`: аналог того, як Gentoo `make.conf` тримає і `EMERGE_DEFAULT_OPTS`, і `CFLAGS` в одному файлі. Спершу системний файл, потім користувацький; при збігу ключа перемагає останній.
 
 ```bash
-sudo nvim /etc/portage/emerge.toml
+sudo nvim /etc/portage/make.conf
 ```
 
 ```toml
@@ -111,11 +111,11 @@ BUILDENV = ["!distcc", "color", "check", "!sign"]
 
 Скаляри й списки взаємозамінні всюди - список склеюється пробілами, рядок розбивається по них. Значення розкриваються шеллом, коли makepkg читає згенерований конфіг, тож `-j$(nproc)` працює, і посилання на інший ключ вище по файлу теж - `CXXFLAGS = "$CFLAGS"`; TOML literal string (`'\$FOO'`) залишає долар буквальним.
 
-`EMERGE_DEFAULT_OPTS` приймає лише прапори-модифікатори (allowlist: `--ask`, `--verbose`, `--devel`, `--tree`, `--searchdesc`, `--exclude=<атом>` і подібні - див. [приклад файлу](misc/emerge.toml)) - перетворити кожен запуск на `--unmerge` не вийде. Конфліктні пари (`--aur`/`--abs`, `--aur`/`--only-repos`, `--no-sandbox`/`--unshare-net-build`, `--skippgp`/`--autopgp`, `--select`/`--deselect`) відхиляються, якщо обидва прапори активні - набрані вручну чи з конфігу; прапор з конфігу, що конфліктує з набраним вручну, просто відкидається, бо командний рядок - конкретніший намір. `--abs` і `--only-repos` конфліктом **не є** - ABS збирає офіційний пакунок з його ж джерела, тож ці два узгоджені.
+`EMERGE_DEFAULT_OPTS` приймає лише прапори-модифікатори (allowlist: `--ask`, `--verbose`, `--devel`, `--tree`, `--searchdesc`, `--exclude=<атом>` і подібні - див. [приклад файлу](misc/make.conf)) - перетворити кожен запуск на `--unmerge` не вийде. Конфліктні пари (`--aur`/`--abs`, `--aur`/`--only-repos`, `--no-sandbox`/`--unshare-net-build`, `--skippgp`/`--autopgp`, `--select`/`--deselect`) відхиляються, якщо обидва прапори активні - набрані вручну чи з конфігу; прапор з конфігу, що конфліктує з набраним вручну, просто відкидається, бо командний рядок - конкретніший намір. `--abs` і `--only-repos` конфліктом **не є** - ABS збирає офіційний пакунок з його ж джерела, тож ці два узгоджені.
 
 `--info` показує, що прочитано, і фактичне, розкрите шеллом значення кожного перевизначення.
 
-[**→ Приклад emerge.toml**](misc/emerge.toml)
+[**→ Приклад make.conf**](misc/make.conf)
 
 ## Маска (/etc/portage/package.mask)
 
@@ -488,7 +488,7 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `--revdep-rebuild` | Знайти й полагодити бінарники з бітими лінками бібліотек |
 | `-t`, `--tree` | Показати план як дерево залежностей |
 | `-D`, `--deep[=N]` | З `-t`: вкладати на N рівнів, або на всі - без числа |
-| `--ignore-default-opts` | Ігнорувати `EMERGE_DEFAULT_OPTS` з emerge.toml для цього запуску |
+| `--ignore-default-opts` | Ігнорувати `EMERGE_DEFAULT_OPTS` з make.conf для цього запуску |
 | `-h` / `--help` | Довідка |
 | `-V` / `--version` | Версія |
 
