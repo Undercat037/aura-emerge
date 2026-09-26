@@ -1832,6 +1832,10 @@ fn run() -> anyhow::Result<()> {
         } else {
             vec!["-Syu"]
         };
+        // Match every other pacman call: no --ask means no prompt.
+        if !cli.pretend && !cli.ask {
+            s_args.push("--noconfirm");
+        }
         if cli.verbose {
             s_args.push("--verbose");
         }
@@ -2118,7 +2122,9 @@ fn run() -> anyhow::Result<()> {
                 if cli.verbose { off_args.push("--verbose"); }
                 off_args.extend(&base_args);
                 let timer = logbook::Timer::start();
+                let world_snapshot = world_set::world_installed_snapshot();
                 success = pacman_install(&off_args, &target_pkgs);
+                world_set::reconcile_world_after_install(&world_snapshot);
                 installed_infos = if success {
                     logbook::log_merge_batch("repo", &target_pkgs, timer.elapsed());
                     official_infos
@@ -2160,7 +2166,9 @@ fn run() -> anyhow::Result<()> {
                 if cli.verbose { off_args.push("--verbose"); }
                 off_args.extend(&base_args);
                 let timer = logbook::Timer::start();
+                let world_snapshot = world_set::world_installed_snapshot();
                 let off_success = pacman_install(&off_args, &official_names);
+                world_set::reconcile_world_after_install(&world_snapshot);
                 installed_infos = if off_success {
                     logbook::log_merge_batch("repo", &official_names, timer.elapsed());
                     official_infos
@@ -2221,7 +2229,9 @@ fn run() -> anyhow::Result<()> {
                 if cli.verbose { off_args.push("--verbose"); }
                 off_args.extend(&base_args);
                 let timer = logbook::Timer::start();
+                let world_snapshot = world_set::world_installed_snapshot();
                 success = pacman_install(&off_args, &official_names);
+                world_set::reconcile_world_after_install(&world_snapshot);
                 if success {
                     if !official_names.is_empty() {
                         logbook::log_merge_batch("repo", &official_names, timer.elapsed());

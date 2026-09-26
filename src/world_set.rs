@@ -314,7 +314,10 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
         let mut args: Vec<&str> = vec![PACMAN_BIN, "-S", "--needed"];
         if verbose { args.push("--verbose"); }
         if !ask { args.push("--noconfirm"); }
-        if !crate::pacman_install(&args, &official_missing) {
+        let snapshot = world_installed_snapshot();
+        let install_ok = crate::pacman_install(&args, &official_missing);
+        reconcile_world_after_install(&snapshot);
+        if !install_ok {
             overall_ok = false;
             eprintln!(">>> Warning: some official-repo package(s) failed to install.");
             if !crate::runtime::keep_going() {
@@ -350,7 +353,10 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
         let mut args: Vec<&str> = vec![PACMAN_BIN, "-S", "--needed"];
         if verbose { args.push("--verbose"); }
         if !ask { args.push("--noconfirm"); }
-        if crate::pacman_install(&args, &resolved_official) {
+        let snapshot = world_installed_snapshot();
+        let install_ok = crate::pacman_install(&args, &resolved_official);
+        reconcile_world_after_install(&snapshot);
+        if install_ok {
             // Fix world prefix now that the real repo is known.
             if let Err(e) = add_to_world_set(&resolved_official, None) {
                 eprintln!(">>> Warning: package(s) installed but world was not updated: {:#}", e);
@@ -602,6 +608,74 @@ pub(crate) fn add_to_world_set(packages: &[String], forced_prefix: Option<&str>)
     let mut sorted: Vec<String> = current_set.into_values().collect();
     sorted.sort();
     write_world_set(&sorted)
+}
+
+// Conflict-removal reconciliation 
+//
+// Detection removes the package from world if pacman removed it while resolving a conflict.
+
+fn installed_bare_names() -> HashSet<String> {
+    Command::new(PACMAN_BIN)
+        .arg("-Qq")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Call before a `pacman -S` that might conflict-remove another
+/// installed package. Cheap: two reads, no writes.
+pub(crate) fn world_installed_snapshot() -> HashSet<String> {
+    if !is_safe_path(WORLD_SET_FILE) {
+        return HashSet::new();
+    }
+    let world_bare: HashSet<String> = match fs::File::open(WORLD_SET_FILE) {
+        Ok(file) => io::BufReader::new(file)
+            .lines()
+            .map_while(Result::ok)
+            .map(|l| l.trim().split('/').last().unwrap_or("").to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        Err(_) => return HashSet::new(),
+    };
+    let installed = installed_bare_names();
+    world_bare.intersection(&installed).cloned().collect()
+}
+
+/// Call after that same `pacman -S` with the snapshot from before it.
+/// Anything that was installed then and isn't now got removed by
+/// pacman, not us -- untrack it. Best-effort; never fails the caller.
+pub(crate) fn reconcile_world_after_install(before: &HashSet<String>) {
+    if before.is_empty() {
+        return;
+    }
+    let installed_after = installed_bare_names();
+    let vanished: Vec<String> = before
+        .iter()
+        .filter(|name| !installed_after.contains(*name))
+        .cloned()
+        .collect();
+    if vanished.is_empty() {
+        return;
+    }
+    println!(
+        "{} pacman removed {} while resolving a conflict during this install \
+        - removing from world too (it can't be reinstalled the way it was): {}",
+        ">>>".yellow().bold(),
+        vanished.len(),
+        vanished.join(", ")
+    );
+    if let Err(e) = remove_from_world_set(&vanished) {
+        eprintln!(">>> Warning: conflict-removed package(s) but world was not updated: {:#}", e);
+    }
 }
 
 pub(crate) fn remove_from_world_set(packages: &[String]) -> Result<()> {
