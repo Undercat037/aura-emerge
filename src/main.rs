@@ -561,6 +561,7 @@ fn print_help() {
     println!("          [ --scan <pkg...>       | --install-pkgbuild <PATH>       ]");
     println!("          [ --batchinstall <FILE> | --clean-source-cache            ]");
     println!("          [ --revdep-rebuild                                       ]");
+    println!("          (first action on the command line wins; options may mix)");
     println!();
     println!("   @world (no -u): install whatever's listed in /etc/portage/world");
     println!("   and missing from this system - declarative provisioning, e.g. for a");
@@ -751,6 +752,214 @@ fn upgrade_ignores() -> Vec<String> {
     names.sort();
     names.dedup();
     names
+}
+
+// ── Action priority: first exclusive action on the command line wins ─────
+// Options may mix freely. --sync is not exclusive (can fall through).
+// --scan with --install-pkgbuild is one action + modifier.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActionKind {
+    Help, Version, Info, News, ListSets, CleanSourceCache, CheckDevel,
+    InstallPkgbuild, RevdepRebuild, Scan, Search, Regen, RegenWorld,
+    RegenSets, RegenWorldFromExplicit, Prune, Resume, Undo, Select,
+    Deselect, Update, Depclean, Unmerge,
+}
+
+impl ActionKind {
+    fn label(self) -> &'static str {
+        match self {
+            ActionKind::Help => "--help",
+            ActionKind::Version => "--version",
+            ActionKind::Info => "--info",
+            ActionKind::News => "--news",
+            ActionKind::ListSets => "--list-sets",
+            ActionKind::CleanSourceCache => "--clean-source-cache",
+            ActionKind::CheckDevel => "--check-devel",
+            ActionKind::InstallPkgbuild => "--install-pkgbuild",
+            ActionKind::RevdepRebuild => "--revdep-rebuild",
+            ActionKind::Scan => "--scan",
+            ActionKind::Search => "--search",
+            ActionKind::Regen => "--regen",
+            ActionKind::RegenWorld => "--regen-world",
+            ActionKind::RegenSets => "--regen-sets",
+            ActionKind::RegenWorldFromExplicit => "--regen-world-from-explicit",
+            ActionKind::Prune => "--prune",
+            ActionKind::Resume => "--resume",
+            ActionKind::Undo => "--undo",
+            ActionKind::Select => "--select",
+            ActionKind::Deselect => "--deselect",
+            ActionKind::Update => "--update",
+            ActionKind::Depclean => "--depclean",
+            ActionKind::Unmerge => "--unmerge",
+        }
+    }
+}
+
+fn action_from_long(token: &str) -> Option<ActionKind> {
+    let base = token.split('=').next().unwrap_or(token);
+    match base {
+        "--help" => Some(ActionKind::Help),
+        "--version" => Some(ActionKind::Version),
+        "--info" => Some(ActionKind::Info),
+        "--news" | "--check-news" => Some(ActionKind::News),
+        "--list-sets" => Some(ActionKind::ListSets),
+        "--clean-source-cache" => Some(ActionKind::CleanSourceCache),
+        "--check-devel" => Some(ActionKind::CheckDevel),
+        "--install-pkgbuild" => Some(ActionKind::InstallPkgbuild),
+        "--revdep-rebuild" => Some(ActionKind::RevdepRebuild),
+        "--scan" => Some(ActionKind::Scan),
+        "--search" | "--searchdesc" => Some(ActionKind::Search),
+        "--regen" => Some(ActionKind::Regen),
+        "--regen-world" => Some(ActionKind::RegenWorld),
+        "--regen-sets" => Some(ActionKind::RegenSets),
+        "--regen-world-from-explicit" => Some(ActionKind::RegenWorldFromExplicit),
+        "--prune" => Some(ActionKind::Prune),
+        "--resume" => Some(ActionKind::Resume),
+        "--undo" => Some(ActionKind::Undo),
+        "--select" => Some(ActionKind::Select),
+        "--deselect" => Some(ActionKind::Deselect),
+        "--update" => Some(ActionKind::Update),
+        "--depclean" => Some(ActionKind::Depclean),
+        "--unmerge" => Some(ActionKind::Unmerge),
+        _ => None,
+    }
+}
+
+fn action_from_short_char(c: char) -> Option<ActionKind> {
+    match c {
+        'h' => Some(ActionKind::Help),
+        'V' => Some(ActionKind::Version),
+        's' => Some(ActionKind::Search),
+        'u' => Some(ActionKind::Update),
+        'c' => Some(ActionKind::Depclean),
+        'C' => Some(ActionKind::Unmerge),
+        _ => None,
+    }
+}
+
+fn active_actions(cli: &Cli) -> Vec<ActionKind> {
+    let mut out = Vec::new();
+    if cli.help { out.push(ActionKind::Help); }
+    if cli.version { out.push(ActionKind::Version); }
+    if cli.info { out.push(ActionKind::Info); }
+    if cli.news.is_some() || cli.check_news.is_some() { out.push(ActionKind::News); }
+    if cli.list_sets { out.push(ActionKind::ListSets); }
+    if cli.clean_source_cache { out.push(ActionKind::CleanSourceCache); }
+    if cli.check_devel { out.push(ActionKind::CheckDevel); }
+    if cli.install_pkgbuild.is_some() { out.push(ActionKind::InstallPkgbuild); }
+    if cli.revdep_rebuild { out.push(ActionKind::RevdepRebuild); }
+    // standalone --scan only; with --install-pkgbuild it is a modifier
+    if cli.scan && cli.install_pkgbuild.is_none() { out.push(ActionKind::Scan); }
+    if cli.search || cli.searchdesc { out.push(ActionKind::Search); }
+    if cli.regen { out.push(ActionKind::Regen); }
+    if cli.regen_world { out.push(ActionKind::RegenWorld); }
+    if cli.regen_sets.is_some() { out.push(ActionKind::RegenSets); }
+    if cli.regen_world_from_explicit { out.push(ActionKind::RegenWorldFromExplicit); }
+    if cli.prune { out.push(ActionKind::Prune); }
+    if cli.resume { out.push(ActionKind::Resume); }
+    if cli.undo { out.push(ActionKind::Undo); }
+    if cli.select { out.push(ActionKind::Select); }
+    if cli.deselect { out.push(ActionKind::Deselect); }
+    if cli.update { out.push(ActionKind::Update); }
+    if cli.depclean { out.push(ActionKind::Depclean); }
+    if cli.unmerge { out.push(ActionKind::Unmerge); }
+    out
+}
+
+/// Left-to-right in argv; short clusters scanned letter by letter.
+fn first_action_in_argv(argv: &[String], active: &[ActionKind]) -> Option<ActionKind> {
+    if active.is_empty() {
+        return None;
+    }
+    if active.len() == 1 {
+        return Some(active[0]);
+    }
+    for token in argv.iter().skip(1) {
+        if token == "--" {
+            break;
+        }
+        if token.starts_with("--") {
+            if let Some(kind) = action_from_long(token) {
+                if active.contains(&kind) {
+                    return Some(kind);
+                }
+            }
+            continue;
+        }
+        if token.starts_with('-') && token.len() > 1 {
+            for c in token.chars().skip(1) {
+                if let Some(kind) = action_from_short_char(c) {
+                    if active.contains(&kind) {
+                        return Some(kind);
+                    }
+                }
+            }
+        }
+    }
+    active.first().copied()
+}
+
+fn clear_other_actions(cli: &mut Cli, keep: ActionKind) {
+    if keep != ActionKind::Help { cli.help = false; }
+    if keep != ActionKind::Version { cli.version = false; }
+    if keep != ActionKind::Info { cli.info = false; }
+    if keep != ActionKind::News {
+        cli.news = None;
+        cli.check_news = None;
+    }
+    if keep != ActionKind::ListSets { cli.list_sets = false; }
+    if keep != ActionKind::CleanSourceCache { cli.clean_source_cache = false; }
+    if keep != ActionKind::CheckDevel { cli.check_devel = false; }
+    if keep != ActionKind::InstallPkgbuild { cli.install_pkgbuild = None; }
+    if keep != ActionKind::RevdepRebuild { cli.revdep_rebuild = false; }
+    if keep != ActionKind::Scan && keep != ActionKind::InstallPkgbuild {
+        cli.scan = false;
+    }
+    if keep != ActionKind::Search {
+        cli.search = false;
+        cli.searchdesc = false;
+    }
+    if keep != ActionKind::Regen { cli.regen = false; }
+    if keep != ActionKind::RegenWorld { cli.regen_world = false; }
+    if keep != ActionKind::RegenSets {
+        cli.regen_sets = None;
+        cli.regen_sort = false;
+    }
+    if keep != ActionKind::RegenWorldFromExplicit { cli.regen_world_from_explicit = false; }
+    if keep != ActionKind::Prune { cli.prune = false; }
+    if keep != ActionKind::Resume { cli.resume = false; }
+    if keep != ActionKind::Undo { cli.undo = false; }
+    if keep != ActionKind::Select { cli.select = false; }
+    if keep != ActionKind::Deselect { cli.deselect = false; }
+    if keep != ActionKind::Update { cli.update = false; }
+    if keep != ActionKind::Depclean { cli.depclean = false; }
+    if keep != ActionKind::Unmerge { cli.unmerge = false; }
+}
+
+fn enforce_action_priority(cli: &mut Cli, argv: &[String]) {
+    let active = active_actions(cli);
+    if active.len() <= 1 {
+        return;
+    }
+    let Some(winner) = first_action_in_argv(argv, &active) else {
+        return;
+    };
+    let dropped: Vec<&str> = active
+        .iter()
+        .filter(|a| **a != winner)
+        .map(|a| a.label())
+        .collect();
+    if dropped.is_empty() {
+        return;
+    }
+    eprintln!(
+        "{} multiple actions given; using {} (first on the command line), ignoring: {}",
+        ">>> Warning:".yellow().bold(),
+        winner.label().cyan(),
+        dropped.join(", ")
+    );
+    clear_other_actions(cli, winner);
 }
 
 /// After a partially failed `--keep-going` run, replaces the saved
@@ -1010,7 +1219,9 @@ fn run() -> anyhow::Result<()> {
     // (--aur/--abs, --skippgp/--autopgp, ...) are rejected here - see
     // config::CONFLICTS.
     let cfg = config::load();
-    let cli = Cli::parse_from(config::build_argv(&argv, &cfg));
+    let effective_argv = config::build_argv(&argv, &cfg);
+    let mut cli = Cli::parse_from(&effective_argv);
+    enforce_action_priority(&mut cli, &effective_argv);
 
     // Everything read from deep inside the build path lands here once.
     runtime::init(runtime::Runtime {
@@ -2355,4 +2566,47 @@ fn run() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod action_priority_tests {
+    use super::*;
+
+    #[test]
+    fn first_long_flag_wins() {
+        let argv = vec!["emerge".into(), "--update".into(), "--depclean".into()];
+        let active = vec![ActionKind::Update, ActionKind::Depclean];
+        assert_eq!(first_action_in_argv(&argv, &active), Some(ActionKind::Update));
+    }
+
+    #[test]
+    fn short_cluster_left_to_right() {
+        let active = vec![ActionKind::Update, ActionKind::Depclean];
+        assert_eq!(
+            first_action_in_argv(&["emerge".into(), "-uc".into()], &active),
+            Some(ActionKind::Update)
+        );
+        assert_eq!(
+            first_action_in_argv(&["emerge".into(), "-cu".into()], &active),
+            Some(ActionKind::Depclean)
+        );
+    }
+
+    #[test]
+    fn scan_modifier_kept_with_install_pkgbuild() {
+        let mut cli = Cli::parse_from(["emerge", "--install-pkgbuild", "/tmp/pkg", "--scan"]);
+        cli.update = true;
+        clear_other_actions(&mut cli, ActionKind::InstallPkgbuild);
+        assert!(cli.install_pkgbuild.is_some());
+        assert!(cli.scan);
+        assert!(!cli.update);
+    }
+
+    #[test]
+    fn scan_not_listed_beside_install_pkgbuild() {
+        let cli = Cli::parse_from(["emerge", "--install-pkgbuild", "/tmp/pkg", "--scan"]);
+        let active = active_actions(&cli);
+        assert!(active.contains(&ActionKind::InstallPkgbuild));
+        assert!(!active.contains(&ActionKind::Scan));
+    }
 }

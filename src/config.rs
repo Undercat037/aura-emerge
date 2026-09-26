@@ -478,7 +478,6 @@ const CONFLICTS: &[(&str, &str, &str)] = &[
         "--unshare-net-build drops the build's network inside the bwrap sandbox, which --no-sandbox turns off entirely",
     ),
     ("--skippgp", "--autopgp", "one skips PGP checks, the other imports keys to satisfy them"),
-    ("--select", "--deselect", "one adds to world, the other removes from it"),
 ];
 
 fn base_of(token: &str) -> &str {

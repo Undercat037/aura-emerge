@@ -55,16 +55,104 @@ pub(crate) fn get_pkg_repo(pkg: &str) -> Option<String> {
     None
 }
 
-/// world entry: "repo/name", "Err/name" (local), or bare "name".
-pub(crate) fn pkg_world_entry(pkg: &str, forced_prefix: Option<&str>) -> String {
-    let bare = pkg.split('/').last().unwrap_or(pkg);
-    match get_pkg_repo(bare) {
-        Some(repo) if repo != "None" => format!("{}/{}", repo, bare),
-        Some(_) /* "None" = local build */ => {
-            let prefix = forced_prefix.unwrap_or("Err");
-            format!("{}/{}", prefix, bare)
+// ── batch repo resolution ────────────────────────────────────────────────
+// Resolves a whole package list in at most two pacman spawns total
+// (was one, sometimes two, per package -- see pkg_world_entry_from).
+
+/// `key : value` line, exact match on key.
+fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let (k, v) = line.split_once(':')?;
+    if k.trim() == key { Some(v.trim()) } else { None }
+}
+
+/// Parses `pacman -Qi`/`-Si` output (any number of blank-line-separated
+/// blocks) into name -> repo, keyed off each block's own "Name" field.
+fn parse_repo_blocks(stdout: &str) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    for block in stdout.split("\n\n") {
+        let mut name = None;
+        let mut repo = None;
+        for line in block.lines() {
+            if let Some(v) = field(line, "Name") {
+                name = Some(v.to_string());
+            }
+            if let Some(v) = field(line, "Installed From").or_else(|| field(line, "Repository")) {
+                if !v.is_empty() {
+                    repo = Some(v.to_string());
+                }
+            }
         }
-        None => bare.to_string(),
+        if let Some(n) = name {
+            map.insert(n, repo.unwrap_or_default());
+        }
+    }
+    map
+}
+
+/// Unlike get_pkg_repo's `pacman_c`, status isn't checked -- pacman
+/// exits non-zero if any name is unknown, but still prints blocks for
+/// the ones it did find, and we don't want to lose those.
+fn pacman_raw(args: &[&str]) -> String {
+    Command::new("/usr/bin/pacman")
+        .args(args)
+        .env("LC_ALL", "C")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
+}
+
+/// Batch get_pkg_repo: one -Qi call, then one -Si call for whatever
+/// wasn't installed. Same Some("None")-means-local-build semantics.
+pub(crate) fn get_pkg_repos_batch(names: &[String]) -> std::collections::HashMap<String, Option<String>> {
+    let bares: Vec<String> = names
+        .iter()
+        .map(|n| n.split('/').last().unwrap_or(n).to_string())
+        .collect();
+    if bares.is_empty() {
+        return std::collections::HashMap::new();
+    }
+
+    let mut result: std::collections::HashMap<String, Option<String>> = std::collections::HashMap::new();
+
+    let mut qi_args = vec!["-Qi"];
+    qi_args.extend(bares.iter().map(String::as_str));
+    for (name, repo) in parse_repo_blocks(&pacman_raw(&qi_args)) {
+        result.insert(name, Some(if repo.is_empty() { "None".to_string() } else { repo }));
+    }
+
+    let missing: Vec<&str> = bares
+        .iter()
+        .map(String::as_str)
+        .filter(|b| !result.contains_key(*b))
+        .collect();
+    if !missing.is_empty() {
+        let mut si_args = vec!["-Si"];
+        si_args.extend(missing.iter().copied());
+        for (name, repo) in parse_repo_blocks(&pacman_raw(&si_args)) {
+            result
+                .entry(name)
+                .or_insert_with(|| if repo.is_empty() { None } else { Some(repo) });
+        }
+    }
+
+    result
+}
+
+/// world entry ("repo/name", "Err/name" local, or bare "name") from an
+/// already-resolved get_pkg_repos_batch lookup.
+pub(crate) fn pkg_world_entry_from(
+    bare: &str,
+    forced_prefix: Option<&str>,
+    repos: &std::collections::HashMap<String, Option<String>>,
+) -> String {
+    match repos.get(bare) {
+        Some(Some(repo)) if repo != "None" => format!("{}/{}", repo, bare),
+        Some(Some(_)) /* "None" = local build */ => {
+            format!("{}/{}", forced_prefix.unwrap_or("Err"), bare)
+        }
+        _ => bare.to_string(),
     }
 }
 
@@ -430,6 +518,12 @@ pub(crate) fn regen_world_set() -> Result<()> {
         .filter(|l| !l.is_empty())
         .collect();
 
+    let bares: Vec<String> = entries
+        .iter()
+        .map(|e| e.split('/').last().unwrap_or(e).to_string())
+        .collect();
+    let repos = get_pkg_repos_batch(&bares);
+
     let mut updated: Vec<String> = Vec::new();
     let mut changed = 0usize;
 
@@ -437,7 +531,7 @@ pub(crate) fn regen_world_set() -> Result<()> {
         let bare = entry.split('/').last().unwrap_or(entry);
         // Keep abs/aur prefix if re-resolution can't find a live repo.
         let old_prefix = entry.split('/').next().filter(|p| *p == "abs" || *p == "aur");
-        let new_entry = pkg_world_entry(bare, old_prefix);
+        let new_entry = pkg_world_entry_from(bare, old_prefix, &repos);
         if &new_entry != entry {
             println!("  {} -> {}", entry, new_entry);
             changed += 1;
@@ -479,6 +573,16 @@ pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
         return Ok(());
     }
 
+    // Batch-resolve every valid entry's repo up front -- one or two
+    // pacman calls for the whole set instead of one per line.
+    let bares: Vec<String> = raw_lines
+        .iter()
+        .map(|l| l.trim())
+        .filter(|t| !t.is_empty() && !t.starts_with('#') && validate_pkg(t))
+        .map(|t| t.split('/').last().unwrap_or(t).to_string())
+        .collect();
+    let repos = get_pkg_repos_batch(&bares);
+
     let mut changed = 0usize;
     // sort=false: rewrite in place (keep comments/blanks).
     let mut rewritten: Vec<String> = Vec::new();
@@ -500,7 +604,7 @@ pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
         let bare = trimmed.split('/').last().unwrap_or(trimmed);
         // Keep abs/aur if re-resolution misses (same as regen_world_set).
         let old_prefix = trimmed.split('/').next().filter(|p| *p == "abs" || *p == "aur");
-        let new_entry = pkg_world_entry(bare, old_prefix);
+        let new_entry = pkg_world_entry_from(bare, old_prefix, &repos);
         if new_entry != trimmed {
             println!("  {} -> {}", trimmed, new_entry);
             changed += 1;
@@ -591,10 +695,16 @@ pub(crate) fn add_to_world_set(packages: &[String], forced_prefix: Option<&str>)
         }
     }
 
+    let bares: Vec<String> = packages
+        .iter()
+        .map(|p| p.split('/').last().unwrap_or(p).to_string())
+        .collect();
+    let repos = get_pkg_repos_batch(&bares);
+
     let mut changed = false;
     for pkg in packages {
         let bare = pkg.split('/').last().unwrap_or(pkg).to_string();
-        let entry = pkg_world_entry(&bare, forced_prefix);
+        let entry = pkg_world_entry_from(&bare, forced_prefix, &repos);
         // Overwrite so stale prefixes get corrected.
         let stale = current_set.get(&bare).map(|e| e != &entry).unwrap_or(true);
         if stale {
