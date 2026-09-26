@@ -489,43 +489,27 @@ struct Cli {
     #[arg(long = "with-bdeps")]                     with_bdeps: Option<String>,
     #[arg(long = "alert", short = 'A')]             alert: bool,
 
-    /// Generate a shell completion script and print it to stdout.
-    /// Used by packaging (PKGBUILD) to install completions - not meant
-    /// for interactive use, hence hidden from --help.
+    /// Generate shell completions to stdout; hidden from help.
     #[arg(long = "gen-completions", hide = true, value_name = "SHELL")]
     gen_completions: Option<Shell>,
 
-    /// Generate the man page (troff/ROFF) via clap_mangen and print it to
-    /// stdout. Used by packaging (PKGBUILD) to install `emerge(1)` - this
-    /// way the man page can never drift from --help, since both are
-    /// generated from the same Cli definition. Hidden from --help.
+    /// Generate the man page to stdout; hidden from help.
     #[arg(long = "gen-manpage", hide = true)]
     gen_manpage: bool,
 
-    /// Display info about the system, mirroring `emerge --info`
+    /// Display system info, like `emerge --info`.
     #[arg(long = "info")]
     info: bool,
 
-    /// Show Arch Linux news (https://archlinux.org/feeds/news/), Gentoo
-    /// `eselect news`-style. Bare `--news` lists the most recent items,
-    /// flagging unread ones; `--news <N>` shows the full text of item N
-    /// and marks it read; `--news all` marks every listed item as read
-    /// without displaying anything. Read/unread state is kept per-user in
-    /// ~/.cache/aura-emerge/news.state, so this never needs root.
+    /// Show Arch news; bare `--news` lists items, `--news N` reads one.
     #[arg(long = "news", value_name = "N|all", num_args = 0..=1, default_missing_value = "")]
     news: Option<String>,
 
-    /// Full alias for `--news` - same `[N|all]` argument, same list, same
-    /// read/unread tracking. Kept for Gentoo command-line muscle memory
-    /// (`emerge --check-news` isn't a real Gentoo action either - the
-    /// actual news notification there fires automatically after
-    /// `--sync` - but the flag name is common enough to be worth wiring
-    /// up properly rather than leaving as a silent no-op).
+    /// Alias for `--news`.
     #[arg(long = "check-news", value_name = "N|all", num_args = 0..=1, default_missing_value = "")]
     check_news: Option<String>,
 
-    /// Packages to install, '@world', '@preserved-rebuild', or a custom
-    /// set '@<name>' (read from /etc/portage/sets/<name>.set)
+    /// Packages to install or @set names.
     packages: Vec<String>,
 }
 
