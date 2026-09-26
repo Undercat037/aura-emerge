@@ -231,7 +231,7 @@ AUTHOR
 #[command(
     name = "emerge",
     bin_name = "emerge",
-    version = concat!(env!("CARGO_PKG_VERSION"), " (aura-emerge)"),
+    version = concat!(env!("CARGO_PKG_VERSION")),
     disable_help_flag = true,
     disable_version_flag = true,
     long_about = LONG_ABOUT,
@@ -530,6 +530,7 @@ struct Cli {
 }
 
 fn print_help() {
+    let ver = concat!(env!("CARGO_PKG_VERSION"));
     println!("aura-emerge: command-line interface to the Portage system (Arch Linux)");
     println!("Usage:");
     println!("   emerge [ options ] [ action ] [ package | @set ] [ ... ]");
@@ -540,16 +541,16 @@ fn print_help() {
     println!("Options: -[1aCcDehNnpstuVv]");
     println!("          [ --abs                        ] [ --aur        ]");
     println!("          [ --skippgp                    ] [ --autopgp    ]");
-    println!("          [ --only-repos                                 ]");
+    println!("          [ --only-repos                                  ]");
     println!("          [ --edit                       ] [ --skip-srcinfo-regen ]");
-    println!("          [ --pkgbuild-view              ] [ --emptytree ]");
+    println!("          [ --pkgbuild-view              ] [ --emptytree  ]");
     println!("          [ --newuse                     ] [ --noreplace  ]");
     println!("          [ --oneshot                    ] [ --pretend    ]");
     println!("          [ --skipfirst                  ] [ --refresh    ]");
     println!("          [ --no-sandbox                 ] [ --unshare-net-build ]");
     println!("          [ --devel                      ] [ --sudoloop   ]");
     println!("          [ --verbose-conflicts          ] [ --with-bdeps ]");
-    println!("          [ --err-install                 ] [ --regen-sort ]");
+    println!("          [ --err-install                ] [ --regen-sort ]");
     println!("          [ --deep[=N]                   ] [ --keep-going ]");
     println!("          [ --exclude <ATOM>             ] [ --ignore-default-opts ]");
     println!("Actions:  [ --depclean  | --deselect | --prune      | --regen       ]");
@@ -557,51 +558,16 @@ fn print_help() {
     println!("          [ --sync      | --unmerge  | --update     | --regen-world ]");
     println!("          [ --version   | --info     | --regen-world-from-explicit  ]");
     println!("          [ --list-sets | --regen-sets @<name>  | --news [N|all]    ]");
-    println!("          [ --check-news [N|all] | --check-devel | --undo          ]");
+    println!("          [ --check-news [N|all]  | --check-devel | --undo           ]");
     println!("          [ --scan <pkg...>       | --install-pkgbuild <PATH>       ]");
     println!("          [ --batchinstall <FILE> | --clean-source-cache            ]");
-    println!("          [ --revdep-rebuild                                       ]");
-    println!("          (first action on the command line wins; options may mix)");
+    println!("          [ --revdep-rebuild                                        ]");
+    println!("Sets:     [ @world | @preserved-rebuild | @<custom-sets>            ]");
     println!();
-    println!("   @world (no -u): install whatever's listed in /etc/portage/world");
-    println!("   and missing from this system - declarative provisioning, e.g. for a");
-    println!("   freshly installed machine. Nothing already installed is touched.");
+    println!("Full docs, examples and flag-by-flag details: man emerge");
+    println!("README: https://github.com/Undercat037/aura-emerge");
     println!();
-    println!("   -u @world (or -u alone): full system upgrade (repos + AUR), the");
-    println!("   Gentoo `emerge -u @world` equivalent. For a plain metadata refresh");
-    println!("   use --sync; --refresh forces it even if already current.");
-    println!();
-    println!("   @<name>: a custom set from /etc/portage/sets/<name>.set, one");
-    println!("   package per line (# comments allowed). Use --list-sets to see");
-    println!("   what's available.");
-    println!();
-    println!("   --pkgbuild-view: show the PKGBUILD (diff on rebuilds) and ask");
-    println!("   before building. --scan <pkg...>: the same audit, report-only,");
-    println!("   never builds or installs - exits non-zero on any finding.");
-    println!();
-    println!("   --install-pkgbuild <PATH>: build+install a local PKGBUILD checkout");
-    println!("   through this same pipeline (scanner + sandbox) instead of a");
-    println!("   bare `makepkg -i`. --batchinstall <FILE>: install a plain-text");
-    println!("   package list in one shot, same format as a custom set.");
-    println!();
-    println!("   --devel / --check-devel: catch -git/-hg/-svn/-bzr AUR packages");
-    println!("   whose upstream has moved even though the AUR page's recorded");
-    println!("   version hasn't. --check-devel only reports; -u --devel rebuilds.");
-    println!();
-    println!("   -t/--tree: show the plan as a dependency tree instead of a flat");
-    println!("   list (-p/--pretend to stop there). One level of nesting by");
-    println!("   default (direct deps of what you typed); add --deep to nest");
-    println!("   through however many levels the actual chain goes, or");
-    println!("   --deep=N to cap the nesting at N levels.");
-    println!();
-    println!("   --exclude <ATOM>: leave a package out of this run (repeatable,");
-    println!("   or comma-separated) - applies to installs, -u, @world, and");
-    println!("   --depclean/--prune. --keep-going: don't stop a batch at the");
-    println!("   first failure; --resume afterwards retries just what failed.");
-    println!();
-    println!("   For the full story behind every flag: man emerge");
-    println!("   For more help consult the README: https://github.com/Undercat037/aura-emerge");
-    println!();
+    println!("aura-emerge: v{}", ver);
     println!("Author: Undercat037");
 }
 

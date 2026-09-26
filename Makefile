@@ -30,7 +30,7 @@ completions:
 man:
 	$(BIN) --gen-manpage | sudo tee /usr/share/man/man1/emerge.1 > /dev/null
 
-install: build test completions man
+install: build completions man
 	sudo cp -r $(BIN) /usr/bin/emerge
 
 all: install
