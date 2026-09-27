@@ -1,0 +1,42 @@
+/* Local fonts (fonts/) */
+
+@font-face {
+  font-family: "Capture It";
+  src: url("../fonts/Capture-it.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Fallback display face */
+@font-face {
+  font-family: "Black Ops One";
+  src: url("../fonts/BlackOpsOne-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Allerta Stencil";
+  src: url("../fonts/AllertaStencil-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Satoshi";
+  src: url("../fonts/Satoshi-Variable.ttf") format("truetype");
+  font-weight: 300 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Satoshi";
+  src: url("../fonts/Satoshi-VariableItalic.ttf") format("truetype");
+  font-weight: 300 900;
+  font-style: italic;
+  font-display: swap;
+}

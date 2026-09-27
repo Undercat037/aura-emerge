@@ -1,20 +1,477 @@
-<!DOCTYPE HTML>
-<html>
-    <head>
-        <title>Aura emerge</title>
-    
-        <!-- modules -->
-        <link rel="stylesheet" href="css/style.css">
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Aura-Emerge - a standalone Gentoo-style emerge package manager for Arch Linux with PKGBUILD supply-chain scanning and bwrap sandbox." />
+  <meta name="theme-color" content="#0c0c14" />
+  <title>Aura-Emerge - Secure emerge for Arch</title>
+  <link rel="icon" href="misc/logo/slash-logo-32x32.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="css/fonts.css" />
+  <link rel="stylesheet" href="css/main.css" />
+  <style>
+    .sidebar-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      top: var(--topbar-h);
+      background: rgba(0, 0, 0, 0.55);
+      z-index: 40;
+    }
+    .sidebar-overlay.show { display: block; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="topbar-brand" href="#">
+      <img src="misc/logo/slash-logo-64x64.svg" alt="Aura-Emerge" width="36" height="36"
+           onerror="this.src='misc/logo/slash-logo-128x128.svg'; this.onerror=null;" />
+      <div class="name">Aura<span>Emerge</span></div>
+    </a>
+    <div class="topbar-actions">
+      <a class="btn btn-ghost" href="https://github.com/Undercat037/aura-emerge" target="_blank" rel="noopener">GitHub</a>
+      <a class="btn btn-primary" href="#install">Install</a>
+      <button type="button" class="menu-toggle" id="menu-toggle" aria-label="Open menu">☰</button>
+    </div>
+  </header>
 
-    </head>
+  <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
-    <!-- --- -->
-    <body>
-        <div class="logo-header">
-            <img src="misc/logo/slash-logo-64x64.svg" alt="Aura Emerge logo" height="64" width="64">
-            <h1 class="allerta-font">Aura <br>Emerge<br></h1>
+  <div class="shell">
+    <aside class="sidebar" id="sidebar">
+      <nav>
+        <div class="nav-section">
+          <div class="nav-section-title">Start</div>
+          <a class="nav-link active" href="#overview"><span class="dot"></span> Overview</a>
+          <a class="nav-link" href="#features"><span class="dot"></span> Features</a>
+          <a class="nav-link" href="#install"><span class="dot"></span> Installation</a>
+          <a class="nav-link" href="#quickstart"><span class="dot"></span> Quick start</a>
         </div>
-    
-        <p> Github Pages </p>
-    </body>
+        <div class="nav-section">
+          <div class="nav-section-title">Core</div>
+          <a class="nav-link purple" href="#world"><span class="dot"></span> World &amp; sets</a>
+          <a class="nav-link" href="#config"><span class="dot"></span> make.conf</a>
+          <a class="nav-link" href="#usage"><span class="dot"></span> Usage</a>
+        </div>
+        <div class="nav-section">
+          <div class="nav-section-title">Security</div>
+          <a class="nav-link red" href="#scanner"><span class="dot"></span> PKGBUILD scanner</a>
+          <a class="nav-link blue" href="#sandbox"><span class="dot"></span> bwrap sandbox</a>
+          <a class="nav-link" href="#mask"><span class="dot"></span> package.mask</a>
+        </div>
+        <div class="nav-section">
+          <div class="nav-section-title">More</div>
+          <a class="nav-link" href="#links"><span class="dot"></span> Links</a>
+        </div>
+      </nav>
+    </aside>
+
+    <main class="main">
+      <div class="content">
+        <section class="hero" id="overview">
+          <div class="hero-badge">Arch · Portage-style · Security-first</div>
+          <h1>
+            <span class="accent-purple">Aura</span>-<span class="accent-red">Emerge</span>
+          </h1>
+          <p class="hero-lead">
+            A standalone Gentoo-style <strong>emerge</strong> for Arch Linux -
+            installs from official repos, the AUR, and ABS; scans PKGBUILDs for
+            supply-chain attack patterns; and runs untrusted build steps inside
+            a <code>bwrap</code> sandbox.
+          </p>
+          <div class="hero-actions">
+            <a class="btn btn-primary" href="#install">Get started</a>
+            <a class="btn btn-blue" href="https://github.com/Undercat037/aura-emerge" target="_blank" rel="noopener">View on GitHub</a>
+            <a class="btn btn-ghost" href="https://aur.archlinux.org/packages/aura-emerge" target="_blank" rel="noopener">AUR package</a>
+          </div>
+        </section>
+
+        <section id="features">
+          <h2>Features</h2>
+          <p>
+            Packages are tracked in a <code>world</code> file - install once, track forever.
+            The tool drives <code>pacman</code> for official packages and builds AUR/ABS itself.
+          </p>
+
+          <div class="feature-grid">
+            <article class="feature-card purple">
+              <span class="tag tag-purple">Core</span>
+              <h3>Gentoo-style workflow</h3>
+              <p>
+                <code>@world</code> provisioning, custom sets, <code>--tree</code>,
+                <code>--exclude</code>, <code>--keep-going</code>, merge log -
+                familiar Portage muscle memory on Arch.
+              </p>
+            </article>
+            <article class="feature-card red">
+              <span class="tag tag-red">Security</span>
+              <h3>PKGBUILD scanner</h3>
+              <p>
+                AST + heuristics before every AUR build: <code>curl|sh</code>,
+                base64/xxd pipes, paste sites, known IOCs, sudo escalation,
+                and more. You decide whether to continue.
+              </p>
+            </article>
+            <article class="feature-card blue">
+              <span class="tag tag-blue">Sandbox</span>
+              <h3>bwrap sandbox</h3>
+              <p>
+                Untrusted <code>prepare</code>/<code>build</code>/<code>package</code>
+                run in a bubblewrap namespace - fake <code>$HOME</code>, write only
+                inside the build dir, optional network isolation.
+              </p>
+            </article>
+            <article class="feature-card purple">
+              <span class="tag tag-purple">Sources</span>
+              <h3>Repos · AUR · ABS</h3>
+              <p>
+                Official packages via pacman; AUR via direct git + RPC;
+                ABS via <code>pkgctl</code> with the same scanner and sandbox path.
+              </p>
+            </article>
+            <article class="feature-card red">
+              <span class="tag tag-red">Mask</span>
+              <h3>package.mask</h3>
+              <p>
+                Persistent never-install list - even as a transitive AUR dependency.
+                Separate from one-shot <code>--exclude</code>.
+              </p>
+            </article>
+            <article class="feature-card blue">
+              <span class="tag tag-blue">Maintenance</span>
+              <h3>Revdep &amp; devel</h3>
+              <p>
+                <code>--revdep-rebuild</code> finds broken library links;
+                <code>--devel</code> rebuilds <code>-git</code> packages whose upstream moved.
+              </p>
+            </article>
+          </div>
+        </section>
+
+        <section id="install">
+          <h2 class="sec-blue">Installation</h2>
+
+          <div class="tabs tabs-primary" data-tabs>
+            <div class="tabs-list" role="tablist">
+              <button type="button" class="tab active" role="tab" aria-selected="true" data-tab="aur">AUR</button>
+              <button type="button" class="tab" role="tab" aria-selected="false" data-tab="github">GitHub (Unstable)</button>
+            </div>
+
+            <div class="tab-panel active" data-panel="aur" role="tabpanel">
+              <h3>Helper</h3>
+              <pre class="blue"><code>paru -S aura-emerge
+# or
+yay -S aura-emerge</code></pre>
+
+              <h3>Makepkg</h3>
+              <pre><code>git clone https://aur.archlinux.org/aura-emerge.git
+cd aura-emerge
+makepkg -si</code></pre>
+            </div>
+
+            <div class="tab-panel" data-panel="github" role="tabpanel" hidden>
+              <p>Development builds from source. Clone, then pick a method:</p>
+              <pre><code>git clone https://github.com/Undercat037/aura-emerge.git
+cd aura-emerge</code></pre>
+
+              <div class="tabs tabs-nested" data-tabs>
+                <div class="tabs-list" role="tablist">
+                  <button type="button" class="tab active" role="tab" aria-selected="true" data-tab="manual">Manual</button>
+                  <button type="button" class="tab" role="tab" aria-selected="false" data-tab="makepkg">Makepkg</button>
+                  <button type="button" class="tab" role="tab" aria-selected="false" data-tab="make">Make</button>
+                </div>
+                <div class="tab-panel active" data-panel="manual" role="tabpanel">
+                  <pre><code>cargo build --release
+sudo cp target/release/aura-emerge /usr/bin/emerge
+sudo ln -sf /usr/bin/emerge /usr/bin/portageq
+emerge --gen-completions bash | sudo tee /usr/share/bash-completion/completions/emerge
+emerge --gen-completions zsh  | sudo tee /usr/share/zsh/site-functions/_emerge
+emerge --gen-completions fish | sudo tee /usr/share/fish/vendor_completions.d/emerge.fish
+emerge --gen-manpage | sudo tee /usr/share/man/man1/emerge.1 &gt;/dev/null</code></pre>
+                </div>
+                <div class="tab-panel" data-panel="makepkg" role="tabpanel" hidden>
+                  <pre><code>makepkg -si</code></pre>
+                </div>
+                <div class="tab-panel" data-panel="make" role="tabpanel" hidden>
+                  <pre><code>make install</code></pre>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <h3>Dependencies</h3>
+          <ul>
+            <li><strong>Required:</strong> <code>git</code></li>
+            <li><strong>Optional:</strong>
+              <code>devtools</code> (<code>--abs</code>),
+              <code>gnupg</code> (<code>--autopgp</code>),
+              <code>bubblewrap</code> (sandbox; without it builds fall back to plain makepkg)
+            </li>
+          </ul>
+
+          <div class="callout callout-stripe blue">
+            <div class="callout-title">Binary name</div>
+            The installed binary is <code>emerge</code> (with a <code>portageq</code> symlink).
+            Completions and the man page are generated from the same CLI definition.
+          </div>
+        </section>
+
+        <section id="quickstart">
+          <h2>Quick start</h2>
+          <ol class="steps">
+            <li>
+              Install a package (official repos first, AUR on a miss):
+              <pre><code>emerge neovim</code></pre>
+            </li>
+            <li>
+              Force AUR, review the PKGBUILD, ask before building:
+              <pre><code>emerge neovim-git --aur --pkgbuild-view -a</code></pre>
+            </li>
+            <li>
+              Full system upgrade (repos + AUR):
+              <pre><code>emerge -u @world</code></pre>
+            </li>
+            <li>
+              Provision this machine from your <code>world</code> file:
+              <pre><code>emerge @world</code></pre>
+            </li>
+          </ol>
+        </section>
+
+        <div class="sep"></div>
+
+        <section id="world">
+          <h2>World &amp; sets</h2>
+          <p>
+            Path: <code>/etc/portage/world</code>. Every explicitly installed package
+            is recorded automatically and removed on unmerge. Editable by hand -
+            one atom per line, optional repo prefix:
+          </p>
+          <pre><code>extra/firefox
+aur/ayugram-desktop-bin
+core/nano
+abs/nano-custom</code></pre>
+
+          <h3>Two meanings of <code>@world</code></h3>
+          <ul>
+            <li>
+              <strong><code>emerge @world</code></strong> (no <code>-u</code>) -
+              <em>provision</em>: install whatever world lists that is not already on the system.
+            </li>
+            <li>
+              <strong><code>emerge -u</code></strong> / <code>emerge -u @world</code> -
+              <em>upgrade</em>: upgrade everything already installed. Does not read world.
+            </li>
+            <li>
+              <strong><code>emerge --sync</code></strong> - database refresh only.
+            </li>
+          </ul>
+
+          <h3>Custom sets</h3>
+          <p>
+            Files under <code>/etc/portage/sets/&lt;name&gt;.set</code> are invoked as
+            <code>@&lt;name&gt;</code> and combine freely with other sets and package names:
+          </p>
+          <pre class="blue"><code># /etc/portage/sets/game-kit.set
+steam
+lutris
+gamemode
+aur/protonup-qt
+
+emerge @game-kit @dev-tools neovim
+emerge --list-sets</code></pre>
+        </section>
+
+        <section id="config">
+          <h2>make.conf</h2>
+          <p>
+            <code>/etc/portage/make.conf</code> (and
+            <code>~/.config/emerge/make.conf</code>) is aura-emerge own config -
+            default flags plus build-env overrides applied via a generated makepkg.conf.
+          </p>
+          <pre><code># EMERGE_DEFAULT_OPTS spliced into every run
+EMERGE_DEFAULT_OPTS="--pkgbuild-view --unshare-net-build"
+
+CFLAGS="-march=native -O2 -pipe"
+CXXFLAGS="$CFLAGS"
+RUSTFLAGS="-C target-cpu=native"
+MAKEFLAGS="-j$(nproc)"
+OPTIONS=(strip docs !debug lto)
+BUILDENV=(!distcc color check !sign)</code></pre>
+          <p>
+            Use <code>--ignore-default-opts</code> for a single run without the defaults.
+            <code>emerge --info</code> shows what was loaded and the effective expanded values.
+          </p>
+        </section>
+
+        <section id="usage">
+          <h2 class="sec-blue">Usage highlights</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Command</th>
+                  <th>What it does</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>emerge pkg</code></td>
+                  <td>Official repos, fall back to AUR</td>
+                </tr>
+                <tr>
+                  <td><code>emerge pkg --aur</code></td>
+                  <td>AUR only (recursive AUR deps)</td>
+                </tr>
+                <tr>
+                  <td><code>emerge pkg --abs</code></td>
+                  <td>Build from ABS in the sandbox</td>
+                </tr>
+                <tr>
+                  <td><code>emerge -apt pkg --aur</code></td>
+                  <td>Ask + pretend + dependency tree</td>
+                </tr>
+                <tr>
+                  <td><code>emerge -u --devel</code></td>
+                  <td>Upgrade + rebuild moved <code>-git</code> packages</td>
+                </tr>
+                <tr>
+                  <td><code>emerge --scan pkg --aur</code></td>
+                  <td>Audit PKGBUILD only (no build)</td>
+                </tr>
+                <tr>
+                  <td><code>emerge --revdep-rebuild</code></td>
+                  <td>Find &amp; fix broken shared-library links</td>
+                </tr>
+                <tr>
+                  <td><code>emerge --news</code></td>
+                  <td>Arch Linux news feed</td>
+                </tr>
+                <tr>
+                  <td><code>emerge -c</code> / <code>-C pkg</code></td>
+                  <td>Depclean / unmerge</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            Full flag list: <code>emerge --help</code> or the generated
+            <code>emerge(1)</code> man page.
+          </p>
+        </section>
+
+        <div class="sep"></div>
+
+        <section id="scanner">
+          <h2 class="sec-red">Security: PKGBUILD scanner</h2>
+          <p>
+            Before every AUR install, the raw PKGBUILD (and any
+            <code>.install</code> hook) is fetched from cgit and scanned in two layers:
+          </p>
+          <ol>
+            <li>
+              <strong>AST</strong> (<code>tree-sitter-bash</code>) -
+              <code>curl|sh</code>, base64/xxd pipes, process substitution,
+              <code>eval "$(curl …)"</code>, sudo/pkexec/doas, python inline-exec,
+              top-level command substitution, concatenation evasions, and more.
+            </li>
+            <li>
+              <strong>Line heuristics</strong> -
+              chmod 777, raw IPs, foreign package managers, paste sites,
+              <code>.onion</code>, anti-sandbox probes, known campaign IOCs.
+            </li>
+          </ol>
+          <div class="callout callout-stripe red">
+            <div class="callout-title">Not a hard block</div>
+            Findings are reported with file/line and a cgit link. You get
+            <code>Continue anyway? [y/N]</code> - the decision stays with you.
+          </div>
+          <pre class="red"><code>emerge --scan neovim-git --aur
+emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
+        </section>
+
+        <section id="sandbox">
+          <h2 class="sec-blue">bwrap sandbox</h2>
+          <p>
+            AUR and ABS builds run <code>pkgver</code> / <code>prepare</code> /
+            <code>build</code> / <code>check</code> / <code>package</code> inside
+            a bubblewrap namespace when <code>bubblewrap</code> is installed:
+          </p>
+          <ul>
+            <li>Fake <code>$HOME</code> - no SSH keys, GPG secret ring, browser profile</li>
+            <li>Writes only inside the build directory (+ configured DEST dirs)</li>
+            <li>Network shared by default; <code>--unshare-net-build</code> cuts it for build/check/package</li>
+            <li>Other namespaces torn down; fakeroot runs in a nested uid-0-mapped layer</li>
+          </ul>
+          <p>
+            Dependency install and final <code>pacman -U</code> stay <strong>outside</strong>
+            the sandbox - they do not execute PKGBUILD-authored code.
+          </p>
+          <pre class="blue"><code>emerge pkg --aur --unshare-net-build   # no net during build()
+emerge pkg --aur --no-sandbox          # plain makepkg (with warning)</code></pre>
+        </section>
+
+        <section id="mask">
+          <h2>package.mask</h2>
+          <p>
+            <code>/etc/portage/package.mask</code> (file or directory of files) -
+            packages this machine never installs, even as a transitive dependency:
+          </p>
+          <pre><code>ayugram-desktop-bin            # any source
+aur/*-bin                      # never AUR -bin packages
+*-git                          # no devel packages on this box
+extra/nano                     # specific repo/name</code></pre>
+          <p>
+            A masked package hard-stops the request. Use <code>--exclude</code>
+            for a one-run skip instead.
+          </p>
+        </section>
+
+        <section id="links">
+          <h2>Links</h2>
+          <ul>
+            <li>
+              <a href="https://github.com/Undercat037/aura-emerge" target="_blank" rel="noopener">
+                GitHub repository
+              </a>
+            </li>
+            <li>
+              <a href="https://gitlab.com/Undercat037/aura-emerge" target="_blank" rel="noopener">
+                GitLab repository
+              </a>
+            </li>
+            <li>
+              <a href="https://aur.archlinux.org/packages/aura-emerge" target="_blank" rel="noopener">
+                AUR: aura-emerge
+              </a>
+            </li>
+            <li>
+              <a href="https://github.com/Undercat037/aura-emerge/blob/main/README.MD" target="_blank" rel="noopener">
+                Full README (EN)
+              </a>
+              ·
+              <a href="https://github.com/Undercat037/aura-emerge/blob/main/UA-README.MD" target="_blank" rel="noopener">
+                README (UA)
+              </a>
+            </li>
+          </ul>
+        </section>
+
+        <footer class="site-footer">
+          <span>
+            © <span id="year">2026</span>
+            <strong>Undercat037</strong> · GPL-3.0
+          </span>
+          <span>
+            <a href="https://github.com/Undercat037/aura-emerge">Source</a>
+            ·
+            <a href="https://undercat037.github.io/aura-emerge/">GitHub Pages</a>
+          </span>
+        </footer>
+      </div>
+    </main>
+  </div>
+
+  <script src="js/main.js"></script>
+</body>
 </html>
