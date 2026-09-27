@@ -8,14 +8,37 @@
   function closeSidebar() {
     sidebar?.classList.remove("open");
     overlay?.classList.remove("show");
+    overlay?.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("nav-open");
   }
 
-  toggle?.addEventListener("click", () => {
-    sidebar?.classList.toggle("open");
-    overlay?.classList.toggle("show");
+  function openSidebar() {
+    sidebar?.classList.add("open");
+    overlay?.classList.add("show");
+    overlay?.setAttribute("aria-hidden", "false");
+    document.body.classList.add("nav-open");
+  }
+
+  toggle?.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (sidebar?.classList.contains("open")) closeSidebar();
+    else openSidebar();
   });
 
-  overlay?.addEventListener("click", closeSidebar);
+  /* Backdrop only - sidebar is a sibling above it in z-index */
+  overlay?.addEventListener("click", (e) => {
+    e.preventDefault();
+    closeSidebar();
+  });
+
+  /* Extra safety: never let a drawer tap bubble to document */
+  sidebar?.addEventListener("click", (e) => {
+    e.stopPropagation();
+  });
+  sidebar?.addEventListener("touchstart", (e) => {
+    e.stopPropagation();
+  }, { passive: true });
 
   sidebar?.querySelectorAll("a").forEach((a) => {
     a.addEventListener("click", () => {

@@ -3,5 +3,6 @@
 
 # Aura-Emerge Secure Package Manager
 ## (Github Pages branch)
+https://undercat037.github.io/aura-emerge/
 </div>
 

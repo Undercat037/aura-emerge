@@ -5,22 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="description" content="Aura-Emerge - a standalone Gentoo-style emerge package manager for Arch Linux with PKGBUILD supply-chain scanning and bwrap sandbox." />
   <meta name="theme-color" content="#0c0c14" />
-  <meta name="google-site-verification" content="M1BkKnA2rBLjrxrrTdusD1f0Sq8aGemt9UIHjHPpZgQ" />
   <title>Aura-Emerge - Secure emerge for Arch</title>
   <link rel="icon" href="misc/logo/slash-logo-32x32.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="css/fonts.css" />
   <link rel="stylesheet" href="css/main.css" />
-  <style>
-    .sidebar-overlay {
-      display: none;
-      position: fixed;
-      inset: 0;
-      top: var(--topbar-h);
-      background: rgba(0, 0, 0, 0.55);
-      z-index: 40;
-    }
-    .sidebar-overlay.show { display: block; }
-  </style>
 </head>
 <body>
   <header class="topbar">
@@ -36,37 +24,38 @@
     </div>
   </header>
 
-  <div class="sidebar-overlay" id="sidebar-overlay"></div>
+  <div class="sidebar-overlay" id="sidebar-overlay" aria-hidden="true"></div>
+
+  <!-- Outside .shell so z-index is not trapped under the overlay -->
+  <aside class="sidebar" id="sidebar" aria-label="Site navigation">
+    <nav>
+      <div class="nav-section">
+        <div class="nav-section-title">Start</div>
+        <a class="nav-link active" href="#overview"><span class="dot"></span> Overview</a>
+        <a class="nav-link" href="#features"><span class="dot"></span> Features</a>
+        <a class="nav-link" href="#install"><span class="dot"></span> Installation</a>
+        <a class="nav-link" href="#quickstart"><span class="dot"></span> Quick start</a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-section-title">Core</div>
+        <a class="nav-link purple" href="#world"><span class="dot"></span> World &amp; sets</a>
+        <a class="nav-link" href="#config"><span class="dot"></span> make.conf</a>
+        <a class="nav-link" href="#usage"><span class="dot"></span> Usage</a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-section-title">Security</div>
+        <a class="nav-link red" href="#scanner"><span class="dot"></span> PKGBUILD scanner</a>
+        <a class="nav-link blue" href="#sandbox"><span class="dot"></span> bwrap sandbox</a>
+        <a class="nav-link" href="#mask"><span class="dot"></span> package.mask</a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-section-title">More</div>
+        <a class="nav-link" href="#links"><span class="dot"></span> Links</a>
+      </div>
+    </nav>
+  </aside>
 
   <div class="shell">
-    <aside class="sidebar" id="sidebar">
-      <nav>
-        <div class="nav-section">
-          <div class="nav-section-title">Start</div>
-          <a class="nav-link active" href="#overview"><span class="dot"></span> Overview</a>
-          <a class="nav-link" href="#features"><span class="dot"></span> Features</a>
-          <a class="nav-link" href="#install"><span class="dot"></span> Installation</a>
-          <a class="nav-link" href="#quickstart"><span class="dot"></span> Quick start</a>
-        </div>
-        <div class="nav-section">
-          <div class="nav-section-title">Core</div>
-          <a class="nav-link purple" href="#world"><span class="dot"></span> World &amp; sets</a>
-          <a class="nav-link" href="#config"><span class="dot"></span> make.conf</a>
-          <a class="nav-link" href="#usage"><span class="dot"></span> Usage</a>
-        </div>
-        <div class="nav-section">
-          <div class="nav-section-title">Security</div>
-          <a class="nav-link red" href="#scanner"><span class="dot"></span> PKGBUILD scanner</a>
-          <a class="nav-link blue" href="#sandbox"><span class="dot"></span> bwrap sandbox</a>
-          <a class="nav-link" href="#mask"><span class="dot"></span> package.mask</a>
-        </div>
-        <div class="nav-section">
-          <div class="nav-section-title">More</div>
-          <a class="nav-link" href="#links"><span class="dot"></span> Links</a>
-        </div>
-      </nav>
-    </aside>
-
     <main class="main">
       <div class="content">
         <section class="hero" id="overview">
