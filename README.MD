@@ -4,5 +4,7 @@
 # Aura-Emerge Secure Package Manager
 ## (Github Pages branch)
 https://undercat037.github.io/aura-emerge/
+https://undercat037.github.io/aura-emerge/docs.html
+https://undercat037.github.io/aura-emerge/flags.html
 </div>
 

@@ -794,3 +794,96 @@ tr:hover td { background: rgba(168, 85, 247, 0.04); }
   margin: 2rem 0;
   opacity: 0.6;
 }
+/* ── Language switcher ───────────────────────────────────────────── */
+
+.lang-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--bg-raised);
+}
+
+.lang-switch .lang-btn {
+  font-family: var(--font-body);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.35rem 0.65rem;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.lang-switch .lang-btn:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.lang-switch .lang-btn.active {
+  background: var(--purple-glow);
+  color: #e9d5ff;
+}
+
+.lang-switch .lang-btn + .lang-btn {
+  border-left: 1px solid var(--border);
+}
+
+/* Hide inactive language blocks */
+.lang-block[hidden] {
+  display: none !important;
+}
+
+/* Page hero variant for docs/flags */
+.page-hero {
+  margin-bottom: 2rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid var(--border);
+  position: relative;
+}
+.page-hero::after {
+  content: "";
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  width: 80px;
+  height: 2px;
+  background: linear-gradient(90deg, var(--purple), var(--blue));
+  border-radius: 2px;
+}
+.page-hero h1 {
+  font-family: var(--font-display);
+  font-size: clamp(1.8rem, 4vw, 2.4rem);
+  font-weight: 400;
+  letter-spacing: 0.03em;
+  margin-bottom: 0.5rem;
+}
+.page-hero .lead {
+  color: var(--text-muted);
+  max-width: 40rem;
+  font-size: 1.05rem;
+}
+
+/* Flag table extras */
+.flag-table td:first-child {
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: #c4b5fd;
+}
+.flag-group {
+  margin-top: 2rem;
+}
+.flag-group h3 {
+  margin-top: 0;
+}
+
+/* Note callout at end of overview */
+.callout.note-aura {
+  margin-top: 2rem;
+}

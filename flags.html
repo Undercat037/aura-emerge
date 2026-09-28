@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en" data-lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Aura-Emerge CLI flags reference — every emerge option." />
+  <meta name="theme-color" content="#0c0c14" />
+  <title>Flags · Aura-Emerge</title>
+  <link rel="icon" href="misc/logo/slash-logo-32x32.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="css/fonts.css" />
+  <link rel="stylesheet" href="css/main.css" />
+</head>
+<body>
+  <header class="topbar">
+    <a class="topbar-brand" href="index.html">
+      <img src="misc/logo/slash-logo-64x64.svg" alt="Aura-Emerge" width="36" height="36"
+           onerror="this.src='misc/logo/slash-logo-128x128.svg'; this.onerror=null;" />
+      <div class="name">Aura<span>Emerge</span></div>
+    </a>
+    <div class="topbar-actions">
+      <div class="lang-switch" role="group" aria-label="Language">
+        <button type="button" class="lang-btn active" data-lang="en" aria-pressed="true">EN</button>
+        <button type="button" class="lang-btn" data-lang="ua" aria-pressed="false">UA</button>
+      </div>
+      <a class="btn btn-ghost" href="https://github.com/Undercat037/aura-emerge" target="_blank" rel="noopener" data-i18n="btn_github">GitHub</a>
+      <a class="btn btn-primary" href="index.html#install" data-i18n="btn_install">Install</a>
+      <button type="button" class="menu-toggle" id="menu-toggle" data-i18n-attr="aria-label:menu_open" aria-label="Open menu">☰</button>
+    </div>
+  </header>
+
+  <div class="sidebar-overlay" id="sidebar-overlay" aria-hidden="true"></div>
+
+  <aside class="sidebar" id="sidebar" aria-label="Site navigation">
+    <nav>
+      <div class="nav-section">
+        <div class="nav-section-title" data-i18n="nav_pages">Pages</div>
+        <a class="nav-link" href="index.html" data-page="index.html"><span class="dot"></span> <span data-i18n="nav_overview">Overview</span></a>
+        <a class="nav-link" href="docs.html" data-page="docs.html"><span class="dot"></span> <span data-i18n="nav_docs">Docs</span></a>
+        <a class="nav-link active" href="flags.html" data-page="flags.html"><span class="dot"></span> <span data-i18n="nav_flags">Flags</span></a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-section-title">Groups</div>
+        <a class="nav-link" href="#actions"><span class="dot"></span> Actions</a>
+        <a class="nav-link" href="#source"><span class="dot"></span> Source / build</a>
+        <a class="nav-link" href="#security"><span class="dot"></span> Security</a>
+        <a class="nav-link" href="#world-flags"><span class="dot"></span> World / sets</a>
+        <a class="nav-link" href="#output"><span class="dot"></span> Output / plan</a>
+        <a class="nav-link" href="#batch"><span class="dot"></span> Batch / resume</a>
+        <a class="nav-link" href="#misc"><span class="dot"></span> Misc</a>
+      </div>
+    </nav>
+  </aside>
+
+  <div class="shell">
+    <main class="main">
+      <div class="content">
+        <header class="page-hero">
+          <h1 data-i18n="flags_title">CLI flags</h1>
+          <p class="lead" data-i18n="flags_lead">
+            Every flag accepted by emerge — actions, modifiers, Gentoo-compat no-ops, and generated completions/man page.
+          </p>
+        </header>
+
+        <p class="lang-block" data-lang-block="en">
+          The <code>emerge(1)</code> man page is generated from the same CLI definition via <code>clap_mangen</code>
+          (<code>(emerge --gen-manpage)</code>, so it cannot drift from <code>--help</code>.
+        </p>
+        <p class="lang-block" data-lang-block="ua" hidden>
+          Man-сторінка <code>emerge(1)</code> генерується з того ж визначення CLI через <code>clap_mangen</code>
+          (<code>(emerge --gen-manpage)</code>, тож не розходиться з <code>--help</code>.
+        </p>
+
+        <!-- ── Actions ─────────────────────────────────────────── -->
+        <section class="flag-group" id="actions">
+          <h2 class="sec-purple lang-block" data-lang-block="en">Actions</h2>
+          <h2 class="sec-purple lang-block" data-lang-block="ua" hidden>Дії</h2>
+          <div class="table-wrap">
+            <table class="flag-table">
+              <thead>
+                <tr>
+                  <th>Flag</th>
+                  <th class="lang-block" data-lang-block="en">Description</th>
+                  <th class="lang-block" data-lang-block="ua" hidden>Опис</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>-s</code></td>
+                  <td class="lang-block" data-lang-block="en">Search packages</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Пошук пакунків</td>
+                </tr>
+                <tr>
+                  <td><code>--searchdesc</code></td>
+                  <td class="lang-block" data-lang-block="en">Search by description</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Пошук за описом</td>
+                </tr>
+                <tr>
+                  <td><code>-sv</code></td>
+                  <td class="lang-block" data-lang-block="en">Detailed package info</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Детальна інформація</td>
+                </tr>
+                <tr>
+                  <td><code>-u</code></td>
+                  <td class="lang-block" data-lang-block="en">Full system upgrade (does not read world)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Повне оновлення (world не читається)</td>
+                </tr>
+                <tr>
+                  <td><code>--devel</code></td>
+                  <td class="lang-block" data-lang-block="en">With <code>-u</code>: also rebuild <code>-git</code>/<code>-hg</code>/<code>-svn</code>/<code>-bzr</code> whose upstream moved</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>З <code>-u</code>: також перезібрати devel, чий upstream зрушив</td>
+                </tr>
+                <tr>
+                  <td><code>--check-devel</code></td>
+                  <td class="lang-block" data-lang-block="en">Report devel packages with upstream drift (no rebuild)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Звіт про devel зі зрушенням upstream (без перезбірки)</td>
+                </tr>
+                <tr>
+                  <td><code>-C</code> / <code>--unmerge</code></td>
+                  <td class="lang-block" data-lang-block="en">Remove packages (unmerge)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Видалити пакунки (unmerge)</td>
+                </tr>
+                <tr>
+                  <td><code>-c</code> / <code>--depclean</code></td>
+                  <td class="lang-block" data-lang-block="en">Remove orphans</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Видалити сиріт</td>
+                </tr>
+                <tr>
+                  <td><code>--sync</code></td>
+                  <td class="lang-block" data-lang-block="en">Sync package databases</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Синхронізувати бази</td>
+                </tr>
+                <tr>
+                  <td><code>--refresh</code></td>
+                  <td class="lang-block" data-lang-block="en">Force <code>-Syy</code> (with <code>--sync</code> or <code>-u</code>)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Примусово <code>-Syy</code></td>
+                </tr>
+                <tr>
+                  <td><code>--info</code></td>
+                  <td class="lang-block" data-lang-block="en">System info (Gentoo-style)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Інформація про систему</td>
+                </tr>
+                <tr>
+                  <td><code>--news [N|all]</code></td>
+                  <td class="lang-block" data-lang-block="en">Arch Linux news; <code>N</code> reads one, <code>all</code> marks all read</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Новини Arch; <code>N</code> — прочитати, <code>all</code> — позначити всі</td>
+                </tr>
+                <tr>
+                  <td><code>--check-news</code></td>
+                  <td class="lang-block" data-lang-block="en">Alias for <code>--news</code></td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Синонім <code>--news</code></td>
+                </tr>
+                <tr>
+                  <td><code>--prune</code></td>
+                  <td class="lang-block" data-lang-block="en">Remove packages not in world</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Видалити пакунки поза world</td>
+                </tr>
+                <tr>
+                  <td><code>--select</code></td>
+                  <td class="lang-block" data-lang-block="en">Add to world without installing</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Додати до world без встановлення</td>
+                </tr>
+                <tr>
+                  <td><code>--deselect</code></td>
+                  <td class="lang-block" data-lang-block="en">Remove from world without unmerging</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Прибрати з world без видалення</td>
+                </tr>
+                <tr>
+                  <td><code>--revdep-rebuild</code></td>
+                  <td class="lang-block" data-lang-block="en">Find &amp; fix binaries with broken library links</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Знайти й полагодити биті лінки бібліотек</td>
+                </tr>
+                <tr>
+                  <td><code>--undo</code></td>
+                  <td class="lang-block" data-lang-block="en">Undo last install/unmerge (one step; <code>-u</code> not reversible)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Скасувати останнє встановлення/видалення</td>
+                </tr>
+                <tr>
+                  <td><code>--resume</code></td>
+                  <td class="lang-block" data-lang-block="en">Resume interrupted transaction</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Продовжити перерваний процес</td>
+                </tr>
+                <tr>
+                  <td><code>--skipfirst</code></td>
+                  <td class="lang-block" data-lang-block="en">Skip first package on resume</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Пропустити перший пакунок при resume</td>
+                </tr>
+                <tr>
+                  <td><code>--batchinstall &lt;FILE&gt;</code></td>
+                  <td class="lang-block" data-lang-block="en">Mass-install from a text list (same format as a custom set)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Масове встановлення зі списку</td>
+                </tr>
+                <tr>
+                  <td><code>--install-pkgbuild &lt;PATH&gt;</code></td>
+                  <td class="lang-block" data-lang-block="en">Build+install a local PKGBUILD checkout (scanner + bwrap)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Зібрати+встановити локальний checkout PKGBUILD</td>
+                </tr>
+                <tr>
+                  <td><code>--scan</code></td>
+                  <td class="lang-block" data-lang-block="en">Audit-only PKGBUILD/.install scan (AUR or <code>--install-pkgbuild</code>); non-zero on findings</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Лише аудит PKGBUILD/.install; ненульовий код при знахідках</td>
+                </tr>
+                <tr>
+                  <td><code>--clean-source-cache</code></td>
+                  <td class="lang-block" data-lang-block="en">Wipe persistent VCS source cache</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Очистити кеш VCS-джерел</td>
+                </tr>
+                <tr>
+                  <td><code>--regen</code></td>
+                  <td class="lang-block" data-lang-block="en">Regenerate package metadata cache</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Оновити кеш метаданих</td>
+                </tr>
+                <tr>
+                  <td><code>--regen-world</code></td>
+                  <td class="lang-block" data-lang-block="en">Re-resolve repo prefixes in world</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Оновити префікси репо у world</td>
+                </tr>
+                <tr>
+                  <td><code>--regen-sets &lt;SET&gt;</code></td>
+                  <td class="lang-block" data-lang-block="en">Re-resolve prefixes for one custom set</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Оновити префікси для одного набору</td>
+                </tr>
+                <tr>
+                  <td><code>--regen-sort</code></td>
+                  <td class="lang-block" data-lang-block="en">With <code>--regen-sets</code>: also sort the file (drops comments)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>З <code>--regen-sets</code>: також відсортувати файл</td>
+                </tr>
+                <tr>
+                  <td><code>--regen-world-from-explicit</code></td>
+                  <td class="lang-block" data-lang-block="en">One-time migration: seed world from <code>pacman -Qeq</code></td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Міграція: наповнити world з <code>pacman -Qeq</code></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- ── Source / build ───────────────────────────────────── -->
+        <section class="flag-group" id="source">
+          <h2 class="sec-blue lang-block" data-lang-block="en">Source &amp; build</h2>
+          <h2 class="sec-blue lang-block" data-lang-block="ua" hidden>Джерело і збірка</h2>
+          <div class="table-wrap">
+            <table class="flag-table">
+              <thead>
+                <tr>
+                  <th>Flag</th>
+                  <th class="lang-block" data-lang-block="en">Description</th>
+                  <th class="lang-block" data-lang-block="ua" hidden>Опис</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>--aur</code></td>
+                  <td class="lang-block" data-lang-block="en">Force AUR (AUR-only deps resolved recursively)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Примусово AUR (AUR-залежності рекурсивно)</td>
+                </tr>
+                <tr>
+                  <td><code>--only-repos</code></td>
+                  <td class="lang-block" data-lang-block="en">Official repos only (never AUR)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Лише офіційні репо</td>
+                </tr>
+                <tr>
+                  <td><code>--abs</code></td>
+                  <td class="lang-block" data-lang-block="en">Build from ABS (<code>pkgctl</code>), in bwrap sandbox</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Зібрати з ABS у пісочниці bwrap</td>
+                </tr>
+                <tr>
+                  <td><code>--no-sandbox</code></td>
+                  <td class="lang-block" data-lang-block="en">Disable bwrap; plain makepkg</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Вимкнути bwrap; звичайний makepkg</td>
+                </tr>
+                <tr>
+                  <td><code>--unshare-net-build</code></td>
+                  <td class="lang-block" data-lang-block="en">No network during build()/check()/package()</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Без мережі на етапі build()/check()/package()</td>
+                </tr>
+                <tr>
+                  <td><code>--skippgp</code></td>
+                  <td class="lang-block" data-lang-block="en">Skip PGP checks (ABS)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Пропустити перевірку PGP (ABS)</td>
+                </tr>
+                <tr>
+                  <td><code>--autopgp</code></td>
+                  <td class="lang-block" data-lang-block="en">Auto-import missing PGP keys (ABS)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Автоімпорт відсутніх PGP-ключів (ABS)</td>
+                </tr>
+                <tr>
+                  <td><code>--edit</code></td>
+                  <td class="lang-block" data-lang-block="en">Edit PKGBUILD in <code>$EDITOR</code> before build; regenerates <code>.SRCINFO</code></td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Редагувати PKGBUILD; після збереження оновлює <code>.SRCINFO</code></td>
+                </tr>
+                <tr>
+                  <td><code>--skip-srcinfo-regen</code></td>
+                  <td class="lang-block" data-lang-block="en">With <code>--edit</code>: do not regenerate <code>.SRCINFO</code></td>
+                  <td class="lang-block" data-lang-block="ua" hidden>З <code>--edit</code>: не оновлювати <code>.SRCINFO</code></td>
+                </tr>
+                <tr>
+                  <td><code>--pkgbuild-view</code></td>
+                  <td class="lang-block" data-lang-block="en">Show/diff PKGBUILD, confirm before build</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Показати/diff PKGBUILD, підтвердити перед збіркою</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- ── Security ─────────────────────────────────────────── -->
+        <section class="flag-group" id="security">
+          <h2 class="sec-red lang-block" data-lang-block="en">Security-related</h2>
+          <h2 class="sec-red lang-block" data-lang-block="ua" hidden>Безпека</h2>
+          <div class="table-wrap">
+            <table class="flag-table">
+              <thead>
+                <tr>
+                  <th>Flag</th>
+                  <th class="lang-block" data-lang-block="en">Description</th>
+                  <th class="lang-block" data-lang-block="ua" hidden>Опис</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>--scan</code></td>
+                  <td class="lang-block" data-lang-block="en">Audit PKGBUILD/.install only</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Лише аудит PKGBUILD/.install</td>
+                </tr>
+                <tr>
+                  <td><code>--no-sandbox</code></td>
+                  <td class="lang-block" data-lang-block="en">Turn off bwrap (warning printed)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Вимкнути bwrap (з попередженням)</td>
+                </tr>
+                <tr>
+                  <td><code>--unshare-net-build</code></td>
+                  <td class="lang-block" data-lang-block="en">Network off for build/check/package phases</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Мережа вимкнена для build/check/package</td>
+                </tr>
+                <tr>
+                  <td><code>--pkgbuild-view</code></td>
+                  <td class="lang-block" data-lang-block="en">Human review gate before build</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Людський перегляд перед збіркою</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- ── World / sets ─────────────────────────────────────── -->
+        <section class="flag-group" id="world-flags">
+          <h2 class="lang-block" data-lang-block="en">World &amp; sets</h2>
+          <h2 class="lang-block" data-lang-block="ua" hidden>World і набори</h2>
+          <div class="table-wrap">
+            <table class="flag-table">
+              <thead>
+                <tr>
+                  <th>Flag</th>
+                  <th class="lang-block" data-lang-block="en">Description</th>
+                  <th class="lang-block" data-lang-block="ua" hidden>Опис</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>--list-sets</code></td>
+                  <td class="lang-block" data-lang-block="en">List available <code>@sets</code></td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Показати доступні <code>@sets</code></td>
+                </tr>
+                <tr>
+                  <td><code>--err-install</code></td>
+                  <td class="lang-block" data-lang-block="en">On <code>@world</code>, also try <code>Err/</code> entries</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>При <code>@world</code> також пробувати записи <code>Err/</code></td>
+                </tr>
+                <tr>
+                  <td><code>--exclude &lt;ATOM&gt;</code></td>
+                  <td class="lang-block" data-lang-block="en">Leave a package out of this run (repeatable / comma-separated)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Виключити пакунок з цього запуску</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- ── Output / plan ────────────────────────────────────── -->
+        <section class="flag-group" id="output">
+          <h2 class="lang-block" data-lang-block="en">Output &amp; plan</h2>
+          <h2 class="lang-block" data-lang-block="ua" hidden>Вивід і план</h2>
+          <div class="table-wrap">
+            <table class="flag-table">
+              <thead>
+                <tr>
+                  <th>Flag</th>
+                  <th class="lang-block" data-lang-block="en">Description</th>
+                  <th class="lang-block" data-lang-block="ua" hidden>Опис</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>-p</code> / <code>--pretend</code></td>
+                  <td class="lang-block" data-lang-block="en">Dry run</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Симуляція (dry run)</td>
+                </tr>
+                <tr>
+                  <td><code>-a</code> / <code>--ask</code></td>
+                  <td class="lang-block" data-lang-block="en">Ask before acting</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Запит підтвердження</td>
+                </tr>
+                <tr>
+                  <td><code>-v</code> / <code>--verbose</code></td>
+                  <td class="lang-block" data-lang-block="en">Verbose output</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Детальний вивід</td>
+                </tr>
+                <tr>
+                  <td><code>-t</code> / <code>--tree</code></td>
+                  <td class="lang-block" data-lang-block="en">Show plan as a dependency tree</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Показати план як дерево залежностей</td>
+                </tr>
+                <tr>
+                  <td><code>-D</code> / <code>--deep[=N]</code></td>
+                  <td class="lang-block" data-lang-block="en">With <code>-t</code>: nest N levels, or every level if bare</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>З <code>-t</code>: вкласти N рівнів, або всі — без числа</td>
+                </tr>
+                <tr>
+                  <td><code>-1</code> / <code>--oneshot</code></td>
+                  <td class="lang-block" data-lang-block="en">Install as dependency (not added to world)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Встановити як залежність (не в world)</td>
+                </tr>
+                <tr>
+                  <td><code>-n</code> / <code>--noreplace</code></td>
+                  <td class="lang-block" data-lang-block="en">Do not reinstall if present</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Не перевстановлювати</td>
+                </tr>
+                <tr>
+                  <td><code>--sudoloop</code></td>
+                  <td class="lang-block" data-lang-block="en">Keep sudo timestamp warm for the whole run</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Тримати sudo «теплим» протягом усього запуску</td>
+                </tr>
+                <tr>
+                  <td><code>--keep-going</code></td>
+                  <td class="lang-block" data-lang-block="en">Don’t stop a batch at the first failure; summarize at the end</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Не зупинятись на першій помилці; підсумок в кінці</td>
+                </tr>
+                <tr>
+                  <td><code>--ignore-default-opts</code></td>
+                  <td class="lang-block" data-lang-block="en">Ignore <code>EMERGE_DEFAULT_OPTS</code> from make.conf for this run</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Ігнорувати <code>EMERGE_DEFAULT_OPTS</code> для цього запуску</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- ── Batch / resume ───────────────────────────────────── -->
+        <section class="flag-group" id="batch">
+          <h2 class="lang-block" data-lang-block="en">Batch &amp; resume</h2>
+          <h2 class="lang-block" data-lang-block="ua" hidden>Пакети і resume</h2>
+          <div class="table-wrap">
+            <table class="flag-table">
+              <thead>
+                <tr>
+                  <th>Flag</th>
+                  <th class="lang-block" data-lang-block="en">Description</th>
+                  <th class="lang-block" data-lang-block="ua" hidden>Опис</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>--batchinstall &lt;FILE&gt;</code></td>
+                  <td class="lang-block" data-lang-block="en">Mass-install from list file</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Масове встановлення зі списку</td>
+                </tr>
+                <tr>
+                  <td><code>--keep-going</code></td>
+                  <td class="lang-block" data-lang-block="en">Continue after failures; non-zero exit + summary</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Продовжити після помилок; ненульовий код + підсумок</td>
+                </tr>
+                <tr>
+                  <td><code>--resume</code></td>
+                  <td class="lang-block" data-lang-block="en">Retry failed packages from last run</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Повторити пакунки, що впали</td>
+                </tr>
+                <tr>
+                  <td><code>--skipfirst</code></td>
+                  <td class="lang-block" data-lang-block="en">Skip first package when resuming</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Пропустити перший при resume</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- ── Misc ─────────────────────────────────────────────── -->
+        <section class="flag-group" id="misc">
+          <h2 class="lang-block" data-lang-block="en">Help, version, generated</h2>
+          <h2 class="lang-block" data-lang-block="ua" hidden>Довідка, версія, генерація</h2>
+          <div class="table-wrap">
+            <table class="flag-table">
+              <thead>
+                <tr>
+                  <th>Flag</th>
+                  <th class="lang-block" data-lang-block="en">Description</th>
+                  <th class="lang-block" data-lang-block="ua" hidden>Опис</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>-h</code> / <code>--help</code></td>
+                  <td class="lang-block" data-lang-block="en">Help</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Довідка</td>
+                </tr>
+                <tr>
+                  <td><code>-V</code> / <code>--version</code></td>
+                  <td class="lang-block" data-lang-block="en">Version</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Версія</td>
+                </tr>
+                <tr>
+                  <td><code>--gen-completions &lt;SHELL&gt;</code></td>
+                  <td class="lang-block" data-lang-block="en">Generate shell completions (bash/zsh/fish) to stdout</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Генерувати completions у stdout</td>
+                </tr>
+                <tr>
+                  <td><code>--gen-manpage</code></td>
+                  <td class="lang-block" data-lang-block="en">Generate <code>emerge(1)</code> man page to stdout</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Генерувати man-сторінку у stdout</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="callout callout-stripe blue">
+            <div class="callout-title lang-block" data-lang-block="en">Gentoo compat</div>
+            <div class="callout-title lang-block" data-lang-block="ua" hidden>Сумісність з Gentoo</div>
+            <span class="lang-block" data-lang-block="en">
+              Many Portage flags (<code>-N/--newuse</code>, <code>-e/--emptytree</code>, <code>-O/--nodeps</code>,
+              <code>-k/-K/-g/-G/-b/-B</code>, <code>--jobs</code>, <code>--load-average</code>, …) are accepted
+              silently as no-ops so scripts and muscle memory don’t break.
+            </span>
+            <span class="lang-block" data-lang-block="ua" hidden>
+              Багато прапорів Portage (<code>-N/--newuse</code>, <code>-e/--emptytree</code>, <code>-O/--nodeps</code>,
+              <code>-k/-K/-g/-G/-b/-B</code>, <code>--jobs</code>, …) приймаються мовчки як no-op,
+              щоб скрипти і м'язова пам'ять не ламались.
+            </span>
+          </div>
+        </section>
+
+        <footer class="site-footer">
+          <span>
+            © <span id="year">2026</span>
+            <strong>Undercat037</strong> · GPL-3.0
+          </span>
+          <span>
+            <a href="docs.html" data-i18n="nav_docs">Docs</a>
+            ·
+            <a href="https://github.com/Undercat037/aura-emerge" data-i18n="footer_source">Source</a>
+          </span>
+        </footer>
+      </div>
+    </main>
+  </div>
+
+  <script src="js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en" data-lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Aura-Emerge documentation — world, make.conf, mask, sandbox, scanner, usage." />
+  <meta name="theme-color" content="#0c0c14" />
+  <title>Docs · Aura-Emerge</title>
+  <link rel="icon" href="misc/logo/slash-logo-32x32.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="css/fonts.css" />
+  <link rel="stylesheet" href="css/main.css" />
+</head>
+<body>
+  <header class="topbar">
+    <a class="topbar-brand" href="index.html">
+      <img src="misc/logo/slash-logo-64x64.svg" alt="Aura-Emerge" width="36" height="36"
+           onerror="this.src='misc/logo/slash-logo-128x128.svg'; this.onerror=null;" />
+      <div class="name">Aura<span>Emerge</span></div>
+    </a>
+    <div class="topbar-actions">
+      <div class="lang-switch" role="group" aria-label="Language">
+        <button type="button" class="lang-btn active" data-lang="en" aria-pressed="true">EN</button>
+        <button type="button" class="lang-btn" data-lang="ua" aria-pressed="false">UA</button>
+      </div>
+      <a class="btn btn-ghost" href="https://github.com/Undercat037/aura-emerge" target="_blank" rel="noopener" data-i18n="btn_github">GitHub</a>
+      <a class="btn btn-primary" href="index.html#install" data-i18n="btn_install">Install</a>
+      <button type="button" class="menu-toggle" id="menu-toggle" data-i18n-attr="aria-label:menu_open" aria-label="Open menu">☰</button>
+    </div>
+  </header>
+
+  <div class="sidebar-overlay" id="sidebar-overlay" aria-hidden="true"></div>
+
+  <aside class="sidebar" id="sidebar" aria-label="Site navigation">
+    <nav>
+      <div class="nav-section">
+        <div class="nav-section-title" data-i18n="nav_pages">Pages</div>
+        <a class="nav-link" href="index.html" data-page="index.html"><span class="dot"></span> <span data-i18n="nav_overview">Overview</span></a>
+        <a class="nav-link active" href="docs.html" data-page="docs.html"><span class="dot"></span> <span data-i18n="nav_docs">Docs</span></a>
+        <a class="nav-link" href="flags.html" data-page="flags.html"><span class="dot"></span> <span data-i18n="nav_flags">Flags</span></a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-section-title" data-i18n="nav_start">Start</div>
+        <a class="nav-link" href="#install"><span class="dot"></span> <span data-i18n="nav_install">Installation</span></a>
+        <a class="nav-link" href="#world"><span class="dot"></span> <span data-i18n="nav_world">World &amp; sets</span></a>
+        <a class="nav-link" href="#makeconf"><span class="dot"></span> make.conf</a>
+        <a class="nav-link" href="#mask"><span class="dot"></span> package.mask</a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-section-title" data-i18n="nav_core">Core</div>
+        <a class="nav-link" href="#exclude"><span class="dot"></span> --exclude / --keep-going</a>
+        <a class="nav-link" href="#tree"><span class="dot"></span> --tree / --deep</a>
+        <a class="nav-link" href="#log"><span class="dot"></span> emerge.log</a>
+        <a class="nav-link" href="#usage"><span class="dot"></span> <span data-i18n="nav_usage">Usage</span></a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-section-title" data-i18n="nav_security">Security</div>
+        <a class="nav-link red" href="#scanner"><span class="dot"></span> <span data-i18n="nav_scanner">PKGBUILD scanner</span></a>
+        <a class="nav-link blue" href="#sandbox"><span class="dot"></span> <span data-i18n="nav_sandbox">bwrap sandbox</span></a>
+        <a class="nav-link" href="#pkgbuild-view"><span class="dot"></span> PKGBUILD review</a>
+        <a class="nav-link" href="#devel"><span class="dot"></span> --devel</a>
+        <a class="nav-link" href="#revdep"><span class="dot"></span> --revdep-rebuild</a>
+      </div>
+    </nav>
+  </aside>
+
+  <div class="shell">
+    <main class="main">
+      <div class="content">
+        <header class="page-hero">
+          <h1 data-i18n="docs_title">Documentation</h1>
+          <p class="lead" data-i18n="docs_lead">
+            Full reference for world, make.conf, mask, sandbox, scanner, and everyday usage — the README in page form.
+          </p>
+        </header>
+
+        <section id="install">
+          <h2 class="sec-blue" data-i18n="section_install">Installation</h2>
+          <div class="lang-block" data-lang-block="en">
+            <h3>AUR</h3>
+            <pre class="blue"><code>paru -S aura-emerge
+# or
+yay -S aura-emerge</code></pre>
+            <h3>Makepkg</h3>
+            <pre><code>git clone https://aur.archlinux.org/aura-emerge.git
+cd aura-emerge
+makepkg -si</code></pre>
+            <h3>From source (unstable)</h3>
+            <pre><code>git clone https://github.com/Undercat037/aura-emerge.git
+cd aura-emerge
+cargo build --release
+sudo cp target/release/aura-emerge /usr/bin/emerge
+sudo ln -sf /usr/bin/emerge /usr/bin/portageq
+# completions + manpage — see index or README</code></pre>
+            <p><strong>Required:</strong> <code>git</code>. <strong>Optional:</strong> <code>devtools</code> (<code>--abs</code>), <code>gnupg</code> (<code>--autopgp</code>), <code>bubblewrap</code> (sandbox).</p>
+          </div>
+          <div class="lang-block" data-lang-block="ua" hidden>
+            <h3>AUR</h3>
+            <pre class="blue"><code>paru -S aura-emerge
+# або
+yay -S aura-emerge</code></pre>
+            <h3>Makepkg</h3>
+            <pre><code>git clone https://aur.archlinux.org/aura-emerge.git
+cd aura-emerge
+makepkg -si</code></pre>
+            <h3>З джерела (нестабільне)</h3>
+            <pre><code>git clone https://github.com/Undercat037/aura-emerge.git
+cd aura-emerge
+cargo build --release
+sudo cp target/release/aura-emerge /usr/bin/emerge
+sudo ln -sf /usr/bin/emerge /usr/bin/portageq</code></pre>
+            <p><strong>Обов'язково:</strong> <code>git</code>. <strong>Опційно:</strong> <code>devtools</code> (<code>--abs</code>), <code>gnupg</code> (<code>--autopgp</code>), <code>bubblewrap</code> (пісочниця).</p>
+          </div>
+        </section>
+
+        <section id="world">
+          <h2 data-i18n="section_world">World &amp; sets</h2>
+          <div class="lang-block" data-lang-block="en">
+            <p>Path: <code>/etc/portage/world</code>. Every explicitly installed package is added automatically and removed on unmerge. One package per line; optional repo prefix:</p>
+            <pre><code>cachyos-extra-v3/rust-analyzer
+aur/ayugram-desktop-bin
+abs/nano-custom
+extra/firefox
+Err/local-thing</code></pre>
+            <p>Prefixes: official repo name, <code>aur/</code>, <code>abs/</code>, <code>Err/</code> (source unknown).</p>
+            <h3>Two meanings of <code>@world</code></h3>
+            <ul>
+              <li><strong><code>emerge @world</code></strong> (no <code>-u</code>) — <em>provision</em>: install whatever world lists that isn’t already on the system.</li>
+              <li><strong><code>emerge -u @world</code></strong> (or <code>emerge -u</code>) — <em>upgrade</em>: upgrade everything already installed. Does not read world.</li>
+              <li><strong><code>emerge --sync</code></strong> — database refresh only.</li>
+            </ul>
+            <h3>Custom sets</h3>
+            <p><code>/etc/portage/sets/&lt;name&gt;.set</code> → <code>@&lt;name&gt;</code>. One atom per line, <code>#</code> comments allowed. Combine freely:</p>
+            <pre class="blue"><code>emerge @game-kit @dev-tools neovim
+emerge --list-sets</code></pre>
+            <p><code>--regen-world</code> / <code>--regen-sets @name</code> re-resolve repo prefixes. Add <code>--regen-sort</code> to alphabetize a set (drops comments/grouping).</p>
+          </div>
+          <div class="lang-block" data-lang-block="ua" hidden>
+            <p>Шлях: <code>/etc/portage/world</code>. Кожен явно встановлений пакунок додається автоматично, при видаленні — прибирається. Один пакунок на рядок; опційний префікс репо.</p>
+            <pre><code>cachyos-extra-v3/rust-analyzer
+aur/ayugram-desktop-bin
+abs/nano-custom
+extra/firefox
+Err/local-thing</code></pre>
+            <h3>Два значення <code>@world</code></h3>
+            <ul>
+              <li><strong><code>emerge @world</code></strong> (без <code>-u</code>) — <em>провізіювання</em>: встановити відсутнє з world.</li>
+              <li><strong><code>emerge -u @world</code></strong> — <em>оновлення</em>: оновити все встановлене. World не читається.</li>
+              <li><strong><code>emerge --sync</code></strong> — лише освіження баз.</li>
+            </ul>
+            <h3>Власні набори</h3>
+            <p><code>/etc/portage/sets/&lt;name&gt;.set</code> → <code>@&lt;name&gt;</code>. Один атом на рядок, <code>#</code>-коментарі дозволені.</p>
+            <pre class="blue"><code>emerge @game-kit @dev-tools neovim
+emerge --list-sets</code></pre>
+          </div>
+        </section>
+
+        <section id="makeconf">
+          <h2 data-i18n="section_config">make.conf</h2>
+          <div class="lang-block" data-lang-block="en">
+            <p><code>/etc/portage/make.conf</code> and <code>~/.config/emerge/make.conf</code> — aura-emerge’s own config (not <code>makepkg.conf</code>). System first, user last; last key wins.</p>
+            <pre><code>EMERGE_DEFAULT_OPTS="--pkgbuild-view --unshare-net-build"
+
+CFLAGS="-march=native -O2 -pipe"
+CXXFLAGS="$CFLAGS"
+RUSTFLAGS="-C target-cpu=native"
+MAKEFLAGS="-j$(nproc)"
+OPTIONS=(strip docs !debug lto)
+BUILDENV=(!distcc color check !sign)</code></pre>
+            <p>Build flags are applied via a generated makepkg.conf passed to <code>makepkg --config</code>. Values are shell-expanded, so <code>-j$(nproc)</code> and <code>CXXFLAGS="$CFLAGS"</code> work. <code>EMERGE_DEFAULT_OPTS</code> only accepts an allowlist of modifier flags — not actions like <code>--unmerge</code>.</p>
+            <p>Conflicting pairs (<code>--aur</code>/<code>--abs</code>, <code>--no-sandbox</code>/<code>--unshare-net-build</code>, …) are rejected or the config side is dropped when the CLI is more specific. <code>--ignore-default-opts</code> skips defaults for one run. <code>emerge --info</code> shows loaded files and expanded values.</p>
+          </div>
+          <div class="lang-block" data-lang-block="ua" hidden>
+            <p><code>/etc/portage/make.conf</code> і <code>~/.config/emerge/make.conf</code> — конфіг самого aura-emerge (не <code>makepkg.conf</code>). Системний файл першим, користувацький останнім.</p>
+            <pre><code>EMERGE_DEFAULT_OPTS="--pkgbuild-view --unshare-net-build"
+
+CFLAGS="-march=native -O2 -pipe"
+CXXFLAGS="$CFLAGS"
+RUSTFLAGS="-C target-cpu=native"
+MAKEFLAGS="-j$(nproc)"
+OPTIONS=(strip docs !debug lto)
+BUILDENV=(!distcc color check !sign)</code></pre>
+            <p>Прапори збірки застосовуються через згенерований makepkg.conf. <code>EMERGE_DEFAULT_OPTS</code> приймає лише allowlist модифікаторів. <code>--ignore-default-opts</code> — один запуск без дефолтів.</p>
+          </div>
+        </section>
+
+        <section id="mask">
+          <h2 data-i18n="section_mask">package.mask</h2>
+          <div class="lang-block" data-lang-block="en">
+            <p><code>/etc/portage/package.mask</code> — file or directory of files. Hard stop: never install, even as a transitive AUR dependency or by explicit name. Not a prompt.</p>
+            <pre><code>ayugram-desktop-bin            # any source
+aur/*-bin                      # never AUR -bin
+*-git                          # no devel on this box
+extra/nano                     # specific repo/name</code></pre>
+            <p>Optional trailing <code># reason</code> is shown when the mask fires. Separate from one-run <code>--exclude</code>.</p>
+          </div>
+          <div class="lang-block" data-lang-block="ua" hidden>
+            <p>Жорстка зупинка: ніколи не встановлювати, навіть як транзитну AUR-залежність. Не запит, а відмова.</p>
+            <pre><code>ayugram-desktop-bin
+aur/*-bin
+*-git
+extra/nano</code></pre>
+          </div>
+        </section>
+
+        <section id="exclude">
+          <h2>--exclude / --keep-going</h2>
+          <div class="lang-block" data-lang-block="en">
+            <p><code>--exclude &lt;atom&gt;</code> (repeatable or comma-separated) leaves a package out of the current run — installs, <code>-u</code>, <code>@world</code>, depclean/prune, revdep.</p>
+            <pre><code>emerge -u --exclude linux --exclude aur/ayugram-desktop-bin
+emerge --exclude firefox @world</code></pre>
+            <p><code>--keep-going</code> does not stop a batch at the first failure; collects failures and prints a summary with non-zero exit. <code>--resume</code> after that retries only the failed packages.</p>
+          </div>
+          <div class="lang-block" data-lang-block="ua" hidden>
+            <p><code>--exclude</code> виключає пакунок з поточного запуску. <code>--keep-going</code> не зупиняє пакетну операцію на першій помилці — збирає підсумок і ненульовий код виходу. <code>--resume</code> після цього повторює лише те, що впало.</p>
+          </div>
+        </section>
+
+        <section id="tree">
+          <h2>-t / --tree, --deep</h2>
+          <div class="lang-block" data-lang-block="en">
+            <p>Shows the plan as a dependency tree (<code>emerge -pt</code>-style). Default: one level of nesting. <code>--deep</code> nests the full chain; <code>--deep=N</code> caps at N levels.</p>
+            <pre><code>emerge -apt noctalia --aur
+emerge -pt noctalia --aur --deep
+emerge deepin-session --ask --tree --deep=3</code></pre>
+          </div>
+          <div class="lang-block" data-lang-block="ua" hidden>
+            <p>План як дерево залежностей. За замовчуванням один рівень. <code>--deep</code> — увесь ланцюг; <code>--deep=N</code> — обмеження глибини.</p>
+          </div>
+        </section>
+
+        <section id="log">
+          <h2>Merge / unmerge log</h2>
+          <div class="lang-block" data-lang-block="en">
+            <p><code>/var/log/emerge.log</code> — append-only, one line per event. AUR/ABS get real per-package duration; pacman batches share one total. <code>emerge --info</code> shows cumulative stats.</p>
+            <pre><code>2026-09-21 08:51:44  MERGE    aur    noctalia-5.1.0-1.1        (12s)
+2026-09-21 09:03:02  MERGE    repo   nano-8.0-1  vim-9.1-1     (4s)
+2026-09-21 09:10:05  UNMERGE  -      old-package-2.0-1</code></pre>
+          </div>
+          <div class="lang-block" data-lang-block="ua" hidden>
+            <p><code>/var/log/emerge.log</code> — append-only. AUR/ABS мають реальну тривалість на пакунок. <code>emerge --info</code> показує накопичену статистику.</p>
+          </div>
+        </section>
+
+        <section id="usage">
+          <h2 class="sec-blue" data-i18n="section_usage">Usage highlights</h2>
+          <div class="lang-block" data-lang-block="en">
+            <pre><code>emerge neovim                              # repos → AUR fallback
+emerge neovim-git --aur                    # AUR only, recursive AUR deps
+emerge neovim --abs                        # ABS in bwrap
+emerge -u @world                           # full upgrade (does not read world)
+emerge @world                              # provision from world
+emerge --scan neovim-git --aur             # audit only
+emerge --install-pkgbuild ~/src/my-pkg     # local PKGBUILD (scanner + sandbox)
+emerge -u --devel                          # upgrade + rebuild moved -git
+emerge --revdep-rebuild                    # broken shared-library links
+emerge --batchinstall pkgs.txt             # mass-install from list
+emerge --news                              # Arch news
+emerge --undo                              # undo last install/unmerge
+emerge --resume                            # resume interrupted run</code></pre>
+            <p>See the <a href="flags.html">Flags</a> page for the full table.</p>
+          </div>
+          <div class="lang-block" data-lang-block="ua" hidden>
+            <pre><code>emerge neovim
+emerge neovim-git --aur
+emerge neovim --abs
+emerge -u @world
+emerge @world
+emerge --scan neovim-git --aur
+emerge --install-pkgbuild ~/src/my-pkg
+emerge -u --devel
+emerge --revdep-rebuild
+emerge --batchinstall pkgs.txt
+emerge --news
+emerge --undo
+emerge --resume</code></pre>
+            <p>Повна таблиця — на сторінці <a href="flags.html">Прапори</a>.</p>
+          </div>
+        </section>
+
+        <section id="sandbox">
+          <h2 class="sec-blue" data-i18n="section_sandbox">bwrap sandbox</h2>
+          <div class="lang-block" data-lang-block="en">
+            <p>AUR/ABS run <code>pkgver</code>/<code>prepare</code>/<code>build</code>/<code>check</code>/<code>package</code> inside bubblewrap when installed:</p>
+            <ul>
+              <li>Fake <code>$HOME</code> (no SSH/GPG secrets, no browser profile)</li>
+              <li>Write only inside the build dir (+ configured DEST dirs)</li>
+              <li>Network shared by default; <code>--unshare-net-build</code> cuts net for build/check/package</li>
+              <li>Other namespaces torn down; fakeroot in a nested uid-0-mapped layer</li>
+            </ul>
+            <p>Dependency install and final <code>pacman -U</code> stay <strong>outside</strong> the sandbox.</p>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Flag</th><th>Effect</th></tr></thead>
+                <tbody>
+                  <tr><td><code>--no-sandbox</code></td><td>Plain makepkg (warning)</td></tr>
+                  <tr><td><code>--unshare-net-build</code></td><td>No network during build()/check()/package()</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="lang-block" data-lang-block="ua" hidden>
+            <p>AUR/ABS виконують функції PKGBUILD у просторі імен bubblewrap: фейковий <code>$HOME</code>, запис лише в директорію збірки, опційна ізоляція мережі. Залежності і <code>pacman -U</code> — поза пісочницею.</p>
+          </div>
+        </section>
+
+        <section id="scanner">
+          <h2 class="sec-red" data-i18n="section_scanner">Security: PKGBUILD scanner</h2>
+          <div class="lang-block" data-lang-block="en">
+            <p>Before every AUR install, PKGBUILD + <code>.install</code> are fetched from cgit and scanned:</p>
+            <ol>
+              <li><strong>AST</strong> (<code>tree-sitter-bash</code>) — <code>curl|sh</code>, decode pipes, process subst, <code>eval "$(curl …)"</code>, sudo/pkexec/doas, python inline-exec, shell <code>-c</code> payloads, top-level command substitution, concatenation evasions.</li>
+              <li><strong>Line heuristics</strong> — chmod 777, raw IPv4, foreign package managers, paste sites, <code>.onion</code>, anti-sandbox probes, known IOCs (Atomic Arch, openconnect-sso, 2018 compromised.txt, …).</li>
+            </ol>
+            <p>Findings: <code>Suspicious</code> or <code>ConfirmedIoc</code>. Not a hard block — file/line, cgit link, <code>Continue anyway? [y/N]</code>.</p>
+            <pre class="red"><code>emerge --scan neovim-git --aur
+emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
+          </div>
+          <div class="lang-block" data-lang-block="ua" hidden>
+            <p>Два шари: AST (<code>tree-sitter-bash</code>) і текстові евристики. Знахідки — <code>Suspicious</code> або <code>ConfirmedIoc</code>. Не жорстке блокування: запит <code>Continue anyway? [y/N]</code>.</p>
+            <pre class="red"><code>emerge --scan neovim-git --aur
+emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
+          </div>
+        </section>
+
+        <section id="pkgbuild-view">
+          <h2>PKGBUILD review</h2>
+          <div class="lang-block" data-lang-block="en">
+            <p><code>--pkgbuild-view</code> shows/diffs the PKGBUILD before build and asks for confirmation (offers <code>$EDITOR</code> on decline). Combines with <code>--edit</code>. Only for directly requested packages — not recursive deps or batch paths.</p>
+            <p><code>--install-pkgbuild &lt;PATH&gt;</code> builds a local checkout through the same scanner + sandbox pipeline. Recorded in world as <code>Err/</code> unless <code>-1</code>.</p>
+          </div>
+          <div class="lang-block" data-lang-block="ua" hidden>
+            <p><code>--pkgbuild-view</code> показує/diff PKGBUILD і просить підтвердження. <code>--install-pkgbuild</code> — локальний checkout через сканер + пісочницю.</p>
+          </div>
+        </section>
+
+        <section id="devel">
+          <h2>Devel upstream check</h2>
+          <div class="lang-block" data-lang-block="en">
+            <p>AUR page versions for <code>-git</code>/<code>-hg</code>/… often lag real upstream. <code>--devel</code> (with <code>-u</code>) and <code>--check-devel</code> (report-only) parse <code>git+</code> URLs from PKGBUILDs and <code>git ls-remote</code> against them.</p>
+            <pre><code>emerge -u --devel
+emerge --check-devel</code></pre>
+          </div>
+          <div class="lang-block" data-lang-block="ua" hidden>
+            <p><code>--devel</code> (з <code>-u</code>) і <code>--check-devel</code> порівнюють <code>git ls-remote</code> з останнім відомим хешем для <code>-git</code>/<code>-hg</code>/…</p>
+          </div>
+        </section>
+
+        <section id="revdep">
+          <h2>--revdep-rebuild</h2>
+          <div class="lang-block" data-lang-block="en">
+            <p>Reads installed ELF files (<code>DT_NEEDED</code>, <code>RPATH</code>/<code>RUNPATH</code>) and finds binaries linking against a missing <code>.so</code> — different from <code>@preserved-rebuild</code>, which only checks declared deps via <code>pacman -T</code>.</p>
+            <p>Foreign packages are rebuilt through the sandboxed path; official packages get missing libraries looked up via <code>pacman -F</code>.</p>
+            <pre><code>emerge --revdep-rebuild
+emerge --revdep-rebuild -p</code></pre>
+          </div>
+          <div class="lang-block" data-lang-block="ua" hidden>
+            <p>Читає ELF напряму і знаходить бінарники з битими лінками бібліотек — не те саме, що <code>@preserved-rebuild</code>.</p>
+          </div>
+        </section>
+
+        <div class="callout callout-stripe purple note-aura">
+          <div class="callout-title">Aura</div>
+          <span data-i18n="not_aura">fosskers/aura? No — after v2.1, Aura is no longer part of this project. Aura-Emerge is a separate, security-first reimplementation.</span>
+        </div>
+
+        <footer class="site-footer">
+          <span>
+            © <span id="year">2026</span>
+            <strong>Undercat037</strong> · GPL-3.0
+          </span>
+          <span>
+            <a href="https://github.com/Undercat037/aura-emerge" data-i18n="footer_source">Source</a>
+            ·
+            <a href="flags.html" data-i18n="nav_flags">Flags</a>
+          </span>
+        </footer>
+      </div>
+    </main>
+  </div>
+
+  <script src="js/main.js"></script>
+</body>
+</html>
