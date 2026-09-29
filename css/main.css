@@ -887,3 +887,34 @@ tr:hover td { background: rgba(168, 85, 247, 0.04); }
 .callout.note-aura {
   margin-top: 2rem;
 }
+
+/* ── Terminal output (docs: scanner example) ─────────────────────── */
+
+pre.term {
+  --amber: #fbbf24;
+  background: var(--bg-deep);
+  border-left-color: var(--red);
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow-x: visible;
+  box-shadow: inset 0 0 0 1px var(--red-glow);
+}
+pre.term b { color: var(--text); font-weight: 700; }
+.term .t-p { color: var(--red); font-weight: 700; }
+.term .t-ps { color: var(--purple); font-weight: 700; }
+.term .t-cmd { color: var(--text); }
+.term .t-in { color: var(--text); font-weight: 700; }
+.term .t-dim { color: var(--text-dim); }
+.term .t-loc { color: var(--link); }
+.term .t-hl { color: #fca5a5; font-weight: 700; }
+.term .t-rule-r { color: var(--red); }
+.term .t-rule-a { color: var(--amber); }
+.term .t-h-r { color: var(--red); font-weight: 700; }
+.term .t-h-a { color: var(--amber); font-weight: 700; }
+
+/* term variants for regular (non-alert) output */
+pre.term.term-blue { border-left-color: var(--blue); box-shadow: inset 0 0 0 1px var(--blue-glow); }
+.term .t-ok { color: #4ade80; font-weight: 700; }
+.term .t-w { color: #fbbf24; font-weight: 700; }
+.term .t-tag { color: var(--link); }

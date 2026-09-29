@@ -24,7 +24,7 @@
         <button type="button" class="lang-btn" data-lang="ua" aria-pressed="false">UA</button>
       </div>
       <a class="btn btn-ghost" href="https://github.com/Undercat037/aura-emerge" target="_blank" rel="noopener" data-i18n="btn_github">GitHub</a>
-      <a class="btn btn-primary" href="#install" data-i18n="btn_install">Install</a>
+      <a class="btn btn-primary" href="docs.html#install" data-i18n="btn_install">Install</a>
       <button type="button" class="menu-toggle" id="menu-toggle" data-i18n-attr="aria-label:menu_open" aria-label="Open menu">☰</button>
     </div>
   </header>
@@ -43,7 +43,7 @@
         <div class="nav-section-title" data-i18n="nav_start">Start</div>
         <a class="nav-link" href="#overview"><span class="dot"></span> <span data-i18n="nav_overview">Overview</span></a>
         <a class="nav-link" href="#features"><span class="dot"></span> <span data-i18n="nav_features">Features</span></a>
-        <a class="nav-link" href="#install"><span class="dot"></span> <span data-i18n="nav_install">Installation</span></a>
+        <a class="nav-link" href="docs.html#install"><span class="dot"></span> <span data-i18n="nav_install">Installation</span></a>
         <a class="nav-link" href="#quickstart"><span class="dot"></span> <span data-i18n="nav_quickstart">Quick start</span></a>
       </div>
       <div class="nav-section">
@@ -80,7 +80,7 @@
             a <code>bwrap</code> sandbox.
           </p>
           <div class="hero-actions">
-            <a class="btn btn-primary" href="#install" data-i18n="btn_get_started">Get started</a>
+            <a class="btn btn-primary" href="docs.html#install" data-i18n="btn_get_started">Get started</a>
             <a class="btn btn-blue" href="https://github.com/Undercat037/aura-emerge" target="_blank" rel="noopener" data-i18n="btn_view_github">View on GitHub</a>
             <a class="btn btn-ghost" href="https://aur.archlinux.org/packages/aura-emerge" target="_blank" rel="noopener" data-i18n="btn_aur">AUR package</a>
           </div>
@@ -180,77 +180,12 @@
           </div>
         </section>
 
-        <section id="install">
-          <h2 class="sec-blue" data-i18n="section_install">Installation</h2>
-
-          <div class="tabs tabs-primary" data-tabs>
-            <div class="tabs-list" role="tablist">
-              <button type="button" class="tab active" role="tab" aria-selected="true" data-tab="aur" data-i18n="tab_aur">AUR</button>
-              <button type="button" class="tab" role="tab" aria-selected="false" data-tab="github" data-i18n="tab_github">GitHub (Unstable)</button>
-            </div>
-
-            <div class="tab-panel active" data-panel="aur" role="tabpanel">
-              <h3>Helper</h3>
-              <pre class="blue"><code>paru -S aura-emerge
-# or
-yay -S aura-emerge</code></pre>
-
-              <h3>Makepkg</h3>
-              <pre><code>git clone https://aur.archlinux.org/aura-emerge.git
-cd aura-emerge
-makepkg -si</code></pre>
-            </div>
-
-            <div class="tab-panel" data-panel="github" role="tabpanel" hidden>
-              <p class="lang-block" data-lang-block="en">Development builds from source. Clone, then pick a method:</p>
-              <p class="lang-block" data-lang-block="ua" hidden>Збірка з джерела (нестабільна). Клонуйте, потім оберіть метод:</p>
-              <pre><code>git clone https://github.com/Undercat037/aura-emerge.git
-cd aura-emerge</code></pre>
-
-              <div class="tabs tabs-nested" data-tabs>
-                <div class="tabs-list" role="tablist">
-                  <button type="button" class="tab active" role="tab" aria-selected="true" data-tab="manual">Manual</button>
-                  <button type="button" class="tab" role="tab" aria-selected="false" data-tab="makepkg">Makepkg</button>
-                  <button type="button" class="tab" role="tab" aria-selected="false" data-tab="make">Make</button>
-                </div>
-                <div class="tab-panel active" data-panel="manual" role="tabpanel">
-                  <pre><code>cargo build --release
-sudo cp target/release/aura-emerge /usr/bin/emerge
-sudo ln -sf /usr/bin/emerge /usr/bin/portageq
-emerge --gen-completions bash | sudo tee /usr/share/bash-completion/completions/emerge
-emerge --gen-completions zsh  | sudo tee /usr/share/zsh/site-functions/_emerge
-emerge --gen-completions fish | sudo tee /usr/share/fish/vendor_completions.d/emerge.fish
-emerge --gen-manpage | sudo tee /usr/share/man/man1/emerge.1 &gt;/dev/null</code></pre>
-                </div>
-                <div class="tab-panel" data-panel="makepkg" role="tabpanel" hidden>
-                  <pre><code>makepkg -si</code></pre>
-                </div>
-                <div class="tab-panel" data-panel="make" role="tabpanel" hidden>
-                  <pre><code>make install</code></pre>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <h3 class="lang-block" data-lang-block="en">Dependencies</h3>
-          <h3 class="lang-block" data-lang-block="ua" hidden>Залежності</h3>
-          <ul>
-            <li><strong data-i18n="deps_req">Required:</strong> <code>git</code></li>
-            <li><strong data-i18n="deps_opt">Optional:</strong>
-              <code>devtools</code> (<code>--abs</code>),
-              <code>gnupg</code> (<code>--autopgp</code>),
-              <code>bubblewrap</code> (sandbox; without it builds fall back to plain makepkg)
-            </li>
-          </ul>
-
-          <div class="callout callout-stripe blue">
-            <div class="callout-title" data-i18n="binary_name">Binary name</div>
-            <span data-i18n="binary_name_body">The installed binary is <code>emerge</code> (with a <code>portageq</code> symlink). Completions and the man page are generated from the same CLI definition.</span>
-          </div>
-        </section>
-
         <section id="quickstart">
           <h2 data-i18n="section_quickstart">Quick start</h2>
+          <p>
+            <span data-i18n="qs_not_installed">Not installed yet?</span>
+            <a href="docs.html#install" data-i18n="qs_see_install">See the installation guide.</a>
+          </p>
           <ol class="steps">
             <li>
               <span class="lang-block" data-lang-block="en">Install a package (official repos first, AUR on a miss):</span>

@@ -123,7 +123,7 @@
       ua: "Усі прапори, які приймає emerge — дії, модифікатори, сумісність з Gentoo і згенеровані completions/man."
     },
     tab_aur: { en: "AUR", ua: "AUR" },
-    tab_github: { en: "GitHub (Unstable)", ua: "GitHub (нестабільне)" },
+    tab_github: { en: "GitHub (Unstable)", ua: "GitHub (нестабільна)" },
     section_install: { en: "Installation", ua: "Встановлення" },
     section_quickstart: { en: "Quick start", ua: "Швидкий старт" },
     section_world: { en: "World & sets", ua: "World і набори" },
@@ -133,11 +133,14 @@
     section_sandbox: { en: "bwrap sandbox", ua: "Пісочниця bwrap" },
     section_mask: { en: "package.mask", ua: "package.mask" },
     section_links: { en: "Links", ua: "Посилання" },
-    binary_name: { en: "Binary name", ua: "Ім'я бінарника" },
+    binary_name: { en: "Binary name", ua: "Назва виконуваного файлу" },
     binary_name_body: {
-      en: "The installed binary is emerge (with a portageq symlink). Completions and the man page are generated from the same CLI definition.",
-      ua: "Встановлений бінарник — emerge (з symlink portageq). Completions і man-сторінка генеруються з того ж визначення CLI."
+      en: "The installed binary is <code>emerge</code> (with a <code>portageq</code> symlink). Completions and the man page are generated from the same CLI definition.",
+      ua: "Встановлюється виконуваний файл <code>emerge</code> (із символічним посиланням <code>portageq</code>). Автодоповнення та man-сторінка генеруються з того самого опису CLI."
     },
+    tab_manual: { en: "Manual", ua: "Вручну" },
+    qs_not_installed: { en: "Not installed yet?", ua: "Ще не встановили?" },
+    qs_see_install: { en: "See the installation guide.", ua: "Перегляньте інструкцію зі встановлення." },
     deps_req: { en: "Required:", ua: "Обов'язково:" },
     deps_opt: { en: "Optional:", ua: "Опційно:" },
     not_hard_block: { en: "Not a hard block", ua: "Не жорстке блокування" },
@@ -236,17 +239,17 @@
     });
   }
 
-  /* ── highlight sidebar nav by scroll (in-page #anchors only) ───── */
-  var scrollSpyObserver = null;
+  /* ── highlight sidebar nav by scroll (in-page #anchors only) ─────
+     Position-based, not IntersectionObserver: the active section is
+     always recomputed from the current scroll offset, so scrolling up
+     can never leave a stale highlight. */
+  var spyBound = false;
+  var spyTicking = false;
 
-  function initScrollSpy() {
+  function spyUpdate() {
+    spyTicking = false;
     var navLinks = document.querySelectorAll(".nav-link[href^='#']");
     if (!navLinks.length) return;
-
-    if (scrollSpyObserver) {
-      scrollSpyObserver.disconnect();
-      scrollSpyObserver = null;
-    }
 
     // Only sections that are actually laid out (not inside a hidden lang-block)
     var sections = Array.prototype.slice
@@ -256,37 +259,35 @@
       });
     if (!sections.length) return;
 
-    function setActive(id) {
-      navLinks.forEach(function (l) {
-        l.classList.toggle("active", l.getAttribute("href") === "#" + id);
-      });
-    }
-
-    // At top of page: highlight the first in-page section link
-    function activateTopIfNeeded() {
-      if (window.scrollY < 80) {
-        setActive(sections[0].id);
-      }
-    }
-
-    scrollSpyObserver = new IntersectionObserver(
-      function (entries) {
-        // Prefer the topmost intersecting section
-        var visible = entries
-          .filter(function (e) { return e.isIntersecting; })
-          .sort(function (a, b) {
-            return a.boundingClientRect.top - b.boundingClientRect.top;
-          });
-        if (visible.length) setActive(visible[0].target.id);
-      },
-      { rootMargin: "-15% 0px -55% 0px", threshold: 0 }
-    );
-
+    var probe = window.innerHeight * 0.3;
+    var current = sections[0];
     sections.forEach(function (s) {
-      scrollSpyObserver.observe(s);
+      if (s.getBoundingClientRect().top <= probe) current = s;
     });
+    // Short last sections never reach the probe line: pin to the end
+    if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2) {
+      current = sections[sections.length - 1];
+    }
 
-    activateTopIfNeeded();
+    navLinks.forEach(function (l) {
+      l.classList.toggle("active", l.getAttribute("href") === "#" + current.id);
+    });
+  }
+
+  function requestSpy() {
+    if (spyTicking) return;
+    spyTicking = true;
+    window.requestAnimationFrame(spyUpdate);
+  }
+
+  function initScrollSpy() {
+    if (!spyBound) {
+      spyBound = true;
+      window.addEventListener("scroll", requestSpy, { passive: true });
+      window.addEventListener("resize", requestSpy);
+      window.addEventListener("hashchange", requestSpy);
+    }
+    spyUpdate();
   }
 
   function initYear() {
