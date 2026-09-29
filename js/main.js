@@ -98,13 +98,13 @@
     menu_open: { en: "Open menu", ua: "Відкрити меню" },
     hero_badge: { en: "Arch · Portage-style · Security-first", ua: "Arch · у стилі Portage · безпека перш за все" },
     hero_lead: {
-      en: "A standalone Gentoo-style emerge for Arch Linux — installs from official repos, the AUR, and ABS; scans PKGBUILDs for supply-chain attack patterns; and runs untrusted build steps inside a bwrap sandbox.",
-      ua: "Автономний ПМ у стилі Gentoo emerge для Arch Linux — встановлює з офіційних репозиторіїв, AUR та ABS, сканує PKGBUILD на ознаки атак на ланцюг постачання і виконує недовірені кроки збірки всередині пісочниці bwrap."
+      en: "Gentoo-style emerge for Arch — packages from official repos, the AUR, and ABS. PKGBUILDs get scanned for supply-chain tricks; untrusted build steps run inside a bwrap sandbox.",
+      ua: "Emerge у стилі Gentoo для Arch — пакунки з офіційних репо, AUR і ABS. PKGBUILD скануються на трюки ланцюга постачання; недовірені кроки збірки йдуть у пісочниці bwrap."
     },
     features_title: { en: "Features", ua: "Можливості" },
     features_intro: {
-      en: "Packages are tracked in a world file — install once, track forever. The tool drives pacman for official packages and builds AUR/ABS itself.",
-      ua: "Пакунки відстежуються у файлі world — встановив один раз, відстежується назавжди. Інструмент керує pacman для офіційних пакунків і сам збирає AUR/ABS."
+      en: "Everything you install lands in a world file — install once, keep track forever. Official packages go through pacman; AUR and ABS are built by emerge itself.",
+      ua: "Усе, що ставите, потрапляє у файл world — один раз встановив, далі відстежується. Офіційні пакунки через pacman; AUR і ABS збирає сам emerge."
     },
     footer_source: { en: "Source", ua: "Код" },
     footer_pages: { en: "GitHub Pages", ua: "GitHub Pages" },
@@ -114,8 +114,8 @@
     },
     docs_title: { en: "Documentation", ua: "Документація" },
     docs_lead: {
-      en: "Full reference for world, make.conf, mask, sandbox, scanner, and everyday usage — the README in page form.",
-      ua: "Повний довідник: world, make.conf, mask, пісочниця, сканер і повсякденне використання — README у вигляді сторінки."
+      en: "Full reference for world, make.conf, mask, sandbox, scanner, and everyday usage.",
+      ua: "Повний довідник: world, make.conf, mask, пісочниця, сканер і повсякденне використання."
     },
     flags_title: { en: "CLI flags", ua: "Прапори CLI" },
     flags_lead: {
