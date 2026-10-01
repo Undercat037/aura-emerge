@@ -9,23 +9,11 @@
   <meta property="og:type" content="website" />
   <meta name="theme-color" content="#0c0c14" />
   <title>Docs · Aura-Emerge</title>
-  <link rel="canonical" href="https://undercat037.github.io/aura-emerge/" />
   <link rel="icon" type="image/svg+xml" href="/misc/logo/slash-logo-32x32.svg" />
   <link rel="icon" type="image/x-icon" href="/misc/logo/slash-logo-32x32.ico" />
   <link rel="shortcut icon" href="/misc/logo/slash-logo-32x32.ico" />
   <link rel="stylesheet" href="css/fonts.css" />
   <link rel="stylesheet" href="css/main.css" />
-  <script type="application/ld+json">
-  {
-    "@context": "https://schema.org",
-    "@type": "SoftwareApplication",
-    "name": "Aura-Emerge",
-    "description": "Gentoo-style emerge for Arch with PKGBUILD scanning and bwrap sandbox",
-    "url": "https://undercat037.github.io/aura-emerge/",
-    "codeRepository": "https://github.com/Undercat037/aura-emerge",
-    "license": "GPL-3.0"
-  }
-  </script>
 </head>
 <body>
   <header class="topbar">
@@ -883,9 +871,9 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
             <ul>
               <li><strong>Filesystem:</strong> the whole root is mounted read-only; <code>/proc</code> and <code>/dev</code> are fresh; <code>/tmp</code> is an empty tmpfs.</li>
               <li><strong>Writable:</strong> only the build directory. Configured <code>PKGDEST</code>/<code>SRCDEST</code>/<code>SRCPKGDEST</code>/<code>BUILDDIR</code> outside it get their own writable bind and matching env var.</li>
-              <li><strong>Fake <code>$HOME</code>:</strong> an empty tmpfs — no SSH keys, GPG secret ring or browser profile. <code>XDG_CONFIG_HOME</code> and <code>XDG_CACHE_HOME</code> are unset.</li>
-              <li><strong>Isolation:</strong> <code>--unshare-all</code>, <code>--new-session</code> (no TIOCSTI tricks), <code>--die-with-parent</code>, and every capability dropped.</li>
-              <li><strong>GnuPG:</strong> the keyring imported outside the sandbox is mounted read-only, so signatures still verify but a build cannot plant a key.</li>
+              <li><strong>No real home / session:</strong> empty tmpfs over <code>/home</code> and <code>/run</code> — no SSH keys, secret GPG, browser profile, session D-Bus or agents. Environment is cleared to an allowlist.</li>
+              <li><strong>Isolation:</strong> <code>--unshare-all</code>, <code>--new-session</code>, <code>--die-with-parent</code>, capabilities dropped; PKGBUILD and <code>*.install</code> re-bound read-only.</li>
+              <li><strong>GnuPG:</strong> public-only keyring copy, mounted read-only (signatures verify; no private keys, build cannot plant a key).</li>
             </ul>
             <h3>Network</h3>
             <p>Shared by default. With <code>--unshare-net-build</code> the download phase keeps the network (the declared <code>source=()</code> entries), while <code>build()</code>/<code>check()</code>/<code>package()</code> get none — so a stray <code>cargo build</code> reaching crates.io fails loudly. Loopback stays up for tools that need it; there is still no route outside.</p>
@@ -896,7 +884,7 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
             </ul>
             <div class="callout callout-stripe blue">
               <div class="callout-title">Outside the sandbox</div>
-              <span>Dependency installation and the final <code>pacman -U</code> need real root and never execute PKGBUILD code, so they run outside the jail.</span>
+              <span>Dependency installation and the final <code>pacman -U</code> need real root and never execute PKGBUILD code, so they run outside the jail. The finished <code>*.pkg.tar.*</code> is still audited first (setuid, <code>.INSTALL</code>, alpm hooks, systemd, sudoers, …).</span>
             </div>
             <div class="callout callout-stripe red">
               <div class="callout-title">Known gap</div>
@@ -932,7 +920,7 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
             </ul>
             <div class="callout callout-stripe blue">
               <div class="callout-title">Поза пісочницею</div>
-              <span>Встановлення залежностей і фінальний <code>pacman -U</code> потребують справжнього root і не виконують код із PKGBUILD, тому працюють поза ізоляцією.</span>
+              <span>Встановлення залежностей і фінальний <code>pacman -U</code> потребують справжнього root і не виконують код із PKGBUILD, тому працюють поза ізоляцією. Готовий <code>*.pkg.tar.*</code> перед цим аудитується (setuid, <code>.INSTALL</code>, hooks, …).</span>
             </div>
             <div class="callout callout-stripe red">
               <div class="callout-title">Відома прогалина</div>

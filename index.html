@@ -9,7 +9,6 @@
   <meta property="og:type" content="website" />
   <meta name="theme-color" content="#0c0c14" />
   <meta name="google-site-verification" content="M1BkKnA2rBLjrxrrTdusD1f0Sq8aGemt9UIHjHPpZgQ" />
-  <link rel="canonical" href="https://undercat037.github.io/aura-emerge/" />
   <title>Aura-Emerge - Secure emerge for Arch</title>
   <link rel="icon" type="image/svg+xml" href="/misc/logo/slash-logo-32x32.svg" />
   <link rel="icon" type="image/x-icon" href="/misc/logo/slash-logo-32x32.ico" />
@@ -119,13 +118,13 @@
               <h3 class="lang-block" data-lang-block="ua" hidden>Сканер PKGBUILD</h3>
               <p class="lang-block" data-lang-block="en">
                 Before every AUR build: AST + heuristics for <code>curl|sh</code>,
-                base64 pipes, paste sites, known IOCs, sudo tricks, and more.
-                You still choose whether to continue.
+                interpreter <code>-e</code>/<code>-c</code> (python/perl/ruby/node/lua),
+                paste sites, known IOCs, and more. You still choose whether to continue.
               </p>
               <p class="lang-block" data-lang-block="ua" hidden>
                 Перед кожною збіркою AUR: AST і евристики на <code>curl|sh</code>,
-                base64-пайпи, paste-сайти, відомі IOC, sudo тощо.
-                Продовжувати чи ні — вирішуєте ви.
+                interpreter <code>-e</code>/<code>-c</code> (python/perl/ruby/node/lua),
+                paste-сайти, відомі IOC тощо. Продовжувати чи ні — вирішуєте ви.
               </p>
             </article>
             <article class="feature-card blue">
@@ -133,14 +132,12 @@
               <h3 class="lang-block" data-lang-block="en">bwrap sandbox</h3>
               <h3 class="lang-block" data-lang-block="ua" hidden>Пісочниця bwrap</h3>
               <p class="lang-block" data-lang-block="en">
-                Untrusted <code>prepare</code> / <code>build</code> / <code>package</code>
-                run under bubblewrap — fake <code>$HOME</code>, write only in the
-                build dir, optional network cut-off.
+                Untrusted phases under bubblewrap — no real <code>$HOME</code>/<code>/run</code>,
+                cleared env, public GPG only, then archive audit before <code>pacman -U</code>.
               </p>
               <p class="lang-block" data-lang-block="ua" hidden>
-                Недовірені <code>prepare</code> / <code>build</code> / <code>package</code>
-                під bubblewrap — фейковий <code>$HOME</code>, запис лише в
-                каталог збірки, мережу можна вимкнути.
+                Недовірені фази в bubblewrap — без справжнього <code>$HOME</code>/<code>/run</code>,
+                очищене env, лише public GPG, потім аудит архіву перед <code>pacman -U</code>.
               </p>
             </article>
             <article class="feature-card purple">
@@ -388,8 +385,8 @@ BUILDENV=(!distcc color check !sign)</code></pre>
               <li>
                 <strong>AST</strong> (<code>tree-sitter-bash</code>) —
                 <code>curl|sh</code>, base64/xxd pipes, process substitution,
-                <code>eval "$(curl …)"</code>, sudo/pkexec/doas, python inline-exec,
-                top-level command substitution, concatenation evasions, and more.
+                <code>eval "$(curl …)"</code>, sudo/pkexec/doas,
+                python/perl/ruby/node/lua inline-exec, top-level command substitution, and more.
               </li>
               <li>
                 <strong>Line heuristics</strong> —
@@ -397,6 +394,10 @@ BUILDENV=(!distcc color check !sign)</code></pre>
                 <code>.onion</code>, anti-sandbox probes, known campaign IOCs.
               </li>
             </ol>
+            <p>
+              Built <code>*.pkg.tar.*</code> files are audited before <code>pacman -U</code>
+              (setuid, <code>.INSTALL</code>, alpm hooks, systemd, sudoers, …).
+            </p>
           </div>
           <div class="lang-block" data-lang-block="ua" hidden>
             <p>
@@ -407,8 +408,8 @@ BUILDENV=(!distcc color check !sign)</code></pre>
               <li>
                 <strong>AST</strong> (<code>tree-sitter-bash</code>) —
                 <code>curl|sh</code>, base64/xxd pipes, process substitution,
-                <code>eval "$(curl …)"</code>, sudo/pkexec/doas, python inline-exec,
-                top-level command substitution, обходи через конкатенацію тощо.
+                <code>eval "$(curl …)"</code>, sudo/pkexec/doas,
+                python/perl/ruby/node/lua inline-exec, top-level command substitution тощо.
               </li>
               <li>
                 <strong>Текстові евристики</strong> —
@@ -416,6 +417,10 @@ BUILDENV=(!distcc color check !sign)</code></pre>
                 <code>.onion</code>, зонди anti-sandbox, відомі IOC кампаній.
               </li>
             </ol>
+            <p>
+              Готові <code>*.pkg.tar.*</code> перевіряються перед <code>pacman -U</code>
+              (setuid, <code>.INSTALL</code>, alpm hooks, systemd, sudoers, …).
+            </p>
           </div>
           <div class="callout callout-stripe red">
             <div class="callout-title" data-i18n="not_hard_block">Not a hard block</div>
@@ -434,10 +439,10 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
               a bubblewrap namespace when <code>bubblewrap</code> is installed:
             </p>
             <ul>
-              <li>Fake <code>$HOME</code> — no SSH keys, GPG secret ring, browser profile</li>
-              <li>Writes only inside the build directory (+ configured DEST dirs)</li>
-              <li>Network shared by default; <code>--unshare-net-build</code> cuts it for build/check/package</li>
-              <li>Other namespaces torn down; fakeroot runs in a nested uid-0-mapped layer</li>
+              <li>tmpfs over <code>/home</code> and <code>/run</code> — no real home, no session bus/agents</li>
+              <li>Cleared environment; public-only GPG; PKGBUILD/<code>*.install</code> read-only</li>
+              <li>Writes only in the build dir; network optional via <code>--unshare-net-build</code></li>
+              <li>Fakeroot shim under <code>/var/tmp</code>; archive audit before <code>pacman -U</code></li>
             </ul>
             <p>
               Dependency install and final <code>pacman -U</code> stay <strong>outside</strong>
@@ -448,17 +453,16 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
             <p>
               Збірки AUR і ABS виконують <code>pkgver</code> / <code>prepare</code> /
               <code>build</code> / <code>check</code> / <code>package</code> всередині
-              простору імен bubblewrap (якщо встановлено <code>bubblewrap</code>):
+              bubblewrap (якщо встановлено):
             </p>
             <ul>
-              <li>Фейковий <code>$HOME</code> — немає SSH-ключів, GPG secret ring, профілю браузера</li>
-              <li>Запис лише в директорію збірки (+ налаштовані DEST)</li>
-              <li>Мережа спільна за замовчуванням; <code>--unshare-net-build</code> вимикає її для build/check/package</li>
-              <li>Решта просторів імен знищена; fakeroot — у вкладеному uid-0 шарі</li>
+              <li>tmpfs поверх <code>/home</code> і <code>/run</code> — без справжнього home і session bus</li>
+              <li>Очищене env; лише public GPG; PKGBUILD/<code>*.install</code> read-only</li>
+              <li>Запис лише в каталог збірки; мережа опційно через <code>--unshare-net-build</code></li>
+              <li>Шим fakeroot у <code>/var/tmp</code>; аудит архіву перед <code>pacman -U</code></li>
             </ul>
             <p>
-              Встановлення залежностей і фінальний <code>pacman -U</code> лишаються <strong>поза</strong>
-              пісочницею — там не виконується код з PKGBUILD.
+              Встановлення залежностей і фінальний <code>pacman -U</code> — <strong>поза</strong> пісочницею.
             </p>
           </div>
           <pre class="blue"><code>emerge pkg --aur --unshare-net-build   # no net during build()
