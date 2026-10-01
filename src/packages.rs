@@ -1862,6 +1862,11 @@ fn install_local_tarballs(tarballs: &[String], ask: bool, mark_asdeps: bool) -> 
     if tarballs.is_empty() {
         return true;
     }
+    // What package() produced is still untrusted input to this root
+    // step -- audit the archive (setuid, .INSTALL, hooks, ...) first.
+    if !crate::security::audit_built_packages(tarballs, ask) {
+        return false;
+    }
     println!(
         "{} Installing {} locally-built AUR dependency(ies)...",
         ">>>".green().bold(),
@@ -1912,7 +1917,7 @@ fn build_with_sandbox(
     unshare_net_build: bool,
 ) -> bool {
     // Cleans up the fakeroot shim's scratch dir (now outside build_dir,
-    // see sandbox::FAKEROOT_SHIM_ROOT) on every exit path below.
+    // see sandbox::shim_root / FakerootShimGuard) on every exit path below.
     let _fakeroot_shim_guard = crate::sandbox::FakerootShimGuard::new(build_dir);
 
     let pkgbuild_src = match fs::read_to_string(build_dir.join("PKGBUILD")) {
@@ -2130,6 +2135,10 @@ fn build_with_sandbox(
             ">>> Error:".red().bold(),
             pkgbase
         );
+        return false;
+    }
+    // package() output is untrusted: audit before the root install.
+    if !crate::security::audit_built_packages(&pkg_files, ask) {
         return false;
     }
     let mut args: Vec<&str> = vec![PACMAN_BIN, "-U"];

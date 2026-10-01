@@ -188,12 +188,15 @@ pub(crate) fn valid_set_name(name: &str) -> bool {
 pub(crate) fn read_custom_set(name: &str) -> Result<Vec<String>> {
     let path = format!("{}/{}.set", SETS_DIR, name);
 
-    if !is_safe_path(&path) {
-        bail!("{} is a symlink - refusing to read", path);
-    }
-
-    let file = fs::File::open(&path)
-        .with_context(|| format!("no such set: @{} (expected {})", name, path))?;
+    let file = match open_nofollow(std::path::Path::new(&path)) {
+        Ok(f) => f,
+        Err(e) if is_symlink_open_error(&e) => {
+            bail!("{} is a symlink - refusing to read", path)
+        }
+        Err(e) => {
+            return Err(e).with_context(|| format!("no such set: @{} (expected {})", name, path));
+        }
+    };
 
     let pkgs: Vec<String> = io::BufReader::new(file)
         .lines()
@@ -215,12 +218,15 @@ pub(crate) fn read_custom_set(name: &str) -> Result<Vec<String>> {
 
 /// Read a --batchinstall list (same format as a custom set, any path).
 pub(crate) fn read_batch_file(path: &str) -> Result<Vec<String>> {
-    if !is_safe_path(path) {
-        bail!("{} is a symlink - refusing to read", path);
-    }
-
-    let file =
-        fs::File::open(path).with_context(|| format!("could not open batch file: {}", path))?;
+    let file = match open_nofollow(std::path::Path::new(path)) {
+        Ok(f) => f,
+        Err(e) if is_symlink_open_error(&e) => {
+            bail!("{} is a symlink - refusing to read", path)
+        }
+        Err(e) => {
+            return Err(e).with_context(|| format!("could not open batch file: {}", path));
+        }
+    };
 
     let pkgs: Vec<String> = io::BufReader::new(file)
         .lines()
@@ -290,11 +296,10 @@ pub(crate) fn provision_from_world_set(
 ) -> Result<bool> {
     println!("{} Provisioning system from world...", ">>>".green().bold());
 
-    if !is_safe_path(WORLD_SET_FILE) {
-        bail!("{} is a symlink - refusing to read", WORLD_SET_FILE);
-    }
-
-    let entries: Vec<String> = match fs::File::open(WORLD_SET_FILE) {
+    let entries: Vec<String> = match open_nofollow(std::path::Path::new(WORLD_SET_FILE)) {
+        Err(e) if is_symlink_open_error(&e) => {
+            bail!("{} is a symlink - refusing to read", WORLD_SET_FILE);
+        }
         Ok(file) => io::BufReader::new(file)
             .lines()
             .map_while(io::Result::ok)
@@ -625,12 +630,15 @@ pub(crate) fn regen_world_set() -> Result<()> {
         ">>>".green().bold()
     );
 
-    if !is_safe_path(WORLD_SET_FILE) {
-        bail!("{} is a symlink - refusing to modify", WORLD_SET_FILE);
-    }
-
-    let file = fs::File::open(WORLD_SET_FILE)
-        .with_context(|| format!("cannot open {}", WORLD_SET_FILE))?;
+    let file = match open_nofollow_rw(std::path::Path::new(WORLD_SET_FILE)) {
+        Ok(f) => f,
+        Err(e) if is_symlink_open_error(&e) => {
+            bail!("{} is a symlink - refusing to modify", WORLD_SET_FILE);
+        }
+        Err(e) => {
+            return Err(e).with_context(|| format!("cannot open {}", WORLD_SET_FILE));
+        }
+    };
 
     let entries: Vec<String> = io::BufReader::new(file)
         .lines()
@@ -688,12 +696,15 @@ pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
     );
 
     let path = format!("{}/{}.set", SETS_DIR, name);
-    if !is_safe_path(&path) {
-        bail!("{} is a symlink - refusing to modify", path);
-    }
-
-    let file = fs::File::open(&path)
-        .with_context(|| format!("no such set: @{} (expected {})", name, path))?;
+    let file = match open_nofollow_rw(std::path::Path::new(&path)) {
+        Ok(f) => f,
+        Err(e) if is_symlink_open_error(&e) => {
+            bail!("{} is a symlink - refusing to modify", path);
+        }
+        Err(e) => {
+            return Err(e).with_context(|| format!("no such set: @{} (expected {})", name, path));
+        }
+    };
 
     let raw_lines: Vec<String> = io::BufReader::new(file)
         .lines()
@@ -834,21 +845,23 @@ pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
 pub(crate) fn add_to_world_set(packages: &[String], forced_prefix: Option<&str>) -> Result<()> {
     println!("{} Adding to world...", ">>>".green().bold());
 
-    if !is_safe_path(WORLD_SET_FILE) {
-        bail!("{} is a symlink - refusing to read", WORLD_SET_FILE);
-    }
-
     // bare name → full "repo/name" entry
     let mut current_set: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
-    if let Ok(file) = fs::File::open(WORLD_SET_FILE) {
-        for line in io::BufReader::new(file).lines().map_while(Result::ok) {
-            let trimmed = line.trim().to_string();
-            if !trimmed.is_empty() && validate_pkg(&trimmed) {
-                let bare = trimmed.split('/').last().unwrap_or(&trimmed).to_string();
-                current_set.insert(bare, trimmed);
+    match open_nofollow(std::path::Path::new(WORLD_SET_FILE)) {
+        Err(e) if is_symlink_open_error(&e) => {
+            bail!("{} is a symlink - refusing to read", WORLD_SET_FILE);
+        }
+        Ok(file) => {
+            for line in io::BufReader::new(file).lines().map_while(Result::ok) {
+                let trimmed = line.trim().to_string();
+                if !trimmed.is_empty() && validate_pkg(&trimmed) {
+                    let bare = trimmed.split('/').last().unwrap_or(&trimmed).to_string();
+                    current_set.insert(bare, trimmed);
+                }
             }
         }
+        Err(_) => {}
     }
 
     let bares: Vec<String> = packages
@@ -902,10 +915,7 @@ fn installed_bare_names() -> HashSet<String> {
 /// Call before a `pacman -S` that might conflict-remove another
 /// installed package. Cheap: two reads, no writes.
 pub(crate) fn world_installed_snapshot() -> HashSet<String> {
-    if !is_safe_path(WORLD_SET_FILE) {
-        return HashSet::new();
-    }
-    let world_bare: HashSet<String> = match fs::File::open(WORLD_SET_FILE) {
+    let world_bare: HashSet<String> = match open_nofollow(std::path::Path::new(WORLD_SET_FILE)) {
         Ok(file) => io::BufReader::new(file)
             .lines()
             .map_while(Result::ok)
@@ -952,20 +962,22 @@ pub(crate) fn reconcile_world_after_install(before: &HashSet<String>) {
 pub(crate) fn remove_from_world_set(packages: &[String]) -> Result<()> {
     println!(">>> Removing from world...");
 
-    if !is_safe_path(WORLD_SET_FILE) {
-        bail!("{} is a symlink - refusing to read", WORLD_SET_FILE);
-    }
-
     let mut current_set: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
-    if let Ok(file) = fs::File::open(WORLD_SET_FILE) {
-        for line in io::BufReader::new(file).lines().map_while(Result::ok) {
-            let trimmed = line.trim().to_string();
-            if !trimmed.is_empty() && validate_pkg(&trimmed) {
-                let bare = trimmed.split('/').last().unwrap_or(&trimmed).to_string();
-                current_set.insert(bare, trimmed);
+    match open_nofollow(std::path::Path::new(WORLD_SET_FILE)) {
+        Err(e) if is_symlink_open_error(&e) => {
+            bail!("{} is a symlink - refusing to read", WORLD_SET_FILE);
+        }
+        Ok(file) => {
+            for line in io::BufReader::new(file).lines().map_while(Result::ok) {
+                let trimmed = line.trim().to_string();
+                if !trimmed.is_empty() && validate_pkg(&trimmed) {
+                    let bare = trimmed.split('/').last().unwrap_or(&trimmed).to_string();
+                    current_set.insert(bare, trimmed);
+                }
             }
         }
+        Err(_) => {}
     }
 
     let mut changed = false;
@@ -1036,10 +1048,10 @@ pub(crate) fn clear_resume_state() {
 
 /// Load resume argv, if any.
 pub(crate) fn load_resume_state() -> Option<Vec<String>> {
-    if !is_safe_path(RESUME_FILE) {
-        return None;
-    }
-    let file = fs::File::open(RESUME_FILE).ok()?;
+    let file = match open_nofollow(std::path::Path::new(RESUME_FILE)) {
+        Ok(f) => f,
+        Err(_) => return None,
+    };
     let lines: Vec<String> = io::BufReader::new(file)
         .lines()
         .map_while(io::Result::ok)
@@ -1124,10 +1136,10 @@ pub(crate) fn clear_last_action() {
 
 /// Load undo state: (kind tag, atoms).
 pub(crate) fn load_last_action() -> Option<(String, Vec<String>)> {
-    if !is_safe_path(LASTACTION_FILE) {
-        return None;
-    }
-    let file = fs::File::open(LASTACTION_FILE).ok()?;
+    let file = match open_nofollow(std::path::Path::new(LASTACTION_FILE)) {
+        Ok(f) => f,
+        Err(_) => return None,
+    };
     let mut lines = io::BufReader::new(file)
         .lines()
         .map_while(io::Result::ok)

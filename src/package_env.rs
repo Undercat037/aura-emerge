@@ -109,12 +109,13 @@ fn load() -> Vec<Entry> {
             continue;
         }
         let path_s = path.to_string_lossy().to_string();
-        if !crate::is_safe_path(&path_s) {
-            warn(&format!("{} is a symlink - refusing to read", path_s));
-            continue;
-        }
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
+        let text = match crate::read_to_string_nofollow(&path) {
+            Ok(t) => t,
+            Err(e) if crate::is_symlink_open_error(&e) => {
+                warn(&format!("{} is a symlink - refusing to read", path_s));
+                continue;
+            }
+            Err(_) => continue,
         };
         for (i, raw) in text.lines().enumerate() {
             let body = raw.split('#').next().unwrap_or("").trim();

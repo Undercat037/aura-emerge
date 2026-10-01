@@ -1204,11 +1204,68 @@ fn check_binaries() {
 // ── Symlink guard ─────────────────────────────────────────────────────────────
 
 /// Returns true if the path is safe (not a symlink, or does not exist yet).
-fn is_safe_path(path: &str) -> bool {
+/// Prefer `read_to_string_nofollow` / `open_nofollow` for reads — those close
+/// the TOCTOU window between this check and the open. Keep this for write-side
+/// prechecks and non-file probes.
+pub(crate) fn is_safe_path(path: &str) -> bool {
     match fs::symlink_metadata(path) {
         Ok(meta) => !meta.file_type().is_symlink(),
         Err(_) => true,
     }
+}
+
+/// Open `path` for reading with `O_NOFOLLOW` so a leaf symlink cannot be
+/// swapped in between a metadata check and the open (classic TOCTOU).
+/// Parent components may still be symlinks — same model as `is_safe_path`.
+#[cfg(unix)]
+pub(crate) fn open_nofollow(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn open_nofollow(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::open(path)
+}
+
+/// Like `open_nofollow`, but read+write for in-place edits of existing files.
+#[cfg(unix)]
+pub(crate) fn open_nofollow_rw(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn open_nofollow_rw(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+}
+
+/// Read the whole file via `open_nofollow`.
+pub(crate) fn read_to_string_nofollow(
+    path: impl AsRef<std::path::Path>,
+) -> std::io::Result<String> {
+    use std::io::Read;
+    let mut f = open_nofollow(path.as_ref())?;
+    let mut s = String::new();
+    f.read_to_string(&mut s)?;
+    Ok(s)
+}
+
+/// True when `err` is the kernel refusing a leaf symlink (`ELOOP`) or a
+/// similar "not a regular openable file" failure after `O_NOFOLLOW`.
+pub(crate) fn is_symlink_open_error(err: &std::io::Error) -> bool {
+    // Linux returns ELOOP when O_NOFOLLOW hits a leaf symlink.
+    err.raw_os_error() == Some(libc::ELOOP)
 }
 
 // ── AUR search/info output ──────────────────────────────────────────────────

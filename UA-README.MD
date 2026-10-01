@@ -124,7 +124,7 @@ BUILDENV = ["!distcc", "color", "check", "!sign"]
 
 ## Маска (/etc/portage/package.mask)
 
-Аналог Portage `package.mask` для Arch-атомів: пакунки, які ця машина ніколи не встановлює - перевіряється навіть як транзитивна AUR-залежність і навіть при явному запиті за іменем. По одному запису на рядок, дозволено `*`-глоб, опційний префікс репозиторію, опційна причина після `#`. `/etc/portage/package.mask` може бути одним файлом або каталогом: у каталозі читаються всі звичайні файли (з будь-якою назвою, розширення не потрібне, файли з крапкою на початку пропускаються) за порядком назв. Файл-символічне посилання відхиляється з попередженням.
+Аналог Portage `package.mask` для Arch-атомів: пакунки, які ця машина ніколи не встановлює - перевіряється навіть як транзитивна AUR-залежність і навіть при явному запиті за іменем. По одному запису на рядок, дозволено `*`-глоб, опційний префікс репозиторію, опційна причина після `#`. `/etc/portage/package.mask` може бути одним файлом або каталогом: у каталозі читаються всі звичайні файли (з будь-якою назвою, розширення не потрібне, файли з крапкою на початку пропускаються) за порядком назв. Симлінк на кінці шляху відхиляється (`O_NOFOLLOW`).
 
 ```
 ayugram-desktop-bin            # конкретний пакунок, з будь-якого джерела
@@ -275,22 +275,24 @@ emerge --revdep-rebuild -p                  # те саме, лише списо
 
 ## Пісочниця
 
-Збірки **AUR і ABS** виконують функції PKGBUILD `pkgver()` / `prepare()` / `build()` / `check()` / `package()` всередині простору імен [`bwrap`](https://github.com/containers/bubblewrap) (якщо встановлено `bubblewrap`):
+Збірки **AUR і ABS** виконують `pkgver()` / `prepare()` / `build()` / `check()` / `package()` у [`bwrap`](https://github.com/containers/bubblewrap) (якщо встановлено):
 
-- фейковий `$HOME` (немає SSH-ключів, GPG secret keyring, профілю браузера);
-- запис лише в директорію збірки (+ налаштовані `PKGDEST` / `SRCDEST` / `SRCPKGDEST` / `BUILDDIR`);
-- мережа спільна за замовчуванням (`--share-net`);
-- решта просторів імен (user / IPC / PID / UTS / cgroup) знищена;
-- `fakeroot` для `package()` працює у власному вкладеному `bwrap` з uid 0 (лагодить `fchownat` у звичайному user namespace); скрипт-шим для нього лежить у `/var/tmp`, поза директорією збірки, щоб `prepare()`/`build()` не могли підмінити його до запуску `package()`.
+- порожній tmpfs поверх `/home` і `/run` (немає справжнього `$HOME`, session D-Bus / ssh-agent / gpg-agent);
+- `--clearenv` і короткий allowlist (`PATH`, `TERM`, `LANG`, каталоги збірки, …);
+- копія GnuPG лише з публічними ключами;
+- PKGBUILD і `*.install` знову прив'язуються read-only після writable bind каталогу збірки;
+- запис лише в каталог збірки (+ `PKGDEST` / `SRCDEST` / …);
+- мережа спільна за замовчуванням; інші namespaces знищені;
+- `fakeroot` для `package()` — вкладений bwrap з uid 0; шим у `/var/tmp` (не під `/run` і не в writable build dir).
 
-Це **другий, незалежний рівень** поверх [сканера PKGBUILD](#безпека-сканування-pkgbuild): сканер блокує *відомі* погані патерни до запуску, пісочниця обмежує наслідки того, що він пропустив.
+**Третій рубіж перед встановленням:** готовий `*.pkg.tar.*` перевіряється (`bsdtar`) на setuid/setgid, `.INSTALL` і чутливі шляхи (alpm hooks, systemd, sudoers, udev, …). Вміст `.INSTALL` проганяється тим самим сканером. З `-a`/`--ask` потрібне підтвердження; з `--noconfirm` — попередження і продовження.
 
-Встановлення залежностей (`pacman -S`) і фінальний `pacman -U` лишаються **поза** пісочницею - там не виконується код з PKGBUILD.
+`pacman -S` і фінальний `pacman -U` лишаються **поза** пісочницею.
 
 | Прапор | Ефект |
 |--------|--------|
 | `--no-sandbox` | Вимкнути bwrap, звичайний `makepkg -si` |
-| `--unshare-net-build` | Завантаження/`prepare()` - з мережею; `build()`/`check()`/`package()` - **без** мережі |
+| `--unshare-net-build` | Завантаження/`prepare()` з мережею; `build()`/`check()`/`package()` **без** мережі |
 
 Без `bubblewrap` або з `--no-sandbox` збірка йде без ізоляції (з попередженням).
 
@@ -439,14 +441,16 @@ emerge --news all    # позначити всі як прочитані
 
 ## Безпека: сканування PKGBUILD
 
-Перед кожним встановленням з AUR завантажується «сирий» `PKGBUILD` (і `.install`-хук) з cgit і сканується у два шари:
+Перед кожним встановленням з AUR «сирий» `PKGBUILD` (і `.install`) з cgit сканується у два шари:
 
-1. **AST** (`tree-sitter-bash`) - `curl|sh`, `base64`/`xxd | sh`, `source <(curl …)`, `eval "$(curl …)"`, `sudo`/`pkexec`/`doas`, python inline-exec, `sh`/`bash`/`dash`/`ash` `-c` з підозрілим payload, top-level command substitution (`` `...` `` / `$(...)` поза тілами функцій - напр. markdown-бектейки в `pkgdesc`) тощо. Тривіальні текстові обходи (конкатенація рядків, абсолютні шляхи, `env`) не проходять.
-2. **Текстові евристики** - `chmod 777`, «сирі» IP, сторонні пакетні менеджери (`npm install …`), paste-сайти, `.onion`, зонди anti-sandbox/anti-debugger (`TracerPid`, `LD_PRELOAD`/`LD_LIBRARY_PATH`), відомі IOC (Atomic Arch, openconnect-sso, `compromised.txt` з 2018 тощо).
+1. **AST** (`tree-sitter-bash`) — `curl|sh`, `base64`/`xxd | sh`, `source <(curl …)`, `eval "$(curl …)"`, `sudo`/`pkexec`/`doas`, inline-exec для **python / perl / ruby / node / lua**, `sh`/`bash` `-c` з підозрілим payload, top-level command substitution, обходи через конкатенацію тощо.
+2. **Текстові евристики** — `chmod 777`, «сирі» IP, сторонні ПМ, paste-сайти, `.onion`, зонди anti-sandbox, відомі IOC кампаній.
 
-Знахідки: `Suspicious` або `ConfirmedIoc`. Спрацювання не блокує жорстко - показує файл/рядок, посилання на cgit, запит `Continue anyway? [y/N]`.
+Знахідки: `Suspicious` або `ConfirmedIoc`. Не жорсткий блок — файл/рядок, cgit, `Continue anyway? [y/N]`.
 
-Збірки AUR і ABS додатково захищені [пісочницею `bwrap`](#пісочниця).
+**Також:** текст новин Arch санітизується (без ANSI/bidi у термінал і `news.state`); config/mask/env/world відкриваються з `O_NOFOLLOW`; залежності Rust перевіряються через [`cargo deny`](https://github.com/EmbarkStudios/cargo-deny) (`make deny`).
+
+Збірки AUR/ABS додатково обмежені [пісочницею bwrap](#пісочниця) і аудитом архіву перед `pacman -U`.
 
 <details>
 <summary><h3>Тестування(після встановлення)</h3></summary>

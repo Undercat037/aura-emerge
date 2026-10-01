@@ -123,7 +123,7 @@ Scalars and lists are interchangeable everywhere - a list is joined with spaces,
 
 ## Mask (/etc/portage/package.mask)
 
-Portage's `package.mask`, for Arch atoms: packages this machine never installs, checked even as a transitive AUR dependency and even when requested by name. One entry per line, `*` glob allowed, optional repo prefix, optional trailing `# reason`. `/etc/portage/package.mask` may be a single file or a directory: in a directory every regular file is read (any name, no extension needed, dotfiles skipped) in filename order. A symlinked mask file is refused with a warning.
+Portage's `package.mask`, for Arch atoms: packages this machine never installs, checked even as a transitive AUR dependency and even when requested by name. One entry per line, `*` glob allowed, optional repo prefix, optional trailing `# reason`. `/etc/portage/package.mask` may be a single file or a directory: in a directory every regular file is read (any name, no extension needed, dotfiles skipped) in filename order. A leaf symlink is refused (`O_NOFOLLOW` open).
 
 ```
 ayugram-desktop-bin            # specific package, any source
@@ -274,17 +274,19 @@ emerge --revdep-rebuild -p                  # same, list only
 
 ## Sandbox
 
-**AUR and ABS** builds run the PKGBUILD functions `pkgver()` / `prepare()` / `build()` / `check()` / `package()` inside a [`bwrap`](https://github.com/containers/bubblewrap) namespace (when `bubblewrap` is installed):
+**AUR and ABS** builds run PKGBUILD `pkgver()` / `prepare()` / `build()` / `check()` / `package()` inside [`bwrap`](https://github.com/containers/bubblewrap) (when installed):
 
-- fake `$HOME` (no SSH keys, GPG secret keyring, browser profile);
-- writes only inside the build directory (plus configured `PKGDEST` / `SRCDEST` / `SRCPKGDEST` / `BUILDDIR`);
-- network shared by default (`--share-net`);
-- other namespaces (user / IPC / PID / UTS / cgroup) torn down;
-- `package()`'s `fakeroot` runs in its own nested, uid-0-mapped `bwrap` (fixes `fchownat` failing under a plain user namespace); the shim script for it lives under `/var/tmp`, outside the writable build dir, so `prepare()`/`build()` can't tamper with it before `package()` runs it.
+- empty tmpfs over `/home` and `/run` (no real `$HOME`, no session D-Bus / ssh-agent / gpg-agent);
+- `--clearenv` plus a small allowlist (`PATH`, `TERM`, `LANG`, build destinations, …);
+- public-only GnuPG keyring copy (no private keys);
+- PKGBUILD and `*.install` re-bound read-only after the writable build dir bind;
+- writes only in the build dir (+ configured `PKGDEST` / `SRCDEST` / …);
+- network shared by default; other namespaces torn down;
+- `package()`'s `fakeroot` uses a nested uid-0 `bwrap`; the shim lives under `/var/tmp` (not under `/run` or the writable build dir).
 
-This is a **second, independent layer** on top of the [PKGBUILD scanner](#security-pkgbuild-scanning): the scanner blocks *known* bad patterns before anything runs; the sandbox contains whatever it missed.
+**Third gate before install:** the finished `*.pkg.tar.*` is audited (`bsdtar`) for setuid/setgid, `.INSTALL` scripts, and sensitive paths (alpm hooks, systemd units, sudoers, udev, …). `.INSTALL` content is re-scanned with the same PKGBUILD scanner. With `-a`/`--ask` you must confirm; with `--noconfirm` it warns and continues.
 
-Dependency installation (`pacman -S`) and the final `pacman -U` stay **outside** the sandbox - neither executes PKGBUILD-authored code.
+Dependency install (`pacman -S`) and the final `pacman -U` stay **outside** the sandbox — they do not run PKGBUILD code.
 
 | Flag | Effect |
 |------|--------|
@@ -440,12 +442,14 @@ emerge --news all    # mark all as read
 
 Before every AUR install, the raw `PKGBUILD` (and any `.install` hook) is fetched from cgit and scanned in two layers:
 
-1. **AST** (`tree-sitter-bash`) - `curl|sh`, `base64`/`xxd | sh`, `source <(curl …)`, `eval "$(curl …)"`, `sudo`/`pkexec`/`doas`, python inline-exec, `sh`/`bash`/`dash`/`ash` `-c` with suspicious payload, top-level command substitution (`` `...` `` / `$(...)` outside function bodies - e.g. leftover markdown backticks in `pkgdesc`), etc. Trivial text evasions (string concatenation, absolute paths, `env` wrappers) do not slip through.
-2. **Line heuristics** - `chmod 777`, raw IPv4 literals, foreign package managers (`npm install …`), paste sites, `.onion` addresses, anti-sandbox/anti-debugger probes (`TracerPid`, `LD_PRELOAD`/`LD_LIBRARY_PATH`), known IOCs (Atomic Arch, openconnect-sso, 2018 `compromised.txt`, …).
+1. **AST** (`tree-sitter-bash`) — `curl|sh`, `base64`/`xxd | sh`, `source <(curl …)`, `eval "$(curl …)"`, `sudo`/`pkexec`/`doas`, inline exec for **python / perl / ruby / node / lua**, `sh`/`bash`/`dash`/`ash` `-c` with a suspicious payload, top-level command substitution, string-concatenation evasions, etc.
+2. **Line heuristics** — `chmod 777`, raw IPv4, foreign package managers (`npm install …`), paste sites, `.onion`, anti-sandbox probes, known campaign IOCs (Atomic Arch, openconnect-sso, 2018 `compromised.txt`, …).
 
-Findings are `Suspicious` or `ConfirmedIoc`. A hit does not hard-block - it prints the file/line, a cgit link, and asks `Continue anyway? [y/N]`.
+Findings are `Suspicious` or `ConfirmedIoc`. A hit does not hard-block — file/line, cgit link, `Continue anyway? [y/N]`.
 
-AUR and ABS builds are additionally constrained by the [bwrap sandbox](#sandbox).
+**Also hardened:** Arch news RSS text is sanitized (no ANSI/bidi injection into the terminal or `news.state`); config/mask/env/world files are opened with `O_NOFOLLOW` so a leaf symlink cannot be raced in; Rust dependencies are gated with [`cargo deny`](https://github.com/EmbarkStudios/cargo-deny) (`make deny`).
+
+AUR and ABS builds are additionally constrained by the [bwrap sandbox](#sandbox) and the pre-`pacman -U` package archive audit.
 
 <details>
 <summary><h3>Testing(post-install)</h3></summary>

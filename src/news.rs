@@ -1,5 +1,10 @@
 //! Arch Linux news (eselect-news style). RSS via http helper, hand-rolled
 //! tag parse. Read state in ~/.cache/aura-emerge/news.state (no root).
+//!
+//! External feed text is untrusted: a compromised mirror could put ANSI /
+//! OSC sequences or bidi overrides into `<title>` / `<description>` /
+//! `<guid>`. Those are stripped before anything is printed or written
+//! to the on-disk read-state file.
 
 use colored::Colorize;
 use std::fs;
@@ -86,17 +91,50 @@ fn strip_tags(s: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Drop C0/C1 controls (and TAB/LF so fields stay one line), DEL, and
+/// common bidi/isolate overrides that can reverse or hide terminal
+/// output. Newlines in a single field would also forge multi-line
+/// entries in `news.state`.
+fn sanitize_text(s: &str) -> String {
+    // Turn line breaks into spaces *before* dropping other controls so a
+    // forged "guid\nextra-guid" cannot glue into one opaque token.
+    let spaced: String = s
+        .chars()
+        .map(|c| match c {
+            '\t' | '\n' | '\r' => ' ',
+            other => other,
+        })
+        .collect();
+    spaced
+        .chars()
+        .filter(|c| match *c {
+            c if c.is_control() => false,
+            // U+202A..U+202E (embedding/override), U+2066..U+2069 (isolates)
+            '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' => false,
+            // BOM / zero-width joiners
+            '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}' => false,
+            _ => true,
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub(crate) fn parse_news(xml: &str) -> Vec<NewsItem> {
     split_items(xml)
         .into_iter()
         .filter_map(|block| {
-            let title = decode_entities(&extract_tag(block, "title")?);
-            let link = extract_tag(block, "link")?;
-            let pub_date = extract_tag(block, "pubDate").unwrap_or_default();
+            let title = sanitize_text(&decode_entities(&extract_tag(block, "title")?));
+            let link = sanitize_text(&extract_tag(block, "link")?);
+            let pub_date = sanitize_text(&extract_tag(block, "pubDate").unwrap_or_default());
             let description = extract_tag(block, "description")
-                .map(|d| strip_tags(&decode_entities(&d)))
+                .map(|d| sanitize_text(&strip_tags(&decode_entities(&d))))
                 .unwrap_or_default();
-            let guid = extract_tag(block, "guid").unwrap_or_else(|| link.clone());
+            let guid = sanitize_text(&extract_tag(block, "guid").unwrap_or_else(|| link.clone()));
+            if title.is_empty() {
+                return None;
+            }
             Some(NewsItem {
                 title,
                 link,
@@ -130,7 +168,7 @@ fn load_read_guids() -> std::collections::HashSet<String> {
     match fs::read_to_string(path) {
         Ok(s) => s
             .lines()
-            .map(|l| l.trim().to_string())
+            .map(|l| sanitize_text(l.trim()))
             .filter(|l| !l.is_empty())
             .collect(),
         Err(_) => Default::default(),
@@ -155,7 +193,7 @@ fn save_read_guids(guids: &std::collections::HashSet<String>) {
     let write_result = (|| -> std::io::Result<()> {
         let mut f = fs::File::create(&tmp)?;
         for g in guids {
-            writeln!(f, "{}", g)?;
+            writeln!(f, "{}", sanitize_text(g))?;
         }
         Ok(())
     })();
@@ -271,4 +309,25 @@ fn print_full(item: &NewsItem) {
     println!("    {}: {}", "Link".dimmed(), item.link);
     println!();
     println!("{}", item.description);
+}
+
+#[cfg(test)]
+mod sanitize_tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_strips_ansi_and_bidi() {
+        let dirty = "hello\x1b[2J\x1b]0;pwned\x07 world\u{202E}reversed";
+        let clean = sanitize_text(dirty);
+        assert!(!clean.contains('\x1b'));
+        assert!(!clean.contains('\u{202E}'));
+        assert!(clean.contains("hello"));
+        assert!(clean.contains("world"));
+    }
+
+    #[test]
+    fn sanitize_collapses_newlines_so_guid_stays_one_line() {
+        let forged = "legit-guid\nextra-forged-guid";
+        assert_eq!(sanitize_text(forged), "legit-guid extra-forged-guid");
+    }
 }

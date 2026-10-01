@@ -1,12 +1,12 @@
 BIN := target/release/aura-emerge
 VERSION := $(shell grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
 
-.PHONY: build test install uninstall clean completions man git all
+.PHONY: build test install uninstall clean completions man git all deny
 
 build:
 	cargo build --release
 
-test:
+test: deny
 	cargo test --release
 
 git:
@@ -32,5 +32,8 @@ man:
 
 install: build completions man
 	sudo cp -r $(BIN) /usr/bin/emerge
+
+deny:
+	cargo deny check
 
 all: install

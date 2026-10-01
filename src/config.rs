@@ -136,21 +136,24 @@ pub(crate) fn load() -> Config {
         if !path.is_file() {
             continue;
         }
-        if !crate::is_safe_path(&path.to_string_lossy()) {
-            eprintln!(
-                "{} {} is a symlink - refusing to read",
-                ">>> Warning:".yellow().bold(),
-                path.display()
-            );
-            continue;
-        }
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            eprintln!(
-                "{} could not read {} - ignoring it",
-                ">>> Warning:".yellow().bold(),
-                path.display()
-            );
-            continue;
+        let text = match crate::read_to_string_nofollow(&path) {
+            Ok(t) => t,
+            Err(e) if crate::is_symlink_open_error(&e) => {
+                eprintln!(
+                    "{} {} is a symlink - refusing to read",
+                    ">>> Warning:".yellow().bold(),
+                    path.display()
+                );
+                continue;
+            }
+            Err(_) => {
+                eprintln!(
+                    "{} could not read {} - ignoring it",
+                    ">>> Warning:".yellow().bold(),
+                    path.display()
+                );
+                continue;
+            }
         };
         if parse_into(&text, &path, &mut vars, &mut default_flags) {
             files.push(path);
@@ -345,10 +348,14 @@ fn parse_into(
 /// Reads one `package.env` env file (make.conf syntax). Only build
 /// vars are kept; `None` if unreadable, a symlink, or structurally broken.
 pub(crate) fn load_env_file(path: &Path) -> Option<Vec<(String, BuildValue)>> {
-    if !path.is_file() || !crate::is_safe_path(&path.to_string_lossy()) {
+    if !path.is_file() {
         return None;
     }
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = match crate::read_to_string_nofollow(path) {
+        Ok(t) => t,
+        Err(e) if crate::is_symlink_open_error(&e) => return None,
+        Err(_) => return None,
+    };
     let mut vars: HashMap<String, BuildValue> = HashMap::new();
     let mut defaults: Vec<String> = Vec::new();
     if !parse_into(&text, path, &mut vars, &mut defaults) {

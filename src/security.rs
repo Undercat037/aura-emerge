@@ -852,6 +852,154 @@ pub(crate) fn line_of_python_inline_exec(source: &str) -> Option<usize> {
         .map(|i| i + 1)
 }
 
+/// `perl -e`/`-E` with a suspicious payload (fallback if AST misses).
+pub(crate) fn perl_inline_exec_line(line: &str) -> bool {
+    let l = line.trim();
+    if l.starts_with('#') {
+        return false;
+    }
+    let lower = l.to_lowercase();
+    let has_perl_e = (lower.contains("perl ") || lower.contains("/perl "))
+        && (lower.contains(" -e")
+            || lower.contains(" -e'")
+            || lower.contains(" -e\"")
+            || lower.contains(" -e ")
+            || lower.contains(" -e=")
+            || lower.contains(" -E")
+            || lower.contains(" -ne")
+            || lower.contains(" -pe")
+            || lower.contains(" -ee"));
+    if !has_perl_e {
+        return false;
+    }
+    [
+        "system(", "system ", "exec(", "exec ", "qx/", "qx(", "qx'", "qx\"", "open(", "socket(",
+        "inet_", "lwp::", "www::", "curl", "wget", "/bin/sh", "bash", "base64", "eval(", "eval ",
+    ]
+    .iter()
+    .any(|p| lower.contains(p))
+        || lower.len() > 180
+}
+
+#[cfg(test)]
+pub(crate) fn is_perl_inline_exec(source: &str) -> bool {
+    source.lines().any(perl_inline_exec_line)
+}
+
+pub(crate) fn line_of_perl_inline_exec(source: &str) -> Option<usize> {
+    source
+        .lines()
+        .position(perl_inline_exec_line)
+        .map(|i| i + 1)
+}
+
+/// ruby -e with process/network control (fallback if AST misses).
+pub(crate) fn ruby_inline_exec_line(line: &str) -> bool {
+    let l = line.trim();
+    if l.starts_with('#') {
+        return false;
+    }
+    let lower = l.to_lowercase();
+    let has = (lower.contains("ruby ") || lower.contains("/ruby "))
+        && (lower.contains(" -e")
+            || lower.contains("-e ")
+            || lower.contains("-e'")
+            || lower.contains("-e\""));
+    if !has {
+        return false;
+    }
+    let needles: &[&str] = &[
+        "system(", "system ", "exec(", "exec ", "open(", "socket", "net::", "open-uri", "eval(",
+        "eval ", "curl", "wget", "/bin/sh", "bash", "base64", "%x",
+    ];
+    if needles.iter().any(|p| lower.contains(p)) || lower.contains('`') {
+        return true;
+    }
+    lower.len() > 180
+}
+
+pub(crate) fn line_of_ruby_inline_exec(source: &str) -> Option<usize> {
+    source
+        .lines()
+        .position(ruby_inline_exec_line)
+        .map(|i| i + 1)
+}
+
+/// node -e / nodejs -e (fallback if AST misses).
+pub(crate) fn node_inline_exec_line(line: &str) -> bool {
+    let l = line.trim();
+    if l.starts_with('#') {
+        return false;
+    }
+    let lower = l.to_lowercase();
+    let has = (lower.contains("node ") || lower.contains("nodejs ") || lower.contains("/node "))
+        && (lower.contains(" -e")
+            || lower.contains(" -p")
+            || lower.contains(" --eval")
+            || lower.contains(" --print"));
+    if !has {
+        return false;
+    }
+    let needles: &[&str] = &[
+        "child_process",
+        "exec(",
+        "execsync",
+        "spawn(",
+        "spawnsync",
+        "eval(",
+        "function(",
+        "require(",
+        "net.",
+        "http.",
+        "https.",
+        "fs.",
+        "curl",
+        "wget",
+        "/bin/sh",
+        "base64",
+    ];
+    needles.iter().any(|p| lower.contains(p)) || lower.len() > 180
+}
+
+pub(crate) fn line_of_node_inline_exec(source: &str) -> Option<usize> {
+    source
+        .lines()
+        .position(node_inline_exec_line)
+        .map(|i| i + 1)
+}
+
+/// lua -e / luajit -e (fallback if AST misses).
+pub(crate) fn lua_inline_exec_line(line: &str) -> bool {
+    let l = line.trim();
+    if l.starts_with('#') {
+        return false;
+    }
+    let lower = l.to_lowercase();
+    let has = (lower.contains("lua ") || lower.contains("luajit ") || lower.contains("/lua "))
+        && lower.contains(" -e");
+    if !has {
+        return false;
+    }
+    let needles: &[&str] = &[
+        "os.execute",
+        "io.popen",
+        "load(",
+        "loadstring",
+        "dofile",
+        "socket",
+        "http",
+        "curl",
+        "wget",
+        "/bin/sh",
+        "base64",
+    ];
+    needles.iter().any(|p| lower.contains(p)) || lower.len() > 180
+}
+
+pub(crate) fn line_of_lua_inline_exec(source: &str) -> Option<usize> {
+    source.lines().position(lua_inline_exec_line).map(|i| i + 1)
+}
+
 /// sh/bash/dash/ash -c with suspicious payload (fallback if AST misses).
 pub(crate) fn shell_c_line(line: &str) -> bool {
     let l = line.trim();
@@ -941,9 +1089,9 @@ pub(crate) enum Severity {
 #[derive(Clone, Debug)]
 pub(crate) struct Finding {
     /// 1-indexed line number the pattern matched on; 0 if not line-specific.
-    line: usize,
-    message: String,
-    severity: Severity,
+    pub(crate) line: usize,
+    pub(crate) message: String,
+    pub(crate) severity: Severity,
 }
 
 /// Run all heuristics on PKGBUILD or .install; empty = clean.
@@ -1061,6 +1209,45 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
             line,
             severity: Severity::Suspicious,
             message: "python -c snippet execs/evals content inline - a python-flavored obfuscated-execution pattern".to_string(),
+        });
+    }
+    if let Some(line) =
+        crate::bash_ast::perl_inline_exec(source).or_else(|| line_of_perl_inline_exec(source))
+    {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "perl -e/-E snippet with process/network control (system/exec/qx/socket/...) - same obfuscated-execution role as python -c".to_string(),
+        });
+    }
+    if let Some(line) =
+        crate::bash_ast::ruby_inline_exec(source).or_else(|| line_of_ruby_inline_exec(source))
+    {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "ruby -e snippet with process/network control (system/exec/%x/open-uri/...)"
+                .to_string(),
+        });
+    }
+    if let Some(line) =
+        crate::bash_ast::node_inline_exec(source).or_else(|| line_of_node_inline_exec(source))
+    {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "node -e snippet with child_process/eval/net (obfuscated execution)"
+                .to_string(),
+        });
+    }
+    if let Some(line) =
+        crate::bash_ast::lua_inline_exec(source).or_else(|| line_of_lua_inline_exec(source))
+    {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "lua -e snippet with os.execute/io.popen/load (obfuscated execution)"
+                .to_string(),
         });
     }
     if let Some(line) = crate::bash_ast::shell_c_exec(source).or_else(|| line_of_shell_c(source)) {
@@ -1605,6 +1792,209 @@ pub(crate) fn print_finding_block(
             }
         }
     }
+}
+
+// ── Pre-`pacman -U` audit of a built `*.pkg.tar.*` ───────────────────────────
+//
+// The static PKGBUILD scanner cannot predict what `package()` will put
+// into the archive. Whatever ends up installed runs as root (`.INSTALL`
+// hooks, alpm hooks, udev rules, sudoers fragments, setuid binaries).
+// Cheap second pass over the finished tarball before the privileged
+// install step.
+
+/// Paths / modes that are worth stopping the user over before root install.
+const DANGEROUS_PKG_PATH_SUBSTR: &[&str] = &[
+    "/usr/share/libalpm/hooks/",
+    "/etc/pacman.d/hooks/",
+    "/etc/sudoers",
+    "/etc/sudoers.d/",
+    "/etc/polkit-1/",
+    "/usr/share/polkit-1/",
+    "/etc/udev/rules.d/",
+    "/usr/lib/udev/rules.d/",
+    "/etc/systemd/system/",
+    "/usr/lib/systemd/system/",
+    "/etc/cron.",
+    "/etc/profile.d/",
+    "/etc/ld.so.preload",
+    "/etc/ld.so.conf.d/",
+    "/etc/modules-load.d/",
+    "/etc/sysctl.d/",
+    "/etc/tmpfiles.d/",
+    "/etc/X11/xorg.conf.d/",
+    "/usr/lib/sysusers.d/",
+];
+
+#[derive(Debug, Clone)]
+struct PkgAuditFinding {
+    path: String,
+    reason: String,
+}
+
+/// Run `bsdtar -tvf` and collect suspicious members.
+fn audit_tarball(path: &std::path::Path) -> Result<Vec<PkgAuditFinding>, String> {
+    use std::process::{Command, Stdio};
+    let out = Command::new("/usr/bin/bsdtar")
+        .args(["-tvf"])
+        .arg(path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("bsdtar not runnable: {}", e))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        return Err(format!(
+            "bsdtar -tvf failed for {}: {}",
+            path.display(),
+            err.trim()
+        ));
+    }
+    let listing = String::from_utf8_lossy(&out.stdout);
+    let mut findings = Vec::new();
+    for line in listing.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let mode = trimmed.split_whitespace().next().unwrap_or("");
+        let member = trimmed.split_whitespace().last().unwrap_or("");
+        if member.is_empty() || member == "." {
+            continue;
+        }
+        let path_for_match = if member.starts_with('/') {
+            member.to_string()
+        } else {
+            format!("/{}", member)
+        };
+
+        if mode.len() >= 4 {
+            let u = mode.as_bytes().get(3).copied().unwrap_or(0);
+            let g = mode.as_bytes().get(6).copied().unwrap_or(0);
+            if u == b's' || u == b'S' || g == b's' || g == b'S' {
+                findings.push(PkgAuditFinding {
+                    path: member.to_string(),
+                    reason: format!("setuid/setgid binary (mode {})", mode),
+                });
+            }
+        }
+
+        if member == ".INSTALL" || member.ends_with(".install") {
+            findings.push(PkgAuditFinding {
+                path: member.to_string(),
+                reason: "package install script (runs as root on -U/-R)".to_string(),
+            });
+        }
+
+        for sub in DANGEROUS_PKG_PATH_SUBSTR {
+            if path_for_match.contains(sub) || path_for_match.starts_with(sub.trim_end_matches('/'))
+            {
+                findings.push(PkgAuditFinding {
+                    path: member.to_string(),
+                    reason: format!("sensitive path matching {}", sub),
+                });
+                break;
+            }
+        }
+    }
+    Ok(findings)
+}
+
+fn extract_install_script(path: &std::path::Path) -> Option<String> {
+    use std::process::{Command, Stdio};
+    let out = Command::new("/usr/bin/bsdtar")
+        .args(["-xOf"])
+        .arg(path)
+        .arg(".INSTALL")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() || out.stdout.is_empty() {
+        return None;
+    }
+    String::from_utf8(out.stdout).ok()
+}
+
+/// Audit every built tarball before `pacman -U`. Prints findings; when
+/// `force_prompt` is true (interactive ask paths) requires `y` to
+/// continue. With `--noconfirm` only warns and continues.
+///
+/// Returns `false` if the user declined.
+pub(crate) fn audit_built_packages(tarballs: &[String], force_prompt: bool) -> bool {
+    use std::io::{self, Write};
+    use std::path::Path;
+
+    if tarballs.is_empty() {
+        return true;
+    }
+
+    let mut any = false;
+    for t in tarballs {
+        let path = Path::new(t);
+        match audit_tarball(path) {
+            Ok(findings) if findings.is_empty() => {}
+            Ok(findings) => {
+                any = true;
+                eprintln!();
+                eprintln!(
+                    "{} package archive audit: {}",
+                    ">>>".yellow().bold(),
+                    path.display()
+                );
+                for f in &findings {
+                    eprintln!("    {}  {}", f.path.red().bold(), f.reason.dimmed());
+                }
+                if let Some(script) = extract_install_script(path) {
+                    let hits = scan_pkgbuild_source(&script);
+                    if !hits.is_empty() {
+                        eprintln!(
+                            "    {} .INSTALL content matched {} scanner finding(s):",
+                            ">>>".red().bold(),
+                            hits.len()
+                        );
+                        for h in hits.iter().take(8) {
+                            eprintln!("      line {}: {}", h.line, h.message);
+                        }
+                        if hits.len() > 8 {
+                            eprintln!("      ... and {} more", hits.len() - 8);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "{} could not audit {}: {} (continuing, but review manually)",
+                    ">>> Warning:".yellow().bold(),
+                    path.display(),
+                    e
+                );
+            }
+        }
+    }
+    if !any {
+        return true;
+    }
+    if !force_prompt {
+        eprintln!(
+            "{} sensitive paths/scripts detected in the built package(s); install continues (--noconfirm). Review the list above.",
+            ">>> Warning:".yellow().bold()
+        );
+        return true;
+    }
+    eprint!(
+        "{} Built package contains privileged paths/scripts. Continue with pacman -U? [y/N] ",
+        ">>>".yellow().bold()
+    );
+    let _ = io::stderr().flush();
+    let answer = read_line_raw();
+    if !answer.trim().eq_ignore_ascii_case("y") {
+        eprintln!(
+            "{} package audit declined - not installing.",
+            ">>>".red().bold()
+        );
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]
@@ -2358,6 +2748,28 @@ build() {
         // python -c doing something benign shouldn't flag
         assert!(!is_python_inline_exec("python3 -c 'print(1+1)'"));
         assert!(!is_python_inline_exec("python3 setup.py build"));
+    }
+
+    #[test]
+    fn perl_inline_exec_detected() {
+        assert!(is_perl_inline_exec(r#"perl -e 'system("id")'"#));
+        assert!(is_perl_inline_exec(r#"perl -E 'exec "/bin/sh"'"#));
+        assert!(!is_perl_inline_exec(r#"perl -pe 's/foo/bar/'"#));
+        assert!(!is_perl_inline_exec("perl Makefile.PL"));
+        assert!(!is_perl_inline_exec("# perl -e 'system(id)'"));
+    }
+
+    #[test]
+    fn ruby_node_lua_inline_exec_detected() {
+        assert!(ruby_inline_exec_line(r#"ruby -e 'system("id")'"#));
+        assert!(!ruby_inline_exec_line(r#"ruby -e 'puts 1'"#));
+        assert!(node_inline_exec_line(
+            r#"node -e 'require("child_process").exec("id")'"#
+        ));
+        assert!(!node_inline_exec_line(r#"node -e 'console.log(1)'"#));
+        assert!(lua_inline_exec_line(r#"lua -e 'os.execute("id")'"#));
+        assert!(!lua_inline_exec_line(r#"lua -e 'print(1)'"#));
+        assert!(!ruby_inline_exec_line("# ruby -e 'system(id)'"));
     }
 
     #[test]

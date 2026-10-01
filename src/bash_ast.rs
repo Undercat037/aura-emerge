@@ -316,6 +316,238 @@ pub(crate) fn python_inline_exec(source: &str) -> Option<usize> {
     None
 }
 
+/// AST: `perl -e` / `perl -E` with a suspicious payload (exec, system,
+/// open network, qx, backticks). Mirrors `python_inline_exec` for the
+/// interpreter the line heuristics previously only caught inside
+/// `sh -c '...'` strings.
+pub(crate) fn perl_inline_exec(source: &str) -> Option<usize> {
+    let tree = parse(source)?;
+    let src = source.as_bytes();
+    let mut commands = Vec::new();
+    find_descendants(tree.root_node(), "command", &mut commands);
+    for cmd in commands {
+        let Some(name) = command_name_of(cmd, src) else {
+            continue;
+        };
+        if basename(&name) != "perl" {
+            continue;
+        }
+        let mut cursor = cmd.walk();
+        let args: Vec<Node> = cmd.children(&mut cursor).collect();
+        let has_dash_e = args.iter().any(|a| {
+            if a.kind() != "word" {
+                return false;
+            }
+            matches!(
+                a.utf8_text(src),
+                Ok("-e") | Ok("-E") | Ok("-ee") | Ok("-Ee")
+            ) || a.utf8_text(src).ok().is_some_and(|t| {
+                // combined short flags containing e, e.g. -ne, -pe
+                let t = t.trim();
+                t.starts_with('-')
+                    && !t.starts_with("--")
+                    && t.contains('e')
+                    && t.chars().all(|c| c == '-' || c.is_ascii_alphabetic())
+            })
+        });
+        if !has_dash_e {
+            continue;
+        }
+        for a in &args {
+            if matches!(a.kind(), "string" | "raw_string" | "word" | "concatenation") {
+                if let Some(text) = resolve_word(*a, src) {
+                    if is_suspicious_perl_e_payload(&text) {
+                        return Some(line_of(cmd));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn is_suspicious_perl_e_payload(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let len = lower.len();
+    if lower.contains("system(")
+        || lower.contains("system ")
+        || lower.contains("exec(")
+        || lower.contains("exec ")
+        || lower.contains("qx/")
+        || lower.contains("qx(")
+        || lower.contains("qx'")
+        || lower.contains("qx\"")
+        || lower.contains("`")
+        || lower.contains("open(")
+        || lower.contains("core::sys")
+        || lower.contains("socket(")
+        || lower.contains("inet_")
+        || lower.contains("io::socket")
+        || lower.contains("lwp::")
+        || lower.contains("www::")
+        || lower.contains("curl")
+        || lower.contains("wget")
+        || lower.contains("bash")
+        || lower.contains("/bin/sh")
+        || lower.contains("base64")
+        || lower.contains("eval(")
+        || lower.contains("eval ")
+    {
+        return true;
+    }
+    if len > 160 {
+        return true;
+    }
+    false
+}
+
+/// Shared AST walker: `interp -e/-c 'payload'` where payload looks hostile.
+fn interpreter_flag_exec(
+    source: &str,
+    names: &[&str],
+    flags: &[&str],
+    suspicious: fn(&str) -> bool,
+) -> Option<usize> {
+    let tree = parse(source)?;
+    let src = source.as_bytes();
+    let mut commands = Vec::new();
+    find_descendants(tree.root_node(), "command", &mut commands);
+    for cmd in commands {
+        let Some(name) = command_name_of(cmd, src) else {
+            continue;
+        };
+        let base = basename(&name);
+        if !names.iter().any(|n| *n == base) {
+            continue;
+        }
+        let mut cursor = cmd.walk();
+        let args: Vec<Node> = cmd.children(&mut cursor).collect();
+        let has_flag = args.iter().any(|a| {
+            if a.kind() != "word" {
+                return false;
+            }
+            matches!(a.utf8_text(src), Ok(t) if flags.contains(&t))
+                || a.utf8_text(src).ok().is_some_and(|t| {
+                    // combined short flags, e.g. node -e / ruby -e
+                    let t = t.trim();
+                    t.starts_with('-')
+                        && !t.starts_with("--")
+                        && flags.iter().any(|f| {
+                            let ch = f.trim_start_matches('-');
+                            ch.len() == 1 && t.contains(ch)
+                        })
+                        && t.chars().all(|c| c == '-' || c.is_ascii_alphabetic())
+                })
+        });
+        if !has_flag {
+            continue;
+        }
+        for a in &args {
+            if matches!(a.kind(), "string" | "raw_string" | "word" | "concatenation") {
+                if let Some(text) = resolve_word(*a, src) {
+                    if suspicious(&text) {
+                        return Some(line_of(cmd));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn is_suspicious_ruby_e_payload(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("system(")
+        || lower.contains("system ")
+        || lower.contains("`")
+        || lower.contains("%x")
+        || lower.contains("exec(")
+        || lower.contains("exec ")
+        || lower.contains("open(")
+        || lower.contains("socket")
+        || lower.contains("tcp")
+        || lower.contains("udp")
+        || lower.contains("net::")
+        || lower.contains("open-uri")
+        || lower.contains("eval(")
+        || lower.contains("eval ")
+        || lower.contains("curl")
+        || lower.contains("wget")
+        || lower.contains("/bin/sh")
+        || lower.contains("bash")
+        || lower.contains("base64")
+        || lower.len() > 160
+}
+
+fn is_suspicious_node_e_payload(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("child_process")
+        || lower.contains("exec(")
+        || lower.contains("execsync")
+        || lower.contains("spawn(")
+        || lower.contains("spawnsync")
+        || lower.contains("eval(")
+        || lower.contains("function(")
+        || lower.contains("require(")
+        || lower.contains("net.")
+        || lower.contains("http.")
+        || lower.contains("https.")
+        || lower.contains("fs.")
+        || lower.contains("curl")
+        || lower.contains("wget")
+        || lower.contains("/bin/sh")
+        || lower.contains("base64")
+        || lower.len() > 160
+}
+
+fn is_suspicious_lua_e_payload(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("os.execute")
+        || lower.contains("io.popen")
+        || lower.contains("load(")
+        || lower.contains("loadstring")
+        || lower.contains("dofile")
+        || lower.contains("socket")
+        || lower.contains("http")
+        || lower.contains("curl")
+        || lower.contains("wget")
+        || lower.contains("/bin/sh")
+        || lower.contains("base64")
+        || lower.len() > 160
+}
+
+/// AST: `ruby -e` with process/network control.
+pub(crate) fn ruby_inline_exec(source: &str) -> Option<usize> {
+    interpreter_flag_exec(
+        source,
+        &[
+            "ruby", "ruby2.7", "ruby3.0", "ruby3.1", "ruby3.2", "ruby3.3",
+        ],
+        &["-e", "-r"],
+        is_suspicious_ruby_e_payload,
+    )
+}
+
+/// AST: `node -e` / `nodejs -e` with child_process / eval / net.
+pub(crate) fn node_inline_exec(source: &str) -> Option<usize> {
+    interpreter_flag_exec(
+        source,
+        &["node", "nodejs"],
+        &["-e", "-p", "--eval", "--print"],
+        is_suspicious_node_e_payload,
+    )
+}
+
+/// AST: `lua -e` / `luajit -e` with os.execute / load.
+pub(crate) fn lua_inline_exec(source: &str) -> Option<usize> {
+    interpreter_flag_exec(
+        source,
+        &["lua", "luajit", "lua5.1", "lua5.2", "lua5.3", "lua5.4"],
+        &["-e"],
+        is_suspicious_lua_e_payload,
+    )
+}
+
 /// AST: sh/bash/dash/ash/zsh -c 'payload' with suspicious content.
 /// Catches obfuscation that other checks miss when the work is inside -c.
 pub(crate) fn shell_c_exec(source: &str) -> Option<usize> {
@@ -612,6 +844,31 @@ mod ast_tests {
         assert_eq!(python_inline_exec("python -c 'os.system(\"id\")'"), Some(1));
         assert_eq!(python_inline_exec("python3 -c 'print(1+1)'"), None);
         assert_eq!(python_inline_exec("python3 setup.py build"), None);
+    }
+
+    #[test]
+    fn perl_inline_exec_caught_and_not_false_positive() {
+        assert_eq!(perl_inline_exec(r#"perl -e 'system("id")'"#), Some(1));
+        assert_eq!(perl_inline_exec(r#"perl -e 'exec "/bin/sh"'"#), Some(1));
+        assert_eq!(perl_inline_exec(r#"perl -E 'say qx/uname/'"#), Some(1));
+        // benign one-liner used in real PKGBUILDs
+        assert_eq!(perl_inline_exec(r#"perl -pe 's/foo/bar/'"#), None);
+        assert_eq!(perl_inline_exec("perl Makefile.PL PREFIX=/usr"), None);
+        assert_eq!(perl_inline_exec("# perl -e 'system(id)'"), None);
+    }
+
+    #[test]
+    fn ruby_node_lua_inline_exec_caught_and_not_false_positive() {
+        assert_eq!(ruby_inline_exec(r#"ruby -e 'system("id")'"#), Some(1));
+        assert_eq!(ruby_inline_exec(r#"ruby -e 'puts 1+1'"#), None);
+        assert_eq!(
+            node_inline_exec(r#"node -e 'require("child_process").exec("id")'"#),
+            Some(1)
+        );
+        assert_eq!(node_inline_exec(r#"node -e 'console.log(1)'"#), None);
+        assert_eq!(lua_inline_exec(r#"lua -e 'os.execute("id")'"#), Some(1));
+        assert_eq!(lua_inline_exec(r#"lua -e 'print(1)'"#), None);
+        assert_eq!(ruby_inline_exec("# ruby -e 'system(id)'"), None);
     }
 
     #[test]
