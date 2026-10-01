@@ -44,6 +44,7 @@
         <a class="nav-link" href="#world"><span class="dot"></span> <span data-i18n="nav_world">World &amp; sets</span></a>
         <a class="nav-link" href="#makeconf"><span class="dot"></span> make.conf</a>
         <a class="nav-link" href="#mask"><span class="dot"></span> package.mask</a>
+        <a class="nav-link" href="#package-env"><span class="dot"></span> package.env</a>
       </div>
       <div class="nav-section">
         <div class="nav-section-title" data-i18n="nav_core">Core</div>
@@ -186,6 +187,8 @@ Total: 8 package(s)</code></pre>
             <h3>Layout of <code>/etc/portage</code></h3>
             <pre><code>/etc/portage/
 ├── make.conf
+├── env/                 <span class="t-dim"># env files for package.env</span>
+├── package.env/         <span class="t-dim"># a file, or a directory of files</span>
 ├── package.mask/        <span class="t-dim"># a file, or a directory of files</span>
 ├── sets/                <span class="t-dim"># custom sets: &lt;name&gt;.set</span>
 ├── world
@@ -233,6 +236,8 @@ Total: 8 package(s)</code></pre>
             <h3>Структура <code>/etc/portage</code></h3>
             <pre><code>/etc/portage/
 ├── make.conf
+├── env/                 <span class="t-dim"># env files for package.env</span>
+├── package.env/         <span class="t-dim"># a file, or a directory of files</span>
 ├── package.mask/        <span class="t-dim"># a file, or a directory of files</span>
 ├── sets/                <span class="t-dim"># custom sets: &lt;name&gt;.set</span>
 ├── world
@@ -378,6 +383,72 @@ $ emerge emacs
             <h3>Безпека</h3>
             <p>Якщо файл маски є символічним посиланням, його не читають, а видають попередження.</p>
             <p>Коли маска спрацьовує, aura-emerge виводить кожен пакунок разом із записом, що його заблокував (<code>файл:рядок</code>), і причиною. Якщо пакунок було запрошено явно, виконання переривається, а не мовчки фільтрується. Для одноразового пропуску використовуйте <a href="#exclude"><code>--exclude</code></a>.</p>
+          </div>
+        </section>
+
+        <section id="package-env">
+          <h2>package.env</h2>
+          <div class="lang-block" data-lang-block="en">
+            <p><code>/etc/portage/package.env</code> gives individual packages their own build flags. Each entry names a package and one or more <em>env files</em> from <code>/etc/portage/env/</code>; those files are laid over <a href="#makeconf">make.conf</a> for that package's build only.</p>
+            <pre><code>$ cat /etc/portage/package.env/neovim
+abs/neovim lto.conf
+
+$ cat /etc/portage/env/lto.conf
+CFLAGS="-march=znver3 -O2 -pipe -fno-plt -ftree-vectorize"
+MAKEFLAGS="-j16"
+OPTIONS="strip docs !libtool !staticlibs emptydirs zipman purge !debug lto"</code></pre>
+            <p>The build says which files it used:</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge --abs neovim</span>
+<span class="t-ok">&gt;&gt;&gt;</span> Emerging (1 of 1) abs/neovim-0.12.5 (ABS)
+…
+<span class="t-ok">&gt;&gt;&gt;</span> applying build flags from /etc/portage/make.conf, /etc/portage/env/lto.conf</code></pre>
+            <h3>File or directory</h3>
+            <p>Same as <a href="#mask">package.mask</a>: <code>package.env</code> may be one file or a directory. In a directory every regular file is read — any name, dotfiles skipped — in filename order.</p>
+            <h3>Entry syntax</h3>
+            <ul>
+              <li>One entry per line: an atom, then one or more env file names separated by spaces. Blank lines and <code>#</code> comments are ignored.</li>
+              <li>The atom follows the <a href="#mask">package.mask</a> rules: optional <code>repo/</code> prefix (<code>aur</code> or <code>abs</code>), <code>*</code> allowed. Without a prefix it matches any source.</li>
+              <li>Env files use <code>make.conf</code> syntax. Only the build variables count (<code>CFLAGS</code>, <code>CXXFLAGS</code>, <code>MAKEFLAGS</code>, <code>OPTIONS</code>, …); <code>EMERGE_DEFAULT_OPTS</code> is ignored with a warning.</li>
+              <li>A package matches by its pkgbase or by any of its pkgnames from <code>.SRCINFO</code>.</li>
+            </ul>
+            <h3>Layering</h3>
+            <p>Order of application: <code>make.conf</code>, then every matching entry in file and line order, then each env file in the order it is named on the line. The last layer to set a variable wins, and the variable is replaced as a whole, not merged: an <code>OPTIONS</code> array in an env file replaces the one from <code>make.conf</code>, so list every option you want.</p>
+            <p>If two layers set the same variable to different values, the build tells you which one won:</p>
+            <pre class="term term-blue"><code><span class="t-w">&gt;&gt;&gt; Warning:</span> package.env: CFLAGS = '-O0' from /etc/portage/package.env/20-b:1 [slow] overrides '-O3 -pipe' from /etc/portage/package.env/10-a:1 [fast.conf]</code></pre>
+            <h3>Safety</h3>
+            <p>A symlinked <code>package.env</code> file or env file is refused with a warning. An invalid entry, or an env file that is missing or unreadable, is skipped with a warning naming the file and line; the rest still applies.</p>
+            <p>Only AUR and ABS builds are affected — official packages are installed by pacman and not built here.</p>
+          </div>
+          <div class="lang-block" data-lang-block="ua" hidden>
+            <p><code>/etc/portage/package.env</code> задає окремим пакункам власні прапори збірки. Кожен запис називає пакунок і один чи кілька <em>env-файлів</em> із <code>/etc/portage/env/</code>; ці файли накладаються поверх <a href="#makeconf">make.conf</a> лише для збірки цього пакунка.</p>
+            <pre><code>$ cat /etc/portage/package.env/neovim
+abs/neovim lto.conf
+
+$ cat /etc/portage/env/lto.conf
+CFLAGS="-march=znver3 -O2 -pipe -fno-plt -ftree-vectorize"
+MAKEFLAGS="-j16"
+OPTIONS="strip docs !libtool !staticlibs emptydirs zipman purge !debug lto"</code></pre>
+            <p>Під час збірки виводиться, які файли було використано:</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge --abs neovim</span>
+<span class="t-ok">&gt;&gt;&gt;</span> Emerging (1 of 1) abs/neovim-0.12.5 (ABS)
+…
+<span class="t-ok">&gt;&gt;&gt;</span> applying build flags from /etc/portage/make.conf, /etc/portage/env/lto.conf</code></pre>
+            <h3>Файл або каталог</h3>
+            <p>Так само, як і <a href="#mask">package.mask</a>: <code>package.env</code> може бути одним файлом або каталогом. У каталозі читаються всі звичайні файли — з будь-якою назвою, файли з крапкою на початку пропускаються — у порядку за назвою.</p>
+            <h3>Синтаксис запису</h3>
+            <ul>
+              <li>Один запис на рядок: атом, а далі одна чи кілька назв env-файлів через пробіл. Порожні рядки та коментарі через <code>#</code> ігноруються.</li>
+              <li>Атом підпорядковується правилам <a href="#mask">package.mask</a>: необов'язковий префікс <code>repo/</code> (<code>aur</code> або <code>abs</code>), дозволено <code>*</code>. Без префікса запис діє для будь-якого джерела.</li>
+              <li>Env-файли мають синтаксис <code>make.conf</code>. Враховуються лише змінні збірки (<code>CFLAGS</code>, <code>CXXFLAGS</code>, <code>MAKEFLAGS</code>, <code>OPTIONS</code>, …); <code>EMERGE_DEFAULT_OPTS</code> ігнорується з попередженням.</li>
+              <li>Пакунок збігається за pkgbase або за будь-якою з його pkgname із <code>.SRCINFO</code>.</li>
+            </ul>
+            <h3>Накладання шарів</h3>
+            <p>Порядок застосування: <code>make.conf</code>, потім кожен відповідний запис у порядку файлів і рядків, потім кожен env-файл у тому порядку, в якому його названо в рядку. Перемагає останній шар, що задає змінну, і змінна замінюється цілком, а не зливається: масив <code>OPTIONS</code> в env-файлі замінює масив із <code>make.conf</code>, тож перелічуйте всі потрібні опції.</p>
+            <p>Якщо два шари задають одну змінну різними значеннями, під час збірки повідомляється, який із них переміг:</p>
+            <pre class="term term-blue"><code><span class="t-w">&gt;&gt;&gt; Warning:</span> package.env: CFLAGS = '-O0' from /etc/portage/package.env/20-b:1 [slow] overrides '-O3 -pipe' from /etc/portage/package.env/10-a:1 [fast.conf]</code></pre>
+            <h3>Безпека</h3>
+            <p>Якщо файл <code>package.env</code> або env-файл є символічним посиланням, його відхиляють із попередженням. Некоректний запис, а також відсутній чи нечитабельний env-файл пропускаються з попередженням, у якому вказано файл і рядок; решта застосовується далі.</p>
+            <p>Зачіпає лише збірки з AUR і ABS — офіційні пакунки встановлює pacman, тут вони не збираються.</p>
           </div>
         </section>
 
