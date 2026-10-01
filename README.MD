@@ -118,7 +118,7 @@ Scalars and lists are interchangeable everywhere - a list is joined with spaces,
 
 ## Mask (/etc/portage/package.mask)
 
-Portage's `package.mask`, for Arch atoms: packages this machine never installs, checked even as a transitive AUR dependency and even when requested by name. One entry per line in `/etc/portage/package.mask` or `/etc/portage/package.mask/*.mask`, `*` glob allowed, optional repo prefix, optional trailing `# reason`:
+Portage's `package.mask`, for Arch atoms: packages this machine never installs, checked even as a transitive AUR dependency and even when requested by name. One entry per line, `*` glob allowed, optional repo prefix, optional trailing `# reason`. `/etc/portage/package.mask` may be a single file or a directory: in a directory every regular file is read (any name, no extension needed, dotfiles skipped) in filename order. A symlinked mask file is refused with a warning.
 
 ```
 ayugram-desktop-bin            # specific package, any source
@@ -128,6 +128,27 @@ extra/nano                     # specific package from a specific repo
 ```
 
 A masked package hard-stops the request - not a prompt, no override flag. Separate from `--exclude` below: a mask is a standing, persistent decision; `--exclude` is scoped to one run.
+
+## package.env (/etc/portage/package.env)
+
+Portage's `package.env`: build flags for individual packages. Each entry is an atom followed by one or more env file names from `/etc/portage/env/`; those files are laid over [make.conf](#makeconf) for that package's build only. `/etc/portage/package.env` may be a single file or a directory of files (any name, dotfiles skipped, read in filename order), same as `package.mask`.
+
+```
+# /etc/portage/package.env/neovim
+abs/neovim  lto.conf            # repo prefix and '*' work like in package.mask
+aur/*-git   no-lto  fast        # several envs, applied in the order named
+```
+
+```bash
+# /etc/portage/env/lto.conf  (make.conf syntax; only build keys count)
+CFLAGS="-march=znver3 -O2 -pipe"
+MAKEFLAGS="-j16"
+OPTIONS="strip docs !debug lto"
+```
+
+Layering: `make.conf`, then every matching entry in file and line order, then each env file in the order it is named. The last layer to set a key wins, and the key is replaced whole, not merged - an `OPTIONS` in an env file replaces the one from `make.conf`, so list every option you want. If two layers set the same key to different values, the build prints which one won. A package matches by its pkgbase or any of its pkgnames.
+
+Only AUR/ABS builds are affected (official packages aren't built here). `EMERGE_DEFAULT_OPTS` in an env file is ignored with a warning. A symlinked file, an invalid entry, or a missing env file is skipped with a warning naming the file and line; the rest still applies. The build prints the files it used: `>>> applying build flags from /etc/portage/make.conf, /etc/portage/env/lto.conf`.
 
 ## --exclude / --keep-going
 
