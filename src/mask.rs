@@ -143,14 +143,19 @@ fn load() -> MaskList {
             );
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
         for (i, raw) in text.lines().enumerate() {
             let line = raw.trim();
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
             let (atom, reason) = match line.split_once('#') {
-                Some((a, r)) => (a.trim(), Some(r.trim().to_string()).filter(|s| !s.is_empty())),
+                Some((a, r)) => (
+                    a.trim(),
+                    Some(r.trim().to_string()).filter(|s| !s.is_empty()),
+                ),
                 None => (line, None),
             };
             if atom.is_empty() {

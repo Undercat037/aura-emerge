@@ -162,7 +162,11 @@ pub(crate) fn load() -> Config {
         .filter_map(|k| vars.get(*k).map(|v| (k.to_string(), v.clone())))
         .collect();
 
-    Config { default_flags, build_vars, files }
+    Config {
+        default_flags,
+        build_vars,
+        files,
+    }
 }
 
 /// Stores one parsed `key = value` into `vars`/`default_flags`, or
@@ -310,13 +314,21 @@ fn parse_into(
                 warn(path, &key, "unterminated quoted value");
                 ok = false;
                 let raw: String = cs[val_start..n].iter().collect();
-                let v = if q == '\'' { BuildValue::LiteralScalar(raw) } else { BuildValue::Scalar(raw) };
+                let v = if q == '\'' {
+                    BuildValue::LiteralScalar(raw)
+                } else {
+                    BuildValue::Scalar(raw)
+                };
                 store(key, v, path, vars, default_flags);
                 break;
             }
             let raw: String = cs[val_start..i].iter().collect();
             i += 1;
-            let v = if q == '\'' { BuildValue::LiteralScalar(raw) } else { BuildValue::Scalar(raw) };
+            let v = if q == '\'' {
+                BuildValue::LiteralScalar(raw)
+            } else {
+                BuildValue::Scalar(raw)
+            };
             store(key, v, path, vars, default_flags);
         } else {
             let val_start = i;
@@ -389,7 +401,10 @@ pub(crate) fn makepkg_override_conf(cfg: &Config) -> Option<String> {
         out.push_str(&format!("#   {}\n", f.display()));
     }
     out.push_str("# Do not edit -- rewritten on every build, removed afterwards.\n\n");
-    out.push_str(&format!("source {} 2>/dev/null\n\n", crate::MAKEPKG_CONF_SYSTEM));
+    out.push_str(&format!(
+        "source {} 2>/dev/null\n\n",
+        crate::MAKEPKG_CONF_SYSTEM
+    ));
 
     let mut exports: Vec<&str> = Vec::new();
     for (key, value) in &cfg.build_vars {
@@ -637,12 +652,21 @@ mod config_tests {
     fn parse(text: &str) -> Config {
         let mut vars = HashMap::new();
         let mut flags = Vec::new();
-        assert!(parse_into(text, Path::new("test.conf"), &mut vars, &mut flags));
+        assert!(parse_into(
+            text,
+            Path::new("test.conf"),
+            &mut vars,
+            &mut flags
+        ));
         let build_vars = BUILD_VARS
             .iter()
             .filter_map(|k| vars.get(*k).map(|v| (k.to_string(), v.clone())))
             .collect();
-        Config { default_flags: flags, build_vars, files: vec![PathBuf::from("test.conf")] }
+        Config {
+            default_flags: flags,
+            build_vars,
+            files: vec![PathBuf::from("test.conf")],
+        }
     }
 
     #[test]
@@ -665,7 +689,10 @@ mod config_tests {
         let as_list = parse("OPTIONS=(strip !debug)");
         let as_string = parse(r#"OPTIONS="strip !debug""#);
         assert_eq!(as_list.build_vars[0].1.display(), "strip !debug");
-        assert_eq!(as_list.build_vars[0].1.tokens(), as_string.build_vars[0].1.tokens());
+        assert_eq!(
+            as_list.build_vars[0].1.tokens(),
+            as_string.build_vars[0].1.tokens()
+        );
     }
 
     #[test]
@@ -692,14 +719,24 @@ mod config_tests {
     fn unterminated_quote_is_reported_not_panicked() {
         let mut vars = HashMap::new();
         let mut flags = Vec::new();
-        assert!(!parse_into("CFLAGS=\"unclosed\n", Path::new("t.conf"), &mut vars, &mut flags));
+        assert!(!parse_into(
+            "CFLAGS=\"unclosed\n",
+            Path::new("t.conf"),
+            &mut vars,
+            &mut flags
+        ));
     }
 
     #[test]
     fn unterminated_array_is_reported_not_panicked() {
         let mut vars = HashMap::new();
         let mut flags = Vec::new();
-        assert!(!parse_into("OPTIONS=(strip !debug\n", Path::new("t.conf"), &mut vars, &mut flags));
+        assert!(!parse_into(
+            "OPTIONS=(strip !debug\n",
+            Path::new("t.conf"),
+            &mut vars,
+            &mut flags
+        ));
     }
 
     #[test]
@@ -724,7 +761,11 @@ mod config_tests {
     #[test]
     fn cli_flag_wins_over_conflicting_config_default() {
         let cfg = parse(r#"EMERGE_DEFAULT_OPTS=(--aur)"#);
-        let argv = vec!["emerge".to_string(), "--abs".to_string(), "nano".to_string()];
+        let argv = vec![
+            "emerge".to_string(),
+            "--abs".to_string(),
+            "nano".to_string(),
+        ];
         let out = build_argv(&argv, &cfg);
         assert!(!out.iter().any(|t| t == "--aur"));
         assert!(out.iter().any(|t| t == "--abs"));
@@ -734,7 +775,10 @@ mod config_tests {
     fn config_defaults_precede_the_command_line() {
         let cfg = parse(r#"EMERGE_DEFAULT_OPTS=(--pkgbuild-view)"#);
         let argv = vec!["emerge".to_string(), "nano".to_string()];
-        assert_eq!(build_argv(&argv, &cfg), vec!["emerge", "--pkgbuild-view", "nano"]);
+        assert_eq!(
+            build_argv(&argv, &cfg),
+            vec!["emerge", "--pkgbuild-view", "nano"]
+        );
     }
 
     #[test]

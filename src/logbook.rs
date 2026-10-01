@@ -115,7 +115,11 @@ pub(crate) fn log_unmerge(atoms: &[String]) {
     if atoms.is_empty() {
         return;
     }
-    append(&format!("{}  UNMERGE  -      {}", timestamp(), atoms.join("  ")));
+    append(&format!(
+        "{}  UNMERGE  -      {}",
+        timestamp(),
+        atoms.join("  ")
+    ));
 }
 
 // ── `--info` stats ──────────────────────────────────────────────────────────
@@ -205,7 +209,8 @@ mod tests {
 
     #[test]
     fn blank_and_malformed_lines_are_skipped_not_fatal() {
-        let log = "\n   \nnot a log line at all\n2026-09-21 08:51:44  MERGE    aur    x-1-1  (3s)\n";
+        let log =
+            "\n   \nnot a log line at all\n2026-09-21 08:51:44  MERGE    aur    x-1-1  (3s)\n";
         let stats = parse_stats(log);
         assert_eq!(stats.merges, 1);
         assert_eq!(stats.total_build_time, Duration::from_secs(3));

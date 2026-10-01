@@ -19,7 +19,11 @@ pub(crate) struct NewsItem {
 
 fn fetch_feed() -> Option<String> {
     let text = crate::http::get(NEWS_FEED_URL, 10)?;
-    if text.trim().is_empty() { None } else { Some(text) }
+    if text.trim().is_empty() {
+        None
+    } else {
+        Some(text)
+    }
 }
 
 fn split_items(xml: &str) -> Vec<&str> {
@@ -93,7 +97,13 @@ pub(crate) fn parse_news(xml: &str) -> Vec<NewsItem> {
                 .map(|d| strip_tags(&decode_entities(&d)))
                 .unwrap_or_default();
             let guid = extract_tag(block, "guid").unwrap_or_else(|| link.clone());
-            Some(NewsItem { title, link, pub_date, description, guid })
+            Some(NewsItem {
+                title,
+                link,
+                pub_date,
+                description,
+                guid,
+            })
         })
         .collect()
 }
@@ -114,9 +124,15 @@ fn state_path() -> Option<std::path::PathBuf> {
 }
 
 fn load_read_guids() -> std::collections::HashSet<String> {
-    let Some(path) = state_path() else { return Default::default() };
+    let Some(path) = state_path() else {
+        return Default::default();
+    };
     match fs::read_to_string(path) {
-        Ok(s) => s.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect(),
+        Ok(s) => s
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect(),
         Err(_) => Default::default(),
     }
 }
@@ -128,7 +144,10 @@ fn save_read_guids(guids: &std::collections::HashSet<String>) {
     };
     if let Some(parent) = path.parent() {
         if fs::create_dir_all(parent).is_err() {
-            eprintln!(">>> Warning: could not create {}, news read-state not saved", parent.display());
+            eprintln!(
+                ">>> Warning: could not create {}, news read-state not saved",
+                parent.display()
+            );
             return;
         }
     }
@@ -181,7 +200,11 @@ pub(crate) fn run_news(arg: &str) {
                 read.insert(it.guid.clone());
             }
             save_read_guids(&read);
-            println!("{} Marked {} item(s) as read.", ">>>".green().bold(), items.len());
+            println!(
+                "{} Marked {} item(s) as read.",
+                ">>>".green().bold(),
+                items.len()
+            );
         }
         n => match n.parse::<usize>() {
             Ok(idx) if idx >= 1 && idx <= items.len() => {
@@ -191,7 +214,11 @@ pub(crate) fn run_news(arg: &str) {
                 save_read_guids(&read);
             }
             _ => {
-                eprintln!(">>> Error: '{}' is not a valid item number (1-{})", n, items.len());
+                eprintln!(
+                    ">>> Error: '{}' is not a valid item number (1-{})",
+                    n,
+                    items.len()
+                );
                 std::process::exit(1);
             }
         },
@@ -199,20 +226,31 @@ pub(crate) fn run_news(arg: &str) {
 }
 
 fn list_news(items: &[NewsItem], read: &std::collections::HashSet<String>) {
-    println!("{} Arch Linux News (https://archlinux.org/news/)", ">>>".green().bold());
+    println!(
+        "{} Arch Linux News (https://archlinux.org/news/)",
+        ">>>".green().bold()
+    );
     let mut unread_count = 0;
     for (i, it) in items.iter().enumerate() {
         let is_unread = !read.contains(&it.guid);
         if is_unread {
             unread_count += 1;
         }
-        let marker = if is_unread { "N".yellow().bold().to_string() } else { " ".to_string() };
+        let marker = if is_unread {
+            "N".yellow().bold().to_string()
+        } else {
+            " ".to_string()
+        };
         println!(
             "  {:>2}  [{}]  {}  {}",
             i + 1,
             marker,
             short_date(&it.pub_date).dimmed(),
-            if is_unread { it.title.bold().to_string() } else { it.title.clone() }
+            if is_unread {
+                it.title.bold().to_string()
+            } else {
+                it.title.clone()
+            }
         );
     }
     println!();

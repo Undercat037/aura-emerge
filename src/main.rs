@@ -2,26 +2,26 @@
 Copyright (C) 2026 Undercat037
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
-the Free Software Foundation, version 3 of the License 
+the Free Software Foundation, version 3 of the License
 
-aura-emerge: A standalone Gentoo-style emerge package manager 
-for Arch Linux - installs from official repos, the AUR, and ABS; 
-scans PKGBUILDs for supply-chain attack patterns before building; 
+aura-emerge: A standalone Gentoo-style emerge package manager
+for Arch Linux - installs from official repos, the AUR, and ABS;
+scans PKGBUILDs for supply-chain attack patterns before building;
 and runs untrusted build steps inside a bwrap sandbox.
 */
 
-mod world_set;
-mod packages;
-mod security;
-mod news;
-mod bash_ast;
-mod sandbox;
 mod aur;
+mod bash_ast;
 mod config;
-mod runtime;
-mod mask;
-mod revdep;
 mod logbook;
+mod mask;
+mod news;
+mod packages;
+mod revdep;
+mod runtime;
+mod sandbox;
+mod security;
+mod world_set;
 
 /// Shared blocking HTTP GET (replaces curl subprocesses). None on any failure.
 mod http {
@@ -44,37 +44,38 @@ use std::fs;
 use std::io::{self, BufRead, Write};
 use std::process::{Command, Stdio};
 
-use world_set::*;
 use packages::*;
 use security::*;
+use world_set::*;
 
 // ── Binary paths ───────────────────────────────────────────────────────
 
 pub(crate) const PACMAN_BIN: &str = "/usr/bin/pacman";
-pub(crate) const SUDO_BIN:   &str = "/usr/bin/sudo";
-pub(crate) const TEE_BIN:    &str = "/usr/bin/tee";
-pub(crate) const MV_BIN:     &str = "/usr/bin/mv";
-pub(crate) const RM_BIN:     &str = "/usr/bin/rm";
+pub(crate) const SUDO_BIN: &str = "/usr/bin/sudo";
+pub(crate) const TEE_BIN: &str = "/usr/bin/tee";
+pub(crate) const MV_BIN: &str = "/usr/bin/mv";
+pub(crate) const RM_BIN: &str = "/usr/bin/rm";
 pub(crate) const MAKEPKG_BIN: &str = "/usr/bin/makepkg";
 pub(crate) const PKGCTL_BIN: &str = "/usr/bin/pkgctl";
 pub(crate) const VERCMP_BIN: &str = "/usr/bin/vercmp";
 pub(crate) const GPG_BIN: &str = "/usr/bin/gpg";
 pub(crate) const PGP_KEYSERVER: &str = "keyserver.ubuntu.com";
-pub(crate) const ABS_GITLAB_BASE: &str = "https://gitlab.archlinux.org/archlinux/packaging/packages";
+pub(crate) const ABS_GITLAB_BASE: &str =
+    "https://gitlab.archlinux.org/archlinux/packaging/packages";
 
 // ── Files ─────────────────────────────────────────────────────────────────────
 
-pub(crate) const WORLD_SET_FILE:  &str = "/etc/portage/world";
+pub(crate) const WORLD_SET_FILE: &str = "/etc/portage/world";
 /// Custom sets: /etc/portage/sets/<name>.set → `@<name>`.
 pub(crate) const SETS_DIR: &str = "/etc/portage/sets";
 // AUR/ABS build roots: packages::aur_build_base()/abs_build_base().
-pub(crate) const WORLD_SET_TMP:  &str = "/etc/portage/world.tmp";
+pub(crate) const WORLD_SET_TMP: &str = "/etc/portage/world.tmp";
 /// Never-install list; see `mask.rs`.
 pub(crate) const MASK_FILE: &str = mask::MASK_FILE;
 pub(crate) const RESUME_FILE: &str = "/etc/portage/resume.state";
-pub(crate) const RESUME_TMP:  &str = "/etc/portage/resume.state.tmp";
+pub(crate) const RESUME_TMP: &str = "/etc/portage/resume.state.tmp";
 pub(crate) const LASTACTION_FILE: &str = "/etc/portage/lastaction.state";
-pub(crate) const LASTACTION_TMP:  &str = "/etc/portage/lastaction.state.tmp";
+pub(crate) const LASTACTION_TMP: &str = "/etc/portage/lastaction.state.tmp";
 pub(crate) const PACMAN_CONF: &str = "/etc/pacman.conf";
 pub(crate) const MAKEPKG_CONF_SYSTEM: &str = "/etc/makepkg.conf";
 pub(crate) const BASH_BIN: &str = "/usr/bin/bash";
@@ -430,32 +431,49 @@ struct Cli {
     // ── Gentoo compat flags (accepted silently, no-op) ──────────────────────
 
     // Actions
-    #[arg(long = "metadata")]               metadata: bool,
-    #[arg(long = "clean")]                  clean: bool,
-    #[arg(long = "config")]                 config: bool,
+    #[arg(long = "metadata")]
+    metadata: bool,
+    #[arg(long = "clean")]
+    clean: bool,
+    #[arg(long = "config")]
+    config: bool,
 
     // Output control
-    #[arg(short = 'q', long = "quiet")]     quiet: bool,
-    #[arg(long = "nospinner")]              nospinner: bool,
-    #[arg(long = "noconfmem")]              noconfmem: bool,
-    #[arg(long = "color")]                  color: Option<String>,
-    #[arg(long = "columns")]               columns: bool,
+    #[arg(short = 'q', long = "quiet")]
+    quiet: bool,
+    #[arg(long = "nospinner")]
+    nospinner: bool,
+    #[arg(long = "noconfmem")]
+    noconfmem: bool,
+    #[arg(long = "color")]
+    color: Option<String>,
+    #[arg(long = "columns")]
+    columns: bool,
 
     /// Ignore EMERGE_DEFAULT_OPTS from make.conf for this run
-    #[arg(long = "ignore-default-opts")]    ignore_default_opts: bool,
+    #[arg(long = "ignore-default-opts")]
+    ignore_default_opts: bool,
 
     // Dependency / graph control
-    #[arg(short = 'O', long = "nodeps")]    nodeps: bool,
-    #[arg(short = 'o', long = "onlydeps")]  onlydeps: bool,
-    #[arg(short = 't', long = "tree")]      tree: bool,
+    #[arg(short = 'O', long = "nodeps")]
+    nodeps: bool,
+    #[arg(short = 'o', long = "onlydeps")]
+    onlydeps: bool,
+    #[arg(short = 't', long = "tree")]
+    tree: bool,
     /// With -t: recurse N levels (--deep=N), or every level if bare
     #[arg(short = 'D', long = "deep", value_name = "N", num_args = 0..=1, default_missing_value = "0", require_equals = true)]
     deep: Option<u32>,
-    #[arg(long = "complete-graph")]         complete_graph: bool,
-    #[arg(long = "changed-use")]            changed_use: bool,
-    #[arg(long = "backtrack")]              backtrack: Option<u32>,
-    #[arg(long = "jobs")]                   jobs: Option<u32>,
-    #[arg(long = "load-average")]           load_average: Option<f32>,
+    #[arg(long = "complete-graph")]
+    complete_graph: bool,
+    #[arg(long = "changed-use")]
+    changed_use: bool,
+    #[arg(long = "backtrack")]
+    backtrack: Option<u32>,
+    #[arg(long = "jobs")]
+    jobs: Option<u32>,
+    #[arg(long = "load-average")]
+    load_average: Option<f32>,
 
     /// Don't stop a batch at the first failure; report failures at the end
     #[arg(long = "keep-going")]
@@ -470,24 +488,38 @@ struct Cli {
     revdep_rebuild: bool,
 
     // Binary pkg flags (emerge -k/-K/-g/-G/-b/-B)
-    #[arg(short = 'k', long = "usepkg")]          usepkg: bool,
-    #[arg(short = 'K', long = "usepkgonly")]       usepkgonly: bool,
-    #[arg(short = 'g', long = "getbinpkg")]        getbinpkg: bool,
-    #[arg(short = 'G', long = "getbinpkgonly")]    getbinpkgonly: bool,
-    #[arg(short = 'b', long = "buildpkg")]         buildpkg: bool,
-    #[arg(short = 'B', long = "buildpkgonly")]     buildpkgonly: bool,
+    #[arg(short = 'k', long = "usepkg")]
+    usepkg: bool,
+    #[arg(short = 'K', long = "usepkgonly")]
+    usepkgonly: bool,
+    #[arg(short = 'g', long = "getbinpkg")]
+    getbinpkg: bool,
+    #[arg(short = 'G', long = "getbinpkgonly")]
+    getbinpkgonly: bool,
+    #[arg(short = 'b', long = "buildpkg")]
+    buildpkg: bool,
+    #[arg(short = 'B', long = "buildpkgonly")]
+    buildpkgonly: bool,
 
     // Fetch flags
-    #[arg(short = 'f', long = "fetchonly")]        fetchonly: bool,
-    #[arg(short = 'F', long = "fetch-all-uri")]    fetch_all_uri: bool,
+    #[arg(short = 'f', long = "fetchonly")]
+    fetchonly: bool,
+    #[arg(short = 'F', long = "fetch-all-uri")]
+    fetch_all_uri: bool,
 
     // Misc compat
-    #[arg(short = 'l', long = "changelog")]        changelog: bool,
-    #[arg(long = "newrepo")]                        newrepo: bool,
-    #[arg(long = "reinstall")]                      reinstall: Option<String>,
-    #[arg(long = "quiet-build")]                    quiet_build: Option<String>,
-    #[arg(long = "with-bdeps")]                     with_bdeps: Option<String>,
-    #[arg(long = "alert", short = 'A')]             alert: bool,
+    #[arg(short = 'l', long = "changelog")]
+    changelog: bool,
+    #[arg(long = "newrepo")]
+    newrepo: bool,
+    #[arg(long = "reinstall")]
+    reinstall: Option<String>,
+    #[arg(long = "quiet-build")]
+    quiet_build: Option<String>,
+    #[arg(long = "with-bdeps")]
+    with_bdeps: Option<String>,
+    #[arg(long = "alert", short = 'A')]
+    alert: bool,
 
     /// Generate shell completions to stdout; hidden from help.
     #[arg(long = "gen-completions", hide = true, value_name = "SHELL")]
@@ -564,7 +596,9 @@ fn print_help() {
 fn print_set_completion_glue(shell: Shell) {
     match shell {
         Shell::Bash => {
-            println!("{}", r#"
+            println!(
+                "{}",
+                r#"
 # aura-emerge: dynamic @<set> completion (world, preserved-rebuild, sets/*)
 _emerge_with_sets() {
     _emerge
@@ -577,10 +611,13 @@ _emerge_with_sets() {
 }
 complete -o bashdefault -o default -F _emerge_with_sets emerge 2>/dev/null \
     || complete -F _emerge_with_sets emerge
-"#);
+"#
+            );
         }
         Shell::Zsh => {
-            println!("{}", r#"
+            println!(
+                "{}",
+                r#"
 # aura-emerge: dynamic @<set> completion (world, preserved-rebuild, sets/*)
 _emerge_with_sets() {
     _emerge "$@"
@@ -591,21 +628,23 @@ _emerge_with_sets() {
     fi
 }
 compdef _emerge_with_sets emerge
-"#);
+"#
+            );
         }
         Shell::Fish => {
-            println!("{}", r#"
+            println!(
+                "{}",
+                r#"
 # aura-emerge: dynamic @<set> completion (world, preserved-rebuild, sets/*)
 complete -c emerge -f -n 'string match -q "@*" -- (commandline -ct)' -a '(emerge --list-sets 2>/dev/null)'
-"#);
+"#
+            );
         }
         _ => {
             // Elvish/PowerShell: no glue, static flag completion only.
         }
     }
 }
-
-
 
 fn validate_pkg(pkg: &str) -> bool {
     if pkg.starts_with('-') || pkg.contains("..") || pkg.contains("//") {
@@ -655,26 +694,40 @@ fn collect_excludes(raw: &[String]) -> HashSet<String> {
 /// pacman installs a batch as one transaction, so one unresolvable
 /// package means nothing gets installed. Without --keep-going this is
 /// just `run_cmd`; with it, failed batches retry one package at a time.
-pub(crate) fn pacman_install(args: &[&str], names: &[String]) -> bool {
+///
+/// Returns `(all_ok, landed)`. `landed` is what this call actually
+/// installed: everything on success, nothing if the single transaction
+/// failed or was declined at the prompt, and only the per-package
+/// successes after a `--keep-going` retry. Do NOT infer it from
+/// `is_installed()` afterwards -- on a reinstall (`[ebuild  R ]`) every
+/// package is already installed, so a declined/failed run would still
+/// look like it all landed.
+pub(crate) fn pacman_install_landed(args: &[&str], names: &[String]) -> (bool, Vec<String>) {
     if run_cmd(SUDO_BIN, args, names) {
-        return true;
+        return (true, names.to_vec());
     }
     if !runtime::keep_going() || names.len() < 2 {
-        return false;
+        return (false, Vec::new());
     }
     println!(
         "{} batch install failed - --keep-going set, retrying {} package(s) individually...",
         ">>>".yellow().bold(),
         names.len()
     );
-    let mut all_ok = true;
+    let mut landed = Vec::new();
     for name in names {
-        if !run_cmd(SUDO_BIN, args, std::slice::from_ref(name)) {
+        if run_cmd(SUDO_BIN, args, std::slice::from_ref(name)) {
+            landed.push(name.clone());
+        } else {
             runtime::record_failure(name, "pacman install failed");
-            all_ok = false;
         }
     }
-    all_ok
+    (landed.len() == names.len(), landed)
+}
+
+/// Bool-only wrapper for callers that don't care what landed.
+pub(crate) fn pacman_install(args: &[&str], names: &[String]) -> bool {
+    pacman_install_landed(args, names).0
 }
 
 /// Packages to hold back during `-u`: `--exclude` plus every installed
@@ -710,10 +763,29 @@ fn upgrade_ignores() -> Vec<String> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ActionKind {
-    Help, Version, Info, News, ListSets, CleanSourceCache, CheckDevel,
-    InstallPkgbuild, RevdepRebuild, Scan, Search, Regen, RegenWorld,
-    RegenSets, RegenWorldFromExplicit, Prune, Resume, Undo, Select,
-    Deselect, Update, Depclean, Unmerge,
+    Help,
+    Version,
+    Info,
+    News,
+    ListSets,
+    CleanSourceCache,
+    CheckDevel,
+    InstallPkgbuild,
+    RevdepRebuild,
+    Scan,
+    Search,
+    Regen,
+    RegenWorld,
+    RegenSets,
+    RegenWorldFromExplicit,
+    Prune,
+    Resume,
+    Undo,
+    Select,
+    Deselect,
+    Update,
+    Depclean,
+    Unmerge,
 }
 
 impl ActionKind {
@@ -790,30 +862,76 @@ fn action_from_short_char(c: char) -> Option<ActionKind> {
 
 fn active_actions(cli: &Cli) -> Vec<ActionKind> {
     let mut out = Vec::new();
-    if cli.help { out.push(ActionKind::Help); }
-    if cli.version { out.push(ActionKind::Version); }
-    if cli.info { out.push(ActionKind::Info); }
-    if cli.news.is_some() || cli.check_news.is_some() { out.push(ActionKind::News); }
-    if cli.list_sets { out.push(ActionKind::ListSets); }
-    if cli.clean_source_cache { out.push(ActionKind::CleanSourceCache); }
-    if cli.check_devel { out.push(ActionKind::CheckDevel); }
-    if cli.install_pkgbuild.is_some() { out.push(ActionKind::InstallPkgbuild); }
-    if cli.revdep_rebuild { out.push(ActionKind::RevdepRebuild); }
+    if cli.help {
+        out.push(ActionKind::Help);
+    }
+    if cli.version {
+        out.push(ActionKind::Version);
+    }
+    if cli.info {
+        out.push(ActionKind::Info);
+    }
+    if cli.news.is_some() || cli.check_news.is_some() {
+        out.push(ActionKind::News);
+    }
+    if cli.list_sets {
+        out.push(ActionKind::ListSets);
+    }
+    if cli.clean_source_cache {
+        out.push(ActionKind::CleanSourceCache);
+    }
+    if cli.check_devel {
+        out.push(ActionKind::CheckDevel);
+    }
+    if cli.install_pkgbuild.is_some() {
+        out.push(ActionKind::InstallPkgbuild);
+    }
+    if cli.revdep_rebuild {
+        out.push(ActionKind::RevdepRebuild);
+    }
     // standalone --scan only; with --install-pkgbuild it is a modifier
-    if cli.scan && cli.install_pkgbuild.is_none() { out.push(ActionKind::Scan); }
-    if cli.search || cli.searchdesc { out.push(ActionKind::Search); }
-    if cli.regen { out.push(ActionKind::Regen); }
-    if cli.regen_world { out.push(ActionKind::RegenWorld); }
-    if cli.regen_sets.is_some() { out.push(ActionKind::RegenSets); }
-    if cli.regen_world_from_explicit { out.push(ActionKind::RegenWorldFromExplicit); }
-    if cli.prune { out.push(ActionKind::Prune); }
-    if cli.resume { out.push(ActionKind::Resume); }
-    if cli.undo { out.push(ActionKind::Undo); }
-    if cli.select { out.push(ActionKind::Select); }
-    if cli.deselect { out.push(ActionKind::Deselect); }
-    if cli.update { out.push(ActionKind::Update); }
-    if cli.depclean { out.push(ActionKind::Depclean); }
-    if cli.unmerge { out.push(ActionKind::Unmerge); }
+    if cli.scan && cli.install_pkgbuild.is_none() {
+        out.push(ActionKind::Scan);
+    }
+    if cli.search || cli.searchdesc {
+        out.push(ActionKind::Search);
+    }
+    if cli.regen {
+        out.push(ActionKind::Regen);
+    }
+    if cli.regen_world {
+        out.push(ActionKind::RegenWorld);
+    }
+    if cli.regen_sets.is_some() {
+        out.push(ActionKind::RegenSets);
+    }
+    if cli.regen_world_from_explicit {
+        out.push(ActionKind::RegenWorldFromExplicit);
+    }
+    if cli.prune {
+        out.push(ActionKind::Prune);
+    }
+    if cli.resume {
+        out.push(ActionKind::Resume);
+    }
+    if cli.undo {
+        out.push(ActionKind::Undo);
+    }
+    if cli.select {
+        out.push(ActionKind::Select);
+    }
+    if cli.deselect {
+        out.push(ActionKind::Deselect);
+    }
+    if cli.update {
+        out.push(ActionKind::Update);
+    }
+    if cli.depclean {
+        out.push(ActionKind::Depclean);
+    }
+    if cli.unmerge {
+        out.push(ActionKind::Unmerge);
+    }
     out
 }
 
@@ -851,18 +969,34 @@ fn first_action_in_argv(argv: &[String], active: &[ActionKind]) -> Option<Action
 }
 
 fn clear_other_actions(cli: &mut Cli, keep: ActionKind) {
-    if keep != ActionKind::Help { cli.help = false; }
-    if keep != ActionKind::Version { cli.version = false; }
-    if keep != ActionKind::Info { cli.info = false; }
+    if keep != ActionKind::Help {
+        cli.help = false;
+    }
+    if keep != ActionKind::Version {
+        cli.version = false;
+    }
+    if keep != ActionKind::Info {
+        cli.info = false;
+    }
     if keep != ActionKind::News {
         cli.news = None;
         cli.check_news = None;
     }
-    if keep != ActionKind::ListSets { cli.list_sets = false; }
-    if keep != ActionKind::CleanSourceCache { cli.clean_source_cache = false; }
-    if keep != ActionKind::CheckDevel { cli.check_devel = false; }
-    if keep != ActionKind::InstallPkgbuild { cli.install_pkgbuild = None; }
-    if keep != ActionKind::RevdepRebuild { cli.revdep_rebuild = false; }
+    if keep != ActionKind::ListSets {
+        cli.list_sets = false;
+    }
+    if keep != ActionKind::CleanSourceCache {
+        cli.clean_source_cache = false;
+    }
+    if keep != ActionKind::CheckDevel {
+        cli.check_devel = false;
+    }
+    if keep != ActionKind::InstallPkgbuild {
+        cli.install_pkgbuild = None;
+    }
+    if keep != ActionKind::RevdepRebuild {
+        cli.revdep_rebuild = false;
+    }
     if keep != ActionKind::Scan && keep != ActionKind::InstallPkgbuild {
         cli.scan = false;
     }
@@ -870,21 +1004,43 @@ fn clear_other_actions(cli: &mut Cli, keep: ActionKind) {
         cli.search = false;
         cli.searchdesc = false;
     }
-    if keep != ActionKind::Regen { cli.regen = false; }
-    if keep != ActionKind::RegenWorld { cli.regen_world = false; }
+    if keep != ActionKind::Regen {
+        cli.regen = false;
+    }
+    if keep != ActionKind::RegenWorld {
+        cli.regen_world = false;
+    }
     if keep != ActionKind::RegenSets {
         cli.regen_sets = None;
         cli.regen_sort = false;
     }
-    if keep != ActionKind::RegenWorldFromExplicit { cli.regen_world_from_explicit = false; }
-    if keep != ActionKind::Prune { cli.prune = false; }
-    if keep != ActionKind::Resume { cli.resume = false; }
-    if keep != ActionKind::Undo { cli.undo = false; }
-    if keep != ActionKind::Select { cli.select = false; }
-    if keep != ActionKind::Deselect { cli.deselect = false; }
-    if keep != ActionKind::Update { cli.update = false; }
-    if keep != ActionKind::Depclean { cli.depclean = false; }
-    if keep != ActionKind::Unmerge { cli.unmerge = false; }
+    if keep != ActionKind::RegenWorldFromExplicit {
+        cli.regen_world_from_explicit = false;
+    }
+    if keep != ActionKind::Prune {
+        cli.prune = false;
+    }
+    if keep != ActionKind::Resume {
+        cli.resume = false;
+    }
+    if keep != ActionKind::Undo {
+        cli.undo = false;
+    }
+    if keep != ActionKind::Select {
+        cli.select = false;
+    }
+    if keep != ActionKind::Deselect {
+        cli.deselect = false;
+    }
+    if keep != ActionKind::Update {
+        cli.update = false;
+    }
+    if keep != ActionKind::Depclean {
+        cli.depclean = false;
+    }
+    if keep != ActionKind::Unmerge {
+        cli.unmerge = false;
+    }
 }
 
 fn enforce_action_priority(cli: &mut Cli, argv: &[String]) {
@@ -939,22 +1095,54 @@ fn save_failed_resume(cli: &Cli) -> bool {
 /// run it, not what it is).
 fn build_resume_args(cli: &Cli, target_pkgs: &[String], has_world: bool) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
-    if cli.update       { args.push("--update".to_string()); }
-    if cli.aur          { args.push("--aur".to_string()); }
-    if cli.only_repos   { args.push("--only-repos".to_string()); }
-    if cli.abs          { args.push("--abs".to_string()); }
-    if cli.skippgp      { args.push("--skippgp".to_string()); }
-    if cli.autopgp      { args.push("--autopgp".to_string()); }
-    if cli.edit         { args.push("--edit".to_string()); }
-    if cli.skip_srcinfo_regen { args.push("--skip-srcinfo-regen".to_string()); }
-    if cli.oneshot      { args.push("--oneshot".to_string()); }
-    if cli.noreplace    { args.push("--noreplace".to_string()); }
-    if cli.verbose      { args.push("--verbose".to_string()); }
-    if cli.refresh      { args.push("--refresh".to_string()); }
-    if cli.err_install     { args.push("--err-install".to_string()); }
-    if cli.no_sandbox   { args.push("--no-sandbox".to_string()); }
-    if cli.unshare_net_build { args.push("--unshare-net-build".to_string()); }
-    if cli.keep_going   { args.push("--keep-going".to_string()); }
+    if cli.update {
+        args.push("--update".to_string());
+    }
+    if cli.aur {
+        args.push("--aur".to_string());
+    }
+    if cli.only_repos {
+        args.push("--only-repos".to_string());
+    }
+    if cli.abs {
+        args.push("--abs".to_string());
+    }
+    if cli.skippgp {
+        args.push("--skippgp".to_string());
+    }
+    if cli.autopgp {
+        args.push("--autopgp".to_string());
+    }
+    if cli.edit {
+        args.push("--edit".to_string());
+    }
+    if cli.skip_srcinfo_regen {
+        args.push("--skip-srcinfo-regen".to_string());
+    }
+    if cli.oneshot {
+        args.push("--oneshot".to_string());
+    }
+    if cli.noreplace {
+        args.push("--noreplace".to_string());
+    }
+    if cli.verbose {
+        args.push("--verbose".to_string());
+    }
+    if cli.refresh {
+        args.push("--refresh".to_string());
+    }
+    if cli.err_install {
+        args.push("--err-install".to_string());
+    }
+    if cli.no_sandbox {
+        args.push("--no-sandbox".to_string());
+    }
+    if cli.unshare_net_build {
+        args.push("--unshare-net-build".to_string());
+    }
+    if cli.keep_going {
+        args.push("--keep-going".to_string());
+    }
     for e in &cli.exclude {
         args.push("--exclude".to_string());
         args.push(e.clone());
@@ -1030,7 +1218,11 @@ fn print_aur_search_results(results: &[aur::AurPkgInfo]) {
         return;
     }
     for r in results {
-        let ood = if r.out_of_date { " [out of date]".red().bold().to_string() } else { String::new() };
+        let ood = if r.out_of_date {
+            " [out of date]".red().bold().to_string()
+        } else {
+            String::new()
+        };
         println!(
             "{}/{} {}{} ({} votes, {:.2} popularity)",
             "aur".magenta().bold(),
@@ -1058,10 +1250,22 @@ fn print_aur_info_results(results: &[aur::AurPkgInfo]) {
         println!("{:<15}: {}", "Name", r.name.bold());
         println!("{:<15}: {}", "Package Base", r.pkgbase);
         println!("{:<15}: {}", "Version", r.version.green());
-        println!("{:<15}: {}", "Maintainer", r.maintainer.as_deref().unwrap_or("(orphan)"));
+        println!(
+            "{:<15}: {}",
+            "Maintainer",
+            r.maintainer.as_deref().unwrap_or("(orphan)")
+        );
         println!("{:<15}: {}", "Votes", r.num_votes);
         println!("{:<15}: {:.2}", "Popularity", r.popularity);
-        println!("{:<15}: {}", "Out of Date", if r.out_of_date { "Yes".red().bold().to_string() } else { "No".to_string() });
+        println!(
+            "{:<15}: {}",
+            "Out of Date",
+            if r.out_of_date {
+                "Yes".red().bold().to_string()
+            } else {
+                "No".to_string()
+            }
+        );
         println!("{:<15}: {}", "Description", r.description);
         println!();
     }
@@ -1107,7 +1311,9 @@ fn read_line_raw() -> String {
         }
     }
     std::mem::forget(file); // don't close fd 0 out from under the process
-    String::from_utf8_lossy(&line).trim_end_matches('\r').to_string()
+    String::from_utf8_lossy(&line)
+        .trim_end_matches('\r')
+        .to_string()
 }
 
 #[cfg(not(unix))]
@@ -1241,13 +1447,25 @@ fn run() -> anyhow::Result<()> {
         match source_cache_dir() {
             Some(dir) if dir.exists() => {
                 if std::fs::remove_dir_all(&dir).is_ok() {
-                    println!("{} removed source cache at {}", ">>>".green().bold(), dir.display());
+                    println!(
+                        "{} removed source cache at {}",
+                        ">>>".green().bold(),
+                        dir.display()
+                    );
                 } else {
-                    eprintln!("{} could not remove {}", ">>> Error:".red().bold(), dir.display());
+                    eprintln!(
+                        "{} could not remove {}",
+                        ">>> Error:".red().bold(),
+                        dir.display()
+                    );
                     std::process::exit(1);
                 }
             }
-            Some(dir) => println!("{} no source cache to remove ({} doesn't exist).", ">>>".green().bold(), dir.display()),
+            Some(dir) => println!(
+                "{} no source cache to remove ({} doesn't exist).",
+                ">>>".green().bold(),
+                dir.display()
+            ),
             None => {
                 eprintln!("{} could not determine $HOME", ">>> Error:".red().bold());
                 std::process::exit(1);
@@ -1292,7 +1510,9 @@ fn run() -> anyhow::Result<()> {
         // start with the same scanner).
         if cli.scan {
             return if crate::security::scan_report_local(
-                path.file_name().and_then(|n| n.to_str()).unwrap_or(path_str),
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(path_str),
                 &path,
             ) {
                 Ok(())
@@ -1355,13 +1575,11 @@ fn run() -> anyhow::Result<()> {
     let repos_only_search = cli.only_repos || cli.abs;
 
     // Detect @world / world in package list
-    let has_world = cli.packages.iter()
-        .any(|p| p == "@world");
+    let has_world = cli.packages.iter().any(|p| p == "@world");
 
     // Detect @preserved-rebuild set (Gentoo-flavored trigger for a
     // dependency-completeness check - see preserved_rebuild()).
-    let has_preserved_rebuild = cli.packages.iter()
-        .any(|p| p == "@preserved-rebuild");
+    let has_preserved_rebuild = cli.packages.iter().any(|p| p == "@preserved-rebuild");
 
     // Any other "@name" token is a custom set - resolve it against
     // /etc/portage/sets/<name>.set (one package atom per line, '#'
@@ -1380,7 +1598,10 @@ fn run() -> anyhow::Result<()> {
             match read_custom_set(name) {
                 Ok(pkgs) => {
                     if pkgs.is_empty() {
-                        eprintln!(">>> Warning: set @{} is empty ({}/{}.set)", name, SETS_DIR, name);
+                        eprintln!(
+                            ">>> Warning: set @{} is empty ({}/{}.set)",
+                            name, SETS_DIR, name
+                        );
                     }
                     custom_set_pkgs.extend(pkgs);
                 }
@@ -1410,7 +1631,10 @@ fn run() -> anyhow::Result<()> {
         match read_batch_file(path) {
             Ok(pkgs) => {
                 if pkgs.is_empty() {
-                    eprintln!(">>> Warning: batch file is empty (no valid entries): {}", path);
+                    eprintln!(
+                        ">>> Warning: batch file is empty (no valid entries): {}",
+                        path
+                    );
                 }
                 target_pkgs.extend(pkgs);
             }
@@ -1430,7 +1654,10 @@ fn run() -> anyhow::Result<()> {
         runtime::report_excluded(&dropped);
         target_pkgs = kept;
         if target_pkgs.is_empty() && requested > 0 && !has_world {
-            println!("{} Every requested package was excluded - nothing to do.", ">>>".green().bold());
+            println!(
+                "{} Every requested package was excluded - nothing to do.",
+                ">>>".green().bold()
+            );
             return Ok(());
         }
         if !mask::allow_explicit(&target_pkgs, None) {
@@ -1507,11 +1734,20 @@ fn run() -> anyhow::Result<()> {
             // Search descriptions: pacman -Ss for official, AUR RPC
             // (by=name-desc) for AUR - both used to go through aura, which
             // just forwarded to pacman for the official half anyway.
-            println!("{} Searching descriptions for '{}'...", ">>>".green().bold(), term);
+            println!(
+                "{} Searching descriptions for '{}'...",
+                ">>>".green().bold(),
+                term
+            );
             run_cmd(PACMAN_BIN, &["-Ss"], &target_pkgs);
             if !repos_only_search {
                 println!();
-                println!("{} Searching {} descriptions for '{}'...", ">>>".green().bold(), "AUR".cyan().bold(), term);
+                println!(
+                    "{} Searching {} descriptions for '{}'...",
+                    ">>>".green().bold(),
+                    "AUR".cyan().bold(),
+                    term
+                );
                 print_aur_search_results(&aur::rpc_search(&term, true));
             }
             return Ok(());
@@ -1519,7 +1755,12 @@ fn run() -> anyhow::Result<()> {
 
         if cli.verbose {
             if cli.aur {
-                println!("{} Searching in {} for '{}'...", ">>>".green().bold(), "AUR".cyan().bold(), term);
+                println!(
+                    "{} Searching in {} for '{}'...",
+                    ">>>".green().bold(),
+                    "AUR".cyan().bold(),
+                    term
+                );
                 let info = aur::rpc_info(&target_pkgs);
                 if !info.is_empty() {
                     print_aur_info_results(&info);
@@ -1538,7 +1779,12 @@ fn run() -> anyhow::Result<()> {
                     run_cmd(PACMAN_BIN, &["-Ss"], &target_pkgs);
                     if !repos_only_search {
                         println!();
-                        println!("{} Searching in {} for '{}'...", ">>>".green().bold(), "AUR".cyan().bold(), term);
+                        println!(
+                            "{} Searching in {} for '{}'...",
+                            ">>>".green().bold(),
+                            "AUR".cyan().bold(),
+                            term
+                        );
                         print_aur_search_results(&aur::rpc_search(&term, false));
                     } else {
                         println!(
@@ -1550,14 +1796,24 @@ fn run() -> anyhow::Result<()> {
                 }
             }
         } else if cli.aur {
-            println!("{} Searching in {} for '{}'...", ">>>".green().bold(), "AUR".cyan().bold(), term);
+            println!(
+                "{} Searching in {} for '{}'...",
+                ">>>".green().bold(),
+                "AUR".cyan().bold(),
+                term
+            );
             print_aur_search_results(&aur::rpc_search(&term, false));
         } else {
             println!("{} Searching for '{}'...", ">>>".green().bold(), term);
             run_cmd(PACMAN_BIN, &["-Ss"], &target_pkgs);
             if !repos_only_search {
                 println!();
-                println!("{} Searching in {} for '{}'...", ">>>".green().bold(), "AUR".cyan().bold(), term);
+                println!(
+                    "{} Searching in {} for '{}'...",
+                    ">>>".green().bold(),
+                    "AUR".cyan().bold(),
+                    term
+                );
                 print_aur_search_results(&aur::rpc_search(&term, false));
             }
         }
@@ -1567,7 +1823,8 @@ fn run() -> anyhow::Result<()> {
     // 2. Sync - sync DB, then continue to install if packages given
     if cli.sync {
         let sync_flag = if cli.refresh { "-Syy" } else { "-Sy" };
-        println!("{} Syncing package databases{}...",
+        println!(
+            "{} Syncing package databases{}...",
             ">>>".green().bold(),
             if cli.refresh { " (force refresh)" } else { "" }
         );
@@ -1582,7 +1839,10 @@ fn run() -> anyhow::Result<()> {
 
     // --regen: regenerate package metadata cache
     if cli.regen {
-        println!("{} Regenerating package metadata cache...", ">>>".green().bold());
+        println!(
+            "{} Regenerating package metadata cache...",
+            ">>>".green().bold()
+        );
         run_cmd(SUDO_BIN, &[PACMAN_BIN, "-Fy"], &[]);
         return Ok(());
     }
@@ -1613,7 +1873,10 @@ fn run() -> anyhow::Result<()> {
     // start seeing the whole system instead of just what was installed
     // through `emerge` since world existed.
     if cli.regen_world_from_explicit {
-        println!("{} Seeding world from explicitly installed packages...", ">>>".green().bold());
+        println!(
+            "{} Seeding world from explicitly installed packages...",
+            ">>>".green().bold()
+        );
         let explicit: Vec<String> = match Command::new(PACMAN_BIN).arg("-Qeq").output() {
             Ok(out) => String::from_utf8_lossy(&out.stdout)
                 .lines()
@@ -1629,7 +1892,10 @@ fn run() -> anyhow::Result<()> {
             println!(">>> No explicitly installed packages found.");
             return Ok(());
         }
-        println!(">>> Found {} explicitly installed package(s). Resolving repo prefixes...", explicit.len());
+        println!(
+            ">>> Found {} explicitly installed package(s). Resolving repo prefixes...",
+            explicit.len()
+        );
         add_to_world_set(&explicit, None)?;
         return Ok(());
     }
@@ -1638,7 +1904,10 @@ fn run() -> anyhow::Result<()> {
     if cli.prune {
         println!("{} Pruning packages not in world...", ">>>".green().bold());
         if !is_safe_path(WORLD_SET_FILE) {
-            eprintln!(">>> Warning: {} is a symlink - refusing to read", WORLD_SET_FILE);
+            eprintln!(
+                ">>> Warning: {} is a symlink - refusing to read",
+                WORLD_SET_FILE
+            );
             std::process::exit(1);
         }
         let world_bare: HashSet<String> = match fs::File::open(WORLD_SET_FILE) {
@@ -1672,7 +1941,9 @@ fn run() -> anyhow::Result<()> {
                 let (to_remove, excluded) = runtime::split_excluded(&to_remove);
                 runtime::report_excluded(&excluded);
                 if to_remove.is_empty() {
-                    println!(">>> Nothing to prune. All explicitly installed packages are in world.");
+                    println!(
+                        ">>> Nothing to prune. All explicitly installed packages are in world."
+                    );
                     return Ok(());
                 }
                 println!();
@@ -1682,9 +1953,13 @@ fn run() -> anyhow::Result<()> {
                 println!();
                 println!("Total: {} package(s) to prune", to_remove.len());
                 println!();
-                if cli.pretend { return Ok(()); }
+                if cli.pretend {
+                    return Ok(());
+                }
                 let mut args = vec![PACMAN_BIN, "-Rns"];
-                if !cli.ask { args.push("--noconfirm"); }
+                if !cli.ask {
+                    args.push("--noconfirm");
+                }
                 if run_cmd(SUDO_BIN, &args, &to_remove) {
                     logbook::log_unmerge(&to_remove);
                 }
@@ -1707,7 +1982,10 @@ fn run() -> anyhow::Result<()> {
                     // rejects that), and "@world" is never a real package,
                     // so the first token matching neither is unambiguously
                     // the first package in the resumed list.
-                    if let Some(pos) = args.iter().position(|a| !a.starts_with('-') && a != "@world") {
+                    if let Some(pos) = args
+                        .iter()
+                        .position(|a| !a.starts_with('-') && a != "@world")
+                    {
                         println!(">>> Skipping first package in resume list: {}", args[pos]);
                         args.remove(pos);
                     }
@@ -1718,7 +1996,11 @@ fn run() -> anyhow::Result<()> {
                 if cli.ask && !args.iter().any(|a| a == "--ask" || a == "-a") {
                     args.push("--ask".to_string());
                 }
-                println!("{} emerge {}", ">>> Resuming:".green().bold(), args.join(" "));
+                println!(
+                    "{} emerge {}",
+                    ">>> Resuming:".green().bold(),
+                    args.join(" ")
+                );
 
                 let exe = std::env::current_exe()
                     .unwrap_or_else(|_| std::path::PathBuf::from("/usr/bin/emerge"));
@@ -1769,49 +2051,76 @@ fn run() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
             Some((kind, atoms)) if kind == "install" => {
-                println!("{} Undoing last install - removing: {}", ">>>".green().bold(), atoms.join(", "));
-                let bare: Vec<String> = atoms.iter()
+                println!(
+                    "{} Undoing last install - removing: {}",
+                    ">>>".green().bold(),
+                    atoms.join(", ")
+                );
+                let bare: Vec<String> = atoms
+                    .iter()
                     .map(|a| a.split('/').last().unwrap_or(a).to_string())
                     .collect();
                 if cli.pretend {
                     return Ok(());
                 }
                 let mut args: Vec<&str> = vec![PACMAN_BIN, "-R"];
-                if !cli.ask { args.push("--noconfirm"); }
+                if !cli.ask {
+                    args.push("--noconfirm");
+                }
                 let success = run_cmd(SUDO_BIN, &args, &bare);
                 if success {
                     if let Err(e) = remove_from_world_set(&bare) {
-                        eprintln!(">>> Warning: package(s) removed but world was not updated: {:#}", e);
+                        eprintln!(
+                            ">>> Warning: package(s) removed but world was not updated: {:#}",
+                            e
+                        );
                     }
                     clear_last_action();
                 } else {
-                    eprintln!(">>> Warning: undo did not fully succeed - saved state left in place.");
+                    eprintln!(
+                        ">>> Warning: undo did not fully succeed - saved state left in place."
+                    );
                     std::process::exit(1);
                 }
             }
             Some((kind, atoms)) if kind == "unmerge" => {
-                println!("{} Undoing last unmerge - reinstalling: {}", ">>>".green().bold(), atoms.join(", "));
+                println!(
+                    "{} Undoing last unmerge - reinstalling: {}",
+                    ">>>".green().bold(),
+                    atoms.join(", ")
+                );
                 if cli.pretend {
                     return Ok(());
                 }
                 let mut all_ok = true;
 
-                let official: Vec<String> = atoms.iter()
-                    .filter(|a| !a.starts_with("aur/") && !a.starts_with("abs/") && !a.starts_with("Err/"))
-                    .cloned().collect();
-                let aur: Vec<String> = atoms.iter()
+                let official: Vec<String> = atoms
+                    .iter()
+                    .filter(|a| {
+                        !a.starts_with("aur/") && !a.starts_with("abs/") && !a.starts_with("Err/")
+                    })
+                    .cloned()
+                    .collect();
+                let aur: Vec<String> = atoms
+                    .iter()
                     .filter(|a| a.starts_with("aur/"))
-                    .cloned().collect();
-                let unresolved: Vec<String> = atoms.iter()
+                    .cloned()
+                    .collect();
+                let unresolved: Vec<String> = atoms
+                    .iter()
                     .filter(|a| a.starts_with("abs/") || a.starts_with("Err/"))
-                    .cloned().collect();
+                    .cloned()
+                    .collect();
 
                 if !official.is_empty() {
-                    let names: Vec<String> = official.iter()
+                    let names: Vec<String> = official
+                        .iter()
                         .map(|a| a.split('/').last().unwrap_or(a).to_string())
                         .collect();
                     let mut args: Vec<&str> = vec![PACMAN_BIN, "-S"];
-                    if !cli.ask { args.push("--noconfirm"); }
+                    if !cli.ask {
+                        args.push("--noconfirm");
+                    }
                     if run_cmd(SUDO_BIN, &args, &names) {
                         mark_asexplicit(&names);
                         if let Err(e) = add_to_world_set(&names, None) {
@@ -1822,14 +2131,26 @@ fn run() -> anyhow::Result<()> {
                     }
                 }
                 if !aur.is_empty() {
-                    let names: Vec<String> = aur.iter()
+                    let names: Vec<String> = aur
+                        .iter()
                         .map(|a| a.split('/').last().unwrap_or(a).to_string())
                         .collect();
                     scan_aur_pkgbuilds_or_abort(&names);
                     // aur_install() always leaves the explicit bit set on
                     // success (see its doc comment) - no separate
                     // mark_asexplicit() call needed the way `aura -A` required.
-                    if aur_install(&names, false, cli.ask, false, cli.skippgp, cli.edit, cli.no_sandbox, cli.skip_srcinfo_regen, cli.unshare_net_build, false) {
+                    if aur_install(
+                        &names,
+                        false,
+                        cli.ask,
+                        false,
+                        cli.skippgp,
+                        cli.edit,
+                        cli.no_sandbox,
+                        cli.skip_srcinfo_regen,
+                        cli.unshare_net_build,
+                        false,
+                    ) {
                         if let Err(e) = add_to_world_set(&names, Some("aur")) {
                             eprintln!(">>> Warning: package(s) reinstalled but world was not updated: {:#}", e);
                         }
@@ -1850,7 +2171,9 @@ fn run() -> anyhow::Result<()> {
                 if all_ok {
                     clear_last_action();
                 } else {
-                    eprintln!(">>> Warning: undo did not fully succeed - saved state left in place.");
+                    eprintln!(
+                        ">>> Warning: undo did not fully succeed - saved state left in place."
+                    );
                     std::process::exit(1);
                 }
             }
@@ -1859,7 +2182,10 @@ fn run() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
             None => {
-                println!("{} Nothing to undo - no saved action found.", ">>>".green().bold());
+                println!(
+                    "{} Nothing to undo - no saved action found.",
+                    ">>>".green().bold()
+                );
             }
         }
         return Ok(());
@@ -1888,7 +2214,10 @@ fn run() -> anyhow::Result<()> {
             std::process::exit(1);
         }
         for p in &target_pkgs {
-            println!(">>> Deselecting {} from world (package stays installed)...", p);
+            println!(
+                ">>> Deselecting {} from world (package stays installed)...",
+                p
+            );
         }
         remove_from_world_set(&target_pkgs)?;
         // Opposite of --select: no longer wanted by world, so demote to
@@ -1921,12 +2250,23 @@ fn run() -> anyhow::Result<()> {
         if !cli.pretend {
             save_resume_state(&build_resume_args(&cli, &[], true));
         }
-        let ok = provision_from_world_set(cli.pretend, cli.ask, cli.verbose, cli.err_install, cli.no_sandbox, cli.skip_srcinfo_regen, cli.unshare_net_build)?;
+        let ok = provision_from_world_set(
+            cli.pretend,
+            cli.ask,
+            cli.verbose,
+            cli.err_install,
+            cli.no_sandbox,
+            cli.skip_srcinfo_regen,
+            cli.unshare_net_build,
+        )?;
         if !cli.pretend {
             if ok {
                 clear_resume_state();
             } else {
-                eprintln!("{} not everything installed successfully.", ">>> Warning:".yellow().bold());
+                eprintln!(
+                    "{} not everything installed successfully.",
+                    ">>> Warning:".yellow().bold()
+                );
                 save_failed_resume(&cli);
                 if runtime::any_failures() {
                     return Ok(());
@@ -2052,7 +2392,15 @@ fn run() -> anyhow::Result<()> {
             false
         } else {
             println!(">>> Upgrading AUR packages...");
-            aur_upgrade_all(cli.pretend, cli.ask, cli.skippgp, cli.no_sandbox, cli.skip_srcinfo_regen, cli.unshare_net_build, cli.devel)
+            aur_upgrade_all(
+                cli.pretend,
+                cli.ask,
+                cli.skippgp,
+                cli.no_sandbox,
+                cli.skip_srcinfo_regen,
+                cli.unshare_net_build,
+                cli.devel,
+            )
         };
 
         println!();
@@ -2154,12 +2502,24 @@ fn run() -> anyhow::Result<()> {
             std::process::exit(1);
         }
 
-        println!("{} This removes the package unconditionally, matching real emerge -C -", " *".yellow().bold());
-        println!("{} pacman's usual \"required by\" refusal and .pacsave backups are both", " *".yellow().bold());
-        println!("{} bypassed. Use `emerge -p --depclean <atom>` first to check reverse", " *".yellow().bold());
+        println!(
+            "{} This removes the package unconditionally, matching real emerge -C -",
+            " *".yellow().bold()
+        );
+        println!(
+            "{} pacman's usual \"required by\" refusal and .pacsave backups are both",
+            " *".yellow().bold()
+        );
+        println!(
+            "{} bypassed. Use `emerge -p --depclean <atom>` first to check reverse",
+            " *".yellow().bold()
+        );
         println!("{} dependencies if you're not sure.", " *".yellow().bold());
         println!();
-        println!("{} These are the packages that would be unmerged:", ">>>".green().bold());
+        println!(
+            "{} These are the packages that would be unmerged:",
+            ">>>".green().bold()
+        );
         println!();
         // Capture repo/name before removal for --undo.
         let mut unmerge_atoms: Vec<String> = Vec::new();
@@ -2167,20 +2527,26 @@ fn run() -> anyhow::Result<()> {
             let bare = p.split('/').last().unwrap_or(p);
             let ver = {
                 let out = std::process::Command::new(PACMAN_BIN)
-                    .args(["-Q", bare]).env("LC_ALL", "C")
+                    .args(["-Q", bare])
+                    .env("LC_ALL", "C")
                     .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::null())
                     .output();
                 match out {
-                    Ok(o) if o.status.success() =>
-                        String::from_utf8_lossy(&o.stdout)
-                            .split_whitespace().nth(1)
-                            .unwrap_or("?").to_string(),
+                    Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or("?")
+                        .to_string(),
                     _ => "?".to_string(),
                 }
             };
             let repo = get_pkg_repo(bare).unwrap_or_default();
-            let atom = if repo.is_empty() { bare.to_string() } else { format!("{}/{}", repo, bare) };
+            let atom = if repo.is_empty() {
+                bare.to_string()
+            } else {
+                format!("{}/{}", repo, bare)
+            };
             unmerge_atoms.push(atom.clone());
             println!(" {}", atom);
             println!("    selected: {}", ver);
@@ -2188,10 +2554,23 @@ fn run() -> anyhow::Result<()> {
             println!("     omitted: none");
         }
         println!();
-        println!("{} {} packages are slated for removal.", ">>>".green().bold(), "'Selected'".yellow().bold());
-        println!("{} {} and {} packages will not be removed.", ">>>".green().bold(), "'Protected'".green(), "'omitted'".cyan());
+        println!(
+            "{} {} packages are slated for removal.",
+            ">>>".green().bold(),
+            "'Selected'".yellow().bold()
+        );
+        println!(
+            "{} {} and {} packages will not be removed.",
+            ">>>".green().bold(),
+            "'Protected'".green(),
+            "'omitted'".cyan()
+        );
         println!();
-        println!("{} Unmerging {}...", ">>>".green().bold(), target_pkgs.join(", ").bold());
+        println!(
+            "{} Unmerging {}...",
+            ">>>".green().bold(),
+            target_pkgs.join(", ").bold()
+        );
 
         // Real emerge -C removes unconditionally, no "required by"
         // refusal. pacman's -R alone won't do that, so --nodeps twice
@@ -2222,7 +2601,10 @@ fn run() -> anyhow::Result<()> {
         };
         if success && !cli.pretend {
             if let Err(e) = remove_from_world_set(&target_pkgs) {
-                eprintln!(">>> Warning: package(s) unmerged but world was not updated: {:#}", e);
+                eprintln!(
+                    ">>> Warning: package(s) unmerged but world was not updated: {:#}",
+                    e
+                );
             }
             save_last_action(LastAction::Unmerge, &unmerge_atoms);
             logbook::log_unmerge(&target_pkgs);
@@ -2253,7 +2635,19 @@ fn run() -> anyhow::Result<()> {
         let mut not_found: Vec<String> = Vec::new();
 
         if cli.abs {
-            success = abs_install(&target_pkgs, cli.pretend, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.autopgp, cli.no_sandbox, cli.skip_srcinfo_regen, cli.unshare_net_build, cli.pkgbuild_view);
+            success = abs_install(
+                &target_pkgs,
+                cli.pretend,
+                cli.ask,
+                cli.oneshot,
+                cli.skippgp,
+                cli.edit,
+                cli.autopgp,
+                cli.no_sandbox,
+                cli.skip_srcinfo_regen,
+                cli.unshare_net_build,
+                cli.pkgbuild_view,
+            );
         } else if cli.aur {
             let (pkg_infos, missing_aur) = resolve_aur_split(&target_pkgs);
             not_found = missing_aur;
@@ -2265,26 +2659,46 @@ fn run() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
             print_emerge_plan(&pkg_infos, cli.tree, cli.deep, &target_pkgs);
-            if cli.pretend { return Ok(()); }
+            if cli.pretend {
+                return Ok(());
+            }
             print_emerge_emerging(&pkg_infos);
             let found_names: Vec<String> = pkg_infos.iter().map(|p| p.name.clone()).collect();
             scan_aur_pkgbuilds_or_abort(&found_names);
-            success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.skip_srcinfo_regen, cli.unshare_net_build, cli.pkgbuild_view);
-            if success { installed_infos = pkg_infos; }
+            success = aur_install(
+                &found_names,
+                false,
+                cli.ask,
+                cli.oneshot,
+                cli.skippgp,
+                cli.edit,
+                cli.no_sandbox,
+                cli.skip_srcinfo_regen,
+                cli.unshare_net_build,
+                cli.pkgbuild_view,
+            );
+            if success {
+                installed_infos = pkg_infos;
+            }
         } else {
             let (official_infos, missing) = probe_official_split(&target_pkgs);
 
             if missing.is_empty() {
                 // Everything found in official repos.
                 print_emerge_plan(&official_infos, cli.tree, cli.deep, &target_pkgs);
-                if cli.pretend { return Ok(()); }
+                if cli.pretend {
+                    return Ok(());
+                }
                 print_emerge_emerging(&official_infos);
                 let mut off_args: Vec<&str> = vec![PACMAN_BIN, "-S"];
-                if cli.verbose { off_args.push("--verbose"); }
+                if cli.verbose {
+                    off_args.push("--verbose");
+                }
                 off_args.extend(&base_args);
                 let timer = logbook::Timer::start();
                 let world_snapshot = world_set::world_installed_snapshot();
-                success = pacman_install(&off_args, &target_pkgs);
+                let (ok, landed_names) = pacman_install_landed(&off_args, &target_pkgs);
+                success = ok;
                 world_set::reconcile_world_after_install(&world_snapshot);
                 installed_infos = if success {
                     logbook::log_merge_batch("repo", &target_pkgs, timer.elapsed());
@@ -2293,7 +2707,14 @@ fn run() -> anyhow::Result<()> {
                     // --keep-going retried one by one, so some of these
                     // are on the system now; world below must only
                     // hear about those.
-                    let landed: Vec<PkgInfo> = official_infos.into_iter().filter(|p| is_installed(&p.name)).collect();
+                    let landed: Vec<PkgInfo> = official_infos
+                        .into_iter()
+                        .filter(|p| {
+                            landed_names
+                                .iter()
+                                .any(|n| n.split('/').last().unwrap_or(n) == p.name)
+                        })
+                        .collect();
                     if !landed.is_empty() {
                         let names: Vec<String> = landed.iter().map(|p| p.name.clone()).collect();
                         logbook::log_merge_batch("repo", &names, timer.elapsed());
@@ -2316,7 +2737,7 @@ fn run() -> anyhow::Result<()> {
 
                 print_emerge_plan(&official_infos, cli.tree, cli.deep, &target_pkgs);
                 if cli.pretend {
-                // Not everything resolved -- exit non-zero for scripts.
+                    // Not everything resolved -- exit non-zero for scripts.
                     std::process::exit(1);
                 }
                 print_emerge_emerging(&official_infos);
@@ -2324,17 +2745,26 @@ fn run() -> anyhow::Result<()> {
                 let official_names: Vec<String> =
                     official_infos.iter().map(|p| p.name.clone()).collect();
                 let mut off_args: Vec<&str> = vec![PACMAN_BIN, "-S"];
-                if cli.verbose { off_args.push("--verbose"); }
+                if cli.verbose {
+                    off_args.push("--verbose");
+                }
                 off_args.extend(&base_args);
                 let timer = logbook::Timer::start();
                 let world_snapshot = world_set::world_installed_snapshot();
-                let off_success = pacman_install(&off_args, &official_names);
+                let (off_success, landed_names) = pacman_install_landed(&off_args, &official_names);
                 world_set::reconcile_world_after_install(&world_snapshot);
                 installed_infos = if off_success {
                     logbook::log_merge_batch("repo", &official_names, timer.elapsed());
                     official_infos
                 } else {
-                    let landed: Vec<PkgInfo> = official_infos.into_iter().filter(|p| is_installed(&p.name)).collect();
+                    let landed: Vec<PkgInfo> = official_infos
+                        .into_iter()
+                        .filter(|p| {
+                            landed_names
+                                .iter()
+                                .any(|n| n.split('/').last().unwrap_or(n) == p.name)
+                        })
+                        .collect();
                     if !landed.is_empty() {
                         let names: Vec<String> = landed.iter().map(|p| p.name.clone()).collect();
                         logbook::log_merge_batch("repo", &names, timer.elapsed());
@@ -2357,12 +2787,27 @@ fn run() -> anyhow::Result<()> {
                     std::process::exit(1);
                 }
                 print_emerge_plan(&pkg_infos, cli.tree, cli.deep, &target_pkgs);
-                if cli.pretend { return Ok(()); }
+                if cli.pretend {
+                    return Ok(());
+                }
                 print_emerge_emerging(&pkg_infos);
                 let found_names: Vec<String> = pkg_infos.iter().map(|p| p.name.clone()).collect();
                 scan_aur_pkgbuilds_or_abort(&found_names);
-                success = aur_install(&found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.skip_srcinfo_regen, cli.unshare_net_build, cli.pkgbuild_view);
-                if success { installed_infos = pkg_infos; }
+                success = aur_install(
+                    &found_names,
+                    false,
+                    cli.ask,
+                    cli.oneshot,
+                    cli.skippgp,
+                    cli.edit,
+                    cli.no_sandbox,
+                    cli.skip_srcinfo_regen,
+                    cli.unshare_net_build,
+                    cli.pkgbuild_view,
+                );
+                if success {
+                    installed_infos = pkg_infos;
+                }
             } else {
                 // Mixed: official + AUR.
                 println!(
@@ -2381,17 +2826,22 @@ fn run() -> anyhow::Result<()> {
                     std::process::exit(1);
                 }
                 print_emerge_plan(&all_infos, cli.tree, cli.deep, &target_pkgs);
-                if cli.pretend { return Ok(()); }
+                if cli.pretend {
+                    return Ok(());
+                }
                 print_emerge_emerging(&all_infos);
 
                 let official_names: Vec<String> =
                     official_infos.iter().map(|p| p.name.clone()).collect();
                 let mut off_args: Vec<&str> = vec![PACMAN_BIN, "-S"];
-                if cli.verbose { off_args.push("--verbose"); }
+                if cli.verbose {
+                    off_args.push("--verbose");
+                }
                 off_args.extend(&base_args);
                 let timer = logbook::Timer::start();
                 let world_snapshot = world_set::world_installed_snapshot();
-                success = pacman_install(&off_args, &official_names);
+                let (ok, landed_names) = pacman_install_landed(&off_args, &official_names);
+                success = ok;
                 world_set::reconcile_world_after_install(&world_snapshot);
                 if success {
                     if !official_names.is_empty() {
@@ -2399,7 +2849,14 @@ fn run() -> anyhow::Result<()> {
                     }
                     installed_infos.extend(official_infos);
                 } else {
-                    let landed: Vec<PkgInfo> = official_infos.into_iter().filter(|p| is_installed(&p.name)).collect();
+                    let landed: Vec<PkgInfo> = official_infos
+                        .into_iter()
+                        .filter(|p| {
+                            landed_names
+                                .iter()
+                                .any(|n| n.split('/').last().unwrap_or(n) == p.name)
+                        })
+                        .collect();
                     if !landed.is_empty() {
                         let names: Vec<String> = landed.iter().map(|p| p.name.clone()).collect();
                         logbook::log_merge_batch("repo", &names, timer.elapsed());
@@ -2408,9 +2865,21 @@ fn run() -> anyhow::Result<()> {
                 }
 
                 if !aur_infos.is_empty() {
-                    let aur_found_names: Vec<String> = aur_infos.iter().map(|p| p.name.clone()).collect();
+                    let aur_found_names: Vec<String> =
+                        aur_infos.iter().map(|p| p.name.clone()).collect();
                     scan_aur_pkgbuilds_or_abort(&aur_found_names);
-                    let aur_success = aur_install(&aur_found_names, false, cli.ask, cli.oneshot, cli.skippgp, cli.edit, cli.no_sandbox, cli.skip_srcinfo_regen, cli.unshare_net_build, cli.pkgbuild_view);
+                    let aur_success = aur_install(
+                        &aur_found_names,
+                        false,
+                        cli.ask,
+                        cli.oneshot,
+                        cli.skippgp,
+                        cli.edit,
+                        cli.no_sandbox,
+                        cli.skip_srcinfo_regen,
+                        cli.unshare_net_build,
+                        cli.pkgbuild_view,
+                    );
                     if aur_success {
                         installed_infos.extend(aur_infos);
                     } else {
@@ -2442,40 +2911,54 @@ fn run() -> anyhow::Result<()> {
                         println!("{} Auto-cleaning packages...", ">>>".green().bold());
                         mark_asexplicit(&target_pkgs);
                         if let Err(e) = add_to_world_set(&target_pkgs, Some("abs")) {
-                            eprintln!(">>> Warning: package(s) built but world was not updated: {:#}", e);
+                            eprintln!(
+                                ">>> Warning: package(s) built but world was not updated: {:#}",
+                                e
+                            );
                         }
                     }
                 } else if !installed_infos.is_empty() {
                     println!("{} Auto-cleaning packages...", ">>>".green().bold());
                     // world only gets explicitly requested names.
-                    let target_bare: HashSet<String> = target_pkgs.iter()
+                    let target_bare: HashSet<String> = target_pkgs
+                        .iter()
                         .map(|p| p.split('/').last().unwrap_or(p).to_string())
                         .collect();
-                    let explicit_infos: Vec<&PkgInfo> = installed_infos.iter()
+                    let explicit_infos: Vec<&PkgInfo> = installed_infos
+                        .iter()
                         .filter(|p| target_bare.contains(&p.name))
                         .collect();
-                    let official_names: Vec<String> = explicit_infos.iter()
+                    let official_names: Vec<String> = explicit_infos
+                        .iter()
                         .filter(|p| p.repo != "aur")
                         .map(|p| p.name.clone())
                         .collect();
-                    let aur_names: Vec<String> = explicit_infos.iter()
+                    let aur_names: Vec<String> = explicit_infos
+                        .iter()
                         .filter(|p| p.repo == "aur")
                         .map(|p| p.name.clone())
                         .collect();
                     if !official_names.is_empty() {
                         if let Err(e) = add_to_world_set(&official_names, None) {
-                            eprintln!(">>> Warning: package(s) installed but world was not updated: {:#}", e);
+                            eprintln!(
+                                ">>> Warning: package(s) installed but world was not updated: {:#}",
+                                e
+                            );
                         }
                     }
                     if !aur_names.is_empty() {
                         mark_asexplicit(&aur_names);
                         if let Err(e) = add_to_world_set(&aur_names, Some("aur")) {
-                            eprintln!(">>> Warning: package(s) installed but world was not updated: {:#}", e);
+                            eprintln!(
+                                ">>> Warning: package(s) installed but world was not updated: {:#}",
+                                e
+                            );
                         }
                     }
 
                     // Transitive deps → asdeps so depclean can see them.
-                    let dep_only_names: Vec<String> = installed_infos.iter()
+                    let dep_only_names: Vec<String> = installed_infos
+                        .iter()
                         .filter(|p| !target_bare.contains(&p.name))
                         .map(|p| p.name.clone())
                         .collect();
@@ -2486,7 +2969,10 @@ fn run() -> anyhow::Result<()> {
             }
 
             if !success {
-                eprintln!("{} not all requested packages were installed successfully.", ">>> Warning:".yellow().bold());
+                eprintln!(
+                    "{} not all requested packages were installed successfully.",
+                    ">>> Warning:".yellow().bold()
+                );
                 save_failed_resume(&cli);
                 if runtime::any_failures() {
                     // main() prints the summary and exits non-zero.
@@ -2495,7 +2981,8 @@ fn run() -> anyhow::Result<()> {
                 std::process::exit(1);
             } else {
                 clear_resume_state();
-                let new_names: Vec<String> = installed_infos.iter()
+                let new_names: Vec<String> = installed_infos
+                    .iter()
                     .filter(|p| p.status == "N")
                     .map(|p| p.name.clone())
                     .collect();
@@ -2509,7 +2996,15 @@ fn run() -> anyhow::Result<()> {
     // After named pkgs: provision remaining world misses.
     if provision_after_install && !cli.pretend {
         println!();
-        if !provision_from_world_set(cli.pretend, cli.ask, cli.verbose, cli.err_install, cli.no_sandbox, cli.skip_srcinfo_regen, cli.unshare_net_build)? {
+        if !provision_from_world_set(
+            cli.pretend,
+            cli.ask,
+            cli.verbose,
+            cli.err_install,
+            cli.no_sandbox,
+            cli.skip_srcinfo_regen,
+            cli.unshare_net_build,
+        )? {
             eprintln!(">>> Warning: not everything from world installed successfully.");
             std::process::exit(1);
         }
@@ -2526,7 +3021,10 @@ mod action_priority_tests {
     fn first_long_flag_wins() {
         let argv = vec!["emerge".into(), "--update".into(), "--depclean".into()];
         let active = vec![ActionKind::Update, ActionKind::Depclean];
-        assert_eq!(first_action_in_argv(&argv, &active), Some(ActionKind::Update));
+        assert_eq!(
+            first_action_in_argv(&argv, &active),
+            Some(ActionKind::Update)
+        );
     }
 
     #[test]

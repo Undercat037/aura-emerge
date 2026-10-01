@@ -106,13 +106,18 @@ pub(crate) fn failed_atoms() -> Vec<String> {
 }
 
 pub(crate) fn any_failures() -> bool {
-    failures().lock().map(|log| !log.is_empty()).unwrap_or(false)
+    failures()
+        .lock()
+        .map(|log| !log.is_empty())
+        .unwrap_or(false)
 }
 
 /// Gentoo-style end-of-run failure summary. Returns true if anything
 /// was printed, i.e. if the run had failures.
 pub(crate) fn print_failure_summary() -> bool {
-    let Ok(log) = failures().lock() else { return false };
+    let Ok(log) = failures().lock() else {
+        return false;
+    };
     if log.is_empty() {
         return false;
     }
@@ -124,7 +129,11 @@ pub(crate) fn print_failure_summary() -> bool {
     );
     eprintln!();
     for (atom, reason) in log.iter() {
-        eprintln!("  {} {}", atom.red().bold(), format!("({})", reason).dimmed());
+        eprintln!(
+            "  {} {}",
+            atom.red().bold(),
+            format!("({})", reason).dimmed()
+        );
     }
     eprintln!();
     eprintln!(

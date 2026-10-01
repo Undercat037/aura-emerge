@@ -86,7 +86,11 @@ pub(crate) fn clone_repo(pkgbase: &str, dest_root: &Path) -> Option<PathBuf> {
 /// for split packages, where the name (e.g. `gcc6-libs`) isn't the git
 /// repo name (`gcc6`). `None` on failure or if the name doesn't exist.
 pub(crate) fn lookup_pkgbase(pkg: &str) -> Option<String> {
-    let url = format!("{}?v=5&type=info&arg[]={}", AUR_RPC_INFO_URL, urlencode(pkg));
+    let url = format!(
+        "{}?v=5&type=info&arg[]={}",
+        AUR_RPC_INFO_URL,
+        urlencode(pkg)
+    );
     let body = crate::http::get(&url, 10)?;
     extract_json_string_field(&body, "PackageBase")
 }
@@ -152,7 +156,9 @@ pub(crate) fn srcinfo_dependencies(path: &Path, current_arch: &str) -> Option<Ve
     let text = std::fs::read_to_string(path).ok()?;
     let mut out = Vec::new();
     for line in text.lines() {
-        let Some((key, value)) = line.trim().split_once('=') else { continue };
+        let Some((key, value)) = line.trim().split_once('=') else {
+            continue;
+        };
         let key = key.trim();
         let value = value.trim();
         let base_key = key.split('_').next().unwrap_or(key);
@@ -197,7 +203,11 @@ pub(crate) fn srcinfo_pkgnames(path: &Path) -> Option<Vec<String>> {
         })
         .filter(|n| !n.is_empty())
         .collect();
-    if names.is_empty() { None } else { Some(names) }
+    if names.is_empty() {
+        None
+    } else {
+        Some(names)
+    }
 }
 
 fn urlencode(s: &str) -> String {
@@ -218,21 +228,33 @@ fn urlencode(s: &str) -> String {
 /// `AurPkgInfo`s. Skips objects missing `Name` (hand-rolled parsing,
 /// not a real JSON parser -- bail per-object rather than guess).
 fn parse_pkg_results(json: &str) -> Vec<AurPkgInfo> {
-    let Some(array_body) = extract_results_array(json) else { return Vec::new() };
+    let Some(array_body) = extract_results_array(json) else {
+        return Vec::new();
+    };
     split_json_objects(array_body)
         .into_iter()
         .filter_map(|obj| {
             let name = extract_json_string_field(obj, "Name")?;
             let version = extract_json_string_field(obj, "Version").unwrap_or_default();
             let description = extract_json_string_field(obj, "Description").unwrap_or_default();
-            let pkgbase = extract_json_string_field(obj, "PackageBase").unwrap_or_else(|| name.clone());
+            let pkgbase =
+                extract_json_string_field(obj, "PackageBase").unwrap_or_else(|| name.clone());
             let num_votes = extract_json_number_field(obj, "NumVotes").unwrap_or(0.0) as i64;
             let popularity = extract_json_number_field(obj, "Popularity").unwrap_or(0.0);
             let out_of_date = extract_json_raw_field(obj, "OutOfDate")
                 .map(|v| v.trim() != "null")
                 .unwrap_or(false);
             let maintainer = extract_json_string_field(obj, "Maintainer");
-            Some(AurPkgInfo { name, version, description, pkgbase, num_votes, popularity, out_of_date, maintainer })
+            Some(AurPkgInfo {
+                name,
+                version,
+                description,
+                pkgbase,
+                num_votes,
+                popularity,
+                out_of_date,
+                maintainer,
+            })
         })
         .collect()
 }
@@ -251,9 +273,13 @@ fn extract_results_array(json: &str) -> Option<&str> {
     for (i, &b) in bytes.iter().enumerate().skip(open) {
         let c = b as char;
         if in_string {
-            if escaped { escaped = false; }
-            else if c == '\\' { escaped = true; }
-            else if c == '"' { in_string = false; }
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
             continue;
         }
         match c {
@@ -284,15 +310,21 @@ fn split_json_objects(array_body: &str) -> Vec<&str> {
     for (i, &b) in bytes.iter().enumerate() {
         let c = b as char;
         if in_string {
-            if escaped { escaped = false; }
-            else if c == '\\' { escaped = true; }
-            else if c == '"' { in_string = false; }
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
             continue;
         }
         match c {
             '"' => in_string = true,
             '{' => {
-                if depth == 0 { start = i; }
+                if depth == 0 {
+                    start = i;
+                }
                 depth += 1;
             }
             '}' => {
@@ -341,10 +373,16 @@ fn extract_json_string_field(json: &str, field: &str) -> Option<String> {
     let mut escaped = false;
     for (i, &b) in bytes.iter().enumerate() {
         let c = b as char;
-        if escaped { escaped = false; continue; }
+        if escaped {
+            escaped = false;
+            continue;
+        }
         match c {
             '\\' => escaped = true,
-            '"' => { end = Some(i); break; }
+            '"' => {
+                end = Some(i);
+                break;
+            }
             _ => {}
         }
     }
@@ -437,7 +475,10 @@ mod tests {
     #[test]
     fn extract_json_string_field_finds_value() {
         let json = r#"{"results":[{"Name":"foo","PackageBase":"foo-base"}]}"#;
-        assert_eq!(extract_json_string_field(json, "PackageBase"), Some("foo-base".to_string()));
+        assert_eq!(
+            extract_json_string_field(json, "PackageBase"),
+            Some("foo-base".to_string())
+        );
     }
 
     #[test]

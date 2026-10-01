@@ -34,19 +34,28 @@ pub(crate) fn pkg_status(name: &str, new_ver: &str) -> String {
         }
         _ => return "N".to_string(),
     };
-    if installed.is_empty() { return "N".to_string(); }
-    if installed == new_ver  { return "R".to_string(); }
+    if installed.is_empty() {
+        return "N".to_string();
+    }
+    if installed == new_ver {
+        return "R".to_string();
+    }
     // Compare: if installed > new_ver it's a downgrade
     // Use pacman vercmp
     let cmp: i32 = std::process::Command::new(VERCMP_BIN)
         .args([&installed, new_ver])
         .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().parse().unwrap_or(0))
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .parse()
+                .unwrap_or(0)
+        })
         .unwrap_or(0);
     match cmp {
         c if c < 0 => "U".to_string(),
-        0           => "R".to_string(),
-        _           => "D".to_string(),
+        0 => "R".to_string(),
+        _ => "D".to_string(),
     }
 }
 
@@ -65,7 +74,7 @@ pub(crate) fn status_colored(status: &str) -> String {
         "N" => status.green().bold().to_string(),
         "U" => status.yellow().bold().to_string(),
         "D" => status.red().bold().to_string(),
-        _   => status.cyan().bold().to_string(),
+        _ => status.cyan().bold().to_string(),
     }
 }
 
@@ -73,10 +82,13 @@ pub(crate) fn status_colored(status: &str) -> String {
 
 /// pacman -D --asexplicit (AUR/ABS/--select). Best-effort if not installed.
 pub(crate) fn mark_asexplicit(pkgs: &[String]) {
-    let bare: Vec<String> = pkgs.iter()
+    let bare: Vec<String> = pkgs
+        .iter()
         .map(|p| p.split('/').last().unwrap_or(p).to_string())
         .collect();
-    if bare.is_empty() { return; }
+    if bare.is_empty() {
+        return;
+    }
 
     let mut args: Vec<&str> = vec![PACMAN_BIN, "-D", "--asexplicit"];
     args.extend(bare.iter().map(String::as_str));
@@ -89,10 +101,13 @@ pub(crate) fn mark_asexplicit(pkgs: &[String]) {
 
 /// pacman -D --asdeps (--deselect / transitive deps). Best-effort.
 pub(crate) fn mark_asdeps(pkgs: &[String]) {
-    let bare: Vec<String> = pkgs.iter()
+    let bare: Vec<String> = pkgs
+        .iter()
         .map(|p| p.split('/').last().unwrap_or(p).to_string())
         .collect();
-    if bare.is_empty() { return; }
+    if bare.is_empty() {
+        return;
+    }
 
     let mut args: Vec<&str> = vec![PACMAN_BIN, "-D", "--asdeps"];
     args.extend(bare.iter().map(String::as_str));
@@ -101,20 +116,6 @@ pub(crate) fn mark_asdeps(pkgs: &[String]) {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
-}
-
-/// Whether the package is installed right now. Used after a partial
-/// `--keep-going` batch, where a failed transaction can still have
-/// landed something.
-pub(crate) fn is_installed(name: &str) -> bool {
-    Command::new(PACMAN_BIN)
-        .args(["-Q", name])
-        .env("LC_ALL", "C")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
 }
 
 /// Materializes make.conf's build flags as a makepkg.conf and returns
@@ -167,16 +168,28 @@ pub(crate) fn probe_official(pkgs: &[String]) -> Option<Vec<PkgInfo>> {
             let version = parts.next().unwrap_or("").to_string();
             let (repo, bare_name) = if name.contains('/') {
                 let mut p = name.splitn(2, '/');
-                (p.next().unwrap_or("").to_string(), p.next().unwrap_or(&name).to_string())
+                (
+                    p.next().unwrap_or("").to_string(),
+                    p.next().unwrap_or(&name).to_string(),
+                )
             } else {
                 (String::new(), name.clone())
             };
             let status = pkg_status(&bare_name, &version);
-            PkgInfo { name: bare_name, version, repo, status }
+            PkgInfo {
+                name: bare_name,
+                version,
+                repo,
+                status,
+            }
         })
         .collect();
 
-    if infos.is_empty() { None } else { Some(infos) }
+    if infos.is_empty() {
+        None
+    } else {
+        Some(infos)
+    }
 }
 
 /// Split into found/missing. Batch -Sp first, then per-name for misses.
@@ -236,7 +249,6 @@ pub(crate) fn resolve_aur_split(pkgs: &[String]) -> (Vec<PkgInfo>, Vec<String>) 
     (result, missing)
 }
 
-
 // ── Emerge-style output ───────────────────────────────────────────────────────
 
 /// `pkgs` is the plan to show; `requested` is what was typed on the
@@ -244,9 +256,19 @@ pub(crate) fn resolve_aur_split(pkgs: &[String]) -> (Vec<PkgInfo>, Vec<String>) 
 /// whichever package's "Depends On" names it, `emerge -t`-style.
 /// `deep`: `None` = direct deps only, `Some(0)` = every level,
 /// `Some(n)` = capped at `n` levels.
-pub(crate) fn print_emerge_plan(pkgs: &[PkgInfo], tree: bool, deep: Option<u32>, requested: &[String]) {
+pub(crate) fn print_emerge_plan(
+    pkgs: &[PkgInfo],
+    tree: bool,
+    deep: Option<u32>,
+    requested: &[String],
+) {
     println!();
-    println!("{}", "These are the packages that would be merged, in order:".green().bold());
+    println!(
+        "{}",
+        "These are the packages that would be merged, in order:"
+            .green()
+            .bold()
+    );
     println!();
     println!("Calculating dependencies... done!");
     println!();
@@ -260,10 +282,19 @@ pub(crate) fn print_emerge_plan(pkgs: &[PkgInfo], tree: bool, deep: Option<u32>,
 
     for (p, depth) in &entries {
         if p.status == "D" {
-            println!("{} {}: downgrading package!", " *".yellow().bold(), p.name.bold());
+            println!(
+                "{} {}: downgrading package!",
+                " *".yellow().bold(),
+                p.name.bold()
+            );
         }
-        let prefix = if *depth == 0 { String::new() } else { format!("{}`-- ", "  ".repeat(depth - 1)) };
-        println!("[{}  {:<4} ] {}{}",
+        let prefix = if *depth == 0 {
+            String::new()
+        } else {
+            format!("{}`-- ", "  ".repeat(depth - 1))
+        };
+        println!(
+            "[{}  {:<4} ] {}{}",
             "ebuild".green(),
             status_colored(&p.status),
             prefix,
@@ -340,8 +371,9 @@ pub(crate) fn build_plan_tree<'a>(
     requested: &HashSet<&str>,
     deep: Option<u32>,
 ) -> Vec<(&'a PkgInfo, usize)> {
-    let (top, extra): (Vec<&PkgInfo>, Vec<&PkgInfo>) =
-        pkgs.iter().partition(|p| requested.contains(p.name.as_str()));
+    let (top, extra): (Vec<&PkgInfo>, Vec<&PkgInfo>) = pkgs
+        .iter()
+        .partition(|p| requested.contains(p.name.as_str()));
     if extra.is_empty() {
         return top.into_iter().map(|p| (p, 0)).collect();
     }
@@ -373,7 +405,15 @@ fn group_by_parent<'a>(
     for parent in &top {
         out.push((parent, 0));
         placed.insert(parent.name.as_str());
-        place_children(parent.name.as_str(), 0, max_depth, &mut remaining, &mut placed, deps_by_name, &mut out);
+        place_children(
+            parent.name.as_str(),
+            0,
+            max_depth,
+            &mut remaining,
+            &mut placed,
+            deps_by_name,
+            &mut out,
+        );
     }
 
     // Nothing claimed within max_depth still shows, just without a
@@ -402,7 +442,9 @@ fn place_children<'a>(
     if parent_depth >= max_depth {
         return;
     }
-    let Some(deps) = deps_by_name.get(parent_name) else { return };
+    let Some(deps) = deps_by_name.get(parent_name) else {
+        return;
+    };
 
     let mut children: Vec<&'a PkgInfo> = Vec::new();
     let mut i = 0;
@@ -417,7 +459,15 @@ fn place_children<'a>(
     for child in children {
         placed.insert(child.name.as_str());
         out.push((child, parent_depth + 1));
-        place_children(child.name.as_str(), parent_depth + 1, max_depth, remaining, placed, deps_by_name, out);
+        place_children(
+            child.name.as_str(),
+            parent_depth + 1,
+            max_depth,
+            remaining,
+            placed,
+            deps_by_name,
+            out,
+        );
     }
 }
 
@@ -426,7 +476,8 @@ pub(crate) fn print_emerge_emerging(pkgs: &[PkgInfo]) {
     let pfx = ">>>".green().bold();
     println!("{} Verifying ebuild manifests", pfx);
     for (i, p) in pkgs.iter().enumerate() {
-        println!("{} Emerging ({} of {}) {}",
+        println!(
+            "{} Emerging ({} of {}) {}",
             pfx,
             (i + 1).to_string().yellow().bold(),
             total.to_string().yellow().bold(),
@@ -578,7 +629,14 @@ pub(crate) fn ensure_pgp_keys(pkgbuild_path: &std::path::Path, autopgp: bool) {
                 .status()
                 .map(|s| s.success())
                 .unwrap_or(false);
-            println!("{}", if ok { "ok".green().to_string() } else { "failed".red().to_string() });
+            println!(
+                "{}",
+                if ok {
+                    "ok".green().to_string()
+                } else {
+                    "failed".red().to_string()
+                }
+            );
         }
     } else {
         eprintln!();
@@ -597,7 +655,6 @@ pub(crate) fn ensure_pgp_keys(pkgbuild_path: &std::path::Path, autopgp: bool) {
         );
     }
 }
-
 
 /// Build isolation: bwrap preferred; None if missing or --no-sandbox.
 /// (pkgctl build was dropped; pkgctl only used for repo clone.)
@@ -629,14 +686,34 @@ fn choose_build_isolation(no_sandbox: bool) -> BuildIsolation {
 /// Not the same as already_satisfied (provides-aware).
 fn is_satisfiable_without_aur(name: &str) -> bool {
     let bare = name.split(['<', '>', '=']).next().unwrap_or(name);
-    let synced = Command::new(PACMAN_BIN).args(["-Si", bare]).stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
-    if synced { return true; }
-    Command::new(PACMAN_BIN).args(["-Qi", bare]).stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
+    let synced = Command::new(PACMAN_BIN)
+        .args(["-Si", bare])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if synced {
+        return true;
+    }
+    Command::new(PACMAN_BIN)
+        .args(["-Qi", bare])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// pacman -T: dep already satisfied (exact or provides).
 fn already_satisfied(name: &str) -> bool {
-    Command::new(PACMAN_BIN).args(["-T", name]).stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
+    Command::new(PACMAN_BIN)
+        .args(["-T", name])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// Recursively build AUR pkg + unsatisfiable .SRCINFO deps.
@@ -704,7 +781,10 @@ fn pkgbuild_view_cache_path(pkgbase: &str) -> Option<std::path::PathBuf> {
     } else {
         std::path::PathBuf::from(std::env::var("HOME").ok()?).join(".cache")
     };
-    Some(base.join("aura-emerge/pkgbuild-view").join(format!("{}.PKGBUILD", pkgbase)))
+    Some(
+        base.join("aura-emerge/pkgbuild-view")
+            .join(format!("{}.PKGBUILD", pkgbase)),
+    )
 }
 
 /// `--pkgbuild-view`: show the PKGBUILD about to be built for a
@@ -723,7 +803,10 @@ pub(crate) fn pkgbuild_view_step(pkgbase: &str, dir: &std::path::Path) -> Pkgbui
             ">>> Warning:".yellow().bold(),
             pkgbase
         );
-        return PkgbuildViewOutcome { proceed: true, edited: false };
+        return PkgbuildViewOutcome {
+            proceed: true,
+            edited: false,
+        };
     };
 
     let cache_path = pkgbuild_view_cache_path(pkgbase);
@@ -737,13 +820,22 @@ pub(crate) fn pkgbuild_view_step(pkgbase: &str, dir: &std::path::Path) -> Pkgbui
             println!("    ({})", "unchanged since last shown".dimmed());
         }
         Some(prev) => {
-    // Best-effort unified diff via system `diff`.
-            let tmp_prev = std::env::temp_dir()
-                .join(format!("aura-emerge-pkgbuild-view-{}-prev", std::process::id()));
+            // Best-effort unified diff via system `diff`.
+            let tmp_prev = std::env::temp_dir().join(format!(
+                "aura-emerge-pkgbuild-view-{}-prev",
+                std::process::id()
+            ));
             let mut shown_diff = false;
-            if std::path::Path::new("/usr/bin/diff").exists() && fs::write(&tmp_prev, prev).is_ok() {
+            if std::path::Path::new("/usr/bin/diff").exists() && fs::write(&tmp_prev, prev).is_ok()
+            {
                 let diff_out = Command::new("/usr/bin/diff")
-                    .args(["-u", "--label", "PKGBUILD (previous)", "--label", "PKGBUILD (current)"])
+                    .args([
+                        "-u",
+                        "--label",
+                        "PKGBUILD (previous)",
+                        "--label",
+                        "PKGBUILD (current)",
+                    ])
                     .arg(&tmp_prev)
                     .arg(&pkgbuild_path)
                     .output();
@@ -775,26 +867,46 @@ pub(crate) fn pkgbuild_view_step(pkgbase: &str, dir: &std::path::Path) -> Pkgbui
     io::stderr().flush().ok();
     let answer = read_line_raw();
     if answer.trim().is_empty() || answer.trim().eq_ignore_ascii_case("y") {
-        return PkgbuildViewOutcome { proceed: true, edited: false };
+        return PkgbuildViewOutcome {
+            proceed: true,
+            edited: false,
+        };
     }
 
-    eprint!("{} Open it in $EDITOR instead of skipping it? [y/N] ", ">>>".yellow().bold());
+    eprint!(
+        "{} Open it in $EDITOR instead of skipping it? [y/N] ",
+        ">>>".yellow().bold()
+    );
     io::stderr().flush().ok();
     let answer2 = read_line_raw();
     if !answer2.trim().eq_ignore_ascii_case("y") {
         eprintln!("{} skipping '{}'.", ">>>".red().bold(), pkgbase);
-        return PkgbuildViewOutcome { proceed: false, edited: false };
+        return PkgbuildViewOutcome {
+            proceed: false,
+            edited: false,
+        };
     }
 
     let editor = std::env::var("EDITOR")
         .or_else(|_| std::env::var("VISUAL"))
         .unwrap_or_else(|_| "nano".to_string());
-    println!("{} Opening {} in {}...", ">>>".green().bold(), "PKGBUILD".bold(), editor.green().bold());
-    println!("{} Save and close the editor to continue building.", ">>>".yellow().bold());
+    println!(
+        "{} Opening {} in {}...",
+        ">>>".green().bold(),
+        "PKGBUILD".bold(),
+        editor.green().bold()
+    );
+    println!(
+        "{} Save and close the editor to continue building.",
+        ">>>".yellow().bold()
+    );
     Command::new(&editor).arg(&pkgbuild_path).status().ok();
     reset_terminal_colors_after_editor();
 
-    PkgbuildViewOutcome { proceed: true, edited: true }
+    PkgbuildViewOutcome {
+        proceed: true,
+        edited: true,
+    }
 }
 
 pub(crate) fn maybe_regen_srcinfo(dir: &std::path::Path, skip_srcinfo_regen: bool) {
@@ -811,12 +923,19 @@ pub(crate) fn maybe_regen_srcinfo(dir: &std::path::Path, skip_srcinfo_regen: boo
         eprintln!("    changed depends/makedepends/checkdepends? Regenerate it yourself first:");
         eprintln!(
             "      {}",
-            format!("(cd {} && makepkg --printsrcinfo > .SRCINFO)", dir.display()).cyan()
+            format!(
+                "(cd {} && makepkg --printsrcinfo > .SRCINFO)",
+                dir.display()
+            )
+            .cyan()
         );
         return;
     }
 
-    println!("{} Regenerating .SRCINFO from the edited PKGBUILD...", ">>>".green().bold());
+    println!(
+        "{} Regenerating .SRCINFO from the edited PKGBUILD...",
+        ">>>".green().bold()
+    );
     let output = Command::new(MAKEPKG_BIN)
         .arg("--printsrcinfo")
         .current_dir(dir)
@@ -837,7 +956,10 @@ pub(crate) fn maybe_regen_srcinfo(dir: &std::path::Path, skip_srcinfo_regen: boo
                     ">>> Warning:".yellow().bold(),
                     dir.join(".SRCINFO").display().to_string().dimmed()
                 );
-                eprintln!("    pass {} to skip this step next time.", "--skip-srcinfo-regen".cyan());
+                eprintln!(
+                    "    pass {} to skip this step next time.",
+                    "--skip-srcinfo-regen".cyan()
+                );
             }
         }
         _ => {
@@ -846,7 +968,10 @@ pub(crate) fn maybe_regen_srcinfo(dir: &std::path::Path, skip_srcinfo_regen: boo
                 ">>> Warning:".yellow().bold(),
                 dir.display().to_string().dimmed()
             );
-            eprintln!("    pass {} to skip this step next time.", "--skip-srcinfo-regen".cyan());
+            eprintln!(
+                "    pass {} to skip this step next time.",
+                "--skip-srcinfo-regen".cyan()
+            );
         }
     }
 }
@@ -879,7 +1004,11 @@ fn resolve_and_build_aur(
             ">>> Error:".red().bold(),
             pkg,
             entry.describe(),
-            if is_top_level { "" } else { " (pulled in as a dependency)" }
+            if is_top_level {
+                ""
+            } else {
+                " (pulled in as a dependency)"
+            }
         );
         if let Some(reason) = &entry.reason {
             eprintln!("    reason: {}", reason);
@@ -888,7 +1017,11 @@ fn resolve_and_build_aur(
     }
 
     let Some((dir, pkgbase)) = crate::aur::clone_or_resolve(pkg, build_root) else {
-        eprintln!("{} '{}' not found in the AUR", ">>> Error:".red().bold(), pkg);
+        eprintln!(
+            "{} '{}' not found in the AUR",
+            ">>> Error:".red().bold(),
+            pkg
+        );
         return None;
     };
 
@@ -896,7 +1029,11 @@ fn resolve_and_build_aur(
         return Some(cached.clone());
     }
     if !building.insert(pkgbase.clone()) {
-        eprintln!("{} circular AUR dependency involving '{}'", ">>> Error:".red().bold(), pkgbase);
+        eprintln!(
+            "{} circular AUR dependency involving '{}'",
+            ">>> Error:".red().bold(),
+            pkgbase
+        );
         return None;
     }
 
@@ -909,8 +1046,16 @@ fn resolve_and_build_aur(
             .or_else(|_| std::env::var("VISUAL"))
             .unwrap_or_else(|_| "nano".to_string());
         let pkgbuild = dir.join("PKGBUILD");
-        println!("{} Opening {} in {}...", ">>>".green().bold(), "PKGBUILD".bold(), editor.green().bold());
-        println!("{} Save and close the editor to continue building.", ">>>".yellow().bold());
+        println!(
+            "{} Opening {} in {}...",
+            ">>>".green().bold(),
+            "PKGBUILD".bold(),
+            editor.green().bold()
+        );
+        println!(
+            "{} Save and close the editor to continue building.",
+            ">>>".yellow().bold()
+        );
         Command::new(&editor).arg(&pkgbuild).status().ok();
         reset_terminal_colors_after_editor();
         crate::security::verify_local_clone_or_rescan(&pkgbase, &dir, fetched.get(&pkgbase));
@@ -959,7 +1104,21 @@ fn resolve_and_build_aur(
             continue;
         }
         // AUR-only deps are always resolved and built recursively.
-        match resolve_and_build_aur(dep, build_root, ask, skippgp, true, false, false, skip_srcinfo_regen, isolation, unshare_net_build, building, built, false) {
+        match resolve_and_build_aur(
+            dep,
+            build_root,
+            ask,
+            skippgp,
+            true,
+            false,
+            false,
+            skip_srcinfo_regen,
+            isolation,
+            unshare_net_build,
+            building,
+            built,
+            false,
+        ) {
             Some(mut tars) => aur_dep_tarballs.append(&mut tars),
             None => {
                 eprintln!(
@@ -976,14 +1135,28 @@ fn resolve_and_build_aur(
 
     let build_started = std::time::SystemTime::now();
     let result = match isolation {
-        BuildIsolation::Bwrap => build_with_sandbox(&dir, &pkgbase, ask, mark_asdeps, skippgp, &aur_dep_tarballs, unshare_net_build).then(|| find_built_packages(&dir, build_started)),
+        BuildIsolation::Bwrap => build_with_sandbox(
+            &dir,
+            &pkgbase,
+            ask,
+            mark_asdeps,
+            skippgp,
+            &aur_dep_tarballs,
+            unshare_net_build,
+        )
+        .then(|| find_built_packages(&dir, build_started)),
         BuildIsolation::None => {
             if !install_local_tarballs(&aur_dep_tarballs, ask, true) {
-                eprintln!("{} failed to install locally-built AUR dependencies for '{}'", ">>> Error:".red().bold(), pkgbase);
+                eprintln!(
+                    "{} failed to install locally-built AUR dependencies for '{}'",
+                    ">>> Error:".red().bold(),
+                    pkgbase
+                );
                 building.remove(&pkgbase);
                 return None;
             }
-            legacy_makepkg_si(&dir, ask, mark_asdeps, skippgp).then(|| find_built_packages(&dir, build_started))
+            legacy_makepkg_si(&dir, ask, mark_asdeps, skippgp)
+                .then(|| find_built_packages(&dir, build_started))
         }
     };
 
@@ -1014,12 +1187,16 @@ pub(crate) fn abs_build_base() -> std::path::PathBuf {
 fn build_base_dir(name: &str) -> std::path::PathBuf {
     if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
         if !xdg.is_empty() {
-            return std::path::PathBuf::from(xdg).join("aura-emerge/build").join(name);
+            return std::path::PathBuf::from(xdg)
+                .join("aura-emerge/build")
+                .join(name);
         }
     }
     if let Ok(home) = std::env::var("HOME") {
         if !home.is_empty() {
-            return std::path::PathBuf::from(home).join(".cache/aura-emerge/build").join(name);
+            return std::path::PathBuf::from(home)
+                .join(".cache/aura-emerge/build")
+                .join(name);
         }
     }
     std::path::PathBuf::from(format!("/var/tmp/aura-emerge-{}", name))
@@ -1056,18 +1233,42 @@ fn clear_build_base(dir: &std::path::Path) -> std::io::Result<()> {
 /// (`bwrap` -> unsandboxed `makepkg -si`, see `choose_build_isolation`)
 /// instead of shelling out to `aura -A`. `pkgctl` is not involved here
 /// at all -- only `--abs` ever calls it, and only for `repo clone`.
-pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, no_sandbox: bool, skip_srcinfo_regen: bool, unshare_net_build: bool, pkgbuild_view: bool) -> bool {
+pub(crate) fn aur_install(
+    pkgs: &[String],
+    pretend: bool,
+    ask: bool,
+    oneshot: bool,
+    skippgp: bool,
+    edit: bool,
+    no_sandbox: bool,
+    skip_srcinfo_regen: bool,
+    unshare_net_build: bool,
+    pkgbuild_view: bool,
+) -> bool {
     if !std::path::Path::new("/usr/bin/git").exists() {
-        eprintln!("{} required binary not found: /usr/bin/git", ">>> Fatal:".red().bold());
+        eprintln!(
+            "{} required binary not found: /usr/bin/git",
+            ">>> Fatal:".red().bold()
+        );
         return false;
     }
 
-    let bare: Vec<String> = pkgs.iter().map(|p| p.split('/').last().unwrap_or(p).to_string()).collect();
-    if bare.is_empty() { return false; }
+    let bare: Vec<String> = pkgs
+        .iter()
+        .map(|p| p.split('/').last().unwrap_or(p).to_string())
+        .collect();
+    if bare.is_empty() {
+        return false;
+    }
 
     if pretend {
         println!();
-        println!("{}", "These are the packages that would be merged, in order:".green().bold());
+        println!(
+            "{}",
+            "These are the packages that would be merged, in order:"
+                .green()
+                .bold()
+        );
         println!();
         for p in &bare {
             println!("[{}] {} (AUR)", "aur".green(), p.green().bold());
@@ -1079,9 +1280,20 @@ pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
     }
 
     // Refresh sync DBs before dep resolve.
-    println!("{} Synchronizing package databases...", ">>>".green().bold());
-    if !Command::new(SUDO_BIN).args([PACMAN_BIN, "-Sy"]).status().map(|s| s.success()).unwrap_or(false) {
-        eprintln!("{} failed to synchronize pacman databases", ">>> Error:".red().bold());
+    println!(
+        "{} Synchronizing package databases...",
+        ">>>".green().bold()
+    );
+    if !Command::new(SUDO_BIN)
+        .args([PACMAN_BIN, "-Sy"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+    {
+        eprintln!(
+            "{} failed to synchronize pacman databases",
+            ">>> Error:".red().bold()
+        );
         return false;
     }
 
@@ -1102,12 +1314,19 @@ pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
                 e
             );
             eprintln!("    sudo rm -rf failed too -- check what's holding onto it, e.g.:");
-            eprintln!("      {}", format!("sudo lsof +D {}", build_base.display()).cyan());
+            eprintln!(
+                "      {}",
+                format!("sudo lsof +D {}", build_base.display()).cyan()
+            );
             return false;
         }
     }
     if std::fs::create_dir_all(&build_base).is_err() {
-        eprintln!("{} could not create build directory {}", ">>> Fatal:".red().bold(), build_base.display());
+        eprintln!(
+            "{} could not create build directory {}",
+            ">>> Fatal:".red().bold(),
+            build_base.display()
+        );
         return false;
     }
 
@@ -1125,7 +1344,21 @@ pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
         );
         println!();
         let timer = crate::logbook::Timer::start();
-        let result = resolve_and_build_aur(pkg, &build_base, ask, skippgp, oneshot, edit, true, skip_srcinfo_regen, isolation, unshare_net_build, &mut building, &mut built, pkgbuild_view);
+        let result = resolve_and_build_aur(
+            pkg,
+            &build_base,
+            ask,
+            skippgp,
+            oneshot,
+            edit,
+            true,
+            skip_srcinfo_regen,
+            isolation,
+            unshare_net_build,
+            &mut building,
+            &mut built,
+            pkgbuild_view,
+        );
         if result.is_some() {
             crate::logbook::log_merge_one("aur", pkg, timer.elapsed());
         }
@@ -1165,7 +1398,9 @@ pub(crate) fn aur_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
 /// they show as "couldn't determine" rather than invisible, but aren't
 /// checked yet.
 fn is_devel_pkg(name: &str) -> bool {
-    ["-git", "-hg", "-svn", "-bzr"].iter().any(|suf| name.ends_with(suf))
+    ["-git", "-hg", "-svn", "-bzr"]
+        .iter()
+        .any(|suf| name.ends_with(suf))
 }
 
 /// Small best-effort extraction of the first `git+` VCS source URL from
@@ -1178,7 +1413,9 @@ fn is_devel_pkg(name: &str) -> bool {
 fn extract_git_source_url(pkgbuild_src: &str) -> Option<(String, Option<String>)> {
     let idx = pkgbuild_src.find("git+")?;
     let rest = &pkgbuild_src[idx + "git+".len()..];
-    let end = rest.find(['\'', '"', ' ', '\n', '\t']).unwrap_or(rest.len());
+    let end = rest
+        .find(['\'', '"', ' ', '\n', '\t'])
+        .unwrap_or(rest.len());
     let raw = &rest[..end];
     let (url_part, frag) = match raw.split_once('#') {
         Some((u, f)) => (u, Some(f)),
@@ -1188,7 +1425,9 @@ fn extract_git_source_url(pkgbuild_src: &str) -> Option<(String, Option<String>)
         return None;
     }
     let branch = frag.and_then(|f| {
-        f.split('&').find_map(|kv| kv.strip_prefix("branch=")).map(str::to_string)
+        f.split('&')
+            .find_map(|kv| kv.strip_prefix("branch="))
+            .map(str::to_string)
     });
     Some((url_part.to_string(), branch))
 }
@@ -1208,7 +1447,11 @@ fn git_ls_remote_head(url: &str, branch: Option<&str>) -> Option<String> {
         return None;
     }
     let text = String::from_utf8_lossy(&out.stdout);
-    text.lines().next()?.split_whitespace().next().map(str::to_string)
+    text.lines()
+        .next()?
+        .split_whitespace()
+        .next()
+        .map(str::to_string)
 }
 
 /// Where `--devel`/`--check-devel` remember the last upstream commit
@@ -1221,8 +1464,12 @@ fn devel_state_path() -> Option<std::path::PathBuf> {
 }
 
 fn load_devel_state() -> HashMap<String, String> {
-    let Some(path) = devel_state_path() else { return Default::default() };
-    let Ok(text) = fs::read_to_string(path) else { return Default::default() };
+    let Some(path) = devel_state_path() else {
+        return Default::default();
+    };
+    let Ok(text) = fs::read_to_string(path) else {
+        return Default::default();
+    };
     text.lines()
         .filter_map(|l| l.split_once('\t'))
         .map(|(name, hash)| (name.trim().to_string(), hash.trim().to_string()))
@@ -1236,7 +1483,10 @@ fn save_devel_state(state: &HashMap<String, String>) {
     };
     if let Some(parent) = path.parent() {
         if fs::create_dir_all(parent).is_err() {
-            eprintln!(">>> Warning: could not create {}, devel state not saved", parent.display());
+            eprintln!(
+                ">>> Warning: could not create {}, devel state not saved",
+                parent.display()
+            );
             return;
         }
     }
@@ -1306,7 +1556,10 @@ pub(crate) fn check_devel_all() -> bool {
     {
         Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).into_owned(),
         _ => {
-            eprintln!("{} failed to list foreign (AUR/local) packages (pacman -Qm)", ">>> Error:".red().bold());
+            eprintln!(
+                "{} failed to list foreign (AUR/local) packages (pacman -Qm)",
+                ">>> Error:".red().bold()
+            );
             return false;
         }
     };
@@ -1323,7 +1576,11 @@ pub(crate) fn check_devel_all() -> bool {
         return true;
     }
 
-    println!("{} Checking upstream for {} devel package(s)...", ">>>".green().bold(), devel_names.len());
+    println!(
+        "{} Checking upstream for {} devel package(s)...",
+        ">>>".green().bold(),
+        devel_names.len()
+    );
     let mut state = load_devel_state();
     let mut moved: Vec<String> = Vec::new();
     let mut unknown: Vec<String> = Vec::new();
@@ -1338,11 +1595,23 @@ pub(crate) fn check_devel_all() -> bool {
 
     println!();
     if moved.is_empty() {
-        println!("{} No devel package(s) with upstream changes.", ">>>".green().bold());
+        println!(
+            "{} No devel package(s) with upstream changes.",
+            ">>>".green().bold()
+        );
     } else {
-        println!("{} {} devel package(s) with upstream changes:", ">>>".yellow().bold(), moved.len());
+        println!(
+            "{} {} devel package(s) with upstream changes:",
+            ">>>".yellow().bold(),
+            moved.len()
+        );
         for n in &moved {
-            println!("  [{} {:<4}] {}", "ebuild".green(), "U".yellow().bold(), n.yellow().bold());
+            println!(
+                "  [{} {:<4}] {}",
+                "ebuild".green(),
+                "U".yellow().bold(),
+                n.yellow().bold()
+            );
         }
         println!();
         println!(">>> Use `emerge -u --devel` to rebuild these along with the normal upgrade.");
@@ -1358,7 +1627,15 @@ pub(crate) fn check_devel_all() -> bool {
     true
 }
 
-pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbox: bool, skip_srcinfo_regen: bool, unshare_net_build: bool, devel: bool) -> bool {
+pub(crate) fn aur_upgrade_all(
+    pretend: bool,
+    ask: bool,
+    skippgp: bool,
+    no_sandbox: bool,
+    skip_srcinfo_regen: bool,
+    unshare_net_build: bool,
+    devel: bool,
+) -> bool {
     let foreign = match Command::new(PACMAN_BIN)
         .args(["-Qm"])
         .env("LC_ALL", "C")
@@ -1368,7 +1645,10 @@ pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbo
     {
         Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).into_owned(),
         _ => {
-            eprintln!("{} failed to list foreign (AUR/local) packages (pacman -Qm)", ">>> Error:".red().bold());
+            eprintln!(
+                "{} failed to list foreign (AUR/local) packages (pacman -Qm)",
+                ">>> Error:".red().bold()
+            );
             return false;
         }
     };
@@ -1401,7 +1681,12 @@ pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbo
                 let cmp: i32 = Command::new(VERCMP_BIN)
                     .args([installed_ver.as_str(), info.version.as_str()])
                     .output()
-                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().parse().unwrap_or(0))
+                    .map(|o| {
+                        String::from_utf8_lossy(&o.stdout)
+                            .trim()
+                            .parse()
+                            .unwrap_or(0)
+                    })
                     .unwrap_or(0);
                 if cmp < 0 {
                     to_upgrade.push((name.clone(), installed_ver.clone(), info.version.clone()));
@@ -1431,7 +1716,10 @@ pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbo
             .filter(|n| is_devel_pkg(n) && !already.contains(n.as_str()))
             .collect();
         if !candidates.is_empty() {
-            println!(">>> Checking upstream for {} devel package(s)...", candidates.len());
+            println!(
+                ">>> Checking upstream for {} devel package(s)...",
+                candidates.len()
+            );
             let mut state = load_devel_state();
             for name in candidates {
                 if matches!(check_devel_pkg(name, &mut state), DevelStatus::Moved) {
@@ -1462,7 +1750,11 @@ pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbo
         true
     });
     if !held.is_empty() {
-        println!(">>> {} AUR package(s) held back: {}", held.len(), held.join(", "));
+        println!(
+            ">>> {} AUR package(s) held back: {}",
+            held.len(),
+            held.join(", ")
+        );
     }
 
     if to_upgrade.is_empty() {
@@ -1472,10 +1764,21 @@ pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbo
 
     println!();
     for (name, old, new) in &to_upgrade {
-        println!("[{} {:<4}] {} [{} -> {}]", "ebuild".green(), "U".yellow().bold(), name.yellow().bold(), old, new);
+        println!(
+            "[{} {:<4}] {} [{} -> {}]",
+            "ebuild".green(),
+            "U".yellow().bold(),
+            name.yellow().bold(),
+            old,
+            new
+        );
     }
     println!();
-    println!("{}: {} AUR package(s) to upgrade", "Total".bold(), to_upgrade.len());
+    println!(
+        "{}: {} AUR package(s) to upgrade",
+        "Total".bold(),
+        to_upgrade.len()
+    );
     println!();
 
     if pretend {
@@ -1483,7 +1786,18 @@ pub(crate) fn aur_upgrade_all(pretend: bool, ask: bool, skippgp: bool, no_sandbo
     }
 
     let upgrade_names: Vec<String> = to_upgrade.iter().map(|(n, _, _)| n.clone()).collect();
-    aur_install(&upgrade_names, false, ask, false, skippgp, false, no_sandbox, skip_srcinfo_regen, unshare_net_build, false)
+    aur_install(
+        &upgrade_names,
+        false,
+        ask,
+        false,
+        skippgp,
+        false,
+        no_sandbox,
+        skip_srcinfo_regen,
+        unshare_net_build,
+        false,
+    )
 }
 
 /// Installs already-built `*.pkg.tar.*` files directly via `pacman -U`
@@ -1496,10 +1810,18 @@ fn install_local_tarballs(tarballs: &[String], ask: bool, mark_asdeps: bool) -> 
     if tarballs.is_empty() {
         return true;
     }
-    println!("{} Installing {} locally-built AUR dependency(ies)...", ">>>".green().bold(), tarballs.len());
+    println!(
+        "{} Installing {} locally-built AUR dependency(ies)...",
+        ">>>".green().bold(),
+        tarballs.len()
+    );
     let mut args: Vec<&str> = vec![PACMAN_BIN, "-U", "--needed"];
-    if mark_asdeps { args.push("--asdeps"); }
-    if !ask { args.push("--noconfirm"); }
+    if mark_asdeps {
+        args.push("--asdeps");
+    }
+    if !ask {
+        args.push("--noconfirm");
+    }
     let tar_refs: Vec<&str> = tarballs.iter().map(String::as_str).collect();
     Command::new(SUDO_BIN)
         .args(&args)
@@ -1528,7 +1850,15 @@ fn install_local_tarballs(tarballs: &[String], ask: bool, mark_asdeps: bool) -> 
 /// arrays can't be statically resolved either does this fall back to
 /// plain unsandboxed `makepkg -si` for this one package rather than
 /// guessing at a partial dependency list.
-fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, oneshot: bool, skippgp: bool, aur_dep_tarballs: &[String], unshare_net_build: bool) -> bool {
+fn build_with_sandbox(
+    build_dir: &std::path::Path,
+    pkgbase: &str,
+    ask: bool,
+    oneshot: bool,
+    skippgp: bool,
+    aur_dep_tarballs: &[String],
+    unshare_net_build: bool,
+) -> bool {
     // Cleans up the fakeroot shim's scratch dir (now outside build_dir,
     // see sandbox::FAKEROOT_SHIM_ROOT) on every exit path below.
     let _fakeroot_shim_guard = crate::sandbox::FakerootShimGuard::new(build_dir);
@@ -1536,7 +1866,12 @@ fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, one
     let pkgbuild_src = match fs::read_to_string(build_dir.join("PKGBUILD")) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("{} could not read PKGBUILD for '{}': {}", ">>> Error:".red().bold(), pkgbase, e);
+            eprintln!(
+                "{} could not read PKGBUILD for '{}': {}",
+                ">>> Error:".red().bold(),
+                pkgbase,
+                e
+            );
             return false;
         }
     };
@@ -1559,16 +1894,26 @@ fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, one
 
     // 0. Locally-built AUR-only dependencies -- see doc comment above.
     if !install_local_tarballs(aur_dep_tarballs, ask, true) {
-        eprintln!("{} failed to install locally-built AUR dependencies for '{}'", ">>> Error:".red().bold(), pkgbase);
+        eprintln!(
+            "{} failed to install locally-built AUR dependencies for '{}'",
+            ">>> Error:".red().bold(),
+            pkgbase
+        );
         return false;
     }
 
     // 1b. Official deps via pacman -S (outside sandbox).
     match repo_deps {
         Some(deps) if !deps.is_empty() => {
-            println!("{} Installing {} declared dependency(ies) via pacman...", ">>>".green().bold(), deps.len());
+            println!(
+                "{} Installing {} declared dependency(ies) via pacman...",
+                ">>>".green().bold(),
+                deps.len()
+            );
             let mut args: Vec<&str> = vec![PACMAN_BIN, "-S", "--needed", "--asdeps"];
-            if !ask { args.push("--noconfirm"); }
+            if !ask {
+                args.push("--noconfirm");
+            }
             let dep_refs: Vec<&str> = deps.iter().map(String::as_str).collect();
             let ok = Command::new(SUDO_BIN)
                 .args(&args)
@@ -1577,7 +1922,11 @@ fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, one
                 .map(|s| s.success())
                 .unwrap_or(false);
             if !ok {
-                eprintln!("{} failed to install dependencies for '{}'", ">>> Error:".red().bold(), pkgbase);
+                eprintln!(
+                    "{} failed to install dependencies for '{}'",
+                    ">>> Error:".red().bold(),
+                    pkgbase
+                );
                 return false;
             }
         }
@@ -1601,8 +1950,12 @@ fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, one
 
     // 2. Untrusted build steps inside bwrap (no -s/-i).
     let mut makepkg_args: Vec<&str> = Vec::new();
-    if !ask { makepkg_args.push("--noconfirm"); }
-    if skippgp { makepkg_args.push("--skippgpcheck"); }
+    if !ask {
+        makepkg_args.push("--noconfirm");
+    }
+    if skippgp {
+        makepkg_args.push("--skippgpcheck");
+    }
 
     // make.conf's build flags, added before makepkg_args is cloned
     // for the --nobuild/--noextract split below so both halves get it.
@@ -1622,7 +1975,9 @@ fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, one
         makepkg_args.push(path.as_str());
     }
 
-    let real_gnupg = std::env::var("HOME").ok().map(|h| std::path::PathBuf::from(h).join(".gnupg"));
+    let real_gnupg = std::env::var("HOME")
+        .ok()
+        .map(|h| std::path::PathBuf::from(h).join(".gnupg"));
     let (extra_dest_dirs, default_source_cache) = resolve_dest_dirs(build_dir);
     let user_configured: Vec<&str> = extra_dest_dirs
         .iter()
@@ -1654,28 +2009,57 @@ fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, one
         );
         let mut nobuild_args = makepkg_args.clone();
         nobuild_args.push("--nobuild");
-        let fetch_ok = crate::sandbox::sandboxed_makepkg(MAKEPKG_BIN, build_dir, &nobuild_args, real_gnupg.as_deref(), &extra_dest_dirs, true)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
+        let fetch_ok = crate::sandbox::sandboxed_makepkg(
+            MAKEPKG_BIN,
+            build_dir,
+            &nobuild_args,
+            real_gnupg.as_deref(),
+            &extra_dest_dirs,
+            true,
+        )
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
         if !fetch_ok {
-            eprintln!("{} fetching/extracting sources failed for '{}'", ">>> Error:".red().bold(), pkgbase);
+            eprintln!(
+                "{} fetching/extracting sources failed for '{}'",
+                ">>> Error:".red().bold(),
+                pkgbase
+            );
             return false;
         }
         let mut noextract_args = makepkg_args.clone();
         noextract_args.push("--noextract");
-        crate::sandbox::sandboxed_makepkg(MAKEPKG_BIN, build_dir, &noextract_args, real_gnupg.as_deref(), &extra_dest_dirs, false)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+        crate::sandbox::sandboxed_makepkg(
+            MAKEPKG_BIN,
+            build_dir,
+            &noextract_args,
+            real_gnupg.as_deref(),
+            &extra_dest_dirs,
+            false,
+        )
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
     } else {
-        crate::sandbox::sandboxed_makepkg(MAKEPKG_BIN, build_dir, &makepkg_args, real_gnupg.as_deref(), &extra_dest_dirs, true)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+        crate::sandbox::sandboxed_makepkg(
+            MAKEPKG_BIN,
+            build_dir,
+            &makepkg_args,
+            real_gnupg.as_deref(),
+            &extra_dest_dirs,
+            true,
+        )
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
     };
     if !build_ok {
-        eprintln!("{} sandboxed build failed for '{}'", ">>> Error:".red().bold(), pkgbase);
+        eprintln!(
+            "{} sandboxed build failed for '{}'",
+            ">>> Error:".red().bold(),
+            pkgbase
+        );
         if unshare_net_build {
             eprintln!(
                 "    if this failed reaching for the network during build() -- check for an unvendored dependency fetch (cargo/go/pip/npm resolving its graph mid-build instead of in prepare()) and re-run without --unshare-net-build if that's expected for this package."
@@ -1688,12 +2072,20 @@ fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, one
     //    plain pacman operation, no PKGBUILD code involved.
     let pkg_files = find_built_packages(build_dir, build_started);
     if pkg_files.is_empty() {
-        eprintln!("{} sandboxed build for '{}' produced no package file", ">>> Error:".red().bold(), pkgbase);
+        eprintln!(
+            "{} sandboxed build for '{}' produced no package file",
+            ">>> Error:".red().bold(),
+            pkgbase
+        );
         return false;
     }
     let mut args: Vec<&str> = vec![PACMAN_BIN, "-U"];
-    if !ask { args.push("--noconfirm"); }
-    if oneshot { args.push("--asdeps"); }
+    if !ask {
+        args.push("--noconfirm");
+    }
+    if oneshot {
+        args.push("--asdeps");
+    }
     let pkg_refs: Vec<&str> = pkg_files.iter().map(String::as_str).collect();
     Command::new(SUDO_BIN)
         .args(&args)
@@ -1717,7 +2109,10 @@ fn build_with_sandbox(build_dir: &std::path::Path, pkgbase: &str, ask: bool, one
 /// already has unrelated files in it. `not_before` (the caller's
 /// timestamp for just before this build started, with slack for coarse
 /// mtime resolution) filters those out.
-fn find_built_packages(build_dir: &std::path::Path, not_before: std::time::SystemTime) -> Vec<String> {
+fn find_built_packages(
+    build_dir: &std::path::Path,
+    not_before: std::time::SystemTime,
+) -> Vec<String> {
     let search_dir = extra_makepkg_dest_dirs(build_dir)
         .into_iter()
         .find(|(name, _)| *name == "PKGDEST")
@@ -1728,19 +2123,23 @@ fn find_built_packages(build_dir: &std::path::Path, not_before: std::time::Syste
         .unwrap_or(not_before);
 
     let mut out = Vec::new();
-    let Ok(entries) = fs::read_dir(&search_dir) else { return out };
+    let Ok(entries) = fs::read_dir(&search_dir) else {
+        return out;
+    };
     for e in entries.flatten() {
         let path = e.path();
         if !path.is_file() {
             continue;
         }
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
         if !name.contains(".pkg.tar") {
             continue;
         }
         match e.metadata().and_then(|m| m.modified()) {
             Ok(mtime) if mtime >= cutoff => {}
-    // Stale or unreadable mtime -- don't guess.
+            // Stale or unreadable mtime -- don't guess.
             _ => continue,
         }
         out.push(path.to_string_lossy().to_string());
@@ -1757,9 +2156,15 @@ fn legacy_makepkg_si(build_dir: &std::path::Path, ask: bool, oneshot: bool, skip
     let _scratch_guard = crate::sandbox::FakerootShimGuard::new(build_dir);
 
     let mut makepkg_args = vec!["-si"];
-    if !ask    { makepkg_args.push("--noconfirm"); }
-    if oneshot { makepkg_args.push("--asdeps"); }
-    if skippgp { makepkg_args.push("--skippgpcheck"); }
+    if !ask {
+        makepkg_args.push("--noconfirm");
+    }
+    if oneshot {
+        makepkg_args.push("--asdeps");
+    }
+    if skippgp {
+        makepkg_args.push("--skippgpcheck");
+    }
 
     let conf_override = makepkg_conf_override(build_dir);
     if let Some(path) = &conf_override {
@@ -1810,7 +2215,19 @@ fn legacy_makepkg_si(build_dir: &std::path::Path, ask: bool, oneshot: bool, skip
 
 /// Build and install packages from ABS via `pkgctl repo clone` + `makepkg -si`
 /// (or, by default, the bwrap-sandboxed equivalent -- see `build_with_sandbox`).
-pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bool, skippgp: bool, edit: bool, autopgp: bool, no_sandbox: bool, skip_srcinfo_regen: bool, unshare_net_build: bool, pkgbuild_view: bool) -> bool {
+pub(crate) fn abs_install(
+    pkgs: &[String],
+    pretend: bool,
+    ask: bool,
+    oneshot: bool,
+    skippgp: bool,
+    edit: bool,
+    autopgp: bool,
+    no_sandbox: bool,
+    skip_srcinfo_regen: bool,
+    unshare_net_build: bool,
+    pkgbuild_view: bool,
+) -> bool {
     for bin in &[PKGCTL_BIN, MAKEPKG_BIN] {
         if !std::path::Path::new(bin).exists() {
             eprintln!(">>> Fatal: required binary not found: {}", bin);
@@ -1821,41 +2238,66 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
         }
     }
 
-    let pkg_infos: Vec<PkgInfo> = pkgs.iter().filter_map(|pkg| {
-        let bare = pkg.split('/').last().unwrap_or(pkg);
-        if !validate_pkg(bare) || bare.contains('/') {
-            eprintln!(">>> Error: invalid package name '{}' - skipping", bare);
-            return None;
-        }
-        if let Some(entry) = crate::mask::find(bare, Some("abs")) {
-            eprintln!("{} '{}' is masked by {}", ">>> Error:".red().bold(), bare, entry.describe());
-            if let Some(reason) = &entry.reason {
-                eprintln!("    reason: {}", reason);
+    let pkg_infos: Vec<PkgInfo> = pkgs
+        .iter()
+        .filter_map(|pkg| {
+            let bare = pkg.split('/').last().unwrap_or(pkg);
+            if !validate_pkg(bare) || bare.contains('/') {
+                eprintln!(">>> Error: invalid package name '{}' - skipping", bare);
+                return None;
             }
-            crate::runtime::record_failure(bare, "masked");
-            return None;
-        }
-        let version = abs_get_version(bare);
+            if let Some(entry) = crate::mask::find(bare, Some("abs")) {
+                eprintln!(
+                    "{} '{}' is masked by {}",
+                    ">>> Error:".red().bold(),
+                    bare,
+                    entry.describe()
+                );
+                if let Some(reason) = &entry.reason {
+                    eprintln!("    reason: {}", reason);
+                }
+                crate::runtime::record_failure(bare, "masked");
+                return None;
+            }
+            let version = abs_get_version(bare);
 
-        let status = pkg_status(bare, &version);
-        Some(PkgInfo { name: bare.to_string(), version, repo: "abs".to_string(), status })
-    }).collect();
+            let status = pkg_status(bare, &version);
+            Some(PkgInfo {
+                name: bare.to_string(),
+                version,
+                repo: "abs".to_string(),
+                status,
+            })
+        })
+        .collect();
 
-    if pkg_infos.is_empty() { return false; }
+    if pkg_infos.is_empty() {
+        return false;
+    }
 
     let isolation = choose_build_isolation(no_sandbox);
 
     println!();
-    println!("{}", "These are the packages that would be merged, in order:".green().bold());
+    println!(
+        "{}",
+        "These are the packages that would be merged, in order:"
+            .green()
+            .bold()
+    );
     println!();
     println!("Calculating dependencies... done!");
     println!();
     for p in &pkg_infos {
         if p.status == "D" {
-            println!("{} {}: downgrading package!", " *".yellow().bold(), p.name.bold());
+            println!(
+                "{} {}: downgrading package!",
+                " *".yellow().bold(),
+                p.name.bold()
+            );
         }
         let atom = format!("{} (ABS)", format_atom(p));
-        println!("[{}  {:<4} ] {}",
+        println!(
+            "[{}  {:<4} ] {}",
             "ebuild".green(),
             status_colored(&p.status),
             atom.green().bold()
@@ -1865,12 +2307,14 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
     println!("{}: {} package(s)", "Total".bold(), pkg_infos.len());
     println!();
 
-    if pretend { return true; }
+    if pretend {
+        return true;
+    }
 
     // Clean stale build dir from interrupted previous run.
     let build_base = abs_build_base();
     if build_base.exists() {
-    // Same wipe pattern as aur_build_base() in aur_install.
+        // Same wipe pattern as aur_build_base() in aur_install.
         if let Err(e) = clear_build_base(&build_base) {
             eprintln!(
                 "{} could not clear stale build directory {}: {}",
@@ -1879,7 +2323,10 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
                 e
             );
             eprintln!("    sudo rm -rf failed too -- check what's holding onto it, e.g.:");
-            eprintln!("      {}", format!("sudo lsof +D {}", build_base.display()).cyan());
+            eprintln!(
+                "      {}",
+                format!("sudo lsof +D {}", build_base.display()).cyan()
+            );
             return false;
         }
     }
@@ -1887,7 +2334,8 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
 
     for (i, info) in pkg_infos.iter().enumerate() {
         let pfx = ">>>".green().bold();
-        println!("{} Emerging ({} of {}) {} (ABS)",
+        println!(
+            "{} Emerging ({} of {}) {} (ABS)",
             pfx,
             (i + 1).to_string().yellow().bold(),
             pkg_infos.len().to_string().yellow().bold(),
@@ -1908,7 +2356,11 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
         }
         let _ = std::fs::create_dir_all(&build_base);
 
-        println!("{} Fetching {} from ABS via pkgctl...", ">>>".green().bold(), info.name.green().bold());
+        println!(
+            "{} Fetching {} from ABS via pkgctl...",
+            ">>>".green().bold(),
+            info.name.green().bold()
+        );
         let checkout_ok = Command::new(PKGCTL_BIN)
             .args(["repo", "clone", "--protocol=https", &info.name])
             .current_dir(&build_base)
@@ -1917,38 +2369,41 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
             .unwrap_or(false);
 
         if !checkout_ok {
-            eprintln!("{} pkgctl repo clone failed for '{}'", ">>> Error:".red().bold(), info.name);
+            eprintln!(
+                "{} pkgctl repo clone failed for '{}'",
+                ">>> Error:".red().bold(),
+                info.name
+            );
             eprintln!("{} package may not exist in ABS (it must be a pkgbase, not a split-package output name). Try without --abs or use --aur.", ">>> Note:".yellow().bold());
             all_ok = false;
             continue;
         }
 
-    // pkgctl clones into <build_base>/<pkg>/ with PKGBUILD at top.
+        // pkgctl clones into <build_base>/<pkg>/ with PKGBUILD at top.
         let build_dir = pkg_dir.clone();
 
-    // --edit for ABS (top-level).
+        // --edit for ABS (top-level).
         if edit {
             let editor = std::env::var("EDITOR")
                 .or_else(|_| std::env::var("VISUAL"))
                 .unwrap_or_else(|_| "nano".to_string());
             let pkgbuild = build_dir.join("PKGBUILD");
-            println!("{} Opening {} in {}...",
+            println!(
+                "{} Opening {} in {}...",
                 ">>>".green().bold(),
                 "PKGBUILD".bold(),
                 editor.green().bold()
             );
-            println!("{} Save and close the editor to continue building.",
+            println!(
+                "{} Save and close the editor to continue building.",
                 ">>>".yellow().bold()
             );
-            Command::new(&editor)
-                .arg(&pkgbuild)
-                .status()
-                .ok();
+            Command::new(&editor).arg(&pkgbuild).status().ok();
             reset_terminal_colors_after_editor();
             maybe_regen_srcinfo(&build_dir, skip_srcinfo_regen);
         }
 
-    // --pkgbuild-view for ABS (same as AUR path).
+        // --pkgbuild-view for ABS (same as AUR path).
         if pkgbuild_view {
             let outcome = pkgbuild_view_step(&info.name, &build_dir);
             if !outcome.proceed {
@@ -1961,29 +2416,46 @@ pub(crate) fn abs_install(pkgs: &[String], pretend: bool, ask: bool, oneshot: bo
             }
         }
 
-    // Check/import validpgpkeys before makepkg.
+        // Check/import validpgpkeys before makepkg.
         if !skippgp {
             ensure_pgp_keys(&build_dir.join("PKGBUILD"), autopgp);
         }
 
         let timer = crate::logbook::Timer::start();
         let build_ok = match isolation {
-            BuildIsolation::Bwrap => build_with_sandbox(&build_dir, &info.name, ask, oneshot, skippgp, &[], unshare_net_build),
+            BuildIsolation::Bwrap => build_with_sandbox(
+                &build_dir,
+                &info.name,
+                ask,
+                oneshot,
+                skippgp,
+                &[],
+                unshare_net_build,
+            ),
             BuildIsolation::None => legacy_makepkg_si(&build_dir, ask, oneshot, skippgp),
         };
 
         if build_ok {
             crate::logbook::log_merge_one("abs", &format_atom(info), timer.elapsed());
         } else {
-            eprintln!("{} makepkg failed for '{}'", ">>> Error:".red().bold(), info.name);
+            eprintln!(
+                "{} makepkg failed for '{}'",
+                ">>> Error:".red().bold(),
+                info.name
+            );
             if !skippgp {
                 eprintln!(
                     "{} if this failed on a missing PGP key not listed in validpgpkeys, \
                     find the key ID in the error above and run:",
                     ">>> Hint:".yellow().bold()
                 );
-                eprintln!(">>>   gpg --keyserver {} --recv-keys <key-id>", PGP_KEYSERVER);
-                eprintln!(">>> Or retry with --autopgp (auto-import) or --skippgp (bypass checks).");
+                eprintln!(
+                    ">>>   gpg --keyserver {} --recv-keys <key-id>",
+                    PGP_KEYSERVER
+                );
+                eprintln!(
+                    ">>> Or retry with --autopgp (auto-import) or --skippgp (bypass checks)."
+                );
             }
             all_ok = false;
             crate::runtime::record_failure(&info.name, "ABS build failed");
@@ -2033,7 +2505,11 @@ pub(crate) fn pkgbuild_local_install(
 ) -> Option<Vec<String>> {
     let pkgbuild_path = path.join("PKGBUILD");
     if !pkgbuild_path.is_file() {
-        eprintln!("{} no PKGBUILD found in {}", ">>> Error:".red().bold(), path.display());
+        eprintln!(
+            "{} no PKGBUILD found in {}",
+            ">>> Error:".red().bold(),
+            path.display()
+        );
         return None;
     }
 
@@ -2044,7 +2520,11 @@ pub(crate) fn pkgbuild_local_install(
         .map(str::to_string)
         .unwrap_or_else(|| path.display().to_string());
 
-    println!("{} Scanning {} for suspicious patterns...", ">>>".green().bold(), label.bold());
+    println!(
+        "{} Scanning {} for suspicious patterns...",
+        ">>>".green().bold(),
+        label.bold()
+    );
     // Same scanner as AUR/ABS, pointed at local files.
     crate::security::verify_local_clone_or_rescan(&label, path, None);
 
@@ -2069,18 +2549,23 @@ pub(crate) fn pkgbuild_local_install(
 
     let isolation = choose_build_isolation(no_sandbox);
     let build_ok = match isolation {
-        BuildIsolation::Bwrap => build_with_sandbox(path, &label, ask, oneshot, skippgp, &[], unshare_net_build),
+        BuildIsolation::Bwrap => {
+            build_with_sandbox(path, &label, ask, oneshot, skippgp, &[], unshare_net_build)
+        }
         BuildIsolation::None => legacy_makepkg_si(path, ask, oneshot, skippgp),
     };
     if !build_ok {
-        eprintln!("{} build failed for {}", ">>> Error:".red().bold(), path.display());
+        eprintln!(
+            "{} build failed for {}",
+            ">>> Error:".red().bold(),
+            path.display()
+        );
         return None;
     }
 
     // Prefer .SRCINFO pkgnames (handles split packages).
     Some(
-        crate::aur::srcinfo_pkgnames(&path.join(".SRCINFO"))
-            .unwrap_or_else(|| vec![label.clone()]),
+        crate::aur::srcinfo_pkgnames(&path.join(".SRCINFO")).unwrap_or_else(|| vec![label.clone()]),
     )
 }
 
@@ -2091,14 +2576,12 @@ pub(crate) fn pkgbuild_local_install(
 pub(crate) fn portageq_shim(args: &[String]) {
     let cmd = args.get(1).map(String::as_str).unwrap_or("");
     match cmd {
-        "envvar" => {
-            match args.get(2).map(String::as_str).unwrap_or("") {
-                "EROOT" | "ROOT" => println!("/"),
-                "PORTDIR"        => println!("/var/db/pkg"),
-                "DISTDIR"        => println!("/var/cache/distfiles"),
-                _                => {}
-            }
-        }
+        "envvar" => match args.get(2).map(String::as_str).unwrap_or("") {
+            "EROOT" | "ROOT" => println!("/"),
+            "PORTDIR" => println!("/var/db/pkg"),
+            "DISTDIR" => println!("/var/cache/distfiles"),
+            _ => {}
+        },
         "get_repos" => {
             // One dummy repo is enough; fish just needs a non-empty list
             println!("arch");
@@ -2111,7 +2594,11 @@ pub(crate) fn portageq_shim(args: &[String]) {
             println!("/var/db/pkg");
         }
         "match_pkgs" | "best_version" => {
-            let pkg = args.get(3).or_else(|| args.get(2)).map(String::as_str).unwrap_or("");
+            let pkg = args
+                .get(3)
+                .or_else(|| args.get(2))
+                .map(String::as_str)
+                .unwrap_or("");
             if let Ok(out) = Command::new(PACMAN_BIN)
                 .args(["-Q", pkg])
                 .stdout(Stdio::piped())
@@ -2177,7 +2664,9 @@ pub(crate) fn current_arch() -> String {
 }
 
 /// User-configured PKGDEST/SRCDEST/etc. outside build_dir (for sandbox binds).
-pub(crate) fn extra_makepkg_dest_dirs(build_dir: &std::path::Path) -> Vec<(&'static str, std::path::PathBuf)> {
+pub(crate) fn extra_makepkg_dest_dirs(
+    build_dir: &std::path::Path,
+) -> Vec<(&'static str, std::path::PathBuf)> {
     let vars = read_makepkg_vars();
     ["PKGDEST", "SRCDEST", "SRCPKGDEST", "BUILDDIR"]
         .into_iter()
@@ -2207,7 +2696,12 @@ pub(crate) fn source_cache_dir() -> Option<std::path::PathBuf> {
 }
 
 /// Dest dirs for sandbox: user config + default source cache if no SRCDEST.
-pub(crate) fn resolve_dest_dirs(build_dir: &std::path::Path) -> (Vec<(&'static str, std::path::PathBuf)>, Option<std::path::PathBuf>) {
+pub(crate) fn resolve_dest_dirs(
+    build_dir: &std::path::Path,
+) -> (
+    Vec<(&'static str, std::path::PathBuf)>,
+    Option<std::path::PathBuf>,
+) {
     let mut dirs = extra_makepkg_dest_dirs(build_dir);
     let mut default_cache = None;
     if !dirs.iter().any(|(name, _)| *name == "SRCDEST") {
@@ -2225,7 +2719,9 @@ pub(crate) fn resolve_dest_dirs(build_dir: &std::path::Path) -> (Vec<(&'static s
 /// resolved against make.conf's own `CFLAGS`, not the raw config text).
 fn effective_build_vars(cfg: &crate::config::Config) -> HashMap<String, String> {
     let mut map = HashMap::new();
-    let Some(conf) = crate::config::makepkg_override_conf(cfg) else { return map };
+    let Some(conf) = crate::config::makepkg_override_conf(cfg) else {
+        return map;
+    };
 
     let mut dump = String::new();
     for key in crate::config::BUILD_VARS {
@@ -2254,9 +2750,20 @@ fn effective_build_vars(cfg: &crate::config::Config) -> HashMap<String, String> 
 /// makepkg.conf vars (system + user overrides), via bash source.
 pub(crate) fn read_makepkg_vars() -> HashMap<String, String> {
     let watched = [
-        "CARCH", "CHOST", "CFLAGS", "CXXFLAGS", "LDFLAGS", "RUSTFLAGS",
-        "MAKEFLAGS", "OPTIONS", "BUILDENV", "PKGEXT",
-        "PKGDEST", "SRCDEST", "SRCPKGDEST", "BUILDDIR",
+        "CARCH",
+        "CHOST",
+        "CFLAGS",
+        "CXXFLAGS",
+        "LDFLAGS",
+        "RUSTFLAGS",
+        "MAKEFLAGS",
+        "OPTIONS",
+        "BUILDENV",
+        "PKGEXT",
+        "PKGDEST",
+        "SRCDEST",
+        "SRCPKGDEST",
+        "BUILDDIR",
     ];
     let mut dump = String::new();
     for v in &watched {
@@ -2310,7 +2817,9 @@ pub(crate) fn user_makepkg_conf_path() -> String {
 /// pacman.conf repos in file order (Server/Include resolved one level).
 pub(crate) fn parse_pacman_repos() -> Vec<(String, Vec<String>)> {
     let mut repos: Vec<(String, Vec<String>)> = Vec::new();
-    let Ok(file) = fs::File::open(PACMAN_CONF) else { return repos; };
+    let Ok(file) = fs::File::open(PACMAN_CONF) else {
+        return repos;
+    };
     let reader = io::BufReader::new(file);
 
     let mut current: Option<(String, Vec<String>)> = None;
@@ -2323,13 +2832,18 @@ pub(crate) fn parse_pacman_repos() -> Vec<(String, Vec<String>)> {
             if let Some(repo) = current.take() {
                 repos.push(repo);
             }
-            let name = trimmed.trim_start_matches('[').trim_end_matches(']').to_string();
+            let name = trimmed
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .to_string();
             if name != "options" {
                 current = Some((name, Vec::new()));
             }
             continue;
         }
-        let Some((_, lines)) = current.as_mut() else { continue };
+        let Some((_, lines)) = current.as_mut() else {
+            continue;
+        };
         if let Some((key, val)) = trimmed.split_once('=') {
             let key = key.trim();
             let val = val.trim();
@@ -2430,7 +2944,11 @@ pub(crate) fn print_system_info() {
     }
     for (i, (name, lines)) in repos.iter().enumerate() {
         println!("{}", name);
-        println!("    priority: {} (order of appearance in {})", i + 1, PACMAN_CONF);
+        println!(
+            "    priority: {} (order of appearance in {})",
+            i + 1,
+            PACMAN_CONF
+        );
         for l in lines {
             println!("    {}", l);
         }
@@ -2440,16 +2958,32 @@ pub(crate) fn print_system_info() {
     let user_conf = user_makepkg_conf_path();
     let user_conf_active = !user_conf.is_empty() && std::path::Path::new(&user_conf).exists();
     if user_conf_active {
-        println!("makepkg.conf: {} -> overridden by {}", MAKEPKG_CONF_SYSTEM, user_conf);
+        println!(
+            "makepkg.conf: {} -> overridden by {}",
+            MAKEPKG_CONF_SYSTEM, user_conf
+        );
     } else {
-        println!("makepkg.conf: {} (no user override present)", MAKEPKG_CONF_SYSTEM);
+        println!(
+            "makepkg.conf: {} (no user override present)",
+            MAKEPKG_CONF_SYSTEM
+        );
     }
     println!();
 
     let vars = read_makepkg_vars();
     let get = |k: &str| vars.get(k).cloned().unwrap_or_default();
-    for key in ["CARCH", "CHOST", "CFLAGS", "CXXFLAGS", "LDFLAGS", "RUSTFLAGS",
-                "MAKEFLAGS", "OPTIONS", "BUILDENV", "PKGEXT"] {
+    for key in [
+        "CARCH",
+        "CHOST",
+        "CFLAGS",
+        "CXXFLAGS",
+        "LDFLAGS",
+        "RUSTFLAGS",
+        "MAKEFLAGS",
+        "OPTIONS",
+        "BUILDENV",
+        "PKGEXT",
+    ] {
         println!("{}=\"{}\"", key, get(key));
     }
     println!();
@@ -2468,17 +3002,27 @@ pub(crate) fn print_system_info() {
     } else {
         println!(
             "make.conf: {}",
-            cfg.files.iter().map(|f| f.display().to_string()).collect::<Vec<_>>().join(" -> ")
+            cfg.files
+                .iter()
+                .map(|f| f.display().to_string())
+                .collect::<Vec<_>>()
+                .join(" -> ")
         );
         if !cfg.default_flags.is_empty() {
-            println!("    EMERGE_DEFAULT_OPTS=\"{}\"", cfg.default_flags.join(" "));
+            println!(
+                "    EMERGE_DEFAULT_OPTS=\"{}\"",
+                cfg.default_flags.join(" ")
+            );
         }
         // Resolved by actually sourcing the generated makepkg.conf, not
         // printed as written -- a value like CXXFLAGS="$CFLAGS ..." is
         // only meaningful once $CFLAGS itself is expanded.
         let resolved = effective_build_vars(cfg);
         for (key, _) in &cfg.build_vars {
-            let shown = resolved.get(key).cloned().unwrap_or_else(|| "?".to_string());
+            let shown = resolved
+                .get(key)
+                .cloned()
+                .unwrap_or_else(|| "?".to_string());
             println!("    {}=\"{}\"  (overrides makepkg.conf)", key, shown);
         }
     }
@@ -2487,7 +3031,11 @@ pub(crate) fn print_system_info() {
     if masks.is_empty() {
         println!("mask: no entries ({})", crate::mask::MASK_FILE);
     } else {
-        println!("mask: {} entry(ies) ({})", masks.len(), crate::mask::MASK_FILE);
+        println!(
+            "mask: {} entry(ies) ({})",
+            masks.len(),
+            crate::mask::MASK_FILE
+        );
     }
     println!();
 
@@ -2508,10 +3056,12 @@ pub(crate) fn print_system_info() {
             crate::logbook::LOG_FILE
         ),
         Some(_) => println!("log: no events yet ({})", crate::logbook::LOG_FILE),
-        None => println!("log: not found or unreadable ({})", crate::logbook::LOG_FILE),
+        None => println!(
+            "log: not found or unreadable ({})",
+            crate::logbook::LOG_FILE
+        ),
     }
 }
-
 
 // @preserved-rebuild: pacman -Qi deps → pacman -T → offer reinstall.
 
@@ -2597,7 +3147,10 @@ pub(crate) fn missing_via_pacman_t(deps: &[String]) -> Vec<String> {
 
 /// @preserved-rebuild: find unsatisfied deps, offer pacman -S --asdeps.
 pub(crate) fn preserved_rebuild(pretend: bool, ask: bool) {
-    println!("{} Checking installed packages for missing dependencies...", ">>>".green().bold());
+    println!(
+        "{} Checking installed packages for missing dependencies...",
+        ">>>".green().bold()
+    );
 
     let qi = match pacman_qi_all() {
         Some(s) => s,
@@ -2626,17 +3179,30 @@ pub(crate) fn preserved_rebuild(pretend: bool, ask: bool) {
 
     println!();
     for m in &missing {
-        println!("[{} {:<4}] {}", "ebuild".green(), "N".green().bold(), m.green().bold());
+        println!(
+            "[{} {:<4}] {}",
+            "ebuild".green(),
+            "N".green().bold(),
+            m.green().bold()
+        );
     }
     println!();
-    println!("{}: {} missing dependenc{}", "Total".bold(), missing.len(), if missing.len() == 1 { "y" } else { "ies" });
+    println!(
+        "{}: {} missing dependenc{}",
+        "Total".bold(),
+        missing.len(),
+        if missing.len() == 1 { "y" } else { "ies" }
+    );
     println!();
 
     if pretend {
         return;
     }
 
-    print!("{} Reinstall the missing dependencies above? [y/N] ", ">>>".yellow().bold());
+    print!(
+        "{} Reinstall the missing dependencies above? [y/N] ",
+        ">>>".yellow().bold()
+    );
     io::stdout().flush().ok();
     let answer = read_line_raw();
     let confirmed = answer.trim().eq_ignore_ascii_case("y");
@@ -2649,7 +3215,9 @@ pub(crate) fn preserved_rebuild(pretend: bool, ask: bool) {
     // These are all official-repo dependencies (surfaced via `pacman -T`),
     // so this is a plain pacman install -- no AUR resolution involved.
     let mut args: Vec<&str> = vec![PACMAN_BIN, "-S", "--asdeps"];
-    if !ask { args.push("--noconfirm"); }
+    if !ask {
+        args.push("--noconfirm");
+    }
     if run_cmd(SUDO_BIN, &args, &missing) {
         mark_asdeps(&missing);
     }
@@ -2659,7 +3227,12 @@ mod plan_tree_tests {
     use super::*;
 
     fn pkg(name: &str, status: &str) -> PkgInfo {
-        PkgInfo { name: name.to_string(), version: "1.0-1".to_string(), repo: "extra".to_string(), status: status.to_string() }
+        PkgInfo {
+            name: name.to_string(),
+            version: "1.0-1".to_string(),
+            repo: "extra".to_string(),
+            status: status.to_string(),
+        }
     }
 
     #[test]
@@ -2679,7 +3252,10 @@ mod plan_tree_tests {
         let top = vec![&requested];
         let extra = vec![&pulled_in];
         let mut deps = HashMap::new();
-        deps.insert("openconnect".to_string(), HashSet::from(["gnutls".to_string()]));
+        deps.insert(
+            "openconnect".to_string(),
+            HashSet::from(["gnutls".to_string()]),
+        );
         let out = group_by_parent(top, extra, &deps, 1);
         assert_eq!(out, vec![(&requested, 0), (&pulled_in, 1)]);
     }
@@ -2707,7 +3283,6 @@ mod plan_tree_tests {
         let out = group_by_parent(vec![&a, &b], vec![&shared], &deps, 1);
         assert_eq!(out, vec![(&a, 0), (&shared, 1), (&b, 0)]);
     }
-
 
     #[test]
     fn shallow_stops_at_one_level() {
@@ -2800,7 +3375,11 @@ Depends On       : None
         }
         assert_eq!(
             map.get("openconnect").unwrap(),
-            &HashSet::from(["gnutls".to_string(), "libxml2".to_string(), "vpnc-scripts".to_string()])
+            &HashSet::from([
+                "gnutls".to_string(),
+                "libxml2".to_string(),
+                "vpnc-scripts".to_string()
+            ])
         );
         assert_eq!(map.get("vim").unwrap(), &HashSet::new());
     }

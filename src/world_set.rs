@@ -35,7 +35,9 @@ pub(crate) fn get_pkg_repo(pkg: &str) -> Option<String> {
             if line.starts_with("Installed From") || line.starts_with("Repository") {
                 if let Some(val) = line.splitn(2, ':').nth(1) {
                     let r = val.trim().to_string();
-                    if !r.is_empty() { return Some(r); }
+                    if !r.is_empty() {
+                        return Some(r);
+                    }
                 }
             }
         }
@@ -62,7 +64,11 @@ pub(crate) fn get_pkg_repo(pkg: &str) -> Option<String> {
 /// `key : value` line, exact match on key.
 fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     let (k, v) = line.split_once(':')?;
-    if k.trim() == key { Some(v.trim()) } else { None }
+    if k.trim() == key {
+        Some(v.trim())
+    } else {
+        None
+    }
 }
 
 /// Parses `pacman -Qi`/`-Si` output (any number of blank-line-separated
@@ -105,7 +111,9 @@ fn pacman_raw(args: &[&str]) -> String {
 
 /// Batch get_pkg_repo: one -Qi call, then one -Si call for whatever
 /// wasn't installed. Same Some("None")-means-local-build semantics.
-pub(crate) fn get_pkg_repos_batch(names: &[String]) -> std::collections::HashMap<String, Option<String>> {
+pub(crate) fn get_pkg_repos_batch(
+    names: &[String],
+) -> std::collections::HashMap<String, Option<String>> {
     let bares: Vec<String> = names
         .iter()
         .map(|n| n.split('/').last().unwrap_or(n).to_string())
@@ -114,12 +122,20 @@ pub(crate) fn get_pkg_repos_batch(names: &[String]) -> std::collections::HashMap
         return std::collections::HashMap::new();
     }
 
-    let mut result: std::collections::HashMap<String, Option<String>> = std::collections::HashMap::new();
+    let mut result: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
 
     let mut qi_args = vec!["-Qi"];
     qi_args.extend(bares.iter().map(String::as_str));
     for (name, repo) in parse_repo_blocks(&pacman_raw(&qi_args)) {
-        result.insert(name, Some(if repo.is_empty() { "None".to_string() } else { repo }));
+        result.insert(
+            name,
+            Some(if repo.is_empty() {
+                "None".to_string()
+            } else {
+                repo
+            }),
+        );
     }
 
     let missing: Vec<&str> = bares
@@ -163,7 +179,9 @@ pub(crate) fn valid_set_name(name: &str) -> bool {
     !name.is_empty()
         && name != "world"
         && name != "preserved-rebuild"
-        && name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
 }
 
 /// Read sets/<name>.set (one atom/line, # comments; validate_pkg each).
@@ -201,8 +219,8 @@ pub(crate) fn read_batch_file(path: &str) -> Result<Vec<String>> {
         bail!("{} is a symlink - refusing to read", path);
     }
 
-    let file = fs::File::open(path)
-        .with_context(|| format!("could not open batch file: {}", path))?;
+    let file =
+        fs::File::open(path).with_context(|| format!("could not open batch file: {}", path))?;
 
     let pkgs: Vec<String> = io::BufReader::new(file)
         .lines()
@@ -261,7 +279,15 @@ fn hold_back(list: &mut Vec<String>, repo: Option<&str>, held: &mut Vec<String>)
 /// Provision missing packages from world (bare `@world`, no -u).
 /// Prefix picks the source; `abs/` is listed only; bare always resolved;
 /// `Err/` only with err_install. Fixes world prefixes on success.
-pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, err_install: bool, no_sandbox: bool, skip_srcinfo_regen: bool, unshare_net_build: bool) -> Result<bool> {
+pub(crate) fn provision_from_world_set(
+    pretend: bool,
+    ask: bool,
+    verbose: bool,
+    err_install: bool,
+    no_sandbox: bool,
+    skip_srcinfo_regen: bool,
+    unshare_net_build: bool,
+) -> Result<bool> {
     println!("{} Provisioning system from world...", ">>>".green().bold());
 
     if !is_safe_path(WORLD_SET_FILE) {
@@ -340,7 +366,11 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
     hold_back(&mut bare_missing, None, &mut held);
     hold_back(&mut err_missing, None, &mut held);
     if !held.is_empty() {
-        println!(">>> {} world entry(ies) held back: {}", held.len(), held.join(", "));
+        println!(
+            ">>> {} world entry(ies) held back: {}",
+            held.len(),
+            held.join(", ")
+        );
     }
 
     // Bare always resolved; Err/ only with --err-install.
@@ -358,31 +388,68 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
         resolved_aur = missing;
     }
 
-    let unresolved_listed: Vec<String> = if err_install { Vec::new() } else { err_missing.clone() };
+    let unresolved_listed: Vec<String> = if err_install {
+        Vec::new()
+    } else {
+        err_missing.clone()
+    };
 
-    let total = official_missing.len() + aur_missing.len() + abs_missing.len()
-        + unresolved_listed.len() + resolved_official.len() + resolved_aur.len();
+    let total = official_missing.len()
+        + aur_missing.len()
+        + abs_missing.len()
+        + unresolved_listed.len()
+        + resolved_official.len()
+        + resolved_aur.len();
     if total == 0 {
-        println!("{} Nothing to do - every world package is already installed.", ">>>".green().bold());
+        println!(
+            "{} Nothing to do - every world package is already installed.",
+            ">>>".green().bold()
+        );
         return Ok(true);
     }
 
     println!();
-    println!("{}", "These are the packages that would be merged, in order:".green().bold());
+    println!(
+        "{}",
+        "These are the packages that would be merged, in order:"
+            .green()
+            .bold()
+    );
     println!();
     println!("Calculating dependencies... done!");
     println!();
     for p in official_missing.iter().chain(aur_missing.iter()) {
-        println!("[{} {:<4}] {}", "ebuild".green(), "N".green().bold(), p.green().bold());
+        println!(
+            "[{} {:<4}] {}",
+            "ebuild".green(),
+            "N".green().bold(),
+            p.green().bold()
+        );
     }
     for p in &resolved_official {
-        println!("[{} {:<4}] {} (source was unresolved - found in official repos)", "ebuild".green(), "N".green().bold(), p.green().bold());
+        println!(
+            "[{} {:<4}] {} (source was unresolved - found in official repos)",
+            "ebuild".green(),
+            "N".green().bold(),
+            p.green().bold()
+        );
     }
     for p in &resolved_aur {
-        println!("[{} {:<4}] {} (source was unresolved - will try the AUR)", "ebuild".green(), "N".cyan().bold(), p.cyan().bold());
+        println!(
+            "[{} {:<4}] {} (source was unresolved - will try the AUR)",
+            "ebuild".green(),
+            "N".cyan().bold(),
+            p.cyan().bold()
+        );
     }
     for p in &abs_missing {
-        println!("[{} {:<4}] {} (built from ABS - needs `emerge {} --abs`)", "ebuild".green(), "N".yellow().bold(), p.yellow().bold(), p);
+        println!(
+            "[{} {:<4}] {} (built from ABS - needs `emerge {} --abs`)",
+            "ebuild".green(),
+            "N".yellow().bold(),
+            p.yellow().bold(),
+            p
+        );
     }
     for p in &unresolved_listed {
         println!("[{} {:<4}] {} (installed from an unknown source - retry with --err-install, or install manually)", "ebuild".green(), "N".red().bold(), p.red().bold());
@@ -398,10 +465,18 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
     let mut overall_ok = true;
 
     if !official_missing.is_empty() {
-        println!("{} Installing {} package(s) from official repos...", ">>>".green().bold(), official_missing.len());
+        println!(
+            "{} Installing {} package(s) from official repos...",
+            ">>>".green().bold(),
+            official_missing.len()
+        );
         let mut args: Vec<&str> = vec![PACMAN_BIN, "-S", "--needed"];
-        if verbose { args.push("--verbose"); }
-        if !ask { args.push("--noconfirm"); }
+        if verbose {
+            args.push("--verbose");
+        }
+        if !ask {
+            args.push("--noconfirm");
+        }
         let snapshot = world_installed_snapshot();
         let install_ok = crate::pacman_install(&args, &official_missing);
         reconcile_world_after_install(&snapshot);
@@ -418,10 +493,25 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
     }
 
     if !aur_missing.is_empty() {
-        println!("{} Installing {} AUR package(s)...", ">>>".green().bold(), aur_missing.len());
+        println!(
+            "{} Installing {} AUR package(s)...",
+            ">>>".green().bold(),
+            aur_missing.len()
+        );
         scan_aur_pkgbuilds_or_abort(&aur_missing);
         // aur_install sets explicit on success; no mark_asexplicit needed.
-        if !aur_install(&aur_missing, false, ask, false, false, false, no_sandbox, skip_srcinfo_regen, unshare_net_build, false) {
+        if !aur_install(
+            &aur_missing,
+            false,
+            ask,
+            false,
+            false,
+            false,
+            no_sandbox,
+            skip_srcinfo_regen,
+            unshare_net_build,
+            false,
+        ) {
             overall_ok = false;
             eprintln!(">>> Warning: some AUR package(s) failed to install.");
             if !crate::runtime::keep_going() {
@@ -436,18 +526,26 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
     if !resolved_official.is_empty() {
         println!(
             "{} Installing {} previously-unresolved package(s) from official repos...",
-            ">>>".green().bold(), resolved_official.len()
+            ">>>".green().bold(),
+            resolved_official.len()
         );
         let mut args: Vec<&str> = vec![PACMAN_BIN, "-S", "--needed"];
-        if verbose { args.push("--verbose"); }
-        if !ask { args.push("--noconfirm"); }
+        if verbose {
+            args.push("--verbose");
+        }
+        if !ask {
+            args.push("--noconfirm");
+        }
         let snapshot = world_installed_snapshot();
         let install_ok = crate::pacman_install(&args, &resolved_official);
         reconcile_world_after_install(&snapshot);
         if install_ok {
             // Fix world prefix now that the real repo is known.
             if let Err(e) = add_to_world_set(&resolved_official, None) {
-                eprintln!(">>> Warning: package(s) installed but world was not updated: {:#}", e);
+                eprintln!(
+                    ">>> Warning: package(s) installed but world was not updated: {:#}",
+                    e
+                );
             }
         } else {
             overall_ok = false;
@@ -461,12 +559,27 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
     if !resolved_aur.is_empty() {
         println!(
             "{} Installing {} previously-unresolved package(s) via the AUR...",
-            ">>>".green().bold(), resolved_aur.len()
+            ">>>".green().bold(),
+            resolved_aur.len()
         );
         scan_aur_pkgbuilds_or_abort(&resolved_aur);
-        if aur_install(&resolved_aur, false, ask, false, false, false, no_sandbox, skip_srcinfo_regen, unshare_net_build, false) {
+        if aur_install(
+            &resolved_aur,
+            false,
+            ask,
+            false,
+            false,
+            false,
+            no_sandbox,
+            skip_srcinfo_regen,
+            unshare_net_build,
+            false,
+        ) {
             if let Err(e) = add_to_world_set(&resolved_aur, Some("aur")) {
-                eprintln!(">>> Warning: package(s) installed but world was not updated: {:#}", e);
+                eprintln!(
+                    ">>> Warning: package(s) installed but world was not updated: {:#}",
+                    e
+                );
             }
         } else {
             overall_ok = false;
@@ -481,28 +594,36 @@ pub(crate) fn provision_from_world_set(pretend: bool, ask: bool, verbose: bool, 
         eprintln!(
             "{} {} package(s) were built from ABS and can't be reproduced unattended - \
             install them yourself: `emerge <pkg> --abs`",
-            " *".yellow().bold(), abs_missing.len()
+            " *".yellow().bold(),
+            abs_missing.len()
         );
-        for p in &abs_missing { eprintln!("     {}", p); }
+        for p in &abs_missing {
+            eprintln!("     {}", p);
+        }
     }
     if !unresolved_listed.is_empty() {
         eprintln!(
             "{} {} package(s) are installed from an unknown source - retry with \
             `--err-install` to attempt the normal official/AUR install path, or install manually.",
-            " *".yellow().bold(), unresolved_listed.len()
+            " *".yellow().bold(),
+            unresolved_listed.len()
         );
-        for p in &unresolved_listed { eprintln!("     {}", p); }
+        for p in &unresolved_listed {
+            eprintln!("     {}", p);
+        }
     }
 
     Ok(overall_ok)
 }
 
-
 // ── world ─────────────────────────────────────────────────────────────────
 
 /// Re-resolve repo prefixes for every world entry.
 pub(crate) fn regen_world_set() -> Result<()> {
-    println!("{} Regenerating world repository prefixes...", ">>>".green().bold());
+    println!(
+        "{} Regenerating world repository prefixes...",
+        ">>>".green().bold()
+    );
 
     if !is_safe_path(WORLD_SET_FILE) {
         bail!("{} is a symlink - refusing to modify", WORLD_SET_FILE);
@@ -530,7 +651,10 @@ pub(crate) fn regen_world_set() -> Result<()> {
     for entry in &entries {
         let bare = entry.split('/').last().unwrap_or(entry);
         // Keep abs/aur prefix if re-resolution can't find a live repo.
-        let old_prefix = entry.split('/').next().filter(|p| *p == "abs" || *p == "aur");
+        let old_prefix = entry
+            .split('/')
+            .next()
+            .filter(|p| *p == "abs" || *p == "aur");
         let new_entry = pkg_world_entry_from(bare, old_prefix, &repos);
         if &new_entry != entry {
             println!("  {} -> {}", entry, new_entry);
@@ -546,14 +670,22 @@ pub(crate) fn regen_world_set() -> Result<()> {
 
     updated.sort();
     write_world_set(&updated)?;
-    println!("{} world updated ({} entries changed).", ">>>".green().bold(), changed);
+    println!(
+        "{} world updated ({} entries changed).",
+        ">>>".green().bold(),
+        changed
+    );
     Ok(())
 }
 
 /// Re-resolve prefixes in a custom set. sort=true also alphabetizes
 /// (drops comments/blank-line grouping).
 pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
-    println!("{} Regenerating prefixes for @{}...", ">>>".green().bold(), name);
+    println!(
+        "{} Regenerating prefixes for @{}...",
+        ">>>".green().bold(),
+        name
+    );
 
     let path = format!("{}/{}.set", SETS_DIR, name);
     if !is_safe_path(&path) {
@@ -569,7 +701,10 @@ pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
         .collect();
 
     if raw_lines.iter().all(|l| l.trim().is_empty()) {
-        println!(">>> @{} is empty or does not exist ({}) - nothing to regenerate.", name, path);
+        println!(
+            ">>> @{} is empty or does not exist ({}) - nothing to regenerate.",
+            name, path
+        );
         return Ok(());
     }
 
@@ -596,14 +731,20 @@ pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
             continue;
         }
         if !validate_pkg(trimmed) {
-            eprintln!(">>> Warning: invalid entry in @{} (left as-is): {}", name, trimmed);
+            eprintln!(
+                ">>> Warning: invalid entry in @{} (left as-is): {}",
+                name, trimmed
+            );
             rewritten.push(raw.clone());
             continue;
         }
 
         let bare = trimmed.split('/').last().unwrap_or(trimmed);
         // Keep abs/aur if re-resolution misses (same as regen_world_set).
-        let old_prefix = trimmed.split('/').next().filter(|p| *p == "abs" || *p == "aur");
+        let old_prefix = trimmed
+            .split('/')
+            .next()
+            .filter(|p| *p == "abs" || *p == "aur");
         let new_entry = pkg_world_entry_from(bare, old_prefix, &repos);
         if new_entry != trimmed {
             println!("  {} -> {}", trimmed, new_entry);
@@ -619,7 +760,11 @@ pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
         sorted.dedup();
         let order_changed = sorted != pkg_entries;
         if changed == 0 && !order_changed {
-            println!("{} @{} is already up to date (sorted).", ">>>".green().bold(), name);
+            println!(
+                "{} @{} is already up to date (sorted).",
+                ">>>".green().bold(),
+                name
+            );
             return Ok(());
         }
         sorted
@@ -669,9 +814,19 @@ pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
     }
 
     if sort {
-        println!("{} @{} updated ({} entries changed, re-sorted).", ">>>".green().bold(), name, changed);
+        println!(
+            "{} @{} updated ({} entries changed, re-sorted).",
+            ">>>".green().bold(),
+            name,
+            changed
+        );
     } else {
-        println!("{} @{} updated ({} entries changed).", ">>>".green().bold(), name, changed);
+        println!(
+            "{} @{} updated ({} entries changed).",
+            ">>>".green().bold(),
+            name,
+            changed
+        );
     }
     Ok(())
 }
@@ -684,7 +839,8 @@ pub(crate) fn add_to_world_set(packages: &[String], forced_prefix: Option<&str>)
     }
 
     // bare name → full "repo/name" entry
-    let mut current_set: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut current_set: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     if let Ok(file) = fs::File::open(WORLD_SET_FILE) {
         for line in io::BufReader::new(file).lines().map_while(Result::ok) {
             let trimmed = line.trim().to_string();
@@ -713,14 +869,16 @@ pub(crate) fn add_to_world_set(packages: &[String], forced_prefix: Option<&str>)
         }
     }
 
-    if !changed { return Ok(()); }
+    if !changed {
+        return Ok(());
+    }
 
     let mut sorted: Vec<String> = current_set.into_values().collect();
     sorted.sort();
     write_world_set(&sorted)
 }
 
-// Conflict-removal reconciliation 
+// Conflict-removal reconciliation
 //
 // Detection removes the package from world if pacman removed it while resolving a conflict.
 
@@ -784,7 +942,10 @@ pub(crate) fn reconcile_world_after_install(before: &HashSet<String>) {
         vanished.join(", ")
     );
     if let Err(e) = remove_from_world_set(&vanished) {
-        eprintln!(">>> Warning: conflict-removed package(s) but world was not updated: {:#}", e);
+        eprintln!(
+            ">>> Warning: conflict-removed package(s) but world was not updated: {:#}",
+            e
+        );
     }
 }
 
@@ -795,7 +956,8 @@ pub(crate) fn remove_from_world_set(packages: &[String]) -> Result<()> {
         bail!("{} is a symlink - refusing to read", WORLD_SET_FILE);
     }
 
-    let mut current_set: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut current_set: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     if let Ok(file) = fs::File::open(WORLD_SET_FILE) {
         for line in io::BufReader::new(file).lines().map_while(Result::ok) {
             let trimmed = line.trim().to_string();
@@ -814,13 +976,14 @@ pub(crate) fn remove_from_world_set(packages: &[String]) -> Result<()> {
         }
     }
 
-    if !changed { return Ok(()); }
+    if !changed {
+        return Ok(());
+    }
 
     let mut sorted: Vec<String> = current_set.into_values().collect();
     sorted.sort();
     write_world_set(&sorted)
 }
-
 
 // --resume: argv of the last non-pretend install; cleared on success.
 
@@ -831,7 +994,9 @@ pub(crate) fn save_resume_state(args: &[String]) {
         return;
     }
 
-    let _ = Command::new(SUDO_BIN).args([RM_BIN, "-f", RESUME_TMP]).status();
+    let _ = Command::new(SUDO_BIN)
+        .args([RM_BIN, "-f", RESUME_TMP])
+        .status();
 
     let child_proc = Command::new(SUDO_BIN)
         .arg(TEE_BIN)
@@ -864,7 +1029,9 @@ pub(crate) fn save_resume_state(args: &[String]) {
 
 /// Clear resume state after a fully successful operation.
 pub(crate) fn clear_resume_state() {
-    let _ = Command::new(SUDO_BIN).args([RM_BIN, "-f", RESUME_FILE]).status();
+    let _ = Command::new(SUDO_BIN)
+        .args([RM_BIN, "-f", RESUME_FILE])
+        .status();
 }
 
 /// Load resume argv, if any.
@@ -879,7 +1046,11 @@ pub(crate) fn load_resume_state() -> Option<Vec<String>> {
         .map(|l| l.trim().to_string())
         .filter(|l| !l.is_empty())
         .collect();
-    if lines.is_empty() { None } else { Some(lines) }
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines)
+    }
 }
 
 // --undo: one step of install/unmerge history (no version snapshot for -u).
@@ -902,13 +1073,17 @@ impl LastAction {
 
 /// Save undo state (best-effort).
 pub(crate) fn save_last_action(kind: LastAction, atoms: &[String]) {
-    if atoms.is_empty() { return; }
+    if atoms.is_empty() {
+        return;
+    }
     if !is_safe_path(LASTACTION_TMP) || !is_safe_path(LASTACTION_FILE) {
         eprintln!(">>> Warning: refusing to save undo state - symlink detected");
         return;
     }
 
-    let _ = Command::new(SUDO_BIN).args([RM_BIN, "-f", LASTACTION_TMP]).status();
+    let _ = Command::new(SUDO_BIN)
+        .args([RM_BIN, "-f", LASTACTION_TMP])
+        .status();
 
     let child_proc = Command::new(SUDO_BIN)
         .arg(TEE_BIN)
@@ -942,7 +1117,9 @@ pub(crate) fn save_last_action(kind: LastAction, atoms: &[String]) {
 
 /// Clear undo state after --undo acts on it.
 pub(crate) fn clear_last_action() {
-    let _ = Command::new(SUDO_BIN).args([RM_BIN, "-f", LASTACTION_FILE]).status();
+    let _ = Command::new(SUDO_BIN)
+        .args([RM_BIN, "-f", LASTACTION_FILE])
+        .status();
 }
 
 /// Load undo state: (kind tag, atoms).
@@ -958,7 +1135,11 @@ pub(crate) fn load_last_action() -> Option<(String, Vec<String>)> {
         .filter(|l| !l.is_empty());
     let kind = lines.next()?;
     let atoms: Vec<String> = lines.collect();
-    if atoms.is_empty() { None } else { Some((kind, atoms)) }
+    if atoms.is_empty() {
+        None
+    } else {
+        Some((kind, atoms))
+    }
 }
 
 pub(crate) fn write_world_set(packages: &[String]) -> Result<()> {
@@ -992,11 +1173,20 @@ pub(crate) fn write_world_set(packages: &[String]) -> Result<()> {
                 }
                 match child.wait() {
                     Ok(s) if s.success() => true,
-                    Ok(_) => { eprintln!(">>> Error: sudo tee exited with non-zero status."); false }
-                    Err(e) => { eprintln!(">>> Error waiting for sudo tee: {}", e); false }
+                    Ok(_) => {
+                        eprintln!(">>> Error: sudo tee exited with non-zero status.");
+                        false
+                    }
+                    Err(e) => {
+                        eprintln!(">>> Error waiting for sudo tee: {}", e);
+                        false
+                    }
                 }
             }
-            Err(e) => { eprintln!(">>> Error: Failed to spawn sudo tee: {}", e); false }
+            Err(e) => {
+                eprintln!(">>> Error: Failed to spawn sudo tee: {}", e);
+                false
+            }
         }
     };
 

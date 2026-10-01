@@ -88,9 +88,17 @@ fn read_elf_dyn(path: &Path, data: &[u8]) -> Option<ElfDyn> {
     }
 
     let (phoff, phentsize, phnum) = if is_64 {
-        (u64_at(data, 0x20)? as usize, u16_at(data, 0x36)? as usize, u16_at(data, 0x38)? as usize)
+        (
+            u64_at(data, 0x20)? as usize,
+            u16_at(data, 0x36)? as usize,
+            u16_at(data, 0x38)? as usize,
+        )
     } else {
-        (u32_at(data, 0x1C)? as usize, u16_at(data, 0x2A)? as usize, u16_at(data, 0x2C)? as usize)
+        (
+            u32_at(data, 0x1C)? as usize,
+            u16_at(data, 0x2A)? as usize,
+            u16_at(data, 0x2C)? as usize,
+        )
     };
     if phentsize == 0 || phnum == 0 {
         return None;
@@ -104,7 +112,11 @@ fn read_elf_dyn(path: &Path, data: &[u8]) -> Option<ElfDyn> {
         let base = phoff.checked_add(i.checked_mul(phentsize)?)?;
         let p_type = u32_at(data, base)?;
         let (p_offset, p_vaddr, p_filesz) = if is_64 {
-            (u64_at(data, base + 8)?, u64_at(data, base + 16)?, u64_at(data, base + 32)?)
+            (
+                u64_at(data, base + 8)?,
+                u64_at(data, base + 16)?,
+                u64_at(data, base + 32)?,
+            )
         } else {
             (
                 u32_at(data, base + 4)? as u64,
@@ -139,21 +151,27 @@ fn read_elf_dyn(path: &Path, data: &[u8]) -> Option<ElfDyn> {
         let (tag, val) = if is_64 {
             (u64_at(data, off)? as i64, u64_at(data, off + 8)?)
         } else {
-            (u32_at(data, off)? as i32 as i64, u32_at(data, off + 4)? as u64)
+            (
+                u32_at(data, off)? as i32 as i64,
+                u32_at(data, off + 4)? as u64,
+            )
         };
         match tag {
-            0 => break,                                        // DT_NULL
-            1 => needed_offsets.push(val as usize),             // DT_NEEDED
-            5 => strtab_vaddr = Some(val),                      // DT_STRTAB
-            10 => strsz = val as usize,                         // DT_STRSZ
-            15 | 29 => runpath_offsets.push(val as usize),      // DT_RPATH / DT_RUNPATH
+            0 => break,                                    // DT_NULL
+            1 => needed_offsets.push(val as usize),        // DT_NEEDED
+            5 => strtab_vaddr = Some(val),                 // DT_STRTAB
+            10 => strsz = val as usize,                    // DT_STRSZ
+            15 | 29 => runpath_offsets.push(val as usize), // DT_RPATH / DT_RUNPATH
             _ => {}
         }
         off += entry_size;
     }
 
     if needed_offsets.is_empty() && runpath_offsets.is_empty() {
-        return Some(ElfDyn { needed: Vec::new(), runpath: Vec::new() });
+        return Some(ElfDyn {
+            needed: Vec::new(),
+            runpath: Vec::new(),
+        });
     }
 
     let strtab_off = vaddr_to_off(strtab_vaddr?)?;
@@ -164,12 +182,20 @@ fn read_elf_dyn(path: &Path, data: &[u8]) -> Option<ElfDyn> {
     };
     let strtab = data.get(strtab_off..strtab_end)?;
 
-    let needed: Vec<String> = needed_offsets.iter().filter_map(|o| cstr_at(strtab, *o)).collect();
+    let needed: Vec<String> = needed_offsets
+        .iter()
+        .filter_map(|o| cstr_at(strtab, *o))
+        .collect();
 
-    let origin = path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("/"));
+    let origin = path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("/"));
     let mut runpath = Vec::new();
     for o in runpath_offsets {
-        let Some(raw) = cstr_at(strtab, o) else { continue };
+        let Some(raw) = cstr_at(strtab, o) else {
+            continue;
+        };
         for part in raw.split(':').filter(|p| !p.is_empty()) {
             let expanded = part
                 .replace("${ORIGIN}", &origin.to_string_lossy())
@@ -192,7 +218,9 @@ fn linker_dirs() -> Vec<PathBuf> {
         if depth > 4 {
             return;
         }
-        let Ok(text) = std::fs::read_to_string(path) else { return };
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return;
+        };
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -202,7 +230,9 @@ fn linker_dirs() -> Vec<PathBuf> {
                 let pattern = rest.trim();
                 // Only the "dir/*.conf" shape ld.so.conf actually uses.
                 if let Some((dir, suffix)) = pattern.rsplit_once('/') {
-                    let Ok(entries) = std::fs::read_dir(dir) else { continue };
+                    let Ok(entries) = std::fs::read_dir(dir) else {
+                        continue;
+                    };
                     let want_ext = suffix.trim_start_matches('*');
                     let mut paths: Vec<PathBuf> = entries
                         .flatten()
@@ -233,9 +263,13 @@ fn linker_dirs() -> Vec<PathBuf> {
 fn library_index(dirs: &[PathBuf]) -> HashMap<String, Vec<PathBuf>> {
     let mut index: HashMap<String, Vec<PathBuf>> = HashMap::new();
     for dir in dirs {
-        let Ok(entries) = std::fs::read_dir(dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
         for e in entries.flatten() {
-            let Some(name) = e.file_name().to_str().map(str::to_string) else { continue };
+            let Some(name) = e.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
             index.entry(name).or_default().push(e.path());
         }
     }
@@ -309,12 +343,18 @@ fn scan_broken() -> Vec<BrokenFile> {
     for p in &paths {
         let path = Path::new(p);
         // Symlinks point at a real file that's scanned on its own turn.
-        let Ok(meta) = std::fs::symlink_metadata(path) else { continue };
+        let Ok(meta) = std::fs::symlink_metadata(path) else {
+            continue;
+        };
         if !meta.is_file() || meta.len() < 64 || meta.len() > MAX_ELF_BYTES {
             continue;
         }
-        let Ok(data) = std::fs::read(path) else { continue };
-        let Some(info) = read_elf_dyn(path, &data) else { continue };
+        let Ok(data) = std::fs::read(path) else {
+            continue;
+        };
+        let Some(info) = read_elf_dyn(path, &data) else {
+            continue;
+        };
         if info.needed.is_empty() {
             continue;
         }
@@ -325,7 +365,10 @@ fn scan_broken() -> Vec<BrokenFile> {
             .cloned()
             .collect();
         if !missing.is_empty() {
-            broken.push(BrokenFile { path: p.clone(), missing });
+            broken.push(BrokenFile {
+                path: p.clone(),
+                missing,
+            });
         }
     }
     broken
@@ -345,8 +388,12 @@ fn owners_of(files: &[String]) -> HashMap<String, String> {
         let Ok(out) = out else { continue };
         for line in String::from_utf8_lossy(&out.stdout).lines() {
             // "/usr/bin/foo is owned by bar 1.2.3-1"
-            let Some((path, rest)) = line.split_once(" is owned by ") else { continue };
-            let Some(pkg) = rest.split_whitespace().next() else { continue };
+            let Some((path, rest)) = line.split_once(" is owned by ") else {
+                continue;
+            };
+            let Some(pkg) = rest.split_whitespace().next() else {
+                continue;
+            };
             owners.insert(path.trim().to_string(), pkg.to_string());
         }
     }
@@ -433,7 +480,12 @@ pub(crate) fn revdep_rebuild(
     }
 
     println!();
-    println!("{}", "These packages have binaries linking against missing libraries:".yellow().bold());
+    println!(
+        "{}",
+        "These packages have binaries linking against missing libraries:"
+            .yellow()
+            .bold()
+    );
     println!();
     for (pkg, (files, missing)) in &by_pkg {
         println!(
@@ -450,7 +502,10 @@ pub(crate) fn revdep_rebuild(
             println!("      {}", f.dimmed());
         }
         if files.len() > 3 {
-            println!("      {}", format!("... and {} more", files.len() - 3).dimmed());
+            println!(
+                "      {}",
+                format!("... and {} more", files.len() - 3).dimmed()
+            );
         }
     }
     if !orphan_files.is_empty() {
