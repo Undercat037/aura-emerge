@@ -16,6 +16,7 @@ mod config;
 mod logbook;
 mod mask;
 mod news;
+mod package_env;
 mod packages;
 mod revdep;
 mod runtime;
@@ -194,6 +195,9 @@ FILES
                                             build-env overrides (CFLAGS, MAKEFLAGS, ...)
     ~/.config/emerge/make.conf              Same, per-user; last file to set a key wins
     /etc/portage/package.mask               Never-install list (file, or a directory of files)
+    /etc/portage/package.env                Per-package build-env overrides: `atom env...`
+                                            (file, or a directory of files)
+    /etc/portage/env/<name>                 Env files for package.env, make.conf syntax
     /etc/portage/resume.state                Saved state for --resume
     /etc/portage/lastaction.state            Last install/unmerge step, for --undo
     /var/log/emerge.log                     Append-only merge/unmerge event log, with

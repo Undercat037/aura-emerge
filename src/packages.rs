@@ -118,6 +118,32 @@ pub(crate) fn mark_asdeps(pkgs: &[String]) {
         .status();
 }
 
+/// make.conf plus any `package.env` layers matching this build dir
+/// (`.../build/<aur|abs>/<pkgbase>`; pkgbase and every `.SRCINFO`
+/// pkgname are tried against the atoms).
+fn build_config(build_dir: &std::path::Path) -> crate::config::Config {
+    let repo = build_dir
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str());
+    let mut names: Vec<String> = Vec::new();
+    if let Some(b) = build_dir.file_name().and_then(|n| n.to_str()) {
+        names.push(b.to_string());
+    }
+    if let Some(v) = crate::aur::srcinfo_pkgnames(&build_dir.join(".SRCINFO")) {
+        for n in v {
+            if !names.contains(&n) {
+                names.push(n);
+            }
+        }
+    }
+    let applied = crate::package_env::applied_for(repo, &names);
+    for c in &applied.conflicts {
+        eprintln!("{} {}", ">>> Warning:".yellow().bold(), c);
+    }
+    crate::runtime::config().layered(&applied.vars, &applied.files)
+}
+
 /// Materializes make.conf's build flags as a makepkg.conf and returns
 /// its path, for `makepkg --config`.
 ///
@@ -132,8 +158,11 @@ pub(crate) fn mark_asdeps(pkgs: &[String]) {
 /// directory -- see `sandbox::scratch_dir`. `None` when make.conf
 /// sets no build flags, which leaves makepkg's own config lookup
 /// untouched.
-fn makepkg_conf_override(build_dir: &std::path::Path) -> Option<String> {
-    let text = crate::config::makepkg_override_conf(crate::runtime::config())?;
+fn makepkg_conf_override(
+    build_dir: &std::path::Path,
+    cfg: &crate::config::Config,
+) -> Option<String> {
+    let text = crate::config::makepkg_override_conf(cfg)?;
     let dir = crate::sandbox::scratch_dir(build_dir);
     fs::create_dir_all(&dir).ok()?;
     let path = dir.join("makepkg.conf");
@@ -526,19 +555,42 @@ pub(crate) fn print_emerge_completed(pkgs: &[PkgInfo]) {
 
 // ── ABS (Arch Build System) support ──────────────────────────────────────────
 
-/// pkgver from ABS GitLab .SRCINFO (no clone).
+/// `[epoch:]pkgver-pkgrel` from ABS GitLab .SRCINFO (no clone).
+/// Full version, not bare pkgver: `vercmp` skips the release when one
+/// side lacks it, so `0.12.5-1.1` vs `0.12.5` read as a reinstall.
 pub(crate) fn abs_get_version(pkg: &str) -> String {
-    // Try to fetch .SRCINFO from GitLab raw API
     let url = format!("{}/{}/raw/HEAD/.SRCINFO", ABS_GITLAB_BASE, pkg);
     if let Some(text) = crate::http::get(&url, 5) {
-        for line in text.lines() {
-            let line = line.trim();
-            if line.starts_with("pkgver = ") {
-                return line["pkgver = ".len()..].trim().to_string();
-            }
-        }
+        return srcinfo_full_version(&text).unwrap_or_else(|| "?".to_string());
     }
     "?".to_string()
+}
+
+/// First `epoch`/`pkgver`/`pkgrel` in a .SRCINFO (the pkgbase block).
+fn srcinfo_full_version(text: &str) -> Option<String> {
+    let (mut epoch, mut ver, mut rel) = (None, None, None);
+    for line in text.lines() {
+        let Some((k, v)) = line.trim().split_once('=') else {
+            continue;
+        };
+        let v = v.trim().to_string();
+        match k.trim() {
+            "epoch" if epoch.is_none() => epoch = Some(v),
+            "pkgver" if ver.is_none() => ver = Some(v),
+            "pkgrel" if rel.is_none() => rel = Some(v),
+            _ => {}
+        }
+    }
+    let ver = ver?;
+    let mut out = match epoch.filter(|e| e != "0") {
+        Some(e) => format!("{}:{}", e, ver),
+        None => ver,
+    };
+    if let Some(r) = rel {
+        out.push('-');
+        out.push_str(&r);
+    }
+    Some(out)
 }
 
 /// validpgpkeys=(...) IDs, uppercased.
@@ -1959,12 +2011,13 @@ fn build_with_sandbox(
 
     // make.conf's build flags, added before makepkg_args is cloned
     // for the --nobuild/--noextract split below so both halves get it.
-    let conf_override = makepkg_conf_override(build_dir);
+    let build_cfg = build_config(build_dir);
+    let conf_override = makepkg_conf_override(build_dir, &build_cfg);
     if let Some(path) = &conf_override {
         println!(
             "{} applying build flags from {}",
             ">>>".green().bold(),
-            crate::runtime::config()
+            build_cfg
                 .files
                 .iter()
                 .map(|f| f.display().to_string())
@@ -2166,7 +2219,8 @@ fn legacy_makepkg_si(build_dir: &std::path::Path, ask: bool, oneshot: bool, skip
         makepkg_args.push("--skippgpcheck");
     }
 
-    let conf_override = makepkg_conf_override(build_dir);
+    let build_cfg = build_config(build_dir);
+    let conf_override = makepkg_conf_override(build_dir, &build_cfg);
     if let Some(path) = &conf_override {
         makepkg_args.push("--config");
         makepkg_args.push(path.as_str());
@@ -2184,7 +2238,7 @@ fn legacy_makepkg_si(build_dir: &std::path::Path, ask: bool, oneshot: bool, skip
                 !l.starts_with('#') && l.starts_with(key) && l[key.len()..].starts_with('=')
             })
         };
-        let overlap: Vec<&str> = crate::runtime::config()
+        let overlap: Vec<&str> = build_cfg
             .build_vars
             .iter()
             .map(|(k, _)| k.as_str())

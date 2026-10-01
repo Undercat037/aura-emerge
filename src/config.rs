@@ -342,6 +342,47 @@ fn parse_into(
     ok
 }
 
+/// Reads one `package.env` env file (make.conf syntax). Only build
+/// vars are kept; `None` if unreadable, a symlink, or structurally broken.
+pub(crate) fn load_env_file(path: &Path) -> Option<Vec<(String, BuildValue)>> {
+    if !path.is_file() || !crate::is_safe_path(&path.to_string_lossy()) {
+        return None;
+    }
+    let text = std::fs::read_to_string(path).ok()?;
+    let mut vars: HashMap<String, BuildValue> = HashMap::new();
+    let mut defaults: Vec<String> = Vec::new();
+    if !parse_into(&text, path, &mut vars, &mut defaults) {
+        return None;
+    }
+    if !defaults.is_empty() {
+        warn(path, DEFAULT_FLAG_KEY, "only valid in make.conf (ignored)");
+    }
+    Some(
+        BUILD_VARS
+            .iter()
+            .filter_map(|k| vars.remove(*k).map(|v| (k.to_string(), v)))
+            .collect(),
+    )
+}
+
+impl Config {
+    /// This config with `extra` vars laid over it (same key replaced),
+    /// `files` appended to the source list. `BUILD_VARS` order kept.
+    pub(crate) fn layered(&self, extra: &[(String, BuildValue)], files: &[PathBuf]) -> Config {
+        let mut vars: HashMap<String, BuildValue> = self.build_vars.iter().cloned().collect();
+        for (k, v) in extra {
+            vars.insert(k.clone(), v.clone());
+        }
+        let mut out = self.clone();
+        out.build_vars = BUILD_VARS
+            .iter()
+            .filter_map(|k| vars.remove(*k).map(|v| (k.to_string(), v)))
+            .collect();
+        out.files.extend(files.iter().cloned());
+        out
+    }
+}
+
 fn warn(path: &Path, key: &str, msg: &str) {
     eprintln!(
         "{} {}: {}: {}",

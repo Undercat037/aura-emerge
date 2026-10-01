@@ -188,13 +188,13 @@ fn load() -> MaskList {
 }
 
 /// Same character set as a package name, plus `*`.
-fn valid_pattern(p: &str) -> bool {
+pub(crate) fn valid_pattern(p: &str) -> bool {
     p.chars()
         .all(|c| c.is_alphanumeric() || "@._+-*".contains(c))
 }
 
 /// Wildcard match, `*` = any run of characters. Two-pointer walk.
-fn glob_match(pattern: &str, name: &str) -> bool {
+pub(crate) fn glob_match(pattern: &str, name: &str) -> bool {
     let p: Vec<char> = pattern.chars().collect();
     let n: Vec<char> = name.chars().collect();
     let (mut pi, mut ni) = (0usize, 0usize);
