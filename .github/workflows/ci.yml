@@ -1,0 +1,61 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install deps
+        run: pacman -Syu --noconfirm --needed git rust sudo
+
+      - uses: actions/checkout@v4
+
+      - name: Test
+        run: cargo test --locked --release
+
+      - name: Build
+        run: cargo build --locked --release
+
+      - name: Scanner flags the malicious sample
+        env:
+          NO_COLOR: "1"
+        run: |
+          set +e
+          out=$(./target/release/aura-emerge --install-pkgbuild ./scaner-test --scan 2>&1)
+          code=$?
+          echo "$out"
+          [ "$code" -eq 1 ] || { echo "::error::expected exit 1, got $code"; exit 1; }
+          for needle in \
+            "Alert, matched a known-malicious IOC" \
+            "Warning, detected suspicious fragment" \
+            "pipes a remote script straight into a shell" \
+            "decodes a base64 blob" \
+            "hardcoded raw IP address" \
+            ".onion address"
+            "perl -e/-E snippet"
+            "ruby -e snippet"
+            "node -e snippet"
+            "lua -e snippet"
+            "sh/bash -c with suspicious payload"
+          do
+            grep -qF "$needle" <<<"$out" || { echo "::error::missing detection: $needle"; exit 1; }
+          done
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check

