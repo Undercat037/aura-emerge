@@ -36,20 +36,21 @@ jobs:
           code=$?
           echo "$out"
           [ "$code" -eq 1 ] || { echo "::error::expected exit 1, got $code"; exit 1; }
-          for needle in \
-            "Alert, matched a known-malicious IOC" \
-            "Warning, detected suspicious fragment" \
-            "pipes a remote script straight into a shell" \
-            "decodes a base64 blob" \
-            "hardcoded raw IP address" \
+          needles=(
+            "Alert, matched a known-malicious IOC"
+            "Warning, detected suspicious fragment"
+            "pipes a remote script straight into a shell"
+            "decodes a base64 blob"
+            "hardcoded raw IP address"
             ".onion address"
             "perl -e/-E snippet"
             "ruby -e snippet"
             "node -e snippet"
             "lua -e snippet"
             "sh/bash -c with suspicious payload"
-          do
-            grep -qF "$needle" <<<"$out" || { echo "::error::missing detection: $needle"; exit 1; }
+          )
+          for needle in "${needles[@]}"; do
+            grep -qF -- "$needle" <<<"$out" || { echo "::error::missing detection: $needle"; exit 1; }
           done
 
   deny:
