@@ -30,10 +30,11 @@ mod http {
 
     /// GET body as text, or None (non-2xx / timeout / network).
     pub(crate) fn get(url: &str, timeout_secs: u64) -> Option<String> {
-        let agent = ureq::AgentBuilder::new()
-            .timeout(Duration::from_secs(timeout_secs))
-            .build();
-        agent.get(url).call().ok()?.into_string().ok()
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(timeout_secs)))
+            .build()
+            .into();
+        agent.get(url).call().ok()?.body_mut().read_to_string().ok()
     }
 }
 

@@ -1,7 +1,5 @@
 # cargo-deny config for aura-emerge
 # Run: cargo deny check
-#
-# Not shipped in the binary — only gates dependency updates / CI.
 
 [graph]
 targets = [
@@ -14,7 +12,7 @@ no-default-features = false
 [advisories]
 version = 2
 yanked = "deny"
-unmaintained = "workspace"
+unmaintained = "all"
 ignore = []
 
 [licenses]
@@ -42,9 +40,7 @@ wildcards = "deny"
 highlight = "all"
 deny = []
 allow = []
-skip = [
-    { name = "syn", version = "3" },
-]
+skip = []
 
 [sources]
 unknown-registry = "deny"
