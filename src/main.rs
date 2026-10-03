@@ -68,7 +68,7 @@ pub(crate) const ABS_GITLAB_BASE: &str =
 // ── Files ─────────────────────────────────────────────────────────────────────
 
 pub(crate) const WORLD_SET_FILE: &str = "/etc/portage/world";
-/// Custom sets: /etc/portage/sets/<name>.set → `@<name>`.
+/// Custom sets: /etc/portage/sets/<name> or <name>.set → `@<name>`.
 pub(crate) const SETS_DIR: &str = "/etc/portage/sets";
 // AUR/ABS build roots: packages::aur_build_base()/abs_build_base().
 pub(crate) const WORLD_SET_TMP: &str = "/etc/portage/world.tmp";
@@ -118,8 +118,9 @@ WORLD.SET AND @world
     emerge --sync -- just refreshes the databases, independent of the above.
 
 CUSTOM SETS
-    A file /etc/portage/sets/<name>.set (one package atom per line, '#'
-    comments allowed) is invoked as @<name>, and can be combined with other
+    A file /etc/portage/sets/<name> or <name>.set (one package atom per
+    line, '#' comments allowed; having both is an error) is invoked as
+    @<name>, and can be combined with other
     sets and plain package names in the same command. --list-sets prints
     every set currently available. --regen-sets @<name> re-resolves and
     rewrites the repository prefix on every entry in that set file (same
@@ -191,7 +192,7 @@ EXAMPLES
 
 FILES
     /etc/portage/world                      Explicitly-installed packages
-    /etc/portage/sets/*.set                 Custom package sets
+    /etc/portage/sets/*                     Custom package sets (<name> or <name>.set)
     /etc/portage/make.conf                  Default flags (EMERGE_DEFAULT_OPTS) and
                                             build-env overrides (CFLAGS, MAKEFLAGS, ...)
     ~/.config/emerge/make.conf              Same, per-user; last file to set a key wins
@@ -1644,7 +1645,7 @@ fn run() -> anyhow::Result<()> {
     let has_preserved_rebuild = cli.packages.iter().any(|p| p == "@preserved-rebuild");
 
     // Any other "@name" token is a custom set - resolve it against
-    // /etc/portage/sets/<name>.set (one package atom per line, '#'
+    // /etc/portage/sets/<name>[.set] (one package atom per line, '#'
     // comments allowed) and fold its contents into the package list, same
     // as if the user had typed every package in the file by hand.
     let mut custom_set_pkgs: Vec<String> = Vec::new();
@@ -1661,7 +1662,7 @@ fn run() -> anyhow::Result<()> {
                 Ok(pkgs) => {
                     if pkgs.is_empty() {
                         eprintln!(
-                            ">>> Warning: set @{} is empty ({}/{}.set)",
+                            ">>> Warning: set @{} is empty ({}/{}[.set])",
                             name, SETS_DIR, name
                         );
                     }
@@ -1722,7 +1723,13 @@ fn run() -> anyhow::Result<()> {
             );
             return Ok(());
         }
-        if !mask::allow_explicit(&target_pkgs, None) {
+        // A mask says "never install this", not "never mention it":
+        // searching, scanning, unmerging and deselecting only read or
+        // remove what's already there, so they pass straight through.
+        // (A masked package is exactly the one you may need to -C.)
+        let never_installs =
+            cli.search || cli.searchdesc || cli.scan || cli.unmerge || cli.deselect;
+        if !never_installs && !mask::allow_explicit(&target_pkgs, None) {
             std::process::exit(1);
         }
     }
@@ -1916,7 +1923,7 @@ fn run() -> anyhow::Result<()> {
     }
 
     // --regen-sets @<name>: same idea as --regen-world, but for one custom
-    // set under /etc/portage/sets/<name>.set. Accepts either "@name" or
+    // set under /etc/portage/sets/<name>[.set]. Accepts either "@name" or
     // bare "name".
     if let Some(set_arg) = &cli.regen_sets {
         let name = set_arg.strip_prefix('@').unwrap_or(set_arg);

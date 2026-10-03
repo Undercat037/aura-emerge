@@ -708,7 +708,7 @@ pub(crate) fn ensure_pgp_keys(pkgbuild_path: &std::path::Path, autopgp: bool) {
     }
 }
 
-/// Build isolation: bwrap preferred; None if missing or --no-sandbox.
+/// Build isolation: bwrap is required; `None` only with `--no-sandbox`.
 /// (pkgctl build was dropped; pkgctl only used for repo clone.)
 #[derive(Clone, Copy, PartialEq)]
 enum BuildIsolation {
@@ -716,6 +716,8 @@ enum BuildIsolation {
     None,
 }
 
+/// Missing bwrap is a hard stop, not a warning: a silent fallback would
+/// make the sandbox promise depend on an optional package.
 fn choose_build_isolation(no_sandbox: bool) -> BuildIsolation {
     if no_sandbox {
         return BuildIsolation::None;
@@ -724,14 +726,14 @@ fn choose_build_isolation(no_sandbox: bool) -> BuildIsolation {
         return BuildIsolation::Bwrap;
     }
     eprintln!(
-        "{} bubblewrap (bwrap) not found -- building without isolation.",
-        ">>> Warning:".yellow().bold()
+        "{} bubblewrap (bwrap) not found -- refusing to build without isolation.",
+        ">>> Error:".red().bold()
     );
     eprintln!(
-        "{} install bubblewrap (emerge bubblewrap), or pass --no-sandbox to silence this warning.",
+        "{} install it (`emerge bubblewrap`), or pass --no-sandbox to build unisolated on purpose.",
         ">>> Hint:".yellow().bold()
     );
-    BuildIsolation::None
+    std::process::exit(1);
 }
 
 /// Satisfiable without AUR (synced repo or already installed).

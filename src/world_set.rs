@@ -172,7 +172,7 @@ pub(crate) fn pkg_world_entry_from(
     }
 }
 
-// ── custom sets (/etc/portage/sets/<name>.set, invoked as @<name>) ────────────
+// ── custom sets (/etc/portage/sets/<name>[.set], invoked as @<name>) ──────────
 
 /// Safe set name (becomes a filesystem path under sets/).
 pub(crate) fn valid_set_name(name: &str) -> bool {
@@ -184,9 +184,42 @@ pub(crate) fn valid_set_name(name: &str) -> bool {
             .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
 }
 
-/// Read sets/<name>.set (one atom/line, # comments; validate_pkg each).
+/// Where `@<name>` lives: `sets/<name>` (Portage style) or
+/// `sets/<name>.set`. Both existing at once is an error rather than a
+/// silent pick -- `@game-kit` would otherwise mean different things
+/// depending on which file happened to win. Neither existing returns
+/// the `.set` path, so the caller's "no such set" message has
+/// something to point at.
+pub(crate) fn resolve_set_path(name: &str) -> Result<String> {
+    resolve_set_path_in(SETS_DIR, name)
+}
+
+fn resolve_set_path_in(dir: &str, name: &str) -> Result<String> {
+    let bare = format!("{}/{}", dir, name);
+    let ext = format!("{}/{}.set", dir, name);
+    // symlink_metadata: a symlink counts as "exists" so the nofollow
+    // open later can refuse it with its usual message.
+    let is_entry = |p: &str| {
+        fs::symlink_metadata(p)
+            .map(|m| !m.is_dir())
+            .unwrap_or(false)
+    };
+    match (is_entry(&bare), is_entry(&ext)) {
+        (true, true) => bail!(
+            "set @{} is ambiguous: both {} and {} exist - remove or rename one",
+            name,
+            bare,
+            ext
+        ),
+        (true, false) => Ok(bare),
+        _ => Ok(ext),
+    }
+}
+
+/// Read sets/<name> or sets/<name>.set (one atom/line, # comments;
+/// validate_pkg each).
 pub(crate) fn read_custom_set(name: &str) -> Result<Vec<String>> {
-    let path = format!("{}/{}.set", SETS_DIR, name);
+    let path = resolve_set_path(name)?;
 
     let file = match open_nofollow(std::path::Path::new(&path)) {
         Ok(f) => f,
@@ -194,7 +227,12 @@ pub(crate) fn read_custom_set(name: &str) -> Result<Vec<String>> {
             bail!("{} is a symlink - refusing to read", path)
         }
         Err(e) => {
-            return Err(e).with_context(|| format!("no such set: @{} (expected {})", name, path));
+            return Err(e).with_context(|| {
+                format!(
+                    "no such set: @{} (expected {}/{} or {}/{}.set)",
+                    name, SETS_DIR, name, SETS_DIR, name
+                )
+            });
         }
     };
 
@@ -247,19 +285,25 @@ pub(crate) fn read_batch_file(path: &str) -> Result<Vec<String>> {
 }
 
 /// Bare set names under SETS_DIR, sorted (--list-sets / completion).
+/// `foo` and `foo.set` both list as `foo`; names that wouldn't be a
+/// valid `@name` (dotfiles, `*.tmp`, editor backups) are skipped.
 pub(crate) fn list_custom_sets() -> Vec<String> {
     let mut names = Vec::new();
     if let Ok(entries) = fs::read_dir(SETS_DIR) {
         for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("set") {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    names.push(stem.to_string());
-                }
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(true) {
+                continue;
+            }
+            let file = entry.file_name();
+            let Some(file) = file.to_str() else { continue };
+            let stem = file.strip_suffix(".set").unwrap_or(file);
+            if valid_set_name(stem) {
+                names.push(stem.to_string());
             }
         }
     }
     names.sort();
+    names.dedup();
     names
 }
 
@@ -695,14 +739,19 @@ pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
         name
     );
 
-    let path = format!("{}/{}.set", SETS_DIR, name);
+    let path = resolve_set_path(name)?;
     let file = match open_nofollow_rw(std::path::Path::new(&path)) {
         Ok(f) => f,
         Err(e) if is_symlink_open_error(&e) => {
             bail!("{} is a symlink - refusing to modify", path);
         }
         Err(e) => {
-            return Err(e).with_context(|| format!("no such set: @{} (expected {})", name, path));
+            return Err(e).with_context(|| {
+                format!(
+                    "no such set: @{} (expected {}/{} or {}/{}.set)",
+                    name, SETS_DIR, name, SETS_DIR, name
+                )
+            });
         }
     };
 
@@ -1217,4 +1266,59 @@ pub(crate) fn write_world_set(packages: &[String]) -> Result<()> {
 
     println!(">>> world updated.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp(name: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("ae-sets-test-{}-{}", name, std::process::id()));
+        let _ = fs::remove_dir_all(&p);
+        fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    #[test]
+    fn set_path_accepts_bare_name_and_dot_set() {
+        let dir = temp("either");
+        let d = dir.to_str().unwrap();
+        fs::write(dir.join("a"), "nano\n").unwrap();
+        fs::write(dir.join("b.set"), "vim\n").unwrap();
+        assert_eq!(resolve_set_path_in(d, "a").unwrap(), format!("{}/a", d));
+        assert_eq!(resolve_set_path_in(d, "b").unwrap(), format!("{}/b.set", d));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn set_path_with_both_files_is_ambiguous() {
+        let dir = temp("both");
+        let d = dir.to_str().unwrap();
+        fs::write(dir.join("cust-set"), "nano\n").unwrap();
+        fs::write(dir.join("cust-set.set"), "vim\n").unwrap();
+        let err = resolve_set_path_in(d, "cust-set").unwrap_err().to_string();
+        assert!(err.contains("ambiguous"), "{err}");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn set_path_for_missing_set_points_at_dot_set() {
+        let dir = temp("none");
+        let d = dir.to_str().unwrap();
+        assert_eq!(
+            resolve_set_path_in(d, "nope").unwrap(),
+            format!("{}/nope.set", d)
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_directory_with_the_set_name_is_not_a_set() {
+        let dir = temp("dir");
+        let d = dir.to_str().unwrap();
+        fs::create_dir(dir.join("x")).unwrap();
+        fs::write(dir.join("x.set"), "nano\n").unwrap();
+        assert_eq!(resolve_set_path_in(d, "x").unwrap(), format!("{}/x.set", d));
+        let _ = fs::remove_dir_all(dir);
+    }
 }

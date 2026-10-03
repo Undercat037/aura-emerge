@@ -58,11 +58,10 @@ makepkg -si
 </details>
 
 
-**Залежності:** `git`  
+**Залежності:** `git`, `bubblewrap` (пісочниця при збірці AUR/ABS)  
 **Опційно:**
 - `devtools` - підтримка `--abs` (`pkgctl repo clone`)
 - `gnupg` - автоматичний імпорт PGP-ключів (`--autopgp`)
-- `bubblewrap` - пісочниця при збірці AUR/ABS (без неї - відкат до звичайного `makepkg` без ізоляції)
 
 ## Gentoo → Arch: аналог make.conf
 
@@ -226,7 +225,7 @@ emerge @world --err-install                   # також спробувати 
 emerge -u @world                           # повне оновлення (репо + AUR); world не читається
 emerge -u @world --refresh                 # оновлення з примусовим -Syy
 emerge --sync                              # синхронізувати бази
-emerge @game-kit                           # власний набір з /etc/portage/sets/game-kit.set
+emerge @game-kit                           # власний набір з /etc/portage/sets/game-kit[.set]
 emerge @game-kit neovim                    # набори + звичайні пакунки
 emerge --list-sets                         # показати доступні @sets
 emerge --info                              # інформація про систему (як Gentoo emerge --info)
@@ -275,7 +274,7 @@ emerge --revdep-rebuild -p                  # те саме, лише списо
 
 ## Пісочниця
 
-Збірки **AUR і ABS** виконують `pkgver()` / `prepare()` / `build()` / `check()` / `package()` у [`bwrap`](https://github.com/containers/bubblewrap) (якщо встановлено):
+Збірки **AUR і ABS** виконують `pkgver()` / `prepare()` / `build()` / `check()` / `package()` у [`bwrap`](https://github.com/containers/bubblewrap) (обов'язково; вимкнути можна лише через `--no-sandbox`):
 
 - порожній tmpfs поверх `/home` і `/run` (немає справжнього `$HOME`, session D-Bus / ssh-agent / gpg-agent);
 - `--clearenv` і короткий allowlist (`PATH`, `TERM`, `LANG`, каталоги збірки, …);
@@ -294,7 +293,7 @@ emerge --revdep-rebuild -p                  # те саме, лише списо
 | `--no-sandbox` | Вимкнути bwrap, звичайний `makepkg -si` |
 | `--unshare-net-build` | Завантаження/`prepare()` з мережею; `build()`/`check()`/`package()` **без** мережі |
 
-Без `bubblewrap` або з `--no-sandbox` збірка йде без ізоляції (з попередженням).
+`bubblewrap` - жорстка залежність. Якщо його немає, збірку буде відхилено; без ізоляції `makepkg` запуститься лише з явним `--no-sandbox`.
 
 ## Кеш джерел (SRCDEST)
 
@@ -399,17 +398,17 @@ extra/firefox
 
 ## Власні набори (sets)
 
-`/etc/portage/sets/<name>.set` викликається як `@<name>`:
+`/etc/portage/sets/<name>` (або `<name>.set`) викликається як `@<name>`:
 
 ```
-# /etc/portage/sets/game-kit.set
+# /etc/portage/sets/game-kit   (або game-kit.set)
 steam
 lutris
 gamemode
 aur/protonup-qt
 ```
 
-Один пакунок на рядок, `#`-коментарі дозволені. Набори можна комбінувати:
+Один пакунок на рядок, `#`-коментарі дозволені. Якщо існують і `game-kit`, і `game-kit.set`, `@game-kit` відхиляється як неоднозначний, доки один із файлів не буде видалено. Набори можна комбінувати:
 
 ```bash
 emerge @game-kit @dev-tools neovim

@@ -57,11 +57,10 @@ makepkg -si
 ```
 </details>
 
-**Dependencies:** `git`  
+**Dependencies:** `git`, `bubblewrap` (build sandbox for AUR/ABS)  
 **Optional:**
 - `devtools` - `--abs` support (`pkgctl repo clone`)
 - `gnupg` - automatic PGP key import (`--autopgp`)
-- `bubblewrap` - build sandbox for AUR/ABS (without it, falls back to plain unisolated `makepkg`)
 
 ## Gentoo → Arch: make.conf equivalent
 
@@ -225,7 +224,7 @@ emerge @world --err-install                   # also retry Err/ (unknown-source)
 emerge -u @world                           # full system upgrade (repos + AUR); does not read world
 emerge -u @world --refresh                 # upgrade with forced -Syy first
 emerge --sync                              # sync package databases
-emerge @game-kit                           # custom set from /etc/portage/sets/game-kit.set
+emerge @game-kit                           # custom set from /etc/portage/sets/game-kit[.set]
 emerge @game-kit neovim                    # sets + plain packages
 emerge --list-sets                         # list available @sets
 emerge --info                              # system info (Gentoo-style emerge --info)
@@ -274,7 +273,7 @@ emerge --revdep-rebuild -p                  # same, list only
 
 ## Sandbox
 
-**AUR and ABS** builds run PKGBUILD `pkgver()` / `prepare()` / `build()` / `check()` / `package()` inside [`bwrap`](https://github.com/containers/bubblewrap) (when installed):
+**AUR and ABS** builds run PKGBUILD `pkgver()` / `prepare()` / `build()` / `check()` / `package()` inside [`bwrap`](https://github.com/containers/bubblewrap) (required; see `--no-sandbox` to opt out):
 
 - empty tmpfs over `/home` and `/run` (no real `$HOME`, no session D-Bus / ssh-agent / gpg-agent);
 - `--clearenv` plus a small allowlist (`PATH`, `TERM`, `LANG`, build destinations, …);
@@ -293,7 +292,7 @@ Dependency install (`pacman -S`) and the final `pacman -U` stay **outside** the 
 | `--no-sandbox` | Disable bwrap; plain `makepkg -si` |
 | `--unshare-net-build` | Download/`prepare()` keep network; `build()`/`check()`/`package()` run with network off |
 
-Without `bubblewrap` or with `--no-sandbox`, the build runs unisolated (with a warning).
+`bubblewrap` is a hard dependency. If it is missing the build is refused; only an explicit `--no-sandbox` runs `makepkg` unisolated.
 
 ## Source cache (SRCDEST)
 
@@ -398,17 +397,17 @@ Batch installs no longer abort the whole request if one name is missing - the re
 
 ## Custom sets
 
-`/etc/portage/sets/<name>.set` is invoked as `@<name>`:
+`/etc/portage/sets/<name>` (or `<name>.set`) is invoked as `@<name>`:
 
 ```
-# /etc/portage/sets/game-kit.set
+# /etc/portage/sets/game-kit   (or game-kit.set)
 steam
 lutris
 gamemode
 aur/protonup-qt
 ```
 
-One package per line, `#` comments allowed. Sets combine freely:
+One package per line, `#` comments allowed. If both `game-kit` and `game-kit.set` exist, `@game-kit` is rejected as ambiguous until one is removed. Sets combine freely:
 
 ```bash
 emerge @game-kit @dev-tools neovim
