@@ -279,47 +279,7 @@ fn bare_of(p: &str) -> &str {
 /// works for a not-yet-installed package -- what the tree needs to
 /// explain why each dependency showed up in the plan).
 pub(crate) fn depends_on_map(names: &[String]) -> HashMap<String, HashSet<String>> {
-    let mut map = HashMap::new();
-    if names.is_empty() {
-        return map;
-    }
-    let out = Command::new(PACMAN_BIN)
-        .arg("-Si")
-        .args(names)
-        .env("LC_ALL", "C")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output();
-    let Ok(out) = out else { return map };
-    let text = String::from_utf8_lossy(&out.stdout);
-
-    for block in text.split("\n\n") {
-        let mut name = None;
-        let mut deps = HashSet::new();
-        let mut capturing = false;
-        for line in block.lines() {
-            if let Some((label, value)) = line.split_once(" : ") {
-                let label = label.trim();
-                capturing = label == "Depends On";
-                if label == "Name" {
-                    name = Some(value.trim().to_string());
-                } else if capturing {
-                    let value = value.trim();
-                    if value != "None" && !value.is_empty() {
-                        deps.extend(value.split_whitespace().map(strip_version_operator));
-                    }
-                }
-                continue;
-            }
-            if capturing {
-                deps.extend(line.trim().split_whitespace().map(strip_version_operator));
-            }
-        }
-        if let Some(n) = name {
-            map.insert(n, deps);
-        }
-    }
-    map
+    crate::alpm_db::depends_map(names)
 }
 
 /// Orders `pkgs` for tree display: `requested` at depth 0, everything
@@ -1537,26 +1497,11 @@ fn check_devel_pkg(pkg: &str, state: &mut HashMap<String, String>) -> DevelStatu
 /// `aur_upgrade_all`) for the version that folds this into a real
 /// upgrade run.
 pub(crate) fn check_devel_all() -> bool {
-    let foreign = match Command::new(PACMAN_BIN)
-        .args(["-Qm"])
-        .env("LC_ALL", "C")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-    {
-        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).into_owned(),
-        _ => {
-            eprintln!(
-                "{} failed to list foreign (AUR/local) packages (pacman -Qm)",
-                ">>> Error:".red().bold()
-            );
-            return false;
-        }
-    };
+    let foreign = crate::alpm_db::foreign_packages();
 
     let devel_names: Vec<String> = foreign
-        .lines()
-        .filter_map(|l| l.split_whitespace().next())
+        .iter()
+        .map(|(n, _)| n.as_str())
         .filter(|n| is_devel_pkg(n))
         .map(str::to_string)
         .collect();
@@ -1626,32 +1571,7 @@ pub(crate) fn aur_upgrade_all(
     unshare_net_build: bool,
     devel: bool,
 ) -> bool {
-    let foreign = match Command::new(PACMAN_BIN)
-        .args(["-Qm"])
-        .env("LC_ALL", "C")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-    {
-        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).into_owned(),
-        _ => {
-            eprintln!(
-                "{} failed to list foreign (AUR/local) packages (pacman -Qm)",
-                ">>> Error:".red().bold()
-            );
-            return false;
-        }
-    };
-
-    let installed: Vec<(String, String)> = foreign
-        .lines()
-        .filter_map(|l| {
-            let mut parts = l.split_whitespace();
-            let name = parts.next()?.to_string();
-            let ver = parts.next()?.to_string();
-            Some((name, ver))
-        })
-        .collect();
+    let installed: Vec<(String, String)> = crate::alpm_db::foreign_packages();
 
     if installed.is_empty() {
         println!(">>> No foreign (AUR/local) packages installed - nothing to upgrade.");
@@ -1668,17 +1588,9 @@ pub(crate) fn aur_upgrade_all(
     for (name, installed_ver) in &installed {
         match latest_by_name.get(name.as_str()) {
             Some(info) => {
-                let cmp: i32 = Command::new(VERCMP_BIN)
-                    .args([installed_ver.as_str(), info.version.as_str()])
-                    .output()
-                    .map(|o| {
-                        String::from_utf8_lossy(&o.stdout)
-                            .trim()
-                            .parse()
-                            .unwrap_or(0)
-                    })
-                    .unwrap_or(0);
-                if cmp < 0 {
+                if alpm::vercmp(installed_ver.as_str(), info.version.as_str())
+                    == std::cmp::Ordering::Less
+                {
                     to_upgrade.push((name.clone(), installed_ver.clone(), info.version.clone()));
                 }
             }
@@ -3131,19 +3043,7 @@ pub(crate) fn missing_via_pacman_t(deps: &[String]) -> Vec<String> {
     if deps.is_empty() {
         return Vec::new();
     }
-    let out = Command::new(PACMAN_BIN)
-        .arg("-T")
-        .args(deps)
-        .env("LC_ALL", "C")
-        .output();
-    match out {
-        Ok(o) => String::from_utf8_lossy(&o.stdout)
-            .lines()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect(),
-        Err(_) => Vec::new(),
-    }
+    crate::alpm_db::unsatisfied(deps)
 }
 
 /// @preserved-rebuild: find unsatisfied deps, offer pacman -S --asdeps.

@@ -60,7 +60,6 @@ pub(crate) const MV_BIN: &str = "/usr/bin/mv";
 pub(crate) const RM_BIN: &str = "/usr/bin/rm";
 pub(crate) const MAKEPKG_BIN: &str = "/usr/bin/makepkg";
 pub(crate) const PKGCTL_BIN: &str = "/usr/bin/pkgctl";
-pub(crate) const VERCMP_BIN: &str = "/usr/bin/vercmp";
 pub(crate) const GPG_BIN: &str = "/usr/bin/gpg";
 pub(crate) const PGP_KEYSERVER: &str = "keyserver.ubuntu.com";
 pub(crate) const ABS_GITLAB_BASE: &str =
@@ -274,6 +273,10 @@ struct Cli {
     #[arg(short = 'c', long = "depclean")]
     depclean: bool,
 
+    /// With -c: list orphans kept only because they are in world
+    #[arg(long = "show-protected", requires = "depclean")]
+    show_protected: bool,
+
     /// Remove specific packages
     #[arg(short = 'C', long = "unmerge")]
     unmerge: bool,
@@ -411,6 +414,10 @@ struct Cli {
     #[arg(long = "searchdesc")]
     searchdesc: bool,
 
+    /// With -s: list the same name from every repo (like `pacman -Ss`)
+    #[arg(long = "search-all")]
+    search_all: bool,
+
     /// Add to world without installing
     #[arg(long = "select")]
     select: bool,
@@ -418,6 +425,10 @@ struct Cli {
     /// Remove from world without unmerging
     #[arg(long = "deselect")]
     deselect: bool,
+
+    /// List world entries that are missing or not explicitly installed
+    #[arg(long = "check-world")]
+    check_world: bool,
 
     /// Verbose slot/conflict info (informational)
     #[arg(long = "verbose-conflicts")]
@@ -576,10 +587,10 @@ fn print_help() {
     println!("          [ --err-install                ] [ --regen-sort ]");
     println!("          [ --deep[=N]                   ] [ --keep-going ]");
     println!("          [ --exclude <ATOM>             ] [ --ignore-default-opts ]");
-    println!("Actions:  [ --depclean  | --deselect | --prune      | --regen       ]");
-    println!("          [ --resume    | --search   | --select     | --searchdesc  ]");
-    println!("          [ --sync      | --unmerge  | --update     | --regen-world ]");
-    println!("          [ --version   | --info     | --regen-world-from-explicit  ]");
+    println!("Actions:  [ --depclean  | --deselect | --prune      | --check-world ]");
+    println!("          [ --regen     | --resume   | --search     | --searchdesc  ]");
+    println!("          [ --select    | --sync     | --unmerge    | --update      ]");
+    println!("          [ --regen-world | --version | --info | --regen-world-from-explicit ]");
     println!("          [ --list-sets | --regen-sets @<name>  | --news [N|all]    ]");
     println!("          [ --check-news [N|all]  | --check-devel | --undo           ]");
     println!("          [ --scan <pkg...>       | --install-pkgbuild <PATH>       ]");
@@ -790,6 +801,7 @@ enum ActionKind {
     Undo,
     Select,
     Deselect,
+    CheckWorld,
     Update,
     Depclean,
     Unmerge,
@@ -818,6 +830,7 @@ impl ActionKind {
             ActionKind::Undo => "--undo",
             ActionKind::Select => "--select",
             ActionKind::Deselect => "--deselect",
+            ActionKind::CheckWorld => "--check-world",
             ActionKind::Update => "--update",
             ActionKind::Depclean => "--depclean",
             ActionKind::Unmerge => "--unmerge",
@@ -848,6 +861,7 @@ fn action_from_long(token: &str) -> Option<ActionKind> {
         "--undo" => Some(ActionKind::Undo),
         "--select" => Some(ActionKind::Select),
         "--deselect" => Some(ActionKind::Deselect),
+        "--check-world" => Some(ActionKind::CheckWorld),
         "--update" => Some(ActionKind::Update),
         "--depclean" => Some(ActionKind::Depclean),
         "--unmerge" => Some(ActionKind::Unmerge),
@@ -929,6 +943,9 @@ fn active_actions(cli: &Cli) -> Vec<ActionKind> {
     }
     if cli.deselect {
         out.push(ActionKind::Deselect);
+    }
+    if cli.check_world {
+        out.push(ActionKind::CheckWorld);
     }
     if cli.update {
         out.push(ActionKind::Update);
@@ -1038,6 +1055,9 @@ fn clear_other_actions(cli: &mut Cli, keep: ActionKind) {
     }
     if keep != ActionKind::Deselect {
         cli.deselect = false;
+    }
+    if keep != ActionKind::CheckWorld {
+        cli.check_world = false;
     }
     if keep != ActionKind::Update {
         cli.update = false;
@@ -1276,6 +1296,42 @@ pub(crate) fn is_symlink_open_error(err: &std::io::Error) -> bool {
 /// `pacman -Ss`-style two-line-per-result listing, for AUR RPC `search`
 /// results - replaces parsing/forwarding `aura -As`/`aura --searchdesc`
 /// (AUR half) output.
+
+fn print_sync_search_results(results: &[crate::alpm_db::AlpmPkg]) {
+    if results.is_empty() {
+        return;
+    }
+    for p in results {
+        let mut tags = String::new();
+        if p.installed {
+            tags.push_str(&format!(" {}", "[installed]".cyan()));
+        }
+        if crate::mask::find(&p.name, Some(p.repo.as_str())).is_some()
+            || crate::mask::find(&p.name, None).is_some()
+        {
+            tags.push_str(&format!(" {}", "[masked]".red().bold()));
+        }
+        println!(
+            "{}/{} {}{}",
+            p.repo.magenta().bold(),
+            p.name.bold(),
+            p.version.green(),
+            tags
+        );
+        if !p.description.is_empty() {
+            println!("    {}", p.description);
+        }
+    }
+}
+
+fn print_sync_info(pkg: &crate::alpm_db::AlpmPkg) {
+    println!("{:<15}: {}", "Repository", pkg.repo.magenta().bold());
+    println!("{:<15}: {}", "Name", pkg.name.bold());
+    println!("{:<15}: {}", "Version", pkg.version.green());
+    println!("{:<15}: {}", "Description", pkg.description);
+    println!();
+}
+
 fn print_aur_search_results(results: &[aur::AurPkgInfo]) {
     if results.is_empty() {
         println!(">>> No AUR results found.");
@@ -1287,12 +1343,20 @@ fn print_aur_search_results(results: &[aur::AurPkgInfo]) {
         } else {
             String::new()
         };
+        let masked = if crate::mask::find(&r.name, Some("aur")).is_some()
+            || crate::mask::find(&r.name, None).is_some()
+        {
+            format!(" {}", "[masked]".red().bold())
+        } else {
+            String::new()
+        };
         println!(
-            "{}/{} {}{} ({} votes, {:.2} popularity)",
+            "{}/{} {}{}{} ({} votes, {:.2} popularity)",
             "aur".magenta().bold(),
             r.name.bold(),
             r.version.green(),
             ood,
+            masked,
             r.num_votes,
             r.popularity
         );
@@ -1728,8 +1792,12 @@ fn run() -> anyhow::Result<()> {
         // searching, scanning, unmerging and deselecting only read or
         // remove what's already there, so they pass straight through.
         // (A masked package is exactly the one you may need to -C.)
-        let never_installs =
-            cli.search || cli.searchdesc || cli.scan || cli.unmerge || cli.deselect;
+        let never_installs = cli.search
+            || cli.searchdesc
+            || cli.scan
+            || cli.unmerge
+            || cli.deselect
+            || cli.check_world;
         if !never_installs && !mask::allow_explicit(&target_pkgs, None) {
             std::process::exit(1);
         }
@@ -1809,7 +1877,7 @@ fn run() -> anyhow::Result<()> {
                 ">>>".green().bold(),
                 term
             );
-            run_cmd(PACMAN_BIN, &["-Ss"], &target_pkgs);
+            print_sync_search_results(&crate::alpm_db::search_sync(&term, true, cli.search_all));
             if !repos_only_search {
                 println!();
                 println!(
@@ -1842,11 +1910,19 @@ fn run() -> anyhow::Result<()> {
                 let found = probe_official(&target_pkgs).is_some();
                 if found {
                     println!("{} Searching for '{}'...", ">>>".green().bold(), term);
-                    run_cmd(PACMAN_BIN, &["-Si"], &target_pkgs);
+                    for name in &target_pkgs {
+                        if let Some(p) = crate::alpm_db::find_sync(name) {
+                            print_sync_info(&p);
+                        }
+                    }
                 } else {
                     // Not an exact atom -- fall back to a real search.
                     println!("{} Searching for '{}'...", ">>>".green().bold(), term);
-                    run_cmd(PACMAN_BIN, &["-Ss"], &target_pkgs);
+                    print_sync_search_results(&crate::alpm_db::search_sync(
+                        &term,
+                        false,
+                        cli.search_all,
+                    ));
                     if !repos_only_search {
                         println!();
                         println!(
@@ -1875,7 +1951,7 @@ fn run() -> anyhow::Result<()> {
             print_aur_search_results(&aur::rpc_search(&term, false));
         } else {
             println!("{} Searching for '{}'...", ">>>".green().bold(), term);
-            run_cmd(PACMAN_BIN, &["-Ss"], &target_pkgs);
+            print_sync_search_results(&crate::alpm_db::search_sync(&term, false, cli.search_all));
             if !repos_only_search {
                 println!();
                 println!(
@@ -1936,6 +2012,65 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // --check-world: world entries missing or not explicit (asdeps).
+    if cli.check_world {
+        if !is_safe_path(WORLD_SET_FILE) {
+            eprintln!(
+                ">>> Warning: {} is a symlink - refusing to read",
+                WORLD_SET_FILE
+            );
+            std::process::exit(1);
+        }
+        let world_lines: Vec<String> = match fs::File::open(WORLD_SET_FILE) {
+            Ok(file) => io::BufReader::new(file)
+                .lines()
+                .map_while(Result::ok)
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .collect(),
+            Err(_) => {
+                eprintln!(">>> Error: cannot open world");
+                std::process::exit(1);
+            }
+        };
+        let explicit = crate::alpm_db::explicit_set();
+        let mut missing = Vec::new();
+        let mut asdeps = Vec::new();
+        for entry in &world_lines {
+            let bare = entry.split('/').last().unwrap_or(entry);
+            if !crate::alpm_db::is_installed(bare) {
+                missing.push(entry.clone());
+            } else if !explicit.contains(bare) {
+                asdeps.push(entry.clone());
+            }
+        }
+        println!("{} World audit", ">>>".green().bold());
+        println!("    entries: {}", world_lines.len());
+        println!("    not installed: {}", missing.len());
+        println!("    installed asdeps (not explicit): {}", asdeps.len());
+        if !missing.is_empty() {
+            println!();
+            println!("{} not installed:", " *".yellow().bold());
+            for e in &missing {
+                println!("    {}", e);
+            }
+        }
+        if !asdeps.is_empty() {
+            println!();
+            println!(
+                "{} in world but install reason is dependency:",
+                " *".yellow().bold()
+            );
+            for e in &asdeps {
+                println!("    {}", e);
+            }
+        }
+        if missing.is_empty() && asdeps.is_empty() {
+            println!(">>> All world entries are installed and explicit.");
+        }
+        return Ok(());
+    }
+
     // --regen-world-from-explicit: seed world from every currently
     // explicitly-installed package (pacman -Qeq). Meant as a one-time
     // migration step on a system that predates world tracking - run
@@ -1947,17 +2082,7 @@ fn run() -> anyhow::Result<()> {
             "{} Seeding world from explicitly installed packages...",
             ">>>".green().bold()
         );
-        let explicit: Vec<String> = match Command::new(PACMAN_BIN).arg("-Qeq").output() {
-            Ok(out) => String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect(),
-            Err(_) => {
-                eprintln!(">>> Error: failed to list explicitly installed packages");
-                std::process::exit(1);
-            }
-        };
+        let explicit = crate::alpm_db::explicit_names();
         if explicit.is_empty() {
             println!(">>> No explicitly installed packages found.");
             return Ok(());
@@ -1992,49 +2117,33 @@ fn run() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         };
-        let output = Command::new(PACMAN_BIN)
-            .args(["-Qeq"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .output();
-        match output {
-            Ok(out) => {
-                let installed: Vec<String> = String::from_utf8_lossy(&out.stdout)
-                    .lines()
-                    .map(|l| l.trim().to_string())
-                    .filter(|l| !l.is_empty())
-                    .collect();
-                let to_remove: Vec<String> = installed
-                    .into_iter()
-                    .filter(|p| !world_bare.contains(p))
-                    .collect();
-                let (to_remove, excluded) = runtime::split_excluded(&to_remove);
-                runtime::report_excluded(&excluded);
-                if to_remove.is_empty() {
-                    println!(
-                        ">>> Nothing to prune. All explicitly installed packages are in world."
-                    );
-                    return Ok(());
-                }
-                println!();
-                for p in &to_remove {
-                    println!("[{}] {}", "unmerge".red().bold(), p);
-                }
-                println!();
-                println!("Total: {} package(s) to prune", to_remove.len());
-                println!();
-                if cli.pretend {
-                    return Ok(());
-                }
-                let mut args = vec![PACMAN_BIN, "-Rns"];
-                if !cli.ask {
-                    args.push("--noconfirm");
-                }
-                if run_cmd(SUDO_BIN, &args, &to_remove) {
-                    logbook::log_unmerge(&to_remove);
-                }
-            }
-            Err(_) => eprintln!(">>> Error: failed to list installed packages"),
+        let installed = crate::alpm_db::explicit_names();
+        let to_remove: Vec<String> = installed
+            .into_iter()
+            .filter(|p| !world_bare.contains(p))
+            .collect();
+        let (to_remove, excluded) = runtime::split_excluded(&to_remove);
+        runtime::report_excluded(&excluded);
+        if to_remove.is_empty() {
+            println!(">>> Nothing to prune. All explicitly installed packages are in world.");
+            return Ok(());
+        }
+        println!();
+        for p in &to_remove {
+            println!("[{}] {}", "unmerge".red().bold(), p);
+        }
+        println!();
+        println!("Total: {} package(s) to prune", to_remove.len());
+        println!();
+        if cli.pretend {
+            return Ok(());
+        }
+        let mut args = vec![PACMAN_BIN, "-Rns"];
+        if !cli.ask {
+            args.push("--noconfirm");
+        }
+        if run_cmd(SUDO_BIN, &args, &to_remove) {
+            logbook::log_unmerge(&to_remove);
         }
         return Ok(());
     }
@@ -2398,57 +2507,68 @@ fn run() -> anyhow::Result<()> {
         // everywhere else in this tool (never asks for sudo). Real runs
         // still refresh via `-Syu` as before; if the synced db is stale,
         // run `--sync` first for an accurate preview.
-        let mut s_args: Vec<&str> = if cli.pretend {
-            vec!["-Su", "--print"]
-        } else {
-            vec!["-Syu"]
-        };
-        // Match every other pacman call: no --ask means no prompt.
-        if !cli.pretend && !cli.ask {
-            s_args.push("--noconfirm");
-        }
-        if cli.verbose {
-            s_args.push("--verbose");
-        }
-        for name in &ignores {
-            s_args.push("--ignore");
-            s_args.push(name);
-        }
-        // For the log line below: `pacman -Qu` doesn't know about our
-        // own --ignore, so that's subtracted to match what really upgrades.
-        let about_to_upgrade: Vec<String> = if cli.pretend {
-            Vec::new()
-        } else {
-            let ignored: HashSet<&str> = ignores.iter().map(String::as_str).collect();
-            Command::new(PACMAN_BIN)
-                .arg("-Qu")
-                .env("LC_ALL", "C")
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .output()
-                .ok()
-                .map(|o| {
-                    String::from_utf8_lossy(&o.stdout)
-                        .lines()
-                        .filter_map(|l| l.split_whitespace().next())
-                        .filter(|p| !ignored.contains(p))
-                        .map(str::to_string)
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
+        let ignored: HashSet<&str> = ignores.iter().map(String::as_str).collect();
+        let official_upgrades: Vec<(String, String, String, String)> =
+            crate::alpm_db::upgradeable_detail()
+                .into_iter()
+                .filter(|(n, _, _, _)| !ignored.contains(n.as_str()))
+                .collect();
 
-        let timer = logbook::Timer::start();
         let ok1 = if cli.pretend {
-            run_cmd(PACMAN_BIN, &s_args, &[])
+            // ebuild-style plan from libalpm — no `pacman -Su --print` URL dump.
+            if official_upgrades.is_empty() {
+                println!(">>> No official packages out of date.");
+            } else {
+                println!();
+                for (name, old, newv, repo) in &official_upgrades {
+                    let atom = if repo.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{}/{}", repo, name)
+                    };
+                    println!(
+                        "[{} {:<4}] {} [{} -> {}]",
+                        "ebuild".green(),
+                        "U".yellow().bold(),
+                        atom.yellow().bold(),
+                        old,
+                        newv
+                    );
+                }
+                println!();
+                println!(
+                    "{}: {} official package(s) to upgrade",
+                    "Total".bold(),
+                    official_upgrades.len()
+                );
+                println!();
+            }
+            true
         } else {
+            let mut s_args: Vec<&str> = vec!["-Syu"];
+            if !cli.ask {
+                s_args.push("--noconfirm");
+            }
+            if cli.verbose {
+                s_args.push("--verbose");
+            }
+            for name in &ignores {
+                s_args.push("--ignore");
+                s_args.push(name);
+            }
+            let timer = logbook::Timer::start();
             let mut args: Vec<&str> = vec![PACMAN_BIN];
             args.extend(&s_args);
-            run_cmd(SUDO_BIN, &args, &[])
+            let ok = run_cmd(SUDO_BIN, &args, &[]);
+            if ok && !official_upgrades.is_empty() {
+                let names: Vec<String> = official_upgrades
+                    .iter()
+                    .map(|(n, _, _, _)| n.clone())
+                    .collect();
+                logbook::log_merge_batch("repo", &names, timer.elapsed());
+            }
+            ok
         };
-        if ok1 && !about_to_upgrade.is_empty() {
-            logbook::log_merge_batch("repo", &about_to_upgrade, timer.elapsed());
-        }
 
         // A failed repo upgrade usually needs a human; --keep-going
         // pushes on anyway rather than burying the error under an AUR
@@ -2486,81 +2606,92 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // 4. Depclean: pacman -Qttdq, but never remove world entries.
+    // 4. Depclean: orphans via libalpm, never remove world entries.
     if cli.depclean {
         println!(">>> Calculating dependencies... done!");
         println!(">>> Checking for orphaned packages...");
 
-        match Command::new(PACMAN_BIN).arg("-Qttdq").output() {
-            Ok(out) => {
-                let orphans_str = String::from_utf8_lossy(&out.stdout);
-                let mut orphans: Vec<String> = orphans_str
-                    .lines()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
+        {
+            let mut orphans: Vec<String> = crate::alpm_db::orphan_names();
 
-                // Filter out anything tracked in world.
-                if is_safe_path(WORLD_SET_FILE) {
-                    if let Ok(file) = fs::File::open(WORLD_SET_FILE) {
-                        let world_bare: HashSet<String> = io::BufReader::new(file)
-                            .lines()
-                            .map_while(Result::ok)
-                            .filter(|l| !l.trim().is_empty())
-                            .map(|l| l.trim().split('/').last().unwrap_or("").to_string())
-                            .collect();
-                        let before = orphans.len();
-                        orphans.retain(|p| !world_bare.contains(p));
-                        let protected = before - orphans.len();
-                        if protected > 0 {
-                            println!(">>> {} package(s) skipped (tracked in world).", protected);
-                        }
-                    }
-                }
-
-                // --exclude protects from removal as well as from
-                // installation: "leave this package out of this run"
-                // reads the same either way.
-                let (kept, dropped) = runtime::split_excluded(&orphans);
-                runtime::report_excluded(&dropped);
-                orphans = kept;
-
-                if orphans.is_empty() {
-                    println!();
-                    println!(">>> No orphaned packages were found on your system.");
-                    return Ok(());
-                }
-
-                println!();
-                for o in &orphans {
-                    println!("[{}] {}", "unmerge".red().bold(), o);
-                }
-                println!();
-                println!("Total: {} orphaned package(s) to remove", orphans.len());
-                println!();
-
-                // --print and --nosave conflict; nosave N/A on dry run.
-                let mut pacman_args = if cli.pretend {
-                    vec!["-Rs", "--print"]
-                } else {
-                    vec!["-Rns"]
-                };
-                if !cli.ask && !cli.pretend {
-                    pacman_args.push("--noconfirm");
-                }
-
-                // --print needs no root (avoid sudo password on dry run).
-                if cli.pretend {
-                    run_cmd(PACMAN_BIN, &pacman_args, &orphans);
-                } else {
-                    let mut sudo_args = vec![PACMAN_BIN];
-                    sudo_args.extend(pacman_args);
-                    if run_cmd(SUDO_BIN, &sudo_args, &orphans) {
-                        logbook::log_unmerge(&orphans);
-                    }
+            // Split: true orphans vs orphans only kept because world lists them.
+            let mut protected: Vec<String> = Vec::new();
+            if is_safe_path(WORLD_SET_FILE) {
+                if let Ok(file) = fs::File::open(WORLD_SET_FILE) {
+                    let world_bare: HashSet<String> = io::BufReader::new(file)
+                        .lines()
+                        .map_while(Result::ok)
+                        .filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#'))
+                        .map(|l| l.trim().split('/').last().unwrap_or("").to_string())
+                        .collect();
+                    let (keep, prot): (Vec<String>, Vec<String>) =
+                        orphans.into_iter().partition(|p| !world_bare.contains(p));
+                    orphans = keep;
+                    protected = prot;
                 }
             }
-            Err(_) => eprintln!(">>> Error: Failed to check for orphans."),
+            if !protected.is_empty() {
+                if cli.show_protected {
+                    println!();
+                    println!(
+                        "{} {} orphan(s) not removed (listed in world, install reason is dependency):",
+                        ">>>".yellow().bold(),
+                        protected.len()
+                    );
+                    for p in &protected {
+                        println!("    {}", p);
+                    }
+                    println!();
+                } else {
+                    println!(
+                        ">>> {} package(s) skipped (tracked in world). Pass {} to list them.",
+                        protected.len(),
+                        "--show-protected".cyan()
+                    );
+                }
+            }
+
+            // --exclude protects from removal as well as from
+            // installation: "leave this package out of this run"
+            // reads the same either way.
+            let (kept, dropped) = runtime::split_excluded(&orphans);
+            runtime::report_excluded(&dropped);
+            orphans = kept;
+
+            if orphans.is_empty() {
+                println!();
+                println!(">>> No orphaned packages were found on your system.");
+                return Ok(());
+            }
+
+            println!();
+            for o in &orphans {
+                println!("[{}] {}", "unmerge".red().bold(), o);
+            }
+            println!();
+            println!("Total: {} orphaned package(s) to remove", orphans.len());
+            println!();
+
+            // --print and --nosave conflict; nosave N/A on dry run.
+            let mut pacman_args = if cli.pretend {
+                vec!["-Rs", "--print"]
+            } else {
+                vec!["-Rns"]
+            };
+            if !cli.ask && !cli.pretend {
+                pacman_args.push("--noconfirm");
+            }
+
+            // --print needs no root (avoid sudo password on dry run).
+            if cli.pretend {
+                run_cmd(PACMAN_BIN, &pacman_args, &orphans);
+            } else {
+                let mut sudo_args = vec![PACMAN_BIN];
+                sudo_args.extend(pacman_args);
+                if run_cmd(SUDO_BIN, &sudo_args, &orphans) {
+                    logbook::log_unmerge(&orphans);
+                }
+            }
         }
         return Ok(());
     }
@@ -2595,22 +2726,7 @@ fn run() -> anyhow::Result<()> {
         let mut unmerge_atoms: Vec<String> = Vec::new();
         for p in &target_pkgs {
             let bare = p.split('/').last().unwrap_or(p);
-            let ver = {
-                let out = std::process::Command::new(PACMAN_BIN)
-                    .args(["-Q", bare])
-                    .env("LC_ALL", "C")
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::null())
-                    .output();
-                match out {
-                    Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
-                        .split_whitespace()
-                        .nth(1)
-                        .unwrap_or("?")
-                        .to_string(),
-                    _ => "?".to_string(),
-                }
-            };
+            let ver = crate::alpm_db::installed_version(bare).unwrap_or_else(|| "?".to_string());
             let repo = get_pkg_repo(bare).unwrap_or_default();
             let atom = if repo.is_empty() {
                 bare.to_string()

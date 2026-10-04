@@ -283,20 +283,7 @@ pub(crate) fn provision_from_world_set(
     }
 
     // Already installed → skip.
-    let installed: HashSet<String> = Command::new(PACMAN_BIN)
-        .arg("-Qq")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
+    let installed: HashSet<String> = crate::alpm_db::installed_names();
 
     let mut official_missing: Vec<String> = Vec::new();
     let mut aur_missing: Vec<String> = Vec::new();
@@ -866,20 +853,7 @@ pub(crate) fn add_to_world_set(packages: &[String], forced_prefix: Option<&str>)
 // Detection removes the package from world if pacman removed it while resolving a conflict.
 
 fn installed_bare_names() -> HashSet<String> {
-    Command::new(PACMAN_BIN)
-        .arg("-Qq")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        })
-        .unwrap_or_default()
+    crate::alpm_db::installed_names()
 }
 
 /// Call before a `pacman -S` that might conflict-remove another
