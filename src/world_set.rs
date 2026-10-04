@@ -62,55 +62,8 @@ pub(crate) fn get_pkg_repo(pkg: &str) -> Option<String> {
 // (was one, sometimes two, per package -- see pkg_world_entry_from).
 
 /// `key : value` line, exact match on key.
-fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
-    let (k, v) = line.split_once(':')?;
-    if k.trim() == key {
-        Some(v.trim())
-    } else {
-        None
-    }
-}
 
-/// Parses `pacman -Qi`/`-Si` output (any number of blank-line-separated
-/// blocks) into name -> repo, keyed off each block's own "Name" field.
-fn parse_repo_blocks(stdout: &str) -> std::collections::HashMap<String, String> {
-    let mut map = std::collections::HashMap::new();
-    for block in stdout.split("\n\n") {
-        let mut name = None;
-        let mut repo = None;
-        for line in block.lines() {
-            if let Some(v) = field(line, "Name") {
-                name = Some(v.to_string());
-            }
-            if let Some(v) = field(line, "Installed From").or_else(|| field(line, "Repository")) {
-                if !v.is_empty() {
-                    repo = Some(v.to_string());
-                }
-            }
-        }
-        if let Some(n) = name {
-            map.insert(n, repo.unwrap_or_default());
-        }
-    }
-    map
-}
-
-/// Unlike get_pkg_repo's `pacman_c`, status isn't checked -- pacman
-/// exits non-zero if any name is unknown, but still prints blocks for
-/// the ones it did find, and we don't want to lose those.
-fn pacman_raw(args: &[&str]) -> String {
-    Command::new("/usr/bin/pacman")
-        .args(args)
-        .env("LC_ALL", "C")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default()
-}
-
-/// Batch get_pkg_repo: one -Qi call, then one -Si call for whatever
-/// wasn't installed. Same Some("None")-means-local-build semantics.
+/// Batch repo lookup via libalpm. Some("None") = local build.
 pub(crate) fn get_pkg_repos_batch(
     names: &[String],
 ) -> std::collections::HashMap<String, Option<String>> {
@@ -121,39 +74,7 @@ pub(crate) fn get_pkg_repos_batch(
     if bares.is_empty() {
         return std::collections::HashMap::new();
     }
-
-    let mut result: std::collections::HashMap<String, Option<String>> =
-        std::collections::HashMap::new();
-
-    let mut qi_args = vec!["-Qi"];
-    qi_args.extend(bares.iter().map(String::as_str));
-    for (name, repo) in parse_repo_blocks(&pacman_raw(&qi_args)) {
-        result.insert(
-            name,
-            Some(if repo.is_empty() {
-                "None".to_string()
-            } else {
-                repo
-            }),
-        );
-    }
-
-    let missing: Vec<&str> = bares
-        .iter()
-        .map(String::as_str)
-        .filter(|b| !result.contains_key(*b))
-        .collect();
-    if !missing.is_empty() {
-        let mut si_args = vec!["-Si"];
-        si_args.extend(missing.iter().copied());
-        for (name, repo) in parse_repo_blocks(&pacman_raw(&si_args)) {
-            result
-                .entry(name)
-                .or_insert_with(|| if repo.is_empty() { None } else { Some(repo) });
-        }
-    }
-
-    result
+    crate::alpm_db::repos_batch(&bares)
 }
 
 /// world entry ("repo/name", "Err/name" local, or bare "name") from an

@@ -10,6 +10,7 @@ scans PKGBUILDs for supply-chain attack patterns before building;
 and runs untrusted build steps inside a bwrap sandbox.
 */
 
+mod alpm_db;
 mod aur;
 mod bash_ast;
 mod config;

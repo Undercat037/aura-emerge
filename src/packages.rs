@@ -19,44 +19,9 @@ pub(crate) struct PkgInfo {
     pub(crate) status: String,
 }
 
-/// Install status: N/U/D/R.
+/// Install status: N/U/D/R via libalpm.
 pub(crate) fn pkg_status(name: &str, new_ver: &str) -> String {
-    let out = std::process::Command::new(PACMAN_BIN)
-        .args(["-Q", name])
-        .env("LC_ALL", "C")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output();
-    let installed = match out {
-        Ok(o) if o.status.success() => {
-            let s = String::from_utf8_lossy(&o.stdout).into_owned();
-            s.split_whitespace().nth(1).unwrap_or("").to_string()
-        }
-        _ => return "N".to_string(),
-    };
-    if installed.is_empty() {
-        return "N".to_string();
-    }
-    if installed == new_ver {
-        return "R".to_string();
-    }
-    // Compare: if installed > new_ver it's a downgrade
-    // Use pacman vercmp
-    let cmp: i32 = std::process::Command::new(VERCMP_BIN)
-        .args([&installed, new_ver])
-        .output()
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .trim()
-                .parse()
-                .unwrap_or(0)
-        })
-        .unwrap_or(0);
-    match cmp {
-        c if c < 0 => "U".to_string(),
-        0 => "R".to_string(),
-        _ => "D".to_string(),
-    }
+    crate::alpm_db::pkg_status(name, new_ver)
 }
 
 /// Display atom (repo/name-ver).
@@ -170,55 +135,26 @@ fn makepkg_conf_override(
     Some(path.to_string_lossy().to_string())
 }
 
-/// Probe official repos via -Sp --print-format. Some(infos) or None.
+/// Probe official sync dbs via libalpm. Some(infos) or None if none found.
 pub(crate) fn probe_official(pkgs: &[String]) -> Option<Vec<PkgInfo>> {
-    let mut args = vec!["-Sp", "--print-format", "%n %v", "--color", "never"];
-    let pkg_refs: Vec<&str> = pkgs.iter().map(String::as_str).collect();
-    args.extend_from_slice(&pkg_refs);
-
-    let output = Command::new(PACMAN_BIN)
-        .args(&args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
+    let (found, _missing) = crate::alpm_db::probe_sync_split(pkgs);
+    if found.is_empty() {
         return None;
     }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let infos: Vec<PkgInfo> = stdout
-        .lines()
-        .filter(|l| !l.is_empty())
-        .map(|line| {
-            let mut parts = line.splitn(2, ' ');
-            let name = parts.next().unwrap_or("").to_string();
-            let version = parts.next().unwrap_or("").to_string();
-            let (repo, bare_name) = if name.contains('/') {
-                let mut p = name.splitn(2, '/');
-                (
-                    p.next().unwrap_or("").to_string(),
-                    p.next().unwrap_or(&name).to_string(),
-                )
-            } else {
-                (String::new(), name.clone())
-            };
-            let status = pkg_status(&bare_name, &version);
-            PkgInfo {
-                name: bare_name,
-                version,
-                repo,
-                status,
-            }
-        })
-        .collect();
-
-    if infos.is_empty() {
-        None
-    } else {
-        Some(infos)
-    }
+    Some(
+        found
+            .into_iter()
+            .map(|p| {
+                let status = pkg_status(&p.name, &p.version);
+                PkgInfo {
+                    name: p.name,
+                    version: p.version,
+                    repo: p.repo,
+                    status,
+                }
+            })
+            .collect(),
+    )
 }
 
 /// Split into found/missing. Batch -Sp first, then per-name for misses.
