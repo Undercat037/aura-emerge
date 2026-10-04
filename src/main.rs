@@ -13,7 +13,9 @@ and runs untrusted build steps inside a bwrap sandbox.
 mod alpm_db;
 mod aur;
 mod bash_ast;
+mod candy;
 mod config;
+mod helper;
 mod logbook;
 mod mask;
 mod news;
@@ -461,6 +463,9 @@ struct Cli {
     quiet: bool,
     #[arg(long = "nospinner")]
     nospinner: bool,
+    /// Easter egg, hidden from --help and completions.
+    #[arg(long = "moo", hide = true)]
+    moo: bool,
     #[arg(long = "noconfmem")]
     noconfmem: bool,
     #[arg(long = "color")]
@@ -1468,6 +1473,19 @@ fn reset_sigpipe() {
 fn reset_sigpipe() {}
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--ae-service") {
+        std::process::exit(helper::run());
+    }
+    if std::env::args().nth(1).as_deref() == Some("--ae-ping") {
+        match helper::client::Client::start().and_then(|mut c| c.ping()) {
+            Ok(()) => println!("helper ok"),
+            Err(e) => {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     let result = run();
 
     // --keep-going collects rather than aborts, so the one place that
@@ -1508,11 +1526,18 @@ fn run() -> anyhow::Result<()> {
     enforce_action_priority(&mut cli, &effective_argv);
 
     // Everything read from deep inside the build path lands here once.
+    let candy_on = cfg.has_feature("candy") && !cli.nospinner && !cli.quiet;
     runtime::init(runtime::Runtime {
         config: cfg,
         exclude: collect_excludes(&cli.exclude),
         keep_going: cli.keep_going,
+        candy: candy_on,
     });
+
+    if cli.moo {
+        candy::moo();
+        return Ok(());
+    }
 
     // No pacman/world needed -- just prints a script. Handled
     // before check_binaries() so it works in a clean chroot too.

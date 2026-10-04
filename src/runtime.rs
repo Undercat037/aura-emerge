@@ -21,6 +21,8 @@ pub(crate) struct Runtime {
     /// are a separate, persistent layer, see `mask.rs`).
     pub(crate) exclude: HashSet<String>,
     pub(crate) keep_going: bool,
+    /// `FEATURES="candy"`, minus `--nospinner` / `-q`.
+    pub(crate) candy: bool,
 }
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
@@ -42,6 +44,10 @@ pub(crate) fn config() -> &'static Config {
 
 pub(crate) fn keep_going() -> bool {
     get().keep_going
+}
+
+pub(crate) fn candy() -> bool {
+    get().candy
 }
 
 /// True if `--exclude` named this package (compared bare, so

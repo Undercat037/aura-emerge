@@ -63,6 +63,9 @@ const EXPORT_VARS: &[&str] = &["NINJAFLAGS"];
 /// exactly what it is.
 const DEFAULT_FLAG_KEY: &str = "EMERGE_DEFAULT_OPTS";
 
+/// Read into `vars` but not a build var: never reaches makepkg.
+const FEATURES_KEY: &str = "FEATURES";
+
 /// A build value, kept as written so arrays stay arrays in the
 /// generated makepkg.conf.
 #[derive(Debug, Clone)]
@@ -100,6 +103,8 @@ impl BuildValue {
 pub(crate) struct Config {
     /// `EMERGE_DEFAULT_OPTS`, already one token per entry.
     pub(crate) default_flags: Vec<String>,
+    /// `FEATURES` tokens as written (`-foo` turns `foo` off).
+    pub(crate) features: Vec<String>,
     /// Build vars actually set, in `BUILD_VARS` order.
     pub(crate) build_vars: Vec<(String, BuildValue)>,
     /// Config files that were read, in precedence order.
@@ -165,11 +170,20 @@ pub(crate) fn load() -> Config {
         .filter_map(|k| vars.get(*k).map(|v| (k.to_string(), v.clone())))
         .collect();
 
+    let features = features_of(&vars);
+
     Config {
         default_flags,
+        features,
         build_vars,
         files,
     }
+}
+
+fn features_of(vars: &HashMap<String, BuildValue>) -> Vec<String> {
+    vars.get(FEATURES_KEY)
+        .map(BuildValue::tokens)
+        .unwrap_or_default()
 }
 
 /// Stores one parsed `key = value` into `vars`/`default_flags`, or
@@ -183,7 +197,7 @@ fn store(
 ) {
     if key == DEFAULT_FLAG_KEY {
         *default_flags = value.tokens();
-    } else if BUILD_VARS.contains(&key.as_str()) {
+    } else if key == FEATURES_KEY || BUILD_VARS.contains(&key.as_str()) {
         vars.insert(key, value);
     } else {
         warn(path, &key, "unknown key (ignored)");
@@ -373,6 +387,19 @@ pub(crate) fn load_env_file(path: &Path) -> Option<Vec<(String, BuildValue)>> {
 }
 
 impl Config {
+    /// Is `name` on in `FEATURES`? Last mention wins, `-name` is off.
+    pub(crate) fn has_feature(&self, name: &str) -> bool {
+        let mut on = false;
+        for t in &self.features {
+            if t == name {
+                on = true;
+            } else if t.strip_prefix('-') == Some(name) {
+                on = false;
+            }
+        }
+        on
+    }
+
     /// This config with `extra` vars laid over it (same key replaced),
     /// `files` appended to the source list. `BUILD_VARS` order kept.
     pub(crate) fn layered(&self, extra: &[(String, BuildValue)], files: &[PathBuf]) -> Config {
@@ -710,8 +737,10 @@ mod config_tests {
             .iter()
             .filter_map(|k| vars.get(*k).map(|v| (k.to_string(), v.clone())))
             .collect();
+        let features = features_of(&vars);
         Config {
             default_flags: flags,
+            features,
             build_vars,
             files: vec![PathBuf::from("test.conf")],
         }
@@ -723,6 +752,23 @@ mod config_tests {
         let b = parse(r#"EMERGE_DEFAULT_OPTS="--ask --devel""#);
         assert_eq!(a.default_flags, vec!["--ask", "--devel"]);
         assert_eq!(a.default_flags, b.default_flags);
+    }
+
+    #[test]
+    fn features_are_read_but_not_build_vars() {
+        let cfg = parse("FEATURES=\"candy ccache\"\nCFLAGS=\"-O2\"\n");
+        assert_eq!(cfg.features, vec!["candy", "ccache"]);
+        assert!(cfg.has_feature("candy"));
+        assert!(!cfg.has_feature("sandbox"));
+        assert_eq!(cfg.build_vars.len(), 1);
+        assert_eq!(cfg.build_vars[0].0, "CFLAGS");
+    }
+
+    #[test]
+    fn feature_minus_turns_off_last_wins() {
+        assert!(!parse("FEATURES=(candy -candy)").has_feature("candy"));
+        assert!(parse("FEATURES=(-candy candy)").has_feature("candy"));
+        assert!(!parse("CFLAGS=\"-O2\"").has_feature("candy"));
     }
 
     #[test]
