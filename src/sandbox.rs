@@ -404,28 +404,89 @@ fn shq(path: &Path) -> String {
 /// A copy of the PUBLIC half of the real GnuPG home, for signature
 /// verification inside the sandbox.
 ///
-/// Binding the real `~/.gnupg` (even read-only) hands the build
-/// `private-keys-v1.d/` -- a read-only secret key is still a stolen
-/// secret key. `gpg --verify` needs only the public keyring and the
-/// trust db, so that's all that gets copied (regular files only; a
-/// symlink in the real homedir is skipped rather than followed).
-fn public_only_gnupg(real: &Path, build_dir: &Path) -> Option<PathBuf> {
-    if !real.is_dir() {
-        return None;
-    }
+/// Fresh GNUPGHOME under the build scratch dir — never the real
+/// `~/.gnupg`. Host keyboxd / agent sockets are useless inside bwrap;
+/// keys must be imported into this directory with `--homedir`.
+fn sandbox_gnupg_home(build_dir: &Path) -> Option<PathBuf> {
     let dst = fakeroot_shim_scratch_dir(build_dir).join("gnupg");
-    let _ = std::fs::remove_dir_all(&dst); // re-copied per call: ensure_pgp_keys may have imported more
+    let _ = std::fs::remove_dir_all(&dst);
     std::fs::DirBuilder::new().mode(0o700).create(&dst).ok()?;
-    for name in ["pubring.kbx", "pubring.gpg", "trustdb.gpg"] {
-        let src = real.join(name);
-        let is_file = std::fs::symlink_metadata(&src)
-            .map(|m| m.is_file())
+    let _ = std::fs::write(dst.join("gpg.conf"), "batch\nno-tty\nkeyid-format long\n");
+    Some(dst)
+}
+
+/// Import public keys into a sandbox GNUPGHOME via keyserver.
+pub(crate) fn sandbox_recv_keys(gnupg: &Path, keys: &[String], keyserver: &str) -> usize {
+    if keys.is_empty() || !gnupg.is_dir() {
+        return 0;
+    }
+    let mut ok = 0usize;
+    for key in keys {
+        let status = std::process::Command::new("gpg")
+            .args([
+                "--homedir",
+                gnupg.to_str().unwrap_or(""),
+                "--batch",
+                "--yes",
+                "--keyserver",
+                keyserver,
+                "--recv-keys",
+                key,
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
             .unwrap_or(false);
-        if is_file {
-            let _ = std::fs::copy(&src, dst.join(name));
+        if status {
+            ok += 1;
         }
     }
-    Some(dst)
+    ok
+}
+
+/// Best-effort: dump host public keys into the sandbox ring.
+fn seed_from_host_export(real: &Path, dst: &Path) {
+    if !real.is_dir() {
+        return;
+    }
+    let export = std::process::Command::new("gpg")
+        .args([
+            "--homedir",
+            real.to_str().unwrap_or(""),
+            "--batch",
+            "--export",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output();
+    let Ok(out) = export else {
+        return;
+    };
+    if out.stdout.is_empty() {
+        return;
+    }
+    use std::io::Write;
+    let mut child = match std::process::Command::new("gpg")
+        .args([
+            "--homedir",
+            dst.to_str().unwrap_or(""),
+            "--batch",
+            "--yes",
+            "--import",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(&out.stdout);
+    }
+    let _ = child.wait();
 }
 
 // ── the sandbox itself ────────────────────────────────────────────────────────
@@ -449,7 +510,7 @@ fn public_only_gnupg(real: &Path, build_dir: &Path) -> Option<PathBuf> {
 /// jail) still wins over our `--setenv` -- rare in practice.
 ///
 /// `real_gnupg_home`: the user's real GnuPG dir. Never bound as is --
-/// see `public_only_gnupg`.
+/// see `sandbox_gnupg_home`.
 ///
 /// `net`: whether this call gets `--share-net`. Callers using
 /// `--unshare-net-build` pass `true` for the `prepare()`/download phase
@@ -470,6 +531,7 @@ pub(crate) fn sandboxed_makepkg(
     caller_args: &[&str],
     real_gnupg_home: Option<&Path>,
     extra_dest_dirs: &[(&str, PathBuf)],
+    extra_pgp_keys: &[String],
     net: bool,
 ) -> Command {
     let build_dir_s = build_dir.to_string_lossy().to_string();
@@ -592,10 +654,16 @@ pub(crate) fn sandboxed_makepkg(
         }
     }
 
-    // Public-only keyring copy, read-only, so signature verification
-    // still works but a compromised build can't read secret keys, plant
-    // its own key or touch the real ~/.gnupg.
-    if let Some(gnupg) = real_gnupg_home.and_then(|g| public_only_gnupg(g, build_dir)) {
+    // Isolated public keyring: fresh GNUPGHOME, seed from host export,
+    // then recv any explicit keys (validpgpkeys / log-cited). Bound
+    // read-only so the build cannot plant keys or touch the real home.
+    if let Some(gnupg) = sandbox_gnupg_home(build_dir) {
+        if let Some(real) = real_gnupg_home {
+            seed_from_host_export(real, &gnupg);
+        }
+        if !extra_pgp_keys.is_empty() {
+            let _ = sandbox_recv_keys(&gnupg, extra_pgp_keys, "keyserver.ubuntu.com");
+        }
         let dest = fake_home.join(".gnupg");
         let dest_s = dest.to_string_lossy().to_string();
         let src_s = gnupg.to_string_lossy().to_string();
@@ -748,18 +816,12 @@ mod tests {
     }
 
     #[test]
-    fn keyring_copy_has_public_files_only() {
-        let real = temp("gnupg-real");
-        std::fs::write(real.join("pubring.kbx"), "pub").unwrap();
-        std::fs::write(real.join("trustdb.gpg"), "trust").unwrap();
-        std::fs::create_dir_all(real.join("private-keys-v1.d")).unwrap();
-        std::fs::write(real.join("private-keys-v1.d/k.key"), "SECRET").unwrap();
+    fn sandbox_gnupg_home_is_empty_ring() {
         let bd = Path::new("/nonexistent/ae-build-gnupg");
-        let copy = public_only_gnupg(&real, bd).unwrap();
-        assert!(copy.join("pubring.kbx").is_file());
-        assert!(copy.join("trustdb.gpg").is_file());
+        let copy = sandbox_gnupg_home(bd).unwrap();
+        assert!(copy.is_dir());
+        assert!(copy.join("gpg.conf").is_file());
         assert!(!copy.join("private-keys-v1.d").exists());
         drop(FakerootShimGuard::new(bd));
-        let _ = std::fs::remove_dir_all(real);
     }
 }

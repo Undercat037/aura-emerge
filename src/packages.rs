@@ -49,16 +49,20 @@ pub(crate) fn status_colored(status: &str) -> String {
 /// `>>> Emerging` / `>>> Installing` lines stay readable. On failure the
 /// captured log is dumped. Live output with `--debug`, `AE_DEBUG=1`, or
 /// `--quiet-build=n`.
-fn run_build_cmd(mut cmd: Command, label: &str) -> bool {
+fn run_build_cmd(mut cmd: Command, label: &str) -> Result<(), String> {
     if crate::runtime::show_build_output() {
-        return cmd.status().map(|s| s.success()).unwrap_or(false);
+        return if cmd.status().map(|s| s.success()).unwrap_or(false) {
+            Ok(())
+        } else {
+            Err(String::new())
+        };
     }
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     match cmd.output() {
         Ok(out) => {
             if out.status.success() {
-                true
+                Ok(())
             } else {
                 let combined = {
                     let mut s = String::new();
@@ -86,7 +90,7 @@ fn run_build_cmd(mut cmd: Command, label: &str) -> bool {
                         eprintln!();
                     }
                 }
-                false
+                Err(combined)
             }
         }
         Err(e) => {
@@ -96,14 +100,14 @@ fn run_build_cmd(mut cmd: Command, label: &str) -> bool {
                 label,
                 e
             );
-            false
+            Err(String::new())
         }
     }
 }
 
 // ── Explicit / dependency flag helpers ──────────────────────────────────────
 
-/// pacman -D --asexplicit (AUR/ABS/--select). Best-effort if not installed.
+/// libalpm `--asexplicit` (AUR/ABS/--select). Best-effort if not installed.
 pub(crate) fn mark_asexplicit(pkgs: &[String]) {
     let bare: Vec<String> = pkgs
         .iter()
@@ -112,17 +116,10 @@ pub(crate) fn mark_asexplicit(pkgs: &[String]) {
     if bare.is_empty() {
         return;
     }
-
-    let mut args: Vec<&str> = vec![PACMAN_BIN, "-D", "--asexplicit"];
-    args.extend(bare.iter().map(String::as_str));
-    let _ = Command::new(SUDO_BIN)
-        .args(&args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    let _ = crate::rootops::set_reason(true, &bare);
 }
 
-/// pacman -D --asdeps (--deselect / transitive deps). Best-effort.
+/// libalpm `--asdeps` (--deselect / transitive deps). Best-effort.
 pub(crate) fn mark_asdeps(pkgs: &[String]) {
     let bare: Vec<String> = pkgs
         .iter()
@@ -131,14 +128,7 @@ pub(crate) fn mark_asdeps(pkgs: &[String]) {
     if bare.is_empty() {
         return;
     }
-
-    let mut args: Vec<&str> = vec![PACMAN_BIN, "-D", "--asdeps"];
-    args.extend(bare.iter().map(String::as_str));
-    let _ = Command::new(SUDO_BIN)
-        .args(&args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    let _ = crate::rootops::set_reason(false, &bare);
 }
 
 /// make.conf plus any `package.env` layers matching this build dir
@@ -332,19 +322,25 @@ pub(crate) fn print_emerge_plan(
 /// Portage-style `--ask`: one prompt after the plan, before any work.
 /// Returns `true` to proceed. When `ask` is false, always proceeds.
 ///
-/// After a yes, callers must pass `ask: false` into build/install helpers
-/// so pacman/makepkg stay quiet (no second "Continue installation?").
+/// `action` is the verb in the question ("merge" / "unmerge" / ...).
+/// After a yes, callers must keep package managers non-interactive.
 ///
 /// Accepted answers match Portage: empty / y / yes (case-insensitive).
 /// Anything else aborts.
 pub(crate) fn confirm_merge(ask: bool) -> bool {
+    confirm_action(ask, "merge")
+}
+
+/// Same as `confirm_merge`, with a custom verb (`unmerge`, `prune`, ...).
+pub(crate) fn confirm_action(ask: bool, action: &str) -> bool {
     if !ask {
         return true;
     }
     // No >>> on the question -- Portage prints it bare; arrows are for
     // status lines. Yes/No colored so the choice is readable at a glance.
     print!(
-        "Would you like to merge these packages? [{}/{}] ",
+        "Would you like to {} these packages? [{}/{}] ",
+        action,
         "Yes".green().bold(),
         "No".red().bold()
     );
@@ -630,6 +626,119 @@ pub(crate) fn gpg_key_present(key: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Pull a 16-hex key id out of makepkg/gpg noise ("unknown public key",
+/// Ukrainian "невідомий публічний ключ", etc.).
+pub(crate) fn pgp_keys_from_log(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let lower = line.to_ascii_lowercase();
+        // English + Ukrainian makepkg/gpg messages + gpg --status-fd.
+        let hit = lower.contains("unknown public key")
+            || line.contains("невідомий публічний ключ")
+            || lower.contains("using unknown key")
+            || lower.contains("no_pubkey")
+            || lower.contains("no public key");
+        if !hit {
+            continue;
+        }
+        // Last hex run of length >= 8 on the line is the key id.
+        let mut best = None;
+        for word in line.split(|c: char| !c.is_ascii_hexdigit()) {
+            if word.len() >= 8 && word.len() <= 40 && word.chars().all(|c| c.is_ascii_hexdigit()) {
+                best = Some(word.to_ascii_uppercase());
+            }
+        }
+        if let Some(k) = best {
+            if !out.contains(&k) {
+                out.push(k);
+            }
+        }
+    }
+    out
+}
+
+/// When the build log omits the key id, probe `*.asc` next to sources
+/// with `gpg --list-packets` / status for the issuer.
+pub(crate) fn pgp_keys_from_asc_dir(dir: &std::path::Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let rd = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return out,
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        let is_asc = p
+            .extension()
+            .and_then(|x| x.to_str())
+            .map(|x| x.eq_ignore_ascii_case("asc"))
+            .unwrap_or(false);
+        if !is_asc {
+            continue;
+        }
+        let Ok(outp) = Command::new(GPG_BIN)
+            .args(["--list-packets", "--batch"])
+            .arg(&p)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+        else {
+            continue;
+        };
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&outp.stdout),
+            String::from_utf8_lossy(&outp.stderr)
+        );
+        // "keyid: 0x514BBE2EB8E1961F" or "issuer key ID 514BBE2EB8E1961F"
+        for line in text.lines() {
+            let lower = line.to_ascii_lowercase();
+            if !(lower.contains("keyid") || lower.contains("issuer")) {
+                continue;
+            }
+            for word in line.split(|c: char| !c.is_ascii_hexdigit()) {
+                if word.len() >= 8
+                    && word.len() <= 40
+                    && word.chars().all(|c| c.is_ascii_hexdigit())
+                {
+                    let k = word.to_ascii_uppercase();
+                    if !out.contains(&k) {
+                        out.push(k);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Import one key from the default keyserver. Prints status.
+pub(crate) fn import_pgp_key(key: &str) -> bool {
+    if !std::path::Path::new(GPG_BIN).exists() {
+        return false;
+    }
+    if gpg_key_present(key) {
+        return true;
+    }
+    print!("    {} ... ", key);
+    let _ = io::stdout().flush();
+    let ok = Command::new(GPG_BIN)
+        .args(["--keyserver", PGP_KEYSERVER, "--recv-keys", key])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    println!(
+        "{}",
+        if ok {
+            "ok".green().to_string()
+        } else {
+            "failed".red().to_string()
+        }
+    );
+    ok
+}
+
 /// Ensure validpgpkeys in keyring; --autopgp imports, else print recv-keys.
 pub(crate) fn ensure_pgp_keys(pkgbuild_path: &std::path::Path, autopgp: bool) {
     if !std::path::Path::new(GPG_BIN).exists() {
@@ -657,23 +766,7 @@ pub(crate) fn ensure_pgp_keys(pkgbuild_path: &std::path::Path, autopgp: bool) {
             PGP_KEYSERVER
         );
         for key in &missing {
-            print!("    {} ... ", key);
-            io::stdout().flush().ok();
-            let ok = Command::new(GPG_BIN)
-                .args(["--keyserver", PGP_KEYSERVER, "--recv-keys", key])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            println!(
-                "{}",
-                if ok {
-                    "ok".green().to_string()
-                } else {
-                    "failed".red().to_string()
-                }
-            );
+            let _ = import_pgp_key(key);
         }
     } else {
         eprintln!();
@@ -2006,6 +2099,15 @@ fn build_with_sandbox(
         makepkg_args.push(path.as_str());
     }
 
+    // Keys for the sandbox ring: PKGBUILD validpgpkeys + any extras
+    // accumulated on a previous failure (retry path).
+    let mut sandbox_keys: Vec<String> = {
+        let pb = build_dir.join("PKGBUILD");
+        std::fs::read_to_string(&pb)
+            .map(|text| parse_validpgpkeys(&text))
+            .unwrap_or_default()
+    };
+
     let real_gnupg = std::env::var("HOME")
         .ok()
         .map(|h| std::path::PathBuf::from(h).join(".gnupg"));
@@ -2047,10 +2149,12 @@ fn build_with_sandbox(
                 &nobuild_args,
                 real_gnupg.as_deref(),
                 &extra_dest_dirs,
+                &sandbox_keys,
                 true,
             ),
             pkgbase,
-        );
+        )
+        .is_ok();
         if !fetch_ok {
             eprintln!(
                 "{} fetching/extracting sources failed for '{}'",
@@ -2068,6 +2172,7 @@ fn build_with_sandbox(
                 &noextract_args,
                 real_gnupg.as_deref(),
                 &extra_dest_dirs,
+                &sandbox_keys,
                 false,
             ),
             pkgbase,
@@ -2080,22 +2185,84 @@ fn build_with_sandbox(
                 &makepkg_args,
                 real_gnupg.as_deref(),
                 &extra_dest_dirs,
+                &sandbox_keys,
                 true,
             ),
             pkgbase,
         )
     };
-    if !build_ok {
-        eprintln!(
-            "{} sandboxed build failed for '{}'",
-            ">>> Error:".red().bold(),
-            pkgbase
-        );
-        if unshare_net_build {
-            eprintln!(
-                "    if this failed reaching for the network during build() -- check for an unvendored dependency fetch (cargo/go/pip/npm resolving its graph mid-build instead of in prepare()) and re-run without --unshare-net-build if that's expected for this package."
-            );
+
+    // On PGP failure, import keys cited in the log / .asc and retry once
+    // with those keys in the sandbox keyring.
+    let build_ok = match build_ok {
+        Ok(()) => true,
+        Err(log) => {
+            let mut keys = pgp_keys_from_log(&log);
+            if keys.is_empty() {
+                keys = pgp_keys_from_asc_dir(build_dir);
+                if keys.is_empty() {
+                    let src = build_dir.join("src");
+                    if src.is_dir() {
+                        keys = pgp_keys_from_asc_dir(&src);
+                    }
+                }
+            }
+            let can_retry = !skippgp && !keys.is_empty();
+            if can_retry {
+                println!(
+                    "{} Importing {} PGP key(s) into the sandbox keyring...",
+                    ">>>".green().bold(),
+                    keys.len()
+                );
+                for k in &keys {
+                    let _ = import_pgp_key(k);
+                    if !sandbox_keys.iter().any(|x| x == k) {
+                        sandbox_keys.push(k.clone());
+                    }
+                }
+                println!(
+                    "{} Retrying build for '{}'...",
+                    ">>>".green().bold(),
+                    pkgbase
+                );
+                let retry = run_build_cmd(
+                    crate::sandbox::sandboxed_makepkg(
+                        MAKEPKG_BIN,
+                        build_dir,
+                        &makepkg_args,
+                        real_gnupg.as_deref(),
+                        &extra_dest_dirs,
+                        &sandbox_keys,
+                        true,
+                    ),
+                    pkgbase,
+                );
+                if retry.is_ok() {
+                    true
+                } else {
+                    eprintln!(
+                        "{} sandboxed build failed for '{}'",
+                        ">>> Error:".red().bold(),
+                        pkgbase
+                    );
+                    false
+                }
+            } else {
+                eprintln!(
+                    "{} sandboxed build failed for '{}'",
+                    ">>> Error:".red().bold(),
+                    pkgbase
+                );
+                if unshare_net_build {
+                    eprintln!(
+                        "    if this failed reaching for the network during build() -- check for an unvendored dependency fetch (cargo/go/pip/npm resolving its graph mid-build instead of in prepare()) and re-run without --unshare-net-build if that's expected for this package."
+                    );
+                }
+                false
+            }
         }
+    };
+    if !build_ok {
         return false;
     }
 
@@ -2114,10 +2281,8 @@ fn build_with_sandbox(
     if !crate::security::audit_built_packages(&pkg_files, ask) {
         return false;
     }
-    let mut args: Vec<&str> = vec![PACMAN_BIN, "-U"];
-    if !ask {
-        args.push("--noconfirm");
-    }
+    // Plan confirmation already happened (or --ask was off). Never re-prompt pacman.
+    let mut args: Vec<&str> = vec![PACMAN_BIN, "-U", "--noconfirm"];
     if oneshot {
         args.push("--asdeps");
     }
@@ -2251,7 +2416,7 @@ fn legacy_makepkg_si(build_dir: &std::path::Path, ask: bool, oneshot: bool, skip
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("makepkg");
-    run_build_cmd(cmd, label)
+    run_build_cmd(cmd, label).is_ok()
 }
 
 /// Build and install packages from ABS via `pkgctl repo clone` + `makepkg -si`

@@ -23,6 +23,9 @@ pub(crate) trait Backend {
     fn sync(&mut self, _force: bool) -> io::Result<()> {
         unsupported()
     }
+    fn sysupgrade(&mut self, _ignore: &[String]) -> io::Result<()> {
+        unsupported()
+    }
     fn install(&mut self, _names: &[String]) -> io::Result<()> {
         unsupported()
     }
@@ -49,6 +52,10 @@ impl Backend for Real {
         pkgdb::sync(force)
     }
 
+    fn sysupgrade(&mut self, ignore: &[String]) -> io::Result<()> {
+        pkgdb::sysupgrade(ignore)
+    }
+
     fn install(&mut self, names: &[String]) -> io::Result<()> {
         pkgdb::install(names)
     }
@@ -70,6 +77,7 @@ fn dispatch<B: Backend>(be: &mut B, req: &Request) -> io::Result<()> {
     match req {
         Request::Ping | Request::Quit => Ok(()),
         Request::Sync { force } => be.sync(*force),
+        Request::Sysupgrade { ignore } => be.sysupgrade(ignore),
         Request::Install(n) => be.install(n),
         Request::InstallFiles { opts, files } => be.install_files(*opts, files),
         Request::Remove { mode, names } => be.remove(*mode, names),

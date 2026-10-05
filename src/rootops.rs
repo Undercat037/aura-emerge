@@ -109,6 +109,43 @@ pub(crate) fn install_files(pins: &[Pinned], opts: FileOpts) -> Result<(), Strin
     with_helper(|c| c.install_files(opts, &lines)).map_err(|e| e.to_string())
 }
 
+/// `pacman -S` through the root helper (libalpm transaction).
+pub(crate) fn install(names: &[String]) -> Result<(), String> {
+    if names.is_empty() {
+        return Ok(());
+    }
+    with_helper(|c| c.install(names)).map_err(|e| e.to_string())
+}
+
+/// Refresh sync dbs (`-Sy` / `-Syy` when force).
+pub(crate) fn sync(force: bool) -> Result<(), String> {
+    with_helper(|c| c.sync(force)).map_err(|e| e.to_string())
+}
+
+/// Official sysupgrade (`-Su`); `ignore` is holdback list.
+pub(crate) fn sysupgrade(ignore: &[String]) -> Result<(), String> {
+    with_helper(|c| c.sysupgrade(ignore)).map_err(|e| e.to_string())
+}
+
+/// Remove installed packages through the helper.
+pub(crate) fn remove(
+    mode: crate::helper::validate::RemoveMode,
+    names: &[String],
+) -> Result<(), String> {
+    if names.is_empty() {
+        return Ok(());
+    }
+    with_helper(|c| c.remove(mode, names)).map_err(|e| e.to_string())
+}
+
+/// `pacman -D --asexplicit` / `--asdeps`.
+pub(crate) fn set_reason(explicit: bool, names: &[String]) -> Result<(), String> {
+    if names.is_empty() {
+        return Ok(());
+    }
+    with_helper(|c| c.set_reason(explicit, names)).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

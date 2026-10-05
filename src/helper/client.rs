@@ -145,6 +145,25 @@ impl Client {
         self.request(&req, &mut |_| {})
     }
 
+    /// `pacman -S`: install from sync dbs by `[repo/]name`.
+    pub(crate) fn install(&mut self, names: &[String]) -> Result<(), ClientError> {
+        let req = Request::Install(names.to_vec());
+        self.request(&req, &mut |_| {})
+    }
+
+    /// Refresh sync dbs (`pacman -Sy`); `force` is `-Syy`.
+    pub(crate) fn sync(&mut self, force: bool) -> Result<(), ClientError> {
+        self.request(&Request::Sync { force }, &mut |_| {})
+    }
+
+    /// Full official upgrade (`pacman -Su`); `ignore` is `--ignore` names.
+    pub(crate) fn sysupgrade(&mut self, ignore: &[String]) -> Result<(), ClientError> {
+        let req = Request::Sysupgrade {
+            ignore: ignore.to_vec(),
+        };
+        self.request(&req, &mut |_| {})
+    }
+
     /// `pacman -U`: `specs` are `validate::spec` lines (sha256 + abs path).
     pub(crate) fn install_files(
         &mut self,

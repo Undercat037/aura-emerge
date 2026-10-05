@@ -78,6 +78,10 @@ pub(crate) enum Request {
     Sync {
         force: bool,
     },
+    /// `-Su`: upgrade installed packages; args are `--ignore` names.
+    Sysupgrade {
+        ignore: Vec<String>,
+    },
     Quit,
     Install(Vec<String>),
     /// `-U`: `<sha256> <abs path>` per file (see `validate::file_spec`).
@@ -107,6 +111,7 @@ impl Request {
         match self {
             Request::Ping => ("ping", vec![]),
             Request::Sync { force } => (if *force { "refresh" } else { "sync" }, vec![]),
+            Request::Sysupgrade { ignore } => ("sysupgrade", ignore.clone()),
             Request::Quit => ("quit", vec![]),
             Request::Install(n) => ("install", n.clone()),
             Request::InstallFiles { opts, files } => {
@@ -138,6 +143,12 @@ impl Request {
             "ping" => none(Request::Ping, &args),
             "sync" => none(Request::Sync { force: false }, &args),
             "refresh" => none(Request::Sync { force: true }, &args),
+            "sysupgrade" => {
+                if !args.is_empty() {
+                    validate::atoms(&args)?;
+                }
+                Ok(Request::Sysupgrade { ignore: args })
+            }
             "quit" => none(Request::Quit, &args),
             "install" => {
                 validate::atoms(&args)?;

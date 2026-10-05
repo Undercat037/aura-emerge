@@ -157,6 +157,31 @@ pub(crate) fn sync_in(alpm: &mut Alpm, force: bool) -> io::Result<()> {
     res
 }
 
+/// `pacman -Su`: upgrade every installed package that has a newer
+/// version in a sync db. `ignore` is `--ignore` / package.mask holdback
+/// (bare names). Empty transaction is success (nothing to do).
+pub(crate) fn sysupgrade(ignore: &[String]) -> io::Result<()> {
+    let mut alpm = open()?;
+    sysupgrade_in(&mut alpm, ignore)
+}
+
+pub(crate) fn sysupgrade_in(alpm: &mut Alpm, ignore: &[String]) -> io::Result<()> {
+    for n in ignore {
+        let a = validate::atom(n).map_err(|r| fail(format!("bad ignore: {:?}", r)))?;
+        let _ = alpm.add_ignorepkg(a.name);
+    }
+    alpm.trans_init(TransFlag::NONE)
+        .map_err(|e| fail(format!("db lock: {}", e)))?;
+    let res = (|| {
+        // false = no downgrade (same as pacman -Su without -d).
+        alpm.sync_sysupgrade(false)
+            .map_err(|e| fail(format!("sysupgrade: {}", e)))?;
+        prepare_and_commit(alpm)
+    })();
+    let _ = alpm.trans_release();
+    res
+}
+
 /// `pacman -S`: install from the sync dbs by `[repo/]name`.
 pub(crate) fn install(names: &[String]) -> io::Result<()> {
     let mut alpm = open()?;

@@ -731,24 +731,34 @@ fn collect_excludes(raw: &[String]) -> HashSet<String> {
 /// `is_installed()` afterwards -- on a reinstall (`[ebuild  R ]`) every
 /// package is already installed, so a declined/failed run would still
 /// look like it all landed.
-pub(crate) fn pacman_install_landed(args: &[&str], names: &[String]) -> (bool, Vec<String>) {
-    if run_cmd(SUDO_BIN, args, names) {
-        return (true, names.to_vec());
+/// Official-repo install via the root helper (libalpm), with
+/// `--keep-going` retry of individual packages when the batch fails.
+/// `args` is kept for call-site compatibility and is otherwise ignored
+/// -- the helper does not speak the pacman CLI.
+pub(crate) fn pacman_install_landed(_args: &[&str], names: &[String]) -> (bool, Vec<String>) {
+    match rootops::install(names) {
+        Ok(()) => return (true, names.to_vec()),
+        Err(e) => {
+            if !runtime::keep_going() || names.len() < 2 {
+                eprintln!("{} {}", ">>> Error:".red().bold(), e);
+                return (false, Vec::new());
+            }
+            eprintln!(
+                "{} batch install failed ({}) - --keep-going set, retrying {} package(s) individually...",
+                ">>>".yellow().bold(),
+                e,
+                names.len()
+            );
+        }
     }
-    if !runtime::keep_going() || names.len() < 2 {
-        return (false, Vec::new());
-    }
-    println!(
-        "{} batch install failed - --keep-going set, retrying {} package(s) individually...",
-        ">>>".yellow().bold(),
-        names.len()
-    );
     let mut landed = Vec::new();
     for name in names {
-        if run_cmd(SUDO_BIN, args, std::slice::from_ref(name)) {
-            landed.push(name.clone());
-        } else {
-            runtime::record_failure(name, "pacman install failed");
+        match rootops::install(std::slice::from_ref(name)) {
+            Ok(()) => landed.push(name.clone()),
+            Err(e) => {
+                eprintln!("{} {}: {}", ">>> Error:".red().bold(), name, e);
+                runtime::record_failure(name, "alpm install failed");
+            }
         }
     }
     (landed.len() == names.len(), landed)
@@ -757,6 +767,155 @@ pub(crate) fn pacman_install_landed(args: &[&str], names: &[String]) -> (bool, V
 /// Bool-only wrapper for callers that don't care what landed.
 pub(crate) fn pacman_install(args: &[&str], names: &[String]) -> bool {
     pacman_install_landed(args, names).0
+}
+
+/// `emerge -u abs/nano neovim`: upgrade only the named packages.
+/// Official → libalpm install (newer sync version); AUR/ABS → rebuild.
+fn upgrade_selected(cli: &Cli, targets: &[String]) -> anyhow::Result<()> {
+    println!(">>> Calculating dependencies... done!");
+    println!();
+
+    let mut official: Vec<String> = Vec::new();
+    let mut aur: Vec<String> = Vec::new();
+    let mut abs: Vec<String> = Vec::new();
+
+    for raw in targets {
+        let bare = raw.split('/').last().unwrap_or(raw).to_string();
+        if raw.starts_with("abs/") || cli.abs {
+            abs.push(bare);
+            continue;
+        }
+        if raw.starts_with("aur/") || cli.aur {
+            aur.push(bare);
+            continue;
+        }
+        if crate::alpm_db::find_sync_many(std::slice::from_ref(&bare)).contains_key(&bare) {
+            official.push(bare);
+        } else {
+            aur.push(bare);
+        }
+    }
+
+    let upgradeable = crate::alpm_db::upgradeable_detail();
+    let mut plan_count = 0usize;
+    // Only packages with a real upgrade are installed; up-to-date ones are
+    // listed and skipped (emerge -u does not reinstall for fun).
+    let mut official_todo: Vec<String> = Vec::new();
+    for name in &official {
+        if let Some((_, old, newv, repo)) = upgradeable.iter().find(|(n, _, _, _)| n == name) {
+            let atom = if repo.is_empty() {
+                name.clone()
+            } else {
+                format!("{}/{}", repo, name)
+            };
+            println!(
+                "[{} {:<4}] {} [{} -> {}]",
+                "ebuild".green(),
+                "U".yellow().bold(),
+                atom.yellow().bold(),
+                old,
+                newv
+            );
+            official_todo.push(name.clone());
+            plan_count += 1;
+        } else if crate::alpm_db::is_installed(name) {
+            println!(
+                "[{} {:<4}] {} (already up to date)",
+                "ebuild".green(),
+                "R".cyan().bold(),
+                name.green().bold()
+            );
+        } else {
+            println!(
+                "[{} {:<4}] {}",
+                "ebuild".green(),
+                "N".green().bold(),
+                name.green().bold()
+            );
+            official_todo.push(name.clone());
+            plan_count += 1;
+        }
+    }
+    for name in &aur {
+        println!(
+            "[{} {:<4}] {} (AUR rebuild)",
+            "ebuild".green(),
+            "U".yellow().bold(),
+            format!("aur/{}", name).yellow().bold()
+        );
+        plan_count += 1;
+    }
+    for name in &abs {
+        println!(
+            "[{} {:<4}] {} (ABS rebuild)",
+            "ebuild".green(),
+            "U".yellow().bold(),
+            format!("abs/{}", name).yellow().bold()
+        );
+        plan_count += 1;
+    }
+    println!();
+    println!("{}: {} package(s)", "Total".bold(), plan_count);
+    println!();
+
+    if plan_count == 0 {
+        println!(">>> Nothing to upgrade.");
+        return Ok(());
+    }
+    if cli.pretend {
+        return Ok(());
+    }
+    if !confirm_merge(cli.ask) {
+        return Ok(());
+    }
+
+    if !official_todo.is_empty() {
+        println!(">>> Upgrading official packages...");
+        let (ok, _) = pacman_install_landed(&[], &official_todo);
+        if !ok && !cli.keep_going {
+            return Ok(());
+        }
+    }
+    if !aur.is_empty() {
+        println!(">>> Upgrading AUR packages...");
+        scan_aur_pkgbuilds_or_abort(&aur);
+        let ok = aur_install(
+            &aur,
+            false,
+            false,
+            cli.oneshot,
+            cli.skippgp,
+            cli.edit,
+            cli.no_sandbox,
+            cli.skip_srcinfo_regen,
+            cli.unshare_net_build,
+            cli.pkgbuild_view,
+        );
+        if !ok && !cli.keep_going {
+            return Ok(());
+        }
+    }
+    if !abs.is_empty() {
+        println!(">>> Upgrading ABS packages...");
+        let ok = abs_install(
+            &abs,
+            false,
+            false,
+            cli.oneshot,
+            cli.skippgp,
+            cli.edit,
+            cli.autopgp,
+            cli.no_sandbox,
+            cli.skip_srcinfo_regen,
+            cli.unshare_net_build,
+            cli.pkgbuild_view,
+        );
+        if !ok && !cli.keep_going {
+            return Ok(());
+        }
+    }
+    println!("{} Jobs complete", ">>>".green().bold());
+    Ok(())
 }
 
 /// Packages to hold back during `-u`: `--exclude` plus every installed
@@ -1840,19 +1999,82 @@ fn run() -> anyhow::Result<()> {
             std::process::exit(1);
         }
 
-        let term = target_pkgs.join(" ");
+        // Prefix routing for search terms:
+        //   aur/nano              → AUR only, term "nano"
+        //   abs/nano              → repos only (no ABS catalog yet)
+        //   cachyos-core-v3/nano  → repos, prefer that repo, term "nano"
+        //   nano                  → repos then AUR (unless --aur/--abs/--only-repos)
+        let mut force_aur = cli.aur;
+        let mut force_repos = cli.abs || cli.only_repos;
+        let mut preferred_repo: Option<String> = None;
+        let search_pkgs: Vec<String> = target_pkgs
+            .iter()
+            .map(|p| {
+                if let Some(rest) = p.strip_prefix("aur/") {
+                    force_aur = true;
+                    return rest.to_string();
+                }
+                if let Some(rest) = p.strip_prefix("abs/") {
+                    force_repos = true;
+                    return rest.to_string();
+                }
+                if let Some((repo, name)) = p.split_once('/') {
+                    if !repo.is_empty()
+                        && !name.is_empty()
+                        && repo
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                    {
+                        preferred_repo = Some(repo.to_string());
+                        force_repos = true; // repo/name is official, not AUR
+                        return name.to_string();
+                    }
+                }
+                p.clone()
+            })
+            .collect();
+        let term = search_pkgs.join(" ");
+        let target_pkgs = search_pkgs;
+        let skip_aur = force_repos || repos_only_search;
+        let only_aur = force_aur && !force_repos;
+
+        // Rank: exact name match first, then preferred repo, then the rest.
+        let rank_sync = |pkgs: &mut Vec<crate::alpm_db::AlpmPkg>| {
+            pkgs.sort_by(|a, b| {
+                let ae = a.name.eq_ignore_ascii_case(&term);
+                let be = b.name.eq_ignore_ascii_case(&term);
+                match (ae, be) {
+                    (true, false) => std::cmp::Ordering::Less,
+                    (false, true) => std::cmp::Ordering::Greater,
+                    _ => {
+                        if let Some(ref pref) = preferred_repo {
+                            let ar = a.repo == *pref;
+                            let br = b.repo == *pref;
+                            match (ar, br) {
+                                (true, false) => std::cmp::Ordering::Less,
+                                (false, true) => std::cmp::Ordering::Greater,
+                                _ => a.name.cmp(&b.name),
+                            }
+                        } else {
+                            a.name.cmp(&b.name)
+                        }
+                    }
+                }
+            });
+        };
 
         if cli.searchdesc {
-            // Search descriptions: pacman -Ss for official, AUR RPC
-            // (by=name-desc) for AUR - both used to go through aura, which
-            // just forwarded to pacman for the official half anyway.
-            println!(
-                "{} Searching descriptions for '{}'...",
-                ">>>".green().bold(),
-                term
-            );
-            print_sync_search_results(&crate::alpm_db::search_sync(&term, true, cli.search_all));
-            if !repos_only_search {
+            if !only_aur {
+                println!(
+                    "{} Searching descriptions for '{}'...",
+                    ">>>".green().bold(),
+                    term
+                );
+                let mut sync = crate::alpm_db::search_sync(&term, true, cli.search_all);
+                rank_sync(&mut sync);
+                print_sync_search_results(&sync);
+            }
+            if !skip_aur {
                 println!();
                 println!(
                     "{} Searching {} descriptions for '{}'...",
@@ -1866,7 +2088,7 @@ fn run() -> anyhow::Result<()> {
         }
 
         if cli.verbose {
-            if cli.aur {
+            if only_aur {
                 println!(
                     "{} Searching in {} for '{}'...",
                     ">>>".green().bold(),
@@ -1877,7 +2099,6 @@ fn run() -> anyhow::Result<()> {
                 if !info.is_empty() {
                     print_aur_info_results(&info);
                 } else {
-                    // Not an exact name -- fuzzy search instead.
                     print_aur_search_results(&aur::rpc_search(&term, false));
                 }
             } else {
@@ -1890,14 +2111,11 @@ fn run() -> anyhow::Result<()> {
                         }
                     }
                 } else {
-                    // Not an exact atom -- fall back to a real search.
                     println!("{} Searching for '{}'...", ">>>".green().bold(), term);
-                    print_sync_search_results(&crate::alpm_db::search_sync(
-                        &term,
-                        false,
-                        cli.search_all,
-                    ));
-                    if !repos_only_search {
+                    let mut sync = crate::alpm_db::search_sync(&term, false, cli.search_all);
+                    rank_sync(&mut sync);
+                    print_sync_search_results(&sync);
+                    if !skip_aur {
                         println!();
                         println!(
                             "{} Searching in {} for '{}'...",
@@ -1906,16 +2124,12 @@ fn run() -> anyhow::Result<()> {
                             term
                         );
                         print_aur_search_results(&aur::rpc_search(&term, false));
-                    } else {
-                        println!(
-                            ">>> '{}' not found as an exact package. ({} set, not searching AUR)",
-                            term,
-                            if cli.abs { "--abs" } else { "--only-repos" }
-                        );
+                    } else if preferred_repo.is_some() || force_repos {
+                        // repo/name or --abs/--only-repos: stay quiet if empty
                     }
                 }
             }
-        } else if cli.aur {
+        } else if only_aur {
             println!(
                 "{} Searching in {} for '{}'...",
                 ">>>".green().bold(),
@@ -1925,8 +2139,10 @@ fn run() -> anyhow::Result<()> {
             print_aur_search_results(&aur::rpc_search(&term, false));
         } else {
             println!("{} Searching for '{}'...", ">>>".green().bold(), term);
-            print_sync_search_results(&crate::alpm_db::search_sync(&term, false, cli.search_all));
-            if !repos_only_search {
+            let mut sync = crate::alpm_db::search_sync(&term, false, cli.search_all);
+            rank_sync(&mut sync);
+            print_sync_search_results(&sync);
+            if !skip_aur {
                 println!();
                 println!(
                     "{} Searching in {} for '{}'...",
@@ -2112,12 +2328,12 @@ fn run() -> anyhow::Result<()> {
         if cli.pretend {
             return Ok(());
         }
-        let mut args = vec![PACMAN_BIN, "-Rns"];
-        if !cli.ask {
-            args.push("--noconfirm");
+        if !confirm_action(cli.ask, "unmerge") {
+            return Ok(());
         }
-        if run_cmd(SUDO_BIN, &args, &to_remove) {
-            logbook::log_unmerge(&to_remove);
+        match rootops::remove(helper::validate::RemoveMode::Prune, &to_remove) {
+            Ok(()) => logbook::log_unmerge(&to_remove),
+            Err(e) => eprintln!("{} {}", ">>> Error:".red().bold(), e),
         }
         return Ok(());
     }
@@ -2169,12 +2385,15 @@ fn run() -> anyhow::Result<()> {
             None => {
                 println!(">>> No saved transaction to resume.");
                 println!(">>> Falling back to a full system upgrade instead.");
-                let mut args = vec![PACMAN_BIN, "-Syu"];
-                if !cli.ask {
-                    args.push("--noconfirm");
+                if !confirm_merge(cli.ask) {
+                    return Ok(());
                 }
-                let success = run_cmd(SUDO_BIN, &args, &[]);
-                if !success {
+                if let Err(e) = rootops::sync(false) {
+                    eprintln!("{} {}", ">>> Error:".red().bold(), e);
+                    std::process::exit(1);
+                }
+                if let Err(e) = rootops::sysupgrade(&[]) {
+                    eprintln!("{} {}", ">>> Error:".red().bold(), e);
                     std::process::exit(1);
                 }
             }
@@ -2434,7 +2653,16 @@ fn run() -> anyhow::Result<()> {
     // Equivalent to Gentoo's `emerge -u @world`: upgrades everything
     // already installed (official repos + AUR), it does not consult
     // world at all. For -Syy use `--sync --refresh`.
+    // 3. Upgrade: -u alone / -u @world = full system; -u pkg… = only those.
+    // Official half via libalpm sysupgrade (or install for selective);
+    // AUR/ABS rebuilt when named or during full -u.
     if cli.update {
+        // Named packages with -u: selective upgrade, not full system.
+        let selective = !target_pkgs.is_empty() && !has_world;
+        if selective {
+            return upgrade_selected(&cli, &target_pkgs);
+        }
+
         if let Some(n) = news::unread_count_quiet() {
             if n > 0 {
                 println!(
@@ -2488,60 +2716,65 @@ fn run() -> anyhow::Result<()> {
                 .filter(|(n, _, _, _)| !ignored.contains(n.as_str()))
                 .collect();
 
-        let ok1 = if cli.pretend {
-            // ebuild-style plan from libalpm — no `pacman -Su --print` URL dump.
-            if official_upgrades.is_empty() {
-                println!(">>> No official packages out of date.");
-            } else {
-                println!();
-                for (name, old, newv, repo) in &official_upgrades {
-                    let atom = if repo.is_empty() {
-                        name.clone()
-                    } else {
-                        format!("{}/{}", repo, name)
-                    };
-                    println!(
-                        "[{} {:<4}] {} [{} -> {}]",
-                        "ebuild".green(),
-                        "U".yellow().bold(),
-                        atom.yellow().bold(),
-                        old,
-                        newv
-                    );
-                }
-                println!();
-                println!(
-                    "{}: {} official package(s) to upgrade",
-                    "Total".bold(),
-                    official_upgrades.len()
-                );
-                println!();
-            }
-            true
+        // Always show the ebuild-style plan (pretend and real).
+        if official_upgrades.is_empty() {
+            println!(">>> No official packages out of date.");
         } else {
-            let mut s_args: Vec<&str> = vec!["-Syu"];
-            if !cli.ask {
-                s_args.push("--noconfirm");
+            println!();
+            for (name, old, newv, repo) in &official_upgrades {
+                let atom = if repo.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{}/{}", repo, name)
+                };
+                println!(
+                    "[{} {:<4}] {} [{} -> {}]",
+                    "ebuild".green(),
+                    "U".yellow().bold(),
+                    atom.yellow().bold(),
+                    old,
+                    newv
+                );
             }
-            if cli.verbose {
-                s_args.push("--verbose");
+            println!();
+            println!(
+                "{}: {} official package(s) to upgrade",
+                "Total".bold(),
+                official_upgrades.len()
+            );
+            println!();
+        }
+
+        let ok1 = if cli.pretend {
+            true
+        } else if !confirm_merge(cli.ask) {
+            return Ok(());
+        } else {
+            // -Sy then -Su through the helper (libalpm), not sudo pacman.
+            println!(">>> Synchronizing package databases...");
+            if let Err(e) = rootops::sync(false) {
+                eprintln!("{} {}", ">>> Error:".red().bold(), e);
+                false
+            } else {
+                println!(">>> Upgrading system (official repos)...");
+                let timer = logbook::Timer::start();
+                match rootops::sysupgrade(&ignores) {
+                    Ok(()) => {
+                        if !official_upgrades.is_empty() {
+                            let names: Vec<String> = official_upgrades
+                                .iter()
+                                .map(|(n, _, _, _)| n.clone())
+                                .collect();
+                            logbook::log_merge_batch("repo", &names, timer.elapsed());
+                        }
+                        true
+                    }
+                    Err(e) => {
+                        eprintln!("{} {}", ">>> Error:".red().bold(), e);
+                        false
+                    }
+                }
             }
-            for name in &ignores {
-                s_args.push("--ignore");
-                s_args.push(name);
-            }
-            let timer = logbook::Timer::start();
-            let mut args: Vec<&str> = vec![PACMAN_BIN];
-            args.extend(&s_args);
-            let ok = run_cmd(SUDO_BIN, &args, &[]);
-            if ok && !official_upgrades.is_empty() {
-                let names: Vec<String> = official_upgrades
-                    .iter()
-                    .map(|(n, _, _, _)| n.clone())
-                    .collect();
-                logbook::log_merge_batch("repo", &names, timer.elapsed());
-            }
-            ok
         };
 
         // A failed repo upgrade usually needs a human; --keep-going
@@ -2556,9 +2789,10 @@ fn run() -> anyhow::Result<()> {
             false
         } else {
             println!(">>> Upgrading AUR packages...");
+            // Plan prompt already answered for the whole -u run.
             aur_upgrade_all(
                 cli.pretend,
-                cli.ask,
+                false,
                 cli.skippgp,
                 cli.no_sandbox,
                 cli.skip_srcinfo_regen,
@@ -2732,42 +2966,26 @@ fn run() -> anyhow::Result<()> {
             target_pkgs.join(", ").bold()
         );
 
-        // Real emerge -C removes unconditionally, no "required by"
-        // refusal. pacman's -R alone won't do that, so --nodeps twice
-        // (-dd) skips dependency checks entirely, reverse included.
-        // --nosave (-n) drops the .pacsave backup pacman would otherwise
-        // leave -- Portage never kept one, it just deletes. --print and
-        // --nosave conflict (and --nosave is moot on a dry run), so
-        // --pretend gets --print instead.
-        let mut pacman_args: Vec<&str> = vec!["-R", "--nodeps", "--nodeps"];
+        // Real emerge -C removes unconditionally (RemoveMode::Unmerge =
+        // -Rdd --nosave via libalpm). --pretend only lists the plan.
         if cli.pretend {
-            pacman_args.push("--print");
-        } else {
-            pacman_args.push("--nosave");
+            return Ok(());
         }
-        if !cli.ask && !cli.pretend {
-            pacman_args.push("--noconfirm");
+        if !confirm_action(cli.ask, "unmerge") {
+            return Ok(());
         }
-        if cli.verbose {
-            pacman_args.push("--verbose");
-        }
-
-        let success = if cli.pretend {
-            run_cmd(PACMAN_BIN, &pacman_args, &target_pkgs)
-        } else {
-            let mut args: Vec<&str> = vec![PACMAN_BIN];
-            args.extend(&pacman_args);
-            run_cmd(SUDO_BIN, &args, &target_pkgs)
-        };
-        if success && !cli.pretend {
-            if let Err(e) = remove_from_world_set(&target_pkgs) {
-                eprintln!(
-                    ">>> Warning: package(s) unmerged but world was not updated: {:#}",
-                    e
-                );
+        match rootops::remove(helper::validate::RemoveMode::Unmerge, &target_pkgs) {
+            Ok(()) => {
+                if let Err(e) = remove_from_world_set(&target_pkgs) {
+                    eprintln!(
+                        ">>> Warning: package(s) unmerged but world was not updated: {:#}",
+                        e
+                    );
+                }
+                save_last_action(LastAction::Unmerge, &unmerge_atoms);
+                logbook::log_unmerge(&target_pkgs);
             }
-            save_last_action(LastAction::Unmerge, &unmerge_atoms);
-            logbook::log_unmerge(&target_pkgs);
+            Err(e) => eprintln!("{} {}", ">>> Error:".red().bold(), e),
         }
         return Ok(());
     }
@@ -2799,7 +3017,20 @@ fn run() -> anyhow::Result<()> {
         // Missing from repos+AUR (report at end; rest still install).
         let mut not_found: Vec<String> = Vec::new();
 
-        if cli.abs {
+        // abs/pkg and aur/pkg without --abs/--aur: route by prefix.
+        let force_abs = target_pkgs.iter().any(|p| p.starts_with("abs/"));
+        let force_aur = target_pkgs.iter().any(|p| p.starts_with("aur/"));
+        let target_pkgs: Vec<String> = target_pkgs
+            .iter()
+            .map(|p| {
+                p.strip_prefix("abs/")
+                    .or_else(|| p.strip_prefix("aur/"))
+                    .unwrap_or(p)
+                    .to_string()
+            })
+            .collect();
+
+        if cli.abs || force_abs {
             success = abs_install(
                 &target_pkgs,
                 cli.pretend,
@@ -2813,13 +3044,29 @@ fn run() -> anyhow::Result<()> {
                 cli.unshare_net_build,
                 cli.pkgbuild_view,
             );
-        } else if cli.aur {
+        } else if cli.aur || force_aur {
             let (pkg_infos, missing_aur) = resolve_aur_split(&target_pkgs);
             not_found = missing_aur;
             if pkg_infos.is_empty() {
                 eprintln!(">>> Error: none of the requested package(s) were found in the AUR:");
                 for m in &not_found {
                     eprintln!("    {}", m);
+                    // Suggest close AUR names (substring search, top few).
+                    let hints = aur::rpc_search(m, false);
+                    let mut shown = 0usize;
+                    for h in &hints {
+                        if h.name == *m {
+                            continue;
+                        }
+                        if shown == 0 {
+                            eprintln!("    {}:", "did you mean".yellow());
+                        }
+                        eprintln!("      aur/{}", h.name);
+                        shown += 1;
+                        if shown >= 5 {
+                            break;
+                        }
+                    }
                 }
                 std::process::exit(1);
             }
