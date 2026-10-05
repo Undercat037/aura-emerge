@@ -43,6 +43,64 @@ pub(crate) fn status_colored(status: &str) -> String {
     }
 }
 
+/// Run a build command (makepkg / bwrap+makepkg).
+///
+/// Quiet by default: stdout/stderr are captured so the Gentoo-style
+/// `>>> Emerging` / `>>> Installing` lines stay readable. On failure the
+/// captured log is dumped. Live output with `--debug`, `AE_DEBUG=1`, or
+/// `--quiet-build=n`.
+fn run_build_cmd(mut cmd: Command, label: &str) -> bool {
+    if crate::runtime::show_build_output() {
+        return cmd.status().map(|s| s.success()).unwrap_or(false);
+    }
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    match cmd.output() {
+        Ok(out) => {
+            if out.status.success() {
+                true
+            } else {
+                let combined = {
+                    let mut s = String::new();
+                    if !out.stdout.is_empty() {
+                        s.push_str(&String::from_utf8_lossy(&out.stdout));
+                        if !s.ends_with('\n') {
+                            s.push('\n');
+                        }
+                    }
+                    if !out.stderr.is_empty() {
+                        s.push_str(&String::from_utf8_lossy(&out.stderr));
+                    }
+                    s
+                };
+                if !combined.trim().is_empty() {
+                    eprintln!(
+                        "{} build log for '{}' (re-run with {} or {} for live output):",
+                        ">>>".yellow().bold(),
+                        label,
+                        "--debug".cyan(),
+                        "AE_DEBUG=1".cyan()
+                    );
+                    eprint!("{}", combined);
+                    if !combined.ends_with('\n') {
+                        eprintln!();
+                    }
+                }
+                false
+            }
+        }
+        Err(e) => {
+            eprintln!(
+                "{} failed to spawn build for '{}': {}",
+                ">>> Error:".red().bold(),
+                label,
+                e
+            );
+            false
+        }
+    }
+}
+
 // ── Explicit / dependency flag helpers ──────────────────────────────────────
 
 /// pacman -D --asexplicit (AUR/ABS/--select). Best-effort if not installed.
@@ -269,6 +327,37 @@ pub(crate) fn print_emerge_plan(
     println!();
     println!("{}: {} package(s)", "Total".bold(), pkgs.len());
     println!();
+}
+
+/// Portage-style `--ask`: one prompt after the plan, before any work.
+/// Returns `true` to proceed. When `ask` is false, always proceeds.
+///
+/// After a yes, callers must pass `ask: false` into build/install helpers
+/// so pacman/makepkg stay quiet (no second "Continue installation?").
+///
+/// Accepted answers match Portage: empty / y / yes (case-insensitive).
+/// Anything else aborts.
+pub(crate) fn confirm_merge(ask: bool) -> bool {
+    if !ask {
+        return true;
+    }
+    // No >>> on the question -- Portage prints it bare; arrows are for
+    // status lines. Yes/No colored so the choice is readable at a glance.
+    print!(
+        "Would you like to merge these packages? [{}/{}] ",
+        "Yes".green().bold(),
+        "No".red().bold()
+    );
+    let _ = io::stdout().flush();
+    let answer = crate::read_line_raw();
+    let ok = matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "" | "y" | "yes"
+    );
+    if !ok {
+        println!("{} Quitting.", ">>>".yellow().bold());
+    }
+    ok
 }
 
 fn bare_of(p: &str) -> &str {
@@ -1292,7 +1381,14 @@ pub(crate) fn aur_install(
             bare.len().to_string().yellow().bold(),
             pkg.green().bold()
         );
-        println!();
+        if !crate::runtime::show_build_output() {
+            println!(
+                "{} (build output hidden; pass {} or {} to watch)",
+                ">>>".dimmed(),
+                "--debug".cyan(),
+                "AE_DEBUG=1".cyan()
+            );
+        }
         let timer = crate::logbook::Timer::start();
         let result = resolve_and_build_aur(
             pkg,
@@ -1713,8 +1809,28 @@ fn install_local_tarballs(tarballs: &[String], ask: bool, mark_asdeps: bool) -> 
         return true;
     }
     // What package() produced is still untrusted input to this root
-    // step -- audit the archive (setuid, .INSTALL, hooks, ...) first.
+    // step. Pin (path + sha256) what is about to be audited; the root
+    // helper installs only bytes that hash to the same value.
+    let pinned = match crate::rootops::pin(tarballs) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!(
+                "{} cannot read the built package(s): {}",
+                ">>> Error:".red().bold(),
+                e
+            );
+            return false;
+        }
+    };
+    // Audit the archive (setuid, .INSTALL, hooks, ...) first.
     if !crate::security::audit_built_packages(tarballs, ask) {
+        return false;
+    }
+    if !crate::rootops::unchanged(&pinned) {
+        eprintln!(
+            "{} a built package changed while it was being audited - not installing.",
+            ">>> Error:".red().bold()
+        );
         return false;
     }
     println!(
@@ -1722,20 +1838,25 @@ fn install_local_tarballs(tarballs: &[String], ask: bool, mark_asdeps: bool) -> 
         ">>>".green().bold(),
         tarballs.len()
     );
-    let mut args: Vec<&str> = vec![PACMAN_BIN, "-U", "--needed"];
-    if mark_asdeps {
-        args.push("--asdeps");
+    let opts = crate::helper::validate::FileOpts {
+        needed: true,
+        asdeps: mark_asdeps,
+    };
+    match crate::rootops::install_files(&pinned, opts) {
+        Ok(()) => {
+            for t in tarballs {
+                let name = std::path::Path::new(t)
+                    .file_name()
+                    .map_or_else(|| t.clone(), |n| n.to_string_lossy().into_owned());
+                println!("{} Installed {}", ">>>".green().bold(), name);
+            }
+            true
+        }
+        Err(e) => {
+            eprintln!("{} {}", ">>> Error:".red().bold(), e);
+            false
+        }
     }
-    if !ask {
-        args.push("--noconfirm");
-    }
-    let tar_refs: Vec<&str> = tarballs.iter().map(String::as_str).collect();
-    Command::new(SUDO_BIN)
-        .args(&args)
-        .args(&tar_refs)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
 }
 
 /// Runs the untrusted PKGBUILD-defined functions (`pkgver`/`prepare`/
@@ -1856,7 +1977,9 @@ fn build_with_sandbox(
     }
 
     // 2. Untrusted build steps inside bwrap (no -s/-i).
-    let mut makepkg_args: Vec<&str> = Vec::new();
+    // -f: overwrite an existing package file in the build dir (reinstall /
+    // same-version rebuild otherwise dies with "Package already built").
+    let mut makepkg_args: Vec<&str> = vec!["-f"];
     if !ask {
         makepkg_args.push("--noconfirm");
     }
@@ -1917,17 +2040,17 @@ fn build_with_sandbox(
         );
         let mut nobuild_args = makepkg_args.clone();
         nobuild_args.push("--nobuild");
-        let fetch_ok = crate::sandbox::sandboxed_makepkg(
-            MAKEPKG_BIN,
-            build_dir,
-            &nobuild_args,
-            real_gnupg.as_deref(),
-            &extra_dest_dirs,
-            true,
-        )
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+        let fetch_ok = run_build_cmd(
+            crate::sandbox::sandboxed_makepkg(
+                MAKEPKG_BIN,
+                build_dir,
+                &nobuild_args,
+                real_gnupg.as_deref(),
+                &extra_dest_dirs,
+                true,
+            ),
+            pkgbase,
+        );
         if !fetch_ok {
             eprintln!(
                 "{} fetching/extracting sources failed for '{}'",
@@ -1938,29 +2061,29 @@ fn build_with_sandbox(
         }
         let mut noextract_args = makepkg_args.clone();
         noextract_args.push("--noextract");
-        crate::sandbox::sandboxed_makepkg(
-            MAKEPKG_BIN,
-            build_dir,
-            &noextract_args,
-            real_gnupg.as_deref(),
-            &extra_dest_dirs,
-            false,
+        run_build_cmd(
+            crate::sandbox::sandboxed_makepkg(
+                MAKEPKG_BIN,
+                build_dir,
+                &noextract_args,
+                real_gnupg.as_deref(),
+                &extra_dest_dirs,
+                false,
+            ),
+            pkgbase,
         )
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
     } else {
-        crate::sandbox::sandboxed_makepkg(
-            MAKEPKG_BIN,
-            build_dir,
-            &makepkg_args,
-            real_gnupg.as_deref(),
-            &extra_dest_dirs,
-            true,
+        run_build_cmd(
+            crate::sandbox::sandboxed_makepkg(
+                MAKEPKG_BIN,
+                build_dir,
+                &makepkg_args,
+                real_gnupg.as_deref(),
+                &extra_dest_dirs,
+                true,
+            ),
+            pkgbase,
         )
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
     };
     if !build_ok {
         eprintln!(
@@ -2067,7 +2190,8 @@ fn legacy_makepkg_si(build_dir: &std::path::Path, ask: bool, oneshot: bool, skip
     // dir; the sandboxed path has its own guard, this one needs its own).
     let _scratch_guard = crate::sandbox::FakerootShimGuard::new(build_dir);
 
-    let mut makepkg_args = vec!["-si"];
+    // -f: same as the sandboxed path -- allow rebuild over an existing tarball.
+    let mut makepkg_args = vec!["-sif"];
     if !ask {
         makepkg_args.push("--noconfirm");
     }
@@ -2123,7 +2247,11 @@ fn legacy_makepkg_si(build_dir: &std::path::Path, ask: bool, oneshot: bool, skip
         cmd.env(var, &path);
     }
 
-    cmd.status().map(|s| s.success()).unwrap_or(false)
+    let label = build_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("makepkg");
+    run_build_cmd(cmd, label)
 }
 
 /// Build and install packages from ABS via `pkgctl repo clone` + `makepkg -si`
@@ -2460,6 +2588,23 @@ pub(crate) fn pkgbuild_local_install(
         ensure_pgp_keys(&pkgbuild_path, false);
     }
 
+    let pfx = ">>>".green().bold();
+    println!(
+        "{} Emerging ({} of {}) {} (local)",
+        pfx,
+        "1".yellow().bold(),
+        "1".yellow().bold(),
+        label.green().bold()
+    );
+    if !crate::runtime::show_build_output() {
+        println!(
+            "{} (build output hidden; pass {} or {} to watch)",
+            ">>>".dimmed(),
+            "--debug".cyan(),
+            "AE_DEBUG=1".cyan()
+        );
+    }
+
     let isolation = choose_build_isolation(no_sandbox);
     let build_ok = match isolation {
         BuildIsolation::Bwrap => {
@@ -2467,6 +2612,28 @@ pub(crate) fn pkgbuild_local_install(
         }
         BuildIsolation::None => legacy_makepkg_si(path, ask, oneshot, skippgp),
     };
+    if build_ok {
+        println!(
+            "{} Installing ({} of {}) {}",
+            pfx,
+            "1".yellow().bold(),
+            "1".yellow().bold(),
+            label.green().bold()
+        );
+        println!(
+            "{} Completed  ({} of {}) {}",
+            pfx,
+            "1".yellow().bold(),
+            "1".yellow().bold(),
+            label.green().bold()
+        );
+        println!(
+            "{} Jobs: {} of {} complete",
+            pfx,
+            "1".green().bold(),
+            "1".green().bold()
+        );
+    }
     if !build_ok {
         eprintln!(
             "{} build failed for {}",

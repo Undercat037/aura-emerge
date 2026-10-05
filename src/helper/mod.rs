@@ -8,8 +8,11 @@ pub(crate) mod client;
 pub(crate) mod fsio;
 pub(crate) mod guard;
 pub(crate) mod pkgdb;
+pub(crate) mod pkgmask;
 pub(crate) mod proto;
 pub(crate) mod serve;
+pub(crate) mod sha256;
+pub(crate) mod stage;
 pub(crate) mod validate;
 
 use std::fs::File;

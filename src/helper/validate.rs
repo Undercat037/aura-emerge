@@ -61,6 +61,38 @@ impl Target {
     }
 }
 
+/// How `remove` treats dependencies and configs. The client picks one
+/// of these, never raw flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RemoveMode {
+    /// `pacman -R`: refuses if something still needs the package.
+    Plain,
+    /// `pacman -Rdd --nosave` (`emerge -C`): unconditional, no .pacsave.
+    Unmerge,
+    /// `pacman -Rns` (prune/depclean): takes unneeded deps too, no .pacsave.
+    Prune,
+}
+
+impl RemoveMode {
+    /// Wire verb, inverse of `from_id`.
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            RemoveMode::Plain => "remove",
+            RemoveMode::Unmerge => "unmerge",
+            RemoveMode::Prune => "prune",
+        }
+    }
+
+    pub(crate) fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "remove" => Some(RemoveMode::Plain),
+            "unmerge" => Some(RemoveMode::Unmerge),
+            "prune" => Some(RemoveMode::Prune),
+            _ => None,
+        }
+    }
+}
+
 // ASCII only, stricter than mask.rs on purpose (homoglyphs).
 fn name_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || "@._+-".contains(c)
@@ -129,9 +161,142 @@ pub(crate) fn line(s: &str) -> Result<&str, Reject> {
     Ok(s)
 }
 
+/// `-U` switches the client may pick (never raw pacman flags).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct FileOpts {
+    /// `--needed`: skip what is already installed at that version or newer.
+    pub(crate) needed: bool,
+    /// `--asdeps`: mark the targets as dependencies.
+    pub(crate) asdeps: bool,
+}
+
+impl FileOpts {
+    /// Wire form, inverse of `from_id`.
+    pub(crate) fn id(self) -> &'static str {
+        match (self.needed, self.asdeps) {
+            (false, false) => "-",
+            (true, false) => "needed",
+            (false, true) => "asdeps",
+            (true, true) => "needed,asdeps",
+        }
+    }
+
+    pub(crate) fn from_id(id: &str) -> Option<Self> {
+        let (needed, asdeps) = match id {
+            "-" => (false, false),
+            "needed" => (true, false),
+            "asdeps" => (false, true),
+            "needed,asdeps" => (true, true),
+            _ => return None,
+        };
+        Some(FileOpts { needed, asdeps })
+    }
+}
+
+/// `<sha256> <abs path>` for `-U`: what the client says it audited.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct FileSpec<'a> {
+    pub(crate) sha256: &'a str,
+    pub(crate) path: &'a str,
+}
+
+/// Lowercase hex only, exactly 64 chars.
+fn is_sha256(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+pub(crate) fn file_spec(s: &str) -> Result<FileSpec<'_>, Reject> {
+    let s = line(s)?;
+    let (sha256, path) = s.split_once(' ').ok_or(Reject::BadShape)?;
+    if !is_sha256(sha256) {
+        return Err(Reject::BadShape);
+    }
+    // Absolute, no `..`, not a dir-looking path; the client canonicalizes.
+    if !path.starts_with('/') || path.ends_with('/') || path.split('/').any(|c| c == "..") {
+        return Err(Reject::BadShape);
+    }
+    Ok(FileSpec { sha256, path })
+}
+
+pub(crate) fn file_specs(list: &[String]) -> Result<Vec<FileSpec<'_>>, Reject> {
+    if list.is_empty() {
+        return Err(Reject::Empty);
+    }
+    if list.len() > MAX_BATCH {
+        return Err(Reject::TooMany);
+    }
+    list.iter().map(|s| file_spec(s)).collect()
+}
+
+/// Client side: builds a spec line (validated the same way).
+pub(crate) fn spec(sha256: &str, path: &str) -> Result<String, Reject> {
+    let s = format!("{} {}", sha256, path);
+    file_spec(&s)?;
+    Ok(s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SHA: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+    #[test]
+    fn file_spec_ok() {
+        let s = format!("{} /home/u/my pkg-1-1-any.pkg.tar.zst", SHA);
+        let f = file_spec(&s).unwrap();
+        assert_eq!(f.sha256, SHA);
+        assert_eq!(f.path, "/home/u/my pkg-1-1-any.pkg.tar.zst");
+    }
+
+    #[test]
+    fn file_spec_rejects_junk() {
+        let up = SHA.to_uppercase();
+        for bad in [
+            "".to_string(),
+            SHA.to_string(),                         // no path
+            format!("{} rel/path.pkg", SHA),         // relative
+            format!("{} /a/../etc/x", SHA),          // dotdot
+            format!("{} /a/dir/", SHA),              // dir
+            format!("{} /a\nb", SHA),                // newline
+            format!("{} /a\tb", SHA),                // tab
+            format!("{}0 /a", SHA),                  // 65 hex
+            format!("{} /a", &SHA[..63]),            // 63 hex
+            format!("{} /a", up),                    // uppercase
+            format!("{} /a", SHA.replace('b', "g")), // non-hex
+        ] {
+            assert!(file_spec(&bad).is_err(), "{:?}", bad);
+        }
+        assert_eq!(file_specs(&[]), Err(Reject::Empty));
+    }
+
+    #[test]
+    fn file_opts_ids_roundtrip_and_reject_junk() {
+        for (n, d) in [(false, false), (true, false), (false, true), (true, true)] {
+            let o = FileOpts {
+                needed: n,
+                asdeps: d,
+            };
+            assert_eq!(FileOpts::from_id(o.id()), Some(o));
+        }
+        for bad in [
+            "",
+            "--needed",
+            "needed,",
+            "asdeps,needed",
+            "NEEDED",
+            "needed asdeps",
+        ] {
+            assert_eq!(FileOpts::from_id(bad), None, "{:?}", bad);
+        }
+    }
+
+    #[test]
+    fn spec_roundtrips() {
+        let s = spec(SHA, "/tmp/a.pkg.tar.zst").unwrap();
+        assert_eq!(file_spec(&s).unwrap().path, "/tmp/a.pkg.tar.zst");
+        assert!(spec(SHA, "relative").is_err());
+    }
 
     #[test]
     fn atom_ok() {

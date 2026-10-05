@@ -3,12 +3,14 @@
 //! Alpm is !Send and caches the db, so a fresh handle per request.
 
 use std::io::{self, ErrorKind};
+use std::path::PathBuf;
 
-use alpm::{Alpm, PackageReason, TransFlag};
+use alpm::{Alpm, PackageReason, PrepareData, SigLevel, TransFlag};
 use alpm_utils::alpm_with_conf;
 use alpm_utils::config::Config;
 
-use super::validate;
+use super::stage::Stage;
+use super::validate::{self, FileOpts, RemoveMode};
 
 fn fail(msg: impl Into<String>) -> io::Error {
     io::Error::new(ErrorKind::Other, msg.into())
@@ -79,6 +81,218 @@ fn apply(alpm: &Alpm, reason: PackageReason, names: &[&str]) -> io::Result<()> {
     Err(fail(parts.join("; ")))
 }
 
+/// Libalpm flags for each mode (same as the pacman options in `RemoveMode`).
+fn flags_for(mode: RemoveMode) -> TransFlag {
+    match mode {
+        RemoveMode::Plain => TransFlag::NONE,
+        RemoveMode::Unmerge => TransFlag::NO_SAVE | TransFlag::NO_DEPS | TransFlag::NO_DEP_VERSION,
+        RemoveMode::Prune => TransFlag::RECURSE | TransFlag::NO_SAVE,
+    }
+}
+
+/// `pacman -R*` as root. Hooks and scriptlets run as usual.
+pub(crate) fn remove(mode: RemoveMode, names: &[String]) -> io::Result<()> {
+    let mut alpm = open()?;
+    remove_in(&mut alpm, mode, names)
+}
+
+/// Same, on a given handle. All-or-nothing: an unknown name aborts
+/// before anything is queued, like pacman's "target not found".
+pub(crate) fn remove_in(alpm: &mut Alpm, mode: RemoveMode, names: &[String]) -> io::Result<()> {
+    let mut bare = Vec::with_capacity(names.len());
+    for n in names {
+        let a = validate::atom(n).map_err(|r| fail(format!("bad name: {:?}", r)))?;
+        bare.push(a.name);
+    }
+    if bare.is_empty() {
+        return Err(fail("no packages"));
+    }
+
+    alpm.trans_init(flags_for(mode))
+        .map_err(|e| fail(format!("db lock: {}", e)))?;
+    let res = run_remove(alpm, &bare);
+    let _ = alpm.trans_release();
+    res
+}
+
+fn run_remove(alpm: &mut Alpm, names: &[&str]) -> io::Result<()> {
+    let missing: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|n| alpm.localdb().pkg(*n).is_err())
+        .collect();
+    if !missing.is_empty() {
+        return Err(fail(format!("not installed: {}", missing.join(" "))));
+    }
+    for &name in names {
+        let pkg = alpm
+            .localdb()
+            .pkg(name)
+            .map_err(|e| fail(format!("{}: {}", name, e)))?;
+        alpm.trans_remove_pkg(pkg)
+            .map_err(|e| fail(format!("{}: {}", name, e)))?;
+    }
+    alpm.trans_prepare().map_err(|e| fail(prepare_msg(&e)))?;
+    alpm.trans_commit()
+        .map_err(|e| fail(format!("commit: {}", e)))
+}
+
+/// `pacman -Sy`; `force` = `-Syy` (download even if up to date).
+pub(crate) fn sync(force: bool) -> io::Result<()> {
+    let mut alpm = open()?;
+    sync_in(&mut alpm, force)
+}
+
+/// Same, on a given handle. Takes the db lock like pacman does.
+/// The "already up to date" flag from libalpm is dropped on purpose.
+pub(crate) fn sync_in(alpm: &mut Alpm, force: bool) -> io::Result<()> {
+    alpm.trans_init(TransFlag::NONE)
+        .map_err(|e| fail(format!("db lock: {}", e)))?;
+    let res = alpm
+        .syncdbs_mut()
+        .update(force)
+        .map(|_| ())
+        .map_err(|e| fail(format!("sync: {}", e)));
+    let _ = alpm.trans_release();
+    res
+}
+
+/// `pacman -S`: install from the sync dbs by `[repo/]name`.
+pub(crate) fn install(names: &[String]) -> io::Result<()> {
+    let mut alpm = open()?;
+    install_in(&mut alpm, names)
+}
+
+/// Same, on a given handle. All-or-nothing: an unknown target aborts
+/// before anything is queued. Deps are resolved by libalpm; they get
+/// the `asdeps` reason, the named targets stay explicit.
+pub(crate) fn install_in(alpm: &mut Alpm, names: &[String]) -> io::Result<()> {
+    let mut targets = Vec::with_capacity(names.len());
+    for n in names {
+        let a = validate::atom(n).map_err(|r| fail(format!("bad name: {:?}", r)))?;
+        targets.push((a.repo, a.name));
+    }
+    if targets.is_empty() {
+        return Err(fail("no packages"));
+    }
+
+    // package.mask is a hard stop, including transitive names the client
+    // asked for by hand. libalpm-resolved deps are not checked here yet
+    // (would need a prepare-pass to know them); explicit targets are.
+    super::pkgmask::refuse_masked(&targets).map_err(|e| fail(e.to_string()))?;
+
+    alpm.trans_init(TransFlag::NONE)
+        .map_err(|e| fail(format!("db lock: {}", e)))?;
+    let res = run_install(alpm, &targets);
+    let _ = alpm.trans_release();
+    res
+}
+
+/// First sync db (in pacman.conf order) that has `name`; `repo` pins one.
+/// Exact names only, no providers yet.
+fn find_sync<'a>(alpm: &'a Alpm, repo: Option<&str>, name: &str) -> Option<&'a alpm::Package> {
+    alpm.syncdbs()
+        .iter()
+        .filter(|d| repo.map_or(true, |r| d.name() == r))
+        .find_map(|d| d.pkg(name).ok())
+}
+
+fn run_install(alpm: &mut Alpm, targets: &[(Option<&str>, &str)]) -> io::Result<()> {
+    let missing: Vec<String> = targets
+        .iter()
+        .filter(|(r, n)| find_sync(alpm, *r, n).is_none())
+        .map(|(r, n)| match r {
+            Some(r) => format!("{}/{}", r, n),
+            None => n.to_string(),
+        })
+        .collect();
+    if !missing.is_empty() {
+        return Err(fail(format!("target not found: {}", missing.join(" "))));
+    }
+    for &(repo, name) in targets {
+        let pkg = find_sync(alpm, repo, name).ok_or_else(|| fail(format!("{}: gone", name)))?;
+        alpm.trans_add_pkg(pkg)
+            .map_err(|e| fail(format!("{}: {}", name, e)))?;
+    }
+    prepare_and_commit(alpm)
+}
+
+/// `pacman -U`. `specs` are `<sha256> <abs path>` lines. The files are
+/// copied into a root-private dir and hash-checked *before* libalpm
+/// sees them (closes the audit -> install TOCTOU); the stage dir is
+/// removed when this returns.
+pub(crate) fn install_files(opts: FileOpts, specs: &[String]) -> io::Result<()> {
+    let mut stage = Stage::create()?;
+    let paths = stage.copy_specs(specs)?;
+    let mut alpm = open()?;
+    let level = alpm.local_file_siglevel();
+    install_files_in(&mut alpm, &paths, level, opts)
+}
+
+/// Same, on a given handle and already-staged files.
+pub(crate) fn install_files_in(
+    alpm: &mut Alpm,
+    files: &[PathBuf],
+    level: SigLevel,
+    opts: FileOpts,
+) -> io::Result<()> {
+    if files.is_empty() {
+        return Err(fail("no packages"));
+    }
+    let mut flags = TransFlag::NONE;
+    if opts.needed {
+        flags |= TransFlag::NEEDED;
+    }
+    if opts.asdeps {
+        flags |= TransFlag::ALL_DEPS;
+    }
+    alpm.trans_init(flags)
+        .map_err(|e| fail(format!("db lock: {}", e)))?;
+    let res = run_install_files(alpm, files, level);
+    let _ = alpm.trans_release();
+    res
+}
+
+fn run_install_files(alpm: &mut Alpm, files: &[PathBuf], level: SigLevel) -> io::Result<()> {
+    for f in files {
+        // Staged names are "<n>-<original>"; show the original.
+        let name = f.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+        let shown = name.split_once('-').map_or(name, |(_, rest)| rest);
+        let path = f.to_str().ok_or_else(|| fail("non-utf8 path"))?;
+        let pkg = alpm
+            .pkg_load(path, true, level)
+            .map_err(|e| fail(format!("{}: {}", shown, e)))?;
+        alpm.trans_add_pkg(pkg)
+            .map_err(|e| fail(format!("{}: {}", shown, e)))?;
+    }
+    prepare_and_commit(alpm)
+}
+
+fn prepare_and_commit(alpm: &mut Alpm) -> io::Result<()> {
+    // `--needed` can leave nothing to do; that is success, as in pacman.
+    if alpm.trans_add().iter().next().is_none() {
+        return Ok(());
+    }
+    alpm.trans_prepare().map_err(|e| fail(prepare_msg(&e)))?;
+    alpm.trans_commit()
+        .map_err(|e| fail(format!("commit: {}", e)))
+}
+
+/// Short one-liner for a failed prepare; the wire caps it anyway.
+fn prepare_msg(e: &alpm::PrepareError) -> String {
+    if let Some(PrepareData::UnsatisfiedDeps(list)) = e.data() {
+        let top: Vec<String> = list
+            .iter()
+            .take(4)
+            .map(|d| format!("{} needs {}", d.target(), d.depend()))
+            .collect();
+        if !top.is_empty() {
+            return format!("unsatisfied: {}", top.join(", "));
+        }
+    }
+    format!("prepare: {}", e)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,6 +322,34 @@ mod tests {
                 .unwrap();
             }
             Fixture { root }
+        }
+
+        /// Adds an installed package that owns `files` (root-relative,
+        /// created on disk) and, optionally, depends on / was pulled in as dep.
+        fn add(&self, name: &str, ver: &str, files: &[&str], deps: &[&str], asdep: bool) {
+            let dir = self.root.join("db/local").join(format!("{}-{}", name, ver));
+            fs::create_dir_all(&dir).unwrap();
+            let mut desc = format!("%NAME%\n{}\n\n%VERSION%\n{}\n\n", name, ver);
+            if asdep {
+                desc.push_str("%REASON%\n1\n\n");
+            }
+            if !deps.is_empty() {
+                desc.push_str(&format!("%DEPENDS%\n{}\n\n", deps.join("\n")));
+            }
+            fs::write(dir.join("desc"), desc).unwrap();
+            let mut list = String::from("%FILES%\n");
+            for f in files {
+                let p = self.root.join(f);
+                fs::create_dir_all(p.parent().unwrap()).unwrap();
+                fs::write(&p, "x").unwrap();
+                list.push_str(f);
+                list.push('\n');
+            }
+            fs::write(dir.join("files"), list).unwrap();
+        }
+
+        fn installed(&self, name: &str) -> bool {
+            self.handle().localdb().pkg(name).is_ok()
         }
 
         fn handle(&self) -> Alpm {
@@ -200,5 +442,301 @@ mod tests {
         let err = set_reason_in(&mut fx.handle(), false, &names(&["foo"])).unwrap_err();
         assert!(err.to_string().starts_with("db lock:"));
         assert_eq!(reason(&fx, "foo"), PackageReason::Explicit);
+    }
+
+    #[test]
+    fn flags_match_pacman_options() {
+        assert_eq!(flags_for(RemoveMode::Plain), TransFlag::NONE);
+        let u = flags_for(RemoveMode::Unmerge);
+        assert!(u.contains(TransFlag::NO_SAVE | TransFlag::NO_DEPS | TransFlag::NO_DEP_VERSION));
+        assert!(!u.contains(TransFlag::RECURSE));
+        let p = flags_for(RemoveMode::Prune);
+        assert!(p.contains(TransFlag::RECURSE | TransFlag::NO_SAVE));
+        assert!(!p.contains(TransFlag::NO_DEPS));
+    }
+
+    #[test]
+    fn remove_deletes_files_and_db_entry() {
+        let fx = Fixture::new("rm", &[]);
+        fx.add("foo", "1.0-1", &["usr/bin/foo"], &[], false);
+        remove_in(&mut fx.handle(), RemoveMode::Plain, &names(&["foo"])).unwrap();
+        assert!(!fx.installed("foo"));
+        assert!(!fx.root.join("usr/bin/foo").exists());
+        assert!(!fx.root.join("db/db.lck").exists());
+    }
+
+    #[test]
+    fn unknown_name_aborts_before_removing_anything() {
+        let fx = Fixture::new("rmmiss", &[]);
+        fx.add("foo", "1.0-1", &["usr/bin/foo"], &[], false);
+        let err = remove_in(
+            &mut fx.handle(),
+            RemoveMode::Plain,
+            &names(&["foo", "nope"]),
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(err, "not installed: nope");
+        assert!(fx.installed("foo"));
+        assert!(fx.root.join("usr/bin/foo").exists());
+        assert!(!fx.root.join("db/db.lck").exists());
+    }
+
+    #[test]
+    fn plain_refuses_needed_package_unmerge_does_not() {
+        let fx = Fixture::new("rmdep", &[]);
+        fx.add("lib", "1-1", &["usr/lib/lib"], &[], false);
+        fx.add("app", "1-1", &["usr/bin/app"], &["lib"], false);
+
+        let err = remove_in(&mut fx.handle(), RemoveMode::Plain, &names(&["lib"]))
+            .unwrap_err()
+            .to_string();
+        assert!(err.starts_with("unsatisfied:"), "{}", err);
+        assert!(fx.installed("lib"));
+
+        remove_in(&mut fx.handle(), RemoveMode::Unmerge, &names(&["lib"])).unwrap();
+        assert!(!fx.installed("lib"));
+        assert!(fx.installed("app"));
+    }
+
+    #[test]
+    fn prune_takes_unneeded_deps_but_not_explicit_ones() {
+        let fx = Fixture::new("rmprune", &[]);
+        fx.add("dep", "1-1", &["usr/lib/dep"], &[], true);
+        fx.add("keep", "1-1", &["usr/lib/keep"], &[], false);
+        fx.add("app", "1-1", &["usr/bin/app"], &["dep", "keep"], false);
+        remove_in(&mut fx.handle(), RemoveMode::Prune, &names(&["app"])).unwrap();
+        assert!(!fx.installed("app"));
+        assert!(!fx.installed("dep"));
+        assert!(fx.installed("keep"));
+    }
+
+    #[test]
+    fn remove_rejects_bad_names_and_empty_list() {
+        let fx = Fixture::new("rmbad", &[]);
+        fx.add("foo", "1.0-1", &["usr/bin/foo"], &[], false);
+        assert!(remove_in(&mut fx.handle(), RemoveMode::Plain, &names(&["--nodeps"])).is_err());
+        assert!(remove_in(&mut fx.handle(), RemoveMode::Plain, &[]).is_err());
+        assert!(fx.installed("foo"));
+    }
+
+    #[test]
+    fn sync_pulls_a_file_repo() {
+        let fx = Fixture::new("sync", &[]);
+        fs::create_dir_all(fx.root.join("db/sync")).unwrap();
+        // Tiny repo db served over file://; needs `tar` (always on Arch).
+        let repo = fx.root.join("repo");
+        let entry = repo.join("src/foo-1.0-1");
+        fs::create_dir_all(&entry).unwrap();
+        fs::write(entry.join("desc"), "%NAME%\nfoo\n\n%VERSION%\n1.0-1\n\n").unwrap();
+        let st = std::process::Command::new("tar")
+            .arg("-czf")
+            .arg(repo.join("test.db"))
+            .arg("-C")
+            .arg(repo.join("src"))
+            .arg("foo-1.0-1")
+            .status()
+            .unwrap();
+        assert!(st.success());
+
+        let url = format!("file://{}", repo.display());
+        let handle = || {
+            let mut h = fx.handle();
+            h.register_syncdb_mut("test", SigLevel::NONE)
+                .unwrap()
+                .add_server(url.clone())
+                .unwrap();
+            h
+        };
+        sync_in(&mut handle(), false).unwrap();
+        assert!(fx.root.join("db/sync/test.db").exists());
+        assert!(!fx.root.join("db/db.lck").exists());
+        // New handle: proves the db really landed on disk.
+        assert!(handle().syncdbs().iter().any(|d| d.pkg("foo").is_ok()));
+        // -Syy path works too.
+        sync_in(&mut handle(), true).unwrap();
+    }
+
+    #[test]
+    fn sync_with_held_lock_is_an_error() {
+        let fx = Fixture::new("synclock", &[]);
+        fs::write(fx.root.join("db/db.lck"), "").unwrap();
+        let err = sync_in(&mut fx.handle(), false).unwrap_err();
+        assert!(err.to_string().starts_with("db lock:"));
+    }
+
+    /// Local `file://` repo "test" with `foo-1.0-1` (owns usr/bin/foo).
+    /// Needs `tar`, `sha256sum`, `md5sum` (coreutils/Arch base).
+    fn make_repo(fx: &Fixture) -> String {
+        use std::process::Command;
+        let run = |cmd: &str| -> String {
+            let o = Command::new("sh").arg("-c").arg(cmd).output().unwrap();
+            assert!(o.status.success(), "{}", cmd);
+            String::from_utf8(o.stdout).unwrap()
+        };
+        let repo = fx.root.join("repo");
+        let src = fx.root.join("pkgsrc");
+        let dbsrc = fx.root.join("dbsrc/foo-1.0-1");
+        fs::create_dir_all(src.join("usr/bin")).unwrap();
+        fs::create_dir_all(&dbsrc).unwrap();
+        fs::write(src.join("usr/bin/foo"), "x").unwrap();
+        fs::write(
+            src.join(".PKGINFO"),
+            "pkgname = foo\npkgver = 1.0-1\npkgdesc = t\nsize = 1\narch = any\n",
+        )
+        .unwrap();
+        let file = "foo-1.0-1-any.pkg.tar.gz";
+        let pkg = repo.join(file);
+        fs::create_dir_all(&repo).unwrap();
+        run(&format!(
+            "tar -czf {} -C {} .PKGINFO usr",
+            pkg.display(),
+            src.display()
+        ));
+        let sum = |tool: &str| {
+            run(&format!("{} {}", tool, pkg.display()))
+                .split_whitespace()
+                .next()
+                .unwrap()
+                .to_string()
+        };
+        let size = fs::metadata(&pkg).unwrap().len();
+        fs::write(
+            dbsrc.join("desc"),
+            format!(
+                "%FILENAME%\n{}\n\n%NAME%\nfoo\n\n%VERSION%\n1.0-1\n\n%ARCH%\nany\n\n\
+                 %CSIZE%\n{}\n\n%ISIZE%\n1\n\n%MD5SUM%\n{}\n\n%SHA256SUM%\n{}\n\n",
+                file,
+                size,
+                sum("md5sum"),
+                sum("sha256sum")
+            ),
+        )
+        .unwrap();
+        run(&format!(
+            "tar -czf {} -C {} foo-1.0-1",
+            repo.join("test.db").display(),
+            fx.root.join("dbsrc").display()
+        ));
+        format!("file://{}", repo.display())
+    }
+
+    /// Handle with repo "test" registered and a private cache dir.
+    fn repo_handle(fx: &Fixture, url: &str) -> Alpm {
+        let cache = fx.root.join("cache");
+        fs::create_dir_all(&cache).unwrap();
+        let mut h = fx.handle();
+        h.add_cachedir(cache.to_str().unwrap().to_string()).unwrap();
+        h.register_syncdb_mut("test", SigLevel::NONE)
+            .unwrap()
+            .add_server(url.to_string())
+            .unwrap();
+        h
+    }
+
+    #[test]
+    fn install_unknown_target_aborts_and_unlocks() {
+        let fx = Fixture::new("inmiss", &[]);
+        let err = install_in(&mut fx.handle(), &names(&["nope"]))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(err, "target not found: nope");
+        assert!(!fx.root.join("db/db.lck").exists());
+    }
+
+    #[test]
+    fn install_rejects_bad_names_and_empty_list() {
+        let fx = Fixture::new("inbad", &[]);
+        assert!(install_in(&mut fx.handle(), &names(&["--noconfirm"])).is_err());
+        assert!(install_in(&mut fx.handle(), &[]).is_err());
+        assert!(!fx.root.join("db/db.lck").exists());
+    }
+
+    #[test]
+    fn install_with_held_lock_is_an_error() {
+        let fx = Fixture::new("inlock", &[]);
+        fs::write(fx.root.join("db/db.lck"), "").unwrap();
+        let err = install_in(&mut fx.handle(), &names(&["foo"])).unwrap_err();
+        assert!(err.to_string().starts_with("db lock:"));
+    }
+
+    #[test]
+    fn install_pinned_to_the_wrong_repo_is_not_found() {
+        let fx = Fixture::new("inrepo", &[]);
+        let url = make_repo(&fx);
+        sync_in(&mut repo_handle(&fx, &url), false).unwrap();
+        let err = install_in(&mut repo_handle(&fx, &url), &names(&["other/foo"]))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(err, "target not found: other/foo");
+        assert!(!fx.installed("foo"));
+    }
+
+    #[test]
+    fn install_from_file_repo() {
+        let fx = Fixture::new("inok", &[]);
+        let url = make_repo(&fx);
+        sync_in(&mut repo_handle(&fx, &url), false).unwrap();
+        // `test/foo` and bare `foo` both resolve.
+        install_in(&mut repo_handle(&fx, &url), &names(&["test/foo"])).unwrap();
+        assert!(fx.installed("foo"));
+        assert!(fx.root.join("usr/bin/foo").exists());
+        assert_eq!(reason(&fx, "foo"), PackageReason::Explicit);
+        assert!(!fx.root.join("db/db.lck").exists());
+    }
+
+    #[test]
+    fn install_local_file() {
+        let fx = Fixture::new("localpkg", &[]);
+        make_repo(&fx);
+        let file = fx.root.join("repo/foo-1.0-1-any.pkg.tar.gz");
+        install_files_in(
+            &mut fx.handle(),
+            &[file],
+            SigLevel::NONE,
+            FileOpts::default(),
+        )
+        .unwrap();
+        assert!(fx.installed("foo"));
+        assert!(fx.root.join("usr/bin/foo").exists());
+        assert_eq!(reason(&fx, "foo"), PackageReason::Explicit);
+        assert!(!fx.root.join("db/db.lck").exists());
+    }
+
+    #[test]
+    fn install_local_garbage_is_an_error_and_unlocks() {
+        let fx = Fixture::new("localbad", &[]);
+        // Named like a staged copy: "<n>-<original>".
+        let junk = fx.root.join("1-junk.pkg");
+        fs::write(&junk, "not a package").unwrap();
+        let err = install_files_in(
+            &mut fx.handle(),
+            &[junk],
+            SigLevel::NONE,
+            FileOpts::default(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().starts_with("junk.pkg:"), "{}", err);
+        assert!(!fx.root.join("db/db.lck").exists());
+        assert!(
+            install_files_in(&mut fx.handle(), &[], SigLevel::NONE, FileOpts::default()).is_err()
+        );
+    }
+
+    #[test]
+    fn install_local_asdeps_and_needed() {
+        let fx = Fixture::new("localopts", &[]);
+        make_repo(&fx);
+        let file = fx.root.join("repo/foo-1.0-1-any.pkg.tar.gz");
+        let opts = FileOpts {
+            needed: true,
+            asdeps: true,
+        };
+        install_files_in(&mut fx.handle(), &[file.clone()], SigLevel::NONE, opts).unwrap();
+        assert_eq!(reason(&fx, "foo"), PackageReason::Depend);
+        // Same version again with --needed: nothing to do, still success.
+        install_files_in(&mut fx.handle(), &[file], SigLevel::NONE, opts).unwrap();
+        assert!(fx.installed("foo"));
+        assert!(!fx.root.join("db/db.lck").exists());
     }
 }

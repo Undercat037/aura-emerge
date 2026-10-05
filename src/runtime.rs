@@ -23,6 +23,10 @@ pub(crate) struct Runtime {
     pub(crate) keep_going: bool,
     /// `FEATURES="candy"`, minus `--nospinner` / `-q`.
     pub(crate) candy: bool,
+    /// Show makepkg/compiler output live. On by `--debug`, `AE_DEBUG=1`,
+    /// or `--quiet-build=n`; off by default so the Gentoo-style
+    /// Emerging/Installing/Completed lines stay readable.
+    pub(crate) debug: bool,
 }
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
@@ -48,6 +52,11 @@ pub(crate) fn keep_going() -> bool {
 
 pub(crate) fn candy() -> bool {
     get().candy
+}
+
+/// Live makepkg/compiler output (not the `>>>` status lines).
+pub(crate) fn show_build_output() -> bool {
+    get().debug
 }
 
 /// True if `--exclude` named this package (compared bare, so

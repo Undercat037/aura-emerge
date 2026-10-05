@@ -12,7 +12,7 @@ use std::process::{Child, Command, Stdio};
 
 use super::guard::EXPECTED_EXE;
 use super::proto::{self, ProtoError, Request, Response};
-use super::validate::Target;
+use super::validate::{FileOpts, RemoveMode, Target};
 
 const SUDO_BIN: &str = "/usr/bin/sudo";
 
@@ -132,6 +132,28 @@ impl Client {
         let req = Request::Append {
             target,
             line: line.to_string(),
+        };
+        self.request(&req, &mut |_| {})
+    }
+
+    /// Removes installed packages; `mode` picks the pacman -R flavour.
+    pub(crate) fn remove(&mut self, mode: RemoveMode, names: &[String]) -> Result<(), ClientError> {
+        let req = Request::Remove {
+            mode,
+            names: names.to_vec(),
+        };
+        self.request(&req, &mut |_| {})
+    }
+
+    /// `pacman -U`: `specs` are `validate::spec` lines (sha256 + abs path).
+    pub(crate) fn install_files(
+        &mut self,
+        opts: FileOpts,
+        specs: &[String],
+    ) -> Result<(), ClientError> {
+        let req = Request::InstallFiles {
+            opts,
+            files: specs.to_vec(),
         };
         self.request(&req, &mut |_| {})
     }
@@ -267,8 +289,10 @@ mod tests {
         });
         let mut c = client_on(b);
         let mut seen = Vec::new();
-        c.request(&Request::Sync, &mut |t| seen.push(t.to_string()))
-            .unwrap();
+        c.request(&Request::Sync { force: false }, &mut |t| {
+            seen.push(t.to_string())
+        })
+        .unwrap();
         assert_eq!(seen, vec!["1/2", "2/2"]);
         h.join().unwrap();
     }

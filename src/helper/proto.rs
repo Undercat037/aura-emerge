@@ -9,7 +9,7 @@
 use std::fmt;
 use std::io::{self, BufRead, Write};
 
-use super::validate::{self, Reject, Target, MAX_BATCH, MAX_LINE_LEN};
+use super::validate::{self, FileOpts, Reject, RemoveMode, Target, MAX_BATCH, MAX_LINE_LEN};
 
 /// "ARG " / "ERR " prefix + longest legal value.
 const MAX_WIRE_LINE: usize = MAX_LINE_LEN + 8;
@@ -74,10 +74,22 @@ impl From<Reject> for ProtoError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Request {
     Ping,
-    Sync,
+    /// `-Sy`; `force` = `-Syy` (wire verb `refresh`).
+    Sync {
+        force: bool,
+    },
     Quit,
     Install(Vec<String>),
-    Remove(Vec<String>),
+    /// `-U`: `<sha256> <abs path>` per file (see `validate::file_spec`).
+    /// On the wire the first ARG is `opts.id()`, then the files.
+    InstallFiles {
+        opts: FileOpts,
+        files: Vec<String>,
+    },
+    Remove {
+        mode: RemoveMode,
+        names: Vec<String>,
+    },
     /// `asexplicit` / `asdeps`.
     SetReason {
         explicit: bool,
@@ -94,10 +106,15 @@ impl Request {
     fn to_wire(&self) -> (&'static str, Vec<String>) {
         match self {
             Request::Ping => ("ping", vec![]),
-            Request::Sync => ("sync", vec![]),
+            Request::Sync { force } => (if *force { "refresh" } else { "sync" }, vec![]),
             Request::Quit => ("quit", vec![]),
             Request::Install(n) => ("install", n.clone()),
-            Request::Remove(n) => ("remove", n.clone()),
+            Request::InstallFiles { opts, files } => {
+                let mut a = vec![opts.id().to_string()];
+                a.extend(files.iter().cloned());
+                ("installfile", a)
+            }
+            Request::Remove { mode, names } => (mode.id(), names.clone()),
             Request::SetReason { explicit, names } => (
                 if *explicit { "asexplicit" } else { "asdeps" },
                 names.clone(),
@@ -119,15 +136,28 @@ impl Request {
         };
         match verb {
             "ping" => none(Request::Ping, &args),
-            "sync" => none(Request::Sync, &args),
+            "sync" => none(Request::Sync { force: false }, &args),
+            "refresh" => none(Request::Sync { force: true }, &args),
             "quit" => none(Request::Quit, &args),
             "install" => {
                 validate::atoms(&args)?;
                 Ok(Request::Install(args))
             }
-            "remove" => {
+            "installfile" => {
+                let (first, rest) = args
+                    .split_first()
+                    .ok_or(ProtoError::Syntax("installfile wants opts"))?;
+                let opts = FileOpts::from_id(first).ok_or(ProtoError::Syntax("bad opts"))?;
+                validate::file_specs(rest)?;
+                Ok(Request::InstallFiles {
+                    opts,
+                    files: rest.to_vec(),
+                })
+            }
+            "remove" | "unmerge" | "prune" => {
                 validate::atoms(&args)?;
-                Ok(Request::Remove(args))
+                let mode = RemoveMode::from_id(verb).ok_or(ProtoError::UnknownVerb)?;
+                Ok(Request::Remove { mode, names: args })
             }
             "asexplicit" | "asdeps" => {
                 validate::atoms(&args)?;
@@ -279,10 +309,16 @@ mod tests {
     #[test]
     fn requests_roundtrip() {
         roundtrip(Request::Ping);
-        roundtrip(Request::Sync);
+        roundtrip(Request::Sync { force: false });
+        roundtrip(Request::Sync { force: true });
         roundtrip(Request::Quit);
         roundtrip(Request::Install(vec!["extra/nano".into(), "vim".into()]));
-        roundtrip(Request::Remove(vec!["old-pkg".into()]));
+        for mode in [RemoveMode::Plain, RemoveMode::Unmerge, RemoveMode::Prune] {
+            roundtrip(Request::Remove {
+                mode,
+                names: vec!["old-pkg".into()],
+            });
+        }
         roundtrip(Request::SetReason {
             explicit: true,
             names: vec!["foo".into()],
@@ -302,7 +338,10 @@ mod tests {
         let data = "CMD ping\nEND\nCMD sync\nEND\n";
         let mut r = data.as_bytes();
         assert_eq!(read_request(&mut r).unwrap(), Some(Request::Ping));
-        assert_eq!(read_request(&mut r).unwrap(), Some(Request::Sync));
+        assert_eq!(
+            read_request(&mut r).unwrap(),
+            Some(Request::Sync { force: false })
+        );
         assert!(read_request(&mut r).unwrap().is_none());
     }
 
@@ -443,5 +482,38 @@ mod tests {
             read_response(&mut "WAT\n".as_bytes()),
             Err(ProtoError::Framing(_))
         ));
+    }
+
+    #[test]
+    fn installfile_roundtrip_and_rejects() {
+        let h = "a".repeat(64);
+        let req = Request::InstallFiles {
+            opts: FileOpts {
+                needed: true,
+                asdeps: false,
+            },
+            files: vec![format!("{} /tmp/a b.pkg.tar.zst", h)],
+        };
+        let mut buf = Vec::new();
+        write_request(&mut buf, &req).unwrap();
+        let mut r = &buf[..];
+        assert_eq!(read_request(&mut r).unwrap(), Some(req));
+
+        let opts = FileOpts::default();
+        let bad = Request::InstallFiles {
+            opts,
+            files: vec![format!("{} a.pkg", h)],
+        };
+        assert!(write_request(&mut Vec::new(), &bad).is_err());
+        let none = Request::InstallFiles {
+            opts,
+            files: vec![],
+        };
+        assert!(write_request(&mut Vec::new(), &none).is_err());
+        // Unknown opts token on the wire is a recoverable syntax error.
+        let raw = format!("CMD installfile\nARG --needed\nARG {} /tmp/a\nEND\n", h);
+        let mut r = raw.as_bytes();
+        let e = read_request(&mut r).unwrap_err();
+        assert!(!e.is_fatal());
     }
 }

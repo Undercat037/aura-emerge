@@ -545,6 +545,7 @@ const ALLOWED_DEFAULTS: &[(&str, bool)] = &[
     ("--tree", false),
     ("--columns", false),
     ("--nospinner", false),
+    ("--debug", false),
     ("--verbose-conflicts", false),
     ("--searchdesc", false),
     ("--skipfirst", false),

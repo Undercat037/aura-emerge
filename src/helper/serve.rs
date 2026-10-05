@@ -9,7 +9,7 @@ use std::io::{self, BufRead, ErrorKind, Write};
 use super::fsio;
 use super::pkgdb;
 use super::proto::{self, ProtoError, Request, Response};
-use super::validate::{self, Target};
+use super::validate::{self, FileOpts, RemoveMode, Target};
 
 fn unsupported<T>() -> io::Result<T> {
     Err(io::Error::new(ErrorKind::Unsupported, "not implemented"))
@@ -20,13 +20,16 @@ fn unsupported<T>() -> io::Result<T> {
 pub(crate) trait Backend {
     fn append(&mut self, target: Target, line: &str) -> io::Result<()>;
 
-    fn sync(&mut self) -> io::Result<()> {
+    fn sync(&mut self, _force: bool) -> io::Result<()> {
         unsupported()
     }
     fn install(&mut self, _names: &[String]) -> io::Result<()> {
         unsupported()
     }
-    fn remove(&mut self, _names: &[String]) -> io::Result<()> {
+    fn install_files(&mut self, _opts: FileOpts, _specs: &[String]) -> io::Result<()> {
+        unsupported()
+    }
+    fn remove(&mut self, _mode: RemoveMode, _names: &[String]) -> io::Result<()> {
         unsupported()
     }
     fn set_reason(&mut self, _explicit: bool, _names: &[String]) -> io::Result<()> {
@@ -42,17 +45,34 @@ impl Backend for Real {
         fsio::append(target, line)
     }
 
+    fn sync(&mut self, force: bool) -> io::Result<()> {
+        pkgdb::sync(force)
+    }
+
+    fn install(&mut self, names: &[String]) -> io::Result<()> {
+        pkgdb::install(names)
+    }
+
+    fn install_files(&mut self, opts: FileOpts, specs: &[String]) -> io::Result<()> {
+        pkgdb::install_files(opts, specs)
+    }
+
     fn set_reason(&mut self, explicit: bool, names: &[String]) -> io::Result<()> {
         pkgdb::set_reason(explicit, names)
+    }
+
+    fn remove(&mut self, mode: RemoveMode, names: &[String]) -> io::Result<()> {
+        pkgdb::remove(mode, names)
     }
 }
 
 fn dispatch<B: Backend>(be: &mut B, req: &Request) -> io::Result<()> {
     match req {
         Request::Ping | Request::Quit => Ok(()),
-        Request::Sync => be.sync(),
+        Request::Sync { force } => be.sync(*force),
         Request::Install(n) => be.install(n),
-        Request::Remove(n) => be.remove(n),
+        Request::InstallFiles { opts, files } => be.install_files(*opts, files),
+        Request::Remove { mode, names } => be.remove(*mode, names),
         Request::SetReason { explicit, names } => be.set_reason(*explicit, names),
         Request::Append { target, line } => be.append(*target, line),
     }
@@ -108,6 +128,10 @@ mod tests {
     struct Mock {
         appended: Vec<(Target, String)>,
         reasons: Vec<(bool, Vec<String>)>,
+        removed: Vec<(RemoveMode, Vec<String>)>,
+        synced: Vec<bool>,
+        installed: Vec<Vec<String>>,
+        files: Vec<(FileOpts, Vec<String>)>,
         fail: bool,
     }
 
@@ -120,11 +144,43 @@ mod tests {
             Ok(())
         }
 
+        fn sync(&mut self, force: bool) -> io::Result<()> {
+            if self.fail {
+                return Err(io::Error::new(ErrorKind::Other, "boom"));
+            }
+            self.synced.push(force);
+            Ok(())
+        }
+
+        fn install(&mut self, names: &[String]) -> io::Result<()> {
+            if self.fail {
+                return Err(io::Error::new(ErrorKind::Other, "boom"));
+            }
+            self.installed.push(names.to_vec());
+            Ok(())
+        }
+
+        fn install_files(&mut self, opts: FileOpts, specs: &[String]) -> io::Result<()> {
+            if self.fail {
+                return Err(io::Error::new(ErrorKind::Other, "boom"));
+            }
+            self.files.push((opts, specs.to_vec()));
+            Ok(())
+        }
+
         fn set_reason(&mut self, explicit: bool, names: &[String]) -> io::Result<()> {
             if self.fail {
                 return Err(io::Error::new(ErrorKind::Other, "boom"));
             }
             self.reasons.push((explicit, names.to_vec()));
+            Ok(())
+        }
+
+        fn remove(&mut self, mode: RemoveMode, names: &[String]) -> io::Result<()> {
+            if self.fail {
+                return Err(io::Error::new(ErrorKind::Other, "boom"));
+            }
+            self.removed.push((mode, names.to_vec()));
             Ok(())
         }
     }
@@ -166,6 +222,46 @@ mod tests {
     }
 
     #[test]
+    fn sync_reaches_backend() {
+        let mut be = Mock::default();
+        let (res, out) = run("CMD sync\nEND\nCMD refresh\nEND\n", &mut be);
+        assert!(res.is_ok());
+        assert_eq!(out, "OK\nOK\n");
+        assert_eq!(be.synced, vec![false, true]);
+    }
+
+    #[test]
+    fn install_reaches_backend() {
+        let mut be = Mock::default();
+        let (res, out) = run("CMD install\nARG nano\nARG extra/vim\nEND\n", &mut be);
+        assert!(res.is_ok());
+        assert_eq!(out, "OK\n");
+        assert_eq!(
+            be.installed,
+            vec![vec!["nano".to_string(), "extra/vim".to_string()]]
+        );
+    }
+
+    #[test]
+    fn install_files_reaches_backend_and_bad_spec_does_not() {
+        let mut be = Mock::default();
+        let spec = format!("{} /tmp/a.pkg.tar.zst", "a".repeat(64));
+        let input = format!(
+            "CMD installfile\nARG needed,asdeps\nARG {}\nEND\n\
+             CMD installfile\nARG -\nARG /etc/shadow\nEND\n",
+            spec
+        );
+        let (res, out) = run(&input, &mut be);
+        assert!(res.is_ok());
+        assert!(out.starts_with("OK\nERR "), "{}", out);
+        let opts = FileOpts {
+            needed: true,
+            asdeps: true,
+        };
+        assert_eq!(be.files, vec![(opts, vec![spec])]);
+    }
+
+    #[test]
     fn set_reason_reaches_backend() {
         let mut be = Mock::default();
         let (res, out) = run(
@@ -184,6 +280,25 @@ mod tests {
     }
 
     #[test]
+    fn remove_modes_reach_backend() {
+        let mut be = Mock::default();
+        let (res, out) = run(
+            "CMD remove\nARG a\nEND\nCMD unmerge\nARG b\nARG c\nEND\nCMD prune\nARG d\nEND\n",
+            &mut be,
+        );
+        assert!(res.is_ok());
+        assert_eq!(out, "OK\nOK\nOK\n");
+        assert_eq!(
+            be.removed,
+            vec![
+                (RemoveMode::Plain, vec!["a".to_string()]),
+                (RemoveMode::Unmerge, vec!["b".to_string(), "c".to_string()]),
+                (RemoveMode::Prune, vec!["d".to_string()]),
+            ]
+        );
+    }
+
+    #[test]
     fn backend_error_is_reported_and_loop_continues() {
         let mut be = Mock {
             fail: true,
@@ -196,12 +311,21 @@ mod tests {
 
     #[test]
     fn unimplemented_verb_fails_softly() {
-        let (res, out) = run(
-            "CMD sync\nEND\nCMD install\nARG nano\nEND\nCMD ping\nEND\n",
-            &mut Mock::default(),
-        );
+        // Only `append` implemented: the rest hits the defaults.
+        struct Bare;
+        impl Backend for Bare {
+            fn append(&mut self, _: Target, _: &str) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut input = "CMD install\nARG nano\nEND\nCMD sync\nEND\nCMD ping\nEND\n".as_bytes();
+        let mut out = Vec::new();
+        let res = serve(&mut input, &mut out, &mut Bare);
         assert!(res.is_ok());
-        assert_eq!(out, "ERR not implemented\nERR not implemented\nOK\n");
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "ERR not implemented\nERR not implemented\nOK\n"
+        );
     }
 
     #[test]

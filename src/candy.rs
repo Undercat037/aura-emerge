@@ -130,7 +130,7 @@ mod tests {
 
     #[test]
     fn moo_says_it() {
-        assert!(MOO.contains("Moo!"));
+        assert!(MOO.contains("Have you mooed today?"));
         assert!(MOO.lines().all(|l| l.chars().count() < 60));
     }
 }

@@ -22,6 +22,7 @@ mod news;
 mod package_env;
 mod packages;
 mod revdep;
+mod rootops;
 mod runtime;
 mod sandbox;
 mod security;
@@ -463,6 +464,11 @@ struct Cli {
     quiet: bool,
     #[arg(long = "nospinner")]
     nospinner: bool,
+    /// Show makepkg/compiler output live (also AE_DEBUG=1). Default hides
+    /// it so the Gentoo-style >>> lines stay readable; failed builds still
+    /// dump the captured log.
+    #[arg(long = "debug")]
+    debug: bool,
     /// Easter egg, hidden from --help and completions.
     #[arg(long = "moo", hide = true)]
     moo: bool,
@@ -813,6 +819,14 @@ enum ActionKind {
 }
 
 impl ActionKind {
+    /// Name as Portage prints it in "Multiple actions requested".
+    fn portage_name(self) -> &'static str {
+        match self {
+            ActionKind::News => "check-news",
+            other => other.label().trim_start_matches("--"),
+        }
+    }
+
     fn label(self) -> &'static str {
         match self {
             ActionKind::Help => "--help",
@@ -964,140 +978,54 @@ fn active_actions(cli: &Cli) -> Vec<ActionKind> {
     out
 }
 
-/// Left-to-right in argv; short clusters scanned letter by letter.
-fn first_action_in_argv(argv: &[String], active: &[ActionKind]) -> Option<ActionKind> {
-    if active.is_empty() {
-        return None;
-    }
-    if active.len() == 1 {
-        return Some(active[0]);
-    }
+/// Active actions in argv order (each once); short clusters are scanned
+/// letter by letter. Any not seen in argv follow, in `active` order.
+fn actions_in_argv_order(argv: &[String], active: &[ActionKind]) -> Vec<ActionKind> {
+    let mut out: Vec<ActionKind> = Vec::new();
+    let push = |k: ActionKind, out: &mut Vec<ActionKind>| {
+        if active.contains(&k) && !out.contains(&k) {
+            out.push(k);
+        }
+    };
     for token in argv.iter().skip(1) {
         if token == "--" {
             break;
         }
         if token.starts_with("--") {
             if let Some(kind) = action_from_long(token) {
-                if active.contains(&kind) {
-                    return Some(kind);
-                }
+                push(kind, &mut out);
             }
-            continue;
-        }
-        if token.starts_with('-') && token.len() > 1 {
+        } else if token.starts_with('-') && token.len() > 1 {
             for c in token.chars().skip(1) {
                 if let Some(kind) = action_from_short_char(c) {
-                    if active.contains(&kind) {
-                        return Some(kind);
-                    }
+                    push(kind, &mut out);
                 }
             }
         }
     }
-    active.first().copied()
+    for &k in active {
+        push(k, &mut out);
+    }
+    out
 }
 
-fn clear_other_actions(cli: &mut Cli, keep: ActionKind) {
-    if keep != ActionKind::Help {
-        cli.help = false;
-    }
-    if keep != ActionKind::Version {
-        cli.version = false;
-    }
-    if keep != ActionKind::Info {
-        cli.info = false;
-    }
-    if keep != ActionKind::News {
-        cli.news = None;
-        cli.check_news = None;
-    }
-    if keep != ActionKind::ListSets {
-        cli.list_sets = false;
-    }
-    if keep != ActionKind::CleanSourceCache {
-        cli.clean_source_cache = false;
-    }
-    if keep != ActionKind::CheckDevel {
-        cli.check_devel = false;
-    }
-    if keep != ActionKind::InstallPkgbuild {
-        cli.install_pkgbuild = None;
-    }
-    if keep != ActionKind::RevdepRebuild {
-        cli.revdep_rebuild = false;
-    }
-    if keep != ActionKind::Scan && keep != ActionKind::InstallPkgbuild {
-        cli.scan = false;
-    }
-    if keep != ActionKind::Search {
-        cli.search = false;
-        cli.searchdesc = false;
-    }
-    if keep != ActionKind::Regen {
-        cli.regen = false;
-    }
-    if keep != ActionKind::RegenWorld {
-        cli.regen_world = false;
-    }
-    if keep != ActionKind::RegenSets {
-        cli.regen_sets = None;
-        cli.regen_sort = false;
-    }
-    if keep != ActionKind::RegenWorldFromExplicit {
-        cli.regen_world_from_explicit = false;
-    }
-    if keep != ActionKind::Prune {
-        cli.prune = false;
-    }
-    if keep != ActionKind::Resume {
-        cli.resume = false;
-    }
-    if keep != ActionKind::Undo {
-        cli.undo = false;
-    }
-    if keep != ActionKind::Select {
-        cli.select = false;
-    }
-    if keep != ActionKind::Deselect {
-        cli.deselect = false;
-    }
-    if keep != ActionKind::CheckWorld {
-        cli.check_world = false;
-    }
-    if keep != ActionKind::Update {
-        cli.update = false;
-    }
-    if keep != ActionKind::Depclean {
-        cli.depclean = false;
-    }
-    if keep != ActionKind::Unmerge {
-        cli.unmerge = false;
-    }
+/// Portage's text, byte for byte (blank line before and after).
+fn multiple_actions_message(a: ActionKind, b: ActionKind) -> String {
+    format!(
+        "\n!!! Multiple actions requested... Please choose one only.\n!!! '{}' or '{}'\n\n",
+        a.portage_name(),
+        b.portage_name()
+    )
 }
 
-fn enforce_action_priority(cli: &mut Cli, argv: &[String]) {
-    let active = active_actions(cli);
-    if active.len() <= 1 {
-        return;
+/// Like Portage: two actions at once is an error, nothing is guessed.
+/// Names the first two in argv order and exits 1.
+fn enforce_action_priority(cli: &Cli, argv: &[String]) {
+    let order = actions_in_argv_order(argv, &active_actions(cli));
+    if let [a, b, ..] = order[..] {
+        eprint!("{}", multiple_actions_message(a, b));
+        std::process::exit(1);
     }
-    let Some(winner) = first_action_in_argv(argv, &active) else {
-        return;
-    };
-    let dropped: Vec<&str> = active
-        .iter()
-        .filter(|a| **a != winner)
-        .map(|a| a.label())
-        .collect();
-    if dropped.is_empty() {
-        return;
-    }
-    eprintln!(
-        "{} multiple actions given; using {} (first on the command line), ignoring: {}",
-        ">>> Warning:".yellow().bold(),
-        winner.label().cyan(),
-        dropped.join(", ")
-    );
-    clear_other_actions(cli, winner);
 }
 
 /// After a partially failed `--keep-going` run, replaces the saved
@@ -1426,7 +1354,7 @@ fn run_cmd(prog: &str, args: &[&str], packages: &[String]) -> bool {
 /// (pacman) inheriting stdin needs its own interactive read right
 /// after, and any over-read bytes would be lost to it.
 #[cfg(unix)]
-fn read_line_raw() -> String {
+pub(crate) fn read_line_raw() -> String {
     use std::os::unix::io::FromRawFd;
     let mut file = unsafe { std::fs::File::from_raw_fd(0) };
     let mut line = Vec::new();
@@ -1450,7 +1378,7 @@ fn read_line_raw() -> String {
 }
 
 #[cfg(not(unix))]
-fn read_line_raw() -> String {
+pub(crate) fn read_line_raw() -> String {
     let mut line = String::new();
     io::stdin().lock().read_line(&mut line).ok();
     line.trim_end().to_string()
@@ -1522,16 +1450,28 @@ fn run() -> anyhow::Result<()> {
     // config::CONFLICTS.
     let cfg = config::load();
     let effective_argv = config::build_argv(&argv, &cfg);
-    let mut cli = Cli::parse_from(&effective_argv);
-    enforce_action_priority(&mut cli, &effective_argv);
+    let cli = Cli::parse_from(&effective_argv);
+    enforce_action_priority(&cli, &effective_argv);
 
     // Everything read from deep inside the build path lands here once.
     let candy_on = cfg.has_feature("candy") && !cli.nospinner && !cli.quiet;
+    // Live build output: --debug, AE_DEBUG=1, or Gentoo's --quiet-build=n.
+    // --quiet-build=y (or omitted) keeps the default quiet path.
+    let quiet_build_off = matches!(
+        cli.quiet_build.as_deref().map(|s| s.trim()),
+        Some("n" | "N" | "false" | "False" | "0" | "no" | "No")
+    );
+    let debug_on = cli.debug
+        || quiet_build_off
+        || std::env::var_os("AE_DEBUG")
+            .map(|v| v != "0" && !v.is_empty())
+            .unwrap_or(false);
     runtime::init(runtime::Runtime {
         config: cfg,
         exclude: collect_excludes(&cli.exclude),
         keep_going: cli.keep_going,
         candy: candy_on,
+        debug: debug_on,
     });
 
     if cli.moo {
@@ -1656,7 +1596,16 @@ fn run() -> anyhow::Result<()> {
             eprintln!(">>> Error: --install-pkgbuild is not compatible with --aur/--abs.");
             std::process::exit(1);
         }
-        let path = std::path::PathBuf::from(path_str);
+        // Absolute, no trailing slash: bwrap binds this path, and a
+        // relative one ("pkg/") becomes a bogus mount point under the
+        // read-only root ("Can't create file pkg/: Read-only file system").
+        let path = match std::fs::canonicalize(path_str.trim_end_matches('/')) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!(">>> Error: cannot open {}: {}", path_str, e);
+                std::process::exit(1);
+            }
+        };
 
         // --scan: report-only, no build. Checked first since it's a
         // strict subset of the normal --install-pkgbuild flow below (both
@@ -2830,7 +2779,9 @@ fn run() -> anyhow::Result<()> {
         }
 
         let mut base_args: Vec<&str> = Vec::new();
-        if !cli.ask && !cli.pretend {
+        // --ask is answered once at the plan prompt (confirm_merge); pacman
+        // stays non-interactive after that, matching Portage.
+        if !cli.pretend {
             base_args.push("--noconfirm");
         }
         if cli.oneshot {
@@ -2839,6 +2790,9 @@ fn run() -> anyhow::Result<()> {
         if cli.noreplace {
             base_args.push("--needed");
         }
+        // After the plan prompt (or when --ask was off), never re-prompt
+        // pacman/makepkg. Security scanner prompts are separate.
+        let ask_pkgs = false;
 
         let mut success: bool;
         let mut installed_infos: Vec<PkgInfo> = Vec::new();
@@ -2849,7 +2803,7 @@ fn run() -> anyhow::Result<()> {
             success = abs_install(
                 &target_pkgs,
                 cli.pretend,
-                cli.ask,
+                ask_pkgs,
                 cli.oneshot,
                 cli.skippgp,
                 cli.edit,
@@ -2873,13 +2827,16 @@ fn run() -> anyhow::Result<()> {
             if cli.pretend {
                 return Ok(());
             }
+            if !confirm_merge(cli.ask) {
+                return Ok(());
+            }
             print_emerge_emerging(&pkg_infos);
             let found_names: Vec<String> = pkg_infos.iter().map(|p| p.name.clone()).collect();
             scan_aur_pkgbuilds_or_abort(&found_names);
             success = aur_install(
                 &found_names,
                 false,
-                cli.ask,
+                ask_pkgs,
                 cli.oneshot,
                 cli.skippgp,
                 cli.edit,
@@ -2898,6 +2855,9 @@ fn run() -> anyhow::Result<()> {
                 // Everything found in official repos.
                 print_emerge_plan(&official_infos, cli.tree, cli.deep, &target_pkgs);
                 if cli.pretend {
+                    return Ok(());
+                }
+                if !confirm_merge(cli.ask) {
                     return Ok(());
                 }
                 print_emerge_emerging(&official_infos);
@@ -2951,6 +2911,9 @@ fn run() -> anyhow::Result<()> {
                     // Not everything resolved -- exit non-zero for scripts.
                     std::process::exit(1);
                 }
+                if !confirm_merge(cli.ask) {
+                    return Ok(());
+                }
                 print_emerge_emerging(&official_infos);
 
                 let official_names: Vec<String> =
@@ -3001,13 +2964,16 @@ fn run() -> anyhow::Result<()> {
                 if cli.pretend {
                     return Ok(());
                 }
+                if !confirm_merge(cli.ask) {
+                    return Ok(());
+                }
                 print_emerge_emerging(&pkg_infos);
                 let found_names: Vec<String> = pkg_infos.iter().map(|p| p.name.clone()).collect();
                 scan_aur_pkgbuilds_or_abort(&found_names);
                 success = aur_install(
                     &found_names,
                     false,
-                    cli.ask,
+                    ask_pkgs,
                     cli.oneshot,
                     cli.skippgp,
                     cli.edit,
@@ -3038,6 +3004,9 @@ fn run() -> anyhow::Result<()> {
                 }
                 print_emerge_plan(&all_infos, cli.tree, cli.deep, &target_pkgs);
                 if cli.pretend {
+                    return Ok(());
+                }
+                if !confirm_merge(cli.ask) {
                     return Ok(());
                 }
                 print_emerge_emerging(&all_infos);
@@ -3082,7 +3051,7 @@ fn run() -> anyhow::Result<()> {
                     let aur_success = aur_install(
                         &aur_found_names,
                         false,
-                        cli.ask,
+                        ask_pkgs,
                         cli.oneshot,
                         cli.skippgp,
                         cli.edit,
@@ -3229,12 +3198,12 @@ mod action_priority_tests {
     use super::*;
 
     #[test]
-    fn first_long_flag_wins() {
-        let argv = vec!["emerge".into(), "--update".into(), "--depclean".into()];
+    fn long_flags_keep_argv_order() {
+        let argv = vec!["emerge".into(), "--depclean".into(), "--update".into()];
         let active = vec![ActionKind::Update, ActionKind::Depclean];
         assert_eq!(
-            first_action_in_argv(&argv, &active),
-            Some(ActionKind::Update)
+            actions_in_argv_order(&argv, &active),
+            vec![ActionKind::Depclean, ActionKind::Update]
         );
     }
 
@@ -3242,23 +3211,13 @@ mod action_priority_tests {
     fn short_cluster_left_to_right() {
         let active = vec![ActionKind::Update, ActionKind::Depclean];
         assert_eq!(
-            first_action_in_argv(&["emerge".into(), "-uc".into()], &active),
-            Some(ActionKind::Update)
+            actions_in_argv_order(&["emerge".into(), "-uc".into()], &active),
+            vec![ActionKind::Update, ActionKind::Depclean]
         );
         assert_eq!(
-            first_action_in_argv(&["emerge".into(), "-cu".into()], &active),
-            Some(ActionKind::Depclean)
+            actions_in_argv_order(&["emerge".into(), "-cu".into()], &active),
+            vec![ActionKind::Depclean, ActionKind::Update]
         );
-    }
-
-    #[test]
-    fn scan_modifier_kept_with_install_pkgbuild() {
-        let mut cli = Cli::parse_from(["emerge", "--install-pkgbuild", "/tmp/pkg", "--scan"]);
-        cli.update = true;
-        clear_other_actions(&mut cli, ActionKind::InstallPkgbuild);
-        assert!(cli.install_pkgbuild.is_some());
-        assert!(cli.scan);
-        assert!(!cli.update);
     }
 
     #[test]
@@ -3267,5 +3226,27 @@ mod action_priority_tests {
         let active = active_actions(&cli);
         assert!(active.contains(&ActionKind::InstallPkgbuild));
         assert!(!active.contains(&ActionKind::Scan));
+    }
+
+    #[test]
+    fn order_follows_argv_not_field_order() {
+        let active = vec![ActionKind::Search, ActionKind::Depclean, ActionKind::Update];
+        let argv: Vec<String> = ["emerge", "-c", "--update", "-s"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            actions_in_argv_order(&argv, &active),
+            vec![ActionKind::Depclean, ActionKind::Update, ActionKind::Search]
+        );
+    }
+
+    #[test]
+    fn multiple_actions_text_matches_portage() {
+        assert_eq!(
+            multiple_actions_message(ActionKind::Search, ActionKind::Depclean),
+            "\n!!! Multiple actions requested... Please choose one only.\n!!! 'search' or 'depclean'\n\n"
+        );
+        assert_eq!(ActionKind::News.portage_name(), "check-news");
     }
 }
