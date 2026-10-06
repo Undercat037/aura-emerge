@@ -20,13 +20,13 @@ fn unsupported<T>() -> io::Result<T> {
 pub(crate) trait Backend {
     fn append(&mut self, target: Target, line: &str) -> io::Result<()>;
 
-    fn sync(&mut self, _force: bool) -> io::Result<()> {
+    fn sync(&mut self, _force: bool, _emit: &mut dyn FnMut(&str)) -> io::Result<()> {
         unsupported()
     }
-    fn sysupgrade(&mut self, _ignore: &[String]) -> io::Result<()> {
+    fn sysupgrade(&mut self, _ignore: &[String], _emit: &mut dyn FnMut(&str)) -> io::Result<()> {
         unsupported()
     }
-    fn install(&mut self, _names: &[String]) -> io::Result<()> {
+    fn install(&mut self, _names: &[String], _needed: bool) -> io::Result<()> {
         unsupported()
     }
     fn install_files(&mut self, _opts: FileOpts, _specs: &[String]) -> io::Result<()> {
@@ -48,16 +48,16 @@ impl Backend for Real {
         fsio::append(target, line)
     }
 
-    fn sync(&mut self, force: bool) -> io::Result<()> {
-        pkgdb::sync(force)
+    fn sync(&mut self, force: bool, emit: &mut dyn FnMut(&str)) -> io::Result<()> {
+        pkgdb::sync(force, emit)
     }
 
-    fn sysupgrade(&mut self, ignore: &[String]) -> io::Result<()> {
-        pkgdb::sysupgrade(ignore)
+    fn sysupgrade(&mut self, ignore: &[String], emit: &mut dyn FnMut(&str)) -> io::Result<()> {
+        pkgdb::sysupgrade(ignore, emit)
     }
 
-    fn install(&mut self, names: &[String]) -> io::Result<()> {
-        pkgdb::install(names)
+    fn install(&mut self, names: &[String], needed: bool) -> io::Result<()> {
+        pkgdb::install(names, needed)
     }
 
     fn install_files(&mut self, opts: FileOpts, specs: &[String]) -> io::Result<()> {
@@ -73,12 +73,17 @@ impl Backend for Real {
     }
 }
 
-fn dispatch<B: Backend>(be: &mut B, req: &Request) -> io::Result<()> {
+fn dispatch<B: Backend, W: Write>(be: &mut B, req: &Request, out: &mut W) -> io::Result<()> {
     match req {
         Request::Ping | Request::Quit => Ok(()),
-        Request::Sync { force } => be.sync(*force),
-        Request::Sysupgrade { ignore } => be.sysupgrade(ignore),
-        Request::Install(n) => be.install(n),
+        Request::Sync { force } => be.sync(*force, &mut |t| {
+            // Best effort: a dead peer shows up on the final write.
+            let _ = proto::write_response(out, &Response::Event(t.to_string()));
+        }),
+        Request::Sysupgrade { ignore } => be.sysupgrade(ignore, &mut |t| {
+            let _ = proto::write_response(out, &Response::Event(t.to_string()));
+        }),
+        Request::Install { names, needed } => be.install(names, *needed),
         Request::InstallFiles { opts, files } => be.install_files(*opts, files),
         Request::Remove { mode, names } => be.remove(*mode, names),
         Request::SetReason { explicit, names } => be.set_reason(*explicit, names),
@@ -117,7 +122,7 @@ pub(crate) fn serve<R: BufRead, W: Write, B: Backend>(
                 continue;
             }
         };
-        let resp = match dispatch(be, &req) {
+        let resp = match dispatch(be, &req, out) {
             Ok(()) => Response::Done,
             Err(e) => Response::Fail(clean(&e.to_string())),
         };
@@ -152,7 +157,7 @@ mod tests {
             Ok(())
         }
 
-        fn sync(&mut self, force: bool) -> io::Result<()> {
+        fn sync(&mut self, force: bool, _emit: &mut dyn FnMut(&str)) -> io::Result<()> {
             if self.fail {
                 return Err(io::Error::new(ErrorKind::Other, "boom"));
             }
@@ -160,7 +165,7 @@ mod tests {
             Ok(())
         }
 
-        fn install(&mut self, names: &[String]) -> io::Result<()> {
+        fn install(&mut self, names: &[String], _needed: bool) -> io::Result<()> {
             if self.fail {
                 return Err(io::Error::new(ErrorKind::Other, "boom"));
             }

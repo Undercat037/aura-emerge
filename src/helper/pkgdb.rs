@@ -17,6 +17,9 @@ fn fail(msg: impl Into<String>) -> io::Error {
 }
 
 /// Root handle from /etc/pacman.conf.
+/// Keeps pacman.conf SigLevel so package/db signatures are verified
+/// (user-side `alpm_db::open` turns them off to avoid gpg "unsafe
+/// ownership" on `/etc/pacman.d/gnupg`).
 fn open() -> io::Result<Alpm> {
     let conf = Config::new().map_err(|e| fail(format!("pacman.conf: {}", e)))?;
     alpm_with_conf(&conf).map_err(|e| fail(format!("libalpm: {}", e)))
@@ -138,14 +141,65 @@ fn run_remove(alpm: &mut Alpm, names: &[&str]) -> io::Result<()> {
 }
 
 /// `pacman -Sy`; `force` = `-Syy` (download even if up to date).
-pub(crate) fn sync(force: bool) -> io::Result<()> {
-    let mut alpm = open()?;
-    sync_in(&mut alpm, force)
+/// `emit` gets `sync <repo> <updated|uptodate|failed>` per db, live, in
+/// completion order (libalpm downloads in parallel).
+///
+/// libalpm blocks in `update()`, so it runs on a worker thread (the
+/// handle is created there: Alpm is !Send) and events cross a channel
+/// to the caller's thread, which owns `emit`.
+pub(crate) fn sync(force: bool, emit: &mut dyn FnMut(&str)) -> io::Result<()> {
+    use std::sync::mpsc;
+
+    std::thread::scope(|s| {
+        let (tx, rx) = mpsc::channel::<String>();
+        let worker = s.spawn(move || {
+            let mut alpm = open()?;
+            sync_in_with(&mut alpm, force, &tx)
+        });
+        // Ends when the worker is done and its sender is dropped.
+        for ev in rx {
+            emit(&ev);
+        }
+        worker
+            .join()
+            .unwrap_or_else(|_| Err(fail("sync: worker panicked")))
+    })
 }
 
 /// Same, on a given handle. Takes the db lock like pacman does.
 /// The "already up to date" flag from libalpm is dropped on purpose.
 pub(crate) fn sync_in(alpm: &mut Alpm, force: bool) -> io::Result<()> {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    sync_in_with(alpm, force, &tx)
+}
+
+pub(crate) fn sync_in_with(
+    alpm: &mut Alpm,
+    force: bool,
+    tx: &std::sync::mpsc::Sender<String>,
+) -> io::Result<()> {
+    use std::cell::RefCell;
+    use std::collections::HashSet;
+    use std::rc::Rc;
+
+    // dbs that already reported an outcome
+    let seen: Rc<RefCell<HashSet<String>>> = Rc::default();
+    let sink = Rc::clone(&seen);
+    let cb_tx = tx.clone();
+    alpm.set_dl_cb((), move |file, ev, _| {
+        if let alpm::DownloadEvent::Completed(c) = ev.event() {
+            if let Some(db) = file.strip_suffix(".db") {
+                let state = match c.result {
+                    alpm::DownloadResult::Success => "updated",
+                    alpm::DownloadResult::UpToDate => "uptodate",
+                    alpm::DownloadResult::Failed => "failed",
+                };
+                sink.borrow_mut().insert(db.to_string());
+                let _ = cb_tx.send(format!("sync {} {}", db, state));
+            }
+        }
+    });
+
     alpm.trans_init(TransFlag::NONE)
         .map_err(|e| fail(format!("db lock: {}", e)))?;
     let res = alpm
@@ -154,18 +208,76 @@ pub(crate) fn sync_in(alpm: &mut Alpm, force: bool) -> io::Result<()> {
         .map(|_| ())
         .map_err(|e| fail(format!("sync: {}", e)));
     let _ = alpm.trans_release();
+
+    // A db with no event counts as unchanged (failed if the update failed).
+    let seen = seen.borrow();
+    for db in alpm.syncdbs() {
+        if !seen.contains(db.name()) {
+            let state = if res.is_err() { "failed" } else { "uptodate" };
+            let _ = tx.send(format!("sync {} {}", db.name(), state));
+        }
+    }
     res
 }
 
 /// `pacman -Su`: upgrade every installed package that has a newer
 /// version in a sync db. `ignore` is `--ignore` / package.mask holdback
 /// (bare names). Empty transaction is success (nothing to do).
-pub(crate) fn sysupgrade(ignore: &[String]) -> io::Result<()> {
-    let mut alpm = open()?;
-    sysupgrade_in(&mut alpm, ignore)
+/// `emit` gets `pkg start <name>` / `pkg done <name>` per installed or
+/// upgraded package, live (worker thread + channel, as in `sync`).
+pub(crate) fn sysupgrade(ignore: &[String], emit: &mut dyn FnMut(&str)) -> io::Result<()> {
+    use std::sync::mpsc;
+
+    std::thread::scope(|s| {
+        let (tx, rx) = mpsc::channel::<String>();
+        let worker = s.spawn(move || {
+            let mut alpm = open()?;
+            sysupgrade_in_with(&mut alpm, ignore, &tx)
+        });
+        for ev in rx {
+            emit(&ev);
+        }
+        worker
+            .join()
+            .unwrap_or_else(|_| Err(fail("sysupgrade: worker panicked")))
+    })
 }
 
 pub(crate) fn sysupgrade_in(alpm: &mut Alpm, ignore: &[String]) -> io::Result<()> {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    sysupgrade_in_with(alpm, ignore, &tx)
+}
+
+/// New-side package name of an install/upgrade step (removes are skipped).
+fn op_name(op: alpm::PackageOperation) -> Option<String> {
+    use alpm::PackageOperation as P;
+    match op {
+        P::Install(p) | P::Upgrade(p, _) | P::Reinstall(p, _) | P::Downgrade(p, _) => {
+            Some(p.name().to_string())
+        }
+        P::Remove(_) => None,
+    }
+}
+
+fn sysupgrade_in_with(
+    alpm: &mut Alpm,
+    ignore: &[String],
+    tx: &std::sync::mpsc::Sender<String>,
+) -> io::Result<()> {
+    let cb_tx = tx.clone();
+    alpm.set_event_cb((), move |ev, _| match ev.event() {
+        alpm::Event::PackageOperationStart(e) => {
+            if let Some(n) = op_name(e.operation()) {
+                let _ = cb_tx.send(format!("pkg start {}", n));
+            }
+        }
+        alpm::Event::PackageOperationDone(e) => {
+            if let Some(n) = op_name(e.operation()) {
+                let _ = cb_tx.send(format!("pkg done {}", n));
+            }
+        }
+        _ => {}
+    });
     for n in ignore {
         let a = validate::atom(n).map_err(|r| fail(format!("bad ignore: {:?}", r)))?;
         let _ = alpm.add_ignorepkg(a.name);
@@ -176,6 +288,9 @@ pub(crate) fn sysupgrade_in(alpm: &mut Alpm, ignore: &[String]) -> io::Result<()
         // false = no downgrade (same as pacman -Su without -d).
         alpm.sync_sysupgrade(false)
             .map_err(|e| fail(format!("sysupgrade: {}", e)))?;
+        // Real transaction size, so the client can tell "nothing to do"
+        // from "plan and libalpm disagree".
+        let _ = tx.send(format!("plan {}", alpm.trans_add().iter().count()));
         prepare_and_commit(alpm)
     })();
     let _ = alpm.trans_release();
@@ -183,15 +298,15 @@ pub(crate) fn sysupgrade_in(alpm: &mut Alpm, ignore: &[String]) -> io::Result<()
 }
 
 /// `pacman -S`: install from the sync dbs by `[repo/]name`.
-pub(crate) fn install(names: &[String]) -> io::Result<()> {
+pub(crate) fn install(names: &[String], needed: bool) -> io::Result<()> {
     let mut alpm = open()?;
-    install_in(&mut alpm, names)
+    install_in(&mut alpm, names, needed)
 }
 
 /// Same, on a given handle. All-or-nothing: an unknown target aborts
 /// before anything is queued. Deps are resolved by libalpm; they get
 /// the `asdeps` reason, the named targets stay explicit.
-pub(crate) fn install_in(alpm: &mut Alpm, names: &[String]) -> io::Result<()> {
+pub(crate) fn install_in(alpm: &mut Alpm, names: &[String], needed: bool) -> io::Result<()> {
     let mut targets = Vec::with_capacity(names.len());
     for n in names {
         let a = validate::atom(n).map_err(|r| fail(format!("bad name: {:?}", r)))?;
@@ -206,7 +321,11 @@ pub(crate) fn install_in(alpm: &mut Alpm, names: &[String]) -> io::Result<()> {
     // (would need a prepare-pass to know them); explicit targets are.
     super::pkgmask::refuse_masked(&targets).map_err(|e| fail(e.to_string()))?;
 
-    alpm.trans_init(TransFlag::NONE)
+    let mut flags = TransFlag::NONE;
+    if needed {
+        flags |= TransFlag::NEEDED;
+    }
+    alpm.trans_init(flags)
         .map_err(|e| fail(format!("db lock: {}", e)))?;
     let res = run_install(alpm, &targets);
     let _ = alpm.trans_release();
@@ -662,7 +781,7 @@ mod tests {
     #[test]
     fn install_unknown_target_aborts_and_unlocks() {
         let fx = Fixture::new("inmiss", &[]);
-        let err = install_in(&mut fx.handle(), &names(&["nope"]))
+        let err = install_in(&mut fx.handle(), &names(&["nope"]), false)
             .unwrap_err()
             .to_string();
         assert_eq!(err, "target not found: nope");
@@ -672,8 +791,8 @@ mod tests {
     #[test]
     fn install_rejects_bad_names_and_empty_list() {
         let fx = Fixture::new("inbad", &[]);
-        assert!(install_in(&mut fx.handle(), &names(&["--noconfirm"])).is_err());
-        assert!(install_in(&mut fx.handle(), &[]).is_err());
+        assert!(install_in(&mut fx.handle(), &names(&["--noconfirm"]), false).is_err());
+        assert!(install_in(&mut fx.handle(), &[], false).is_err());
         assert!(!fx.root.join("db/db.lck").exists());
     }
 
@@ -681,7 +800,7 @@ mod tests {
     fn install_with_held_lock_is_an_error() {
         let fx = Fixture::new("inlock", &[]);
         fs::write(fx.root.join("db/db.lck"), "").unwrap();
-        let err = install_in(&mut fx.handle(), &names(&["foo"])).unwrap_err();
+        let err = install_in(&mut fx.handle(), &names(&["foo"]), false).unwrap_err();
         assert!(err.to_string().starts_with("db lock:"));
     }
 
@@ -690,7 +809,7 @@ mod tests {
         let fx = Fixture::new("inrepo", &[]);
         let url = make_repo(&fx);
         sync_in(&mut repo_handle(&fx, &url), false).unwrap();
-        let err = install_in(&mut repo_handle(&fx, &url), &names(&["other/foo"]))
+        let err = install_in(&mut repo_handle(&fx, &url), &names(&["other/foo"]), false)
             .unwrap_err()
             .to_string();
         assert_eq!(err, "target not found: other/foo");
@@ -703,7 +822,7 @@ mod tests {
         let url = make_repo(&fx);
         sync_in(&mut repo_handle(&fx, &url), false).unwrap();
         // `test/foo` and bare `foo` both resolve.
-        install_in(&mut repo_handle(&fx, &url), &names(&["test/foo"])).unwrap();
+        install_in(&mut repo_handle(&fx, &url), &names(&["test/foo"]), false).unwrap();
         assert!(fx.installed("foo"));
         assert!(fx.root.join("usr/bin/foo").exists());
         assert_eq!(reason(&fx, "foo"), PackageReason::Explicit);

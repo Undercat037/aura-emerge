@@ -48,18 +48,17 @@ fn wanted(candy: bool, tty: bool, term: Option<&str>) -> bool {
 }
 
 /// Marquee on stderr while it lives; the line is wiped on drop.
-/// Not called yet: goes around the real resolver work.
-#[allow(dead_code)]
+/// Marquee on stderr while work runs; wiped on drop.
 pub(crate) struct Spinner {
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
 
-#[allow(dead_code)]
 impl Spinner {
     /// `None` unless candy is on (`--nospinner`/`-q` already folded into
     /// `crate::runtime::candy()`) and stderr is a real terminal.
-    pub(crate) fn start() -> Option<Spinner> {
+    /// Spinner with a fixed prefix (e.g. "Calculating dependencies ").
+    pub(crate) fn start_with(prefix: Option<&'static str>) -> Option<Spinner> {
         let term = std::env::var("TERM").ok();
         if !wanted(
             crate::runtime::candy(),
@@ -70,11 +69,16 @@ impl Spinner {
         }
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);
+        let prefix_owned = prefix.map(|s| s.to_string());
         let handle = thread::spawn(move || {
             let mut tick = 0usize;
             while !flag.load(Ordering::Relaxed) {
                 let mut err = std::io::stderr().lock();
-                let _ = write!(err, "\r{}", scroll_frame(tick));
+                if let Some(ref p) = prefix_owned {
+                    let _ = write!(err, "\r{}{}", p, scroll_frame(tick));
+                } else {
+                    let _ = write!(err, "\r{}", scroll_frame(tick));
+                }
                 let _ = err.flush();
                 drop(err);
                 tick = tick.wrapping_add(1);
@@ -86,6 +90,17 @@ impl Spinner {
             handle: Some(handle),
         })
     }
+}
+
+/// Print "Calculating dependencies ... done!" with an optional candy marquee.
+pub(crate) fn calculating_deps_done() {
+    let spin = Spinner::start_with(Some("Calculating dependencies "));
+    // Tiny yield so a frame paints when work is instant.
+    if spin.is_some() {
+        thread::sleep(Duration::from_millis(120));
+    }
+    drop(spin);
+    println!("Calculating dependencies ... done!");
 }
 
 impl Drop for Spinner {

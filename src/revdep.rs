@@ -296,25 +296,10 @@ fn resolves(name: &str, index: &HashMap<String, Vec<PathBuf>>, runpath: &[PathBu
 
 // ── scanning ──────────────────────────────────────────────────────────────────
 
-/// Every path pacman owns, narrowed to `SCAN_PREFIXES`.
+/// Every path an installed package owns, narrowed to `SCAN_PREFIXES`.
 fn owned_paths() -> Vec<String> {
-    let out = Command::new(PACMAN_BIN)
-        .arg("-Qlq")
-        .env("LC_ALL", "C")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output();
-    let Ok(out) = out else { return Vec::new() };
-    if !out.status.success() {
-        return Vec::new();
-    }
-    let mut paths: Vec<String> = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.ends_with('/'))
-        .filter(|l| SCAN_PREFIXES.iter().any(|p| l.starts_with(p)))
-        .map(str::to_string)
-        .collect();
+    let mut paths: Vec<String> =
+        crate::alpm_db::owned_paths(|p| SCAN_PREFIXES.iter().any(|x| p.starts_with(x)));
     paths.sort();
     paths.dedup();
     paths
@@ -374,48 +359,17 @@ fn scan_broken() -> Vec<BrokenFile> {
     broken
 }
 
-/// `pacman -Qo` for a batch of files, chunked for very long lists.
+/// Owning package for a batch of files (libalpm file lists, exact paths).
 fn owners_of(files: &[String]) -> HashMap<String, String> {
-    let mut owners = HashMap::new();
-    for chunk in files.chunks(256) {
-        let out = Command::new(PACMAN_BIN)
-            .arg("-Qo")
-            .args(chunk)
-            .env("LC_ALL", "C")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .output();
-        let Ok(out) = out else { continue };
-        for line in String::from_utf8_lossy(&out.stdout).lines() {
-            // "/usr/bin/foo is owned by bar 1.2.3-1"
-            let Some((path, rest)) = line.split_once(" is owned by ") else {
-                continue;
-            };
-            let Some(pkg) = rest.split_whitespace().next() else {
-                continue;
-            };
-            owners.insert(path.trim().to_string(), pkg.to_string());
-        }
-    }
-    owners
+    crate::alpm_db::owners_of(files)
 }
 
-/// Foreign packages (`pacman -Qm`): AUR, ABS, anything built locally.
+/// Foreign packages: installed but in no sync db (AUR, ABS, local builds).
 fn foreign_packages() -> HashSet<String> {
-    let out = Command::new(PACMAN_BIN)
-        .arg("-Qmq")
-        .env("LC_ALL", "C")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output();
-    match out {
-        Ok(o) => String::from_utf8_lossy(&o.stdout)
-            .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
-            .collect(),
-        Err(_) => HashSet::new(),
-    }
+    crate::alpm_db::foreign_packages()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect()
 }
 
 /// Packages that provide a missing soname, via the file database.
@@ -548,20 +502,7 @@ pub(crate) fn revdep_rebuild(
             providers.extend(found);
         }
     }
-    let installed_now: HashSet<String> = Command::new(PACMAN_BIN)
-        .arg("-Qq")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
+    let installed_now: HashSet<String> = crate::alpm_db::installed_names();
     let mut to_install: Vec<String> = providers
         .into_iter()
         .filter(|p| !installed_now.contains(p))
@@ -633,11 +574,8 @@ pub(crate) fn revdep_rebuild(
     let mut ok = true;
 
     if !to_install.is_empty() {
-        let mut args: Vec<&str> = vec![PACMAN_BIN, "-S", "--needed", "--asdeps"];
-        if !ask {
-            args.push("--noconfirm");
-        }
-        if !run_cmd(SUDO_BIN, &args, &to_install) {
+        if let Err(e) = crate::alpm_install_quiet(&to_install, true, true) {
+            eprintln!("{} {}", ">>> Error:".red().bold(), e);
             eprintln!(
                 "{} failed to install the library package(s)",
                 ">>> Error:".red().bold()

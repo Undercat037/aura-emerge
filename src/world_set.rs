@@ -10,58 +10,9 @@ use std::process::{Command, Stdio};
 
 use crate::*;
 
-/// Repo a package came from (e.g. "extra", "aur"). LC_ALL=C.
-/// Tries -Qi first, then -Si for not-yet-installed.
-pub(crate) fn get_pkg_repo(pkg: &str) -> Option<String> {
-    let bare = pkg.split('/').last().unwrap_or(pkg);
-
-    fn pacman_c(args: &[&str]) -> Option<String> {
-        let out = Command::new("/usr/bin/pacman")
-            .args(args)
-            .env("LC_ALL", "C")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .output()
-            .ok()?;
-        if out.status.success() {
-            Some(String::from_utf8_lossy(&out.stdout).into_owned())
-        } else {
-            None
-        }
-    }
-
-    fn first_repo(stdout: &str) -> Option<String> {
-        for line in stdout.lines() {
-            if line.starts_with("Installed From") || line.starts_with("Repository") {
-                if let Some(val) = line.splitn(2, ':').nth(1) {
-                    let r = val.trim().to_string();
-                    if !r.is_empty() {
-                        return Some(r);
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    // Local DB first; None = local build with no repo field.
-    if let Some(stdout) = pacman_c(&["-Qi", bare]) {
-        return first_repo(&stdout);
-    }
-
-    // Sync DB for not-yet-installed (--select etc.)
-    if let Some(stdout) = pacman_c(&["-Si", bare]) {
-        return first_repo(&stdout);
-    }
-
-    None
-}
-
 // ── batch repo resolution ────────────────────────────────────────────────
 // Resolves a whole package list in at most two pacman spawns total
 // (was one, sometimes two, per package -- see pkg_world_entry_from).
-
-/// `key : value` line, exact match on key.
 
 /// Batch repo lookup via libalpm. Some("None") = local build.
 pub(crate) fn get_pkg_repos_batch(
@@ -253,7 +204,7 @@ fn hold_back(list: &mut Vec<String>, repo: Option<&str>, held: &mut Vec<String>)
 pub(crate) fn provision_from_world_set(
     pretend: bool,
     ask: bool,
-    verbose: bool,
+    _verbose: bool,
     err_install: bool,
     no_sandbox: bool,
     skip_srcinfo_regen: bool,
@@ -373,7 +324,7 @@ pub(crate) fn provision_from_world_set(
             .bold()
     );
     println!();
-    println!("Calculating dependencies... done!");
+    crate::candy::calculating_deps_done();
     println!();
     for p in official_missing.iter().chain(aur_missing.iter()) {
         println!(
@@ -427,15 +378,8 @@ pub(crate) fn provision_from_world_set(
             ">>>".green().bold(),
             official_missing.len()
         );
-        let mut args: Vec<&str> = vec![PACMAN_BIN, "-S", "--needed"];
-        if verbose {
-            args.push("--verbose");
-        }
-        if !ask {
-            args.push("--noconfirm");
-        }
         let snapshot = world_installed_snapshot();
-        let install_ok = crate::pacman_install(&args, &official_missing);
+        let install_ok = crate::repo_install(&official_missing);
         reconcile_world_after_install(&snapshot);
         if !install_ok {
             overall_ok = false;
@@ -486,15 +430,8 @@ pub(crate) fn provision_from_world_set(
             ">>>".green().bold(),
             resolved_official.len()
         );
-        let mut args: Vec<&str> = vec![PACMAN_BIN, "-S", "--needed"];
-        if verbose {
-            args.push("--verbose");
-        }
-        if !ask {
-            args.push("--noconfirm");
-        }
         let snapshot = world_installed_snapshot();
-        let install_ok = crate::pacman_install(&args, &resolved_official);
+        let install_ok = crate::repo_install(&resolved_official);
         reconcile_world_after_install(&snapshot);
         if install_ok {
             // Fix world prefix now that the real repo is known.

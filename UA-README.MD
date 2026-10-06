@@ -8,7 +8,7 @@
 [![GitHub](https://img.shields.io/badge/GitHub-333333?style=flat-square&logo=github&logoColor=FFFFFF)](https://github.com/Undercat037/aura-emerge)
 [![GitLab](https://img.shields.io/badge/GitLab-333333?style=flat-square&logo=gitlab&logoColor=FC6D26)](https://gitlab.com/Undercat037/aura-emerge)
 
-[en](README.MD) | ua
+[en](README.MD) | ua | [ru](RU-README.MD)
 </div>
 
 > Автономний ПМ у стилі Gentoo `emerge` для Arch Linux - встановлює з офіційних репозиторіїв, AUR та ABS, сканує PKGBUILD на ознаки атак на ланцюг постачання перед збіркою і виконує недовірені кроки збірки всередині пісочниці `bwrap`.
@@ -518,6 +518,8 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `-t`, `--tree` | Показати план як дерево залежностей |
 | `-D`, `--deep[=N]` | З `-t`: вкладати на N рівнів, або на всі - без числа |
 | `--ignore-default-opts` | Ігнорувати `EMERGE_DEFAULT_OPTS` з make.conf для цього запуску |
+| `--debug` | Показувати вивід makepkg/компілятора наживо (також `AE_DEBUG=1`) |
+| `--log <PATH>` | Записати session-лог (команда, рядки emerge.log, повний вивід збірки) для bug report |
 | `-h` / `--help` | Довідка |
 | `-V` / `--version` | Версія |
 

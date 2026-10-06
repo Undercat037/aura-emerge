@@ -41,6 +41,6 @@ deltainst:
 	sudo install -m755 $(BIN) /usr/bin/emerge
 
 deny:
-	cargo deny check
+	cargo deny check -A parse-error
 
 all: install

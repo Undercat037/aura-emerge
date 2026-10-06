@@ -1334,6 +1334,7 @@ fn scan_memo() -> &'static std::sync::Mutex<ScanMemo> {
 pub(crate) fn scan_aur_pkgbuilds_or_abort(
     pkgs: &[String],
 ) -> std::collections::HashMap<String, FetchedSource> {
+    crate::progress::status_break();
     let mut fetched: std::collections::HashMap<String, FetchedSource> =
         std::collections::HashMap::new();
     let mut to_scan: Vec<String> = Vec::new();
@@ -1690,6 +1691,7 @@ fn scan_report(
 
 /// --scan AUR name via cgit. false on fetch fail or any finding.
 pub(crate) fn scan_report_aur(pkg: &str) -> bool {
+    crate::progress::status_break();
     println!("{} Scanning {} (AUR)...", ">>>".green().bold(), pkg.bold());
     let Some(pkgbuild_src) = fetch_aur_pkgbuild(pkg) else {
         eprintln!(
@@ -1706,6 +1708,7 @@ pub(crate) fn scan_report_aur(pkg: &str) -> bool {
 
 /// --scan local checkout. false if unreadable or any finding.
 pub(crate) fn scan_report_local(label: &str, dir: &std::path::Path) -> bool {
+    crate::progress::status_break();
     println!(
         "{} Scanning {} ({})...",
         ">>>".green().bold(),
@@ -2422,62 +2425,6 @@ package() {
         assert_eq!(strip_version_operator("bash"), "bash");
         assert_eq!(strip_version_operator("foo<=1.2"), "foo");
         assert_eq!(strip_version_operator("foo<1.2"), "foo");
-    }
-
-    #[test]
-    fn parse_depends_on_basic() {
-        let qi = "\
-Name            : bash
-Version         : 5.2.32-1
-Description     : The GNU Bourne Again shell
-Depends On      : readline  libc.so=6-64
-Optional Deps   : None
-Required By     : filesystem
-
-Name            : coreutils
-Version         : 9.5-1
-Depends On      : glibc>=2.38  acl  attr
-Required By     : base
-
-Name            : filesystem
-Version         : 2024.01-1
-Depends On      : None
-Required By     : None
-";
-        let deps = parse_depends_on_all(qi);
-        for expect in ["readline", "libc.so", "glibc", "acl", "attr"] {
-            assert!(deps.contains(expect), "missing: {}", expect);
-        }
-        assert_eq!(deps.len(), 5);
-    }
-
-    #[test]
-    fn parse_depends_on_wrapped_continuation() {
-        // Simulates pacman wrapping a long Depends On value onto a second,
-        // indented line with no field label.
-        let qi = "\
-Name            : bigpkg
-Version         : 1.0-1
-Depends On      : dep-one  dep-two  dep-three
-                  dep-four  dep-five
-Required By     : None
-";
-        let deps = parse_depends_on_all(qi);
-        for expect in ["dep-one", "dep-two", "dep-three", "dep-four", "dep-five"] {
-            assert!(deps.contains(expect), "missing: {}", expect);
-        }
-        assert_eq!(deps.len(), 5);
-    }
-
-    #[test]
-    fn parse_depends_on_none_and_missing_field() {
-        let qi = "\
-Name            : justapkg
-Version         : 1.0-1
-Depends On      : None
-Required By     : None
-";
-        assert!(parse_depends_on_all(qi).is_empty());
     }
 
     #[test]

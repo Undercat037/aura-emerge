@@ -11,8 +11,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
-use colored::Colorize;
-
 pub(crate) const BWRAP_BIN: &str = "/usr/bin/bwrap";
 
 /// Scratch $HOME for the sandboxed build -- not the real one, so a
@@ -594,14 +592,6 @@ pub(crate) fn sandboxed_makepkg(
     // makepkg.conf symlinked into a hidden dir: bring just that file
     // back, read-only (see exposed_targets).
     for p in exposed_config_targets(real_home.as_deref()) {
-        static NOTED: std::sync::Once = std::sync::Once::new();
-        NOTED.call_once(|| {
-            eprintln!(
-                "{} note: makepkg config is a symlink into a hidden directory -- re-exposing {} read-only inside the sandbox",
-                ">>>".dimmed(),
-                p.display()
-            );
-        });
         let s = p.to_string_lossy().to_string();
         cmd.args(["--ro-bind", &s, &s]);
     }

@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use alpm::{Alpm, Package, PackageReason};
+use alpm::{Alpm, Package, PackageReason, SigLevel};
 use alpm_utils::alpm_with_conf;
 use alpm_utils::config::Config as PacmanConfig;
 
@@ -16,9 +16,25 @@ pub(crate) struct AlpmPkg {
     pub(crate) installed: bool,
 }
 
+/// User-side handle: read-only queries. Signature verification is
+/// disabled here so libalpm never opens `/etc/pacman.d/gnupg` as a
+/// non-root process (gpg: "unsafe ownership on homedir"). Real
+/// package/db signature checks run only in the root helper.
 fn open() -> Option<Alpm> {
     let conf = PacmanConfig::new().ok()?;
-    alpm_with_conf(&conf).ok()
+    let mut alpm = alpm_with_conf(&conf).ok()?;
+    disable_user_sig_verify(&mut alpm);
+    Some(alpm)
+}
+
+fn disable_user_sig_verify(alpm: &mut Alpm) {
+    // alpm 5: SigLevel is set on the handle, not per-Db (DbMut has
+    // siglevel() getter only). User reads never need verify; installs
+    // go through the root helper which keeps pacman.conf levels.
+    let none = SigLevel::NONE;
+    let _ = alpm.set_default_siglevel(none);
+    let _ = alpm.set_local_file_siglevel(none);
+    let _ = alpm.set_remote_file_siglevel(none);
 }
 
 fn bare(name: &str) -> &str {
@@ -33,6 +49,13 @@ fn pkg_to_info(pkg: &Package, repo: &str, installed: bool) -> AlpmPkg {
         description: pkg.desc().unwrap_or("").to_string(),
         installed,
     }
+}
+
+/// Sync repo names in pacman.conf order (= priority).
+pub(crate) fn sync_db_names() -> Vec<String> {
+    open().map_or_else(Vec::new, |a| {
+        a.syncdbs().iter().map(|d| d.name().to_string()).collect()
+    })
 }
 
 pub(crate) fn is_installed(name: &str) -> bool {
@@ -83,11 +106,15 @@ pub(crate) fn upgradeable_detail() -> Vec<(String, String, String, String)> {
         let local_ver = pkg.version().to_string();
         for db in alpm.syncdbs() {
             if let Ok(sp) = db.pkg(name) {
+                // libalpm (sync_sysupgrade) looks only at the FIRST sync db
+                // that carries the name; a newer copy in a later repo is
+                // never used. Mirror that, or the plan shows upgrades the
+                // transaction will not contain.
                 let new_ver = sp.version().to_string();
                 if alpm::vercmp(local_ver.as_str(), new_ver.as_str()) == std::cmp::Ordering::Less {
                     out.push((name.to_string(), local_ver, new_ver, db.name().to_string()));
-                    break;
                 }
+                break;
             }
         }
     }
@@ -215,6 +242,63 @@ pub(crate) fn orphan_names() -> Vec<String> {
         .collect()
 }
 
+/// Full depclean set: orphans plus deps freed by removing them
+/// (fixed point). `keep` is never touched, and whatever it needs stays.
+pub(crate) fn orphan_closure(keep: &std::collections::HashSet<String>) -> Vec<String> {
+    let Some(alpm) = open() else {
+        return Vec::new();
+    };
+    let cand: Vec<_> = alpm
+        .localdb()
+        .pkgs()
+        .iter()
+        .filter(|p| p.reason() == PackageReason::Depend && !keep.contains(p.name()))
+        .collect();
+    let mut gone: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut order: Vec<String> = Vec::new();
+    loop {
+        let mut grew = false;
+        for p in &cand {
+            if gone.contains(p.name()) {
+                continue;
+            }
+            let req_free = p.required_by().iter().all(|n| gone.contains(n));
+            let opt_free = p.optional_for().iter().all(|n| gone.contains(n));
+            if req_free && opt_free {
+                gone.insert(p.name().to_string());
+                order.push(p.name().to_string());
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    order
+}
+
+/// Missing optional deps of installed packages that exist in a sync db.
+pub(crate) fn missing_optdeps(names: &[String]) -> Vec<String> {
+    let Some(alpm) = open() else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    for name in names {
+        let Ok(pkg) = alpm.localdb().pkg(bare(name)) else {
+            continue;
+        };
+        for dep in pkg.optdepends() {
+            let dn = dep.name().to_string();
+            let have = alpm.localdb().pkgs().find_satisfier(dn.as_str()).is_some();
+            let in_sync = alpm.syncdbs().iter().any(|d| d.pkg(dn.as_str()).is_ok());
+            if !have && in_sync && !out.contains(&dn) {
+                out.push(dn);
+            }
+        }
+    }
+    out
+}
+
 // ── search / depends / -T ────────────────────────────────────────────────────
 
 /// Sync-db search (`pacman -Ss`).
@@ -309,6 +393,125 @@ pub(crate) fn unsatisfied(deps: &[String]) -> Vec<String> {
         }
     }
     missing
+}
+
+// ── replacements for `pacman -Qi/-Ql/-Qo/-Ssq` output parsing ────────────────
+
+/// Every dependency name of every installed package (what `pacman -Qi`
+/// shows under "Depends On", versions already stripped).
+pub(crate) fn all_depends() -> std::collections::HashSet<String> {
+    let Some(alpm) = open() else {
+        return std::collections::HashSet::new();
+    };
+    let mut out = std::collections::HashSet::new();
+    for pkg in alpm.localdb().pkgs() {
+        for dep in pkg.depends() {
+            out.insert(dep.name().to_string());
+        }
+    }
+    out
+}
+
+/// Absolute paths owned by installed packages (`pacman -Qlq`), directories
+/// skipped, narrowed by `keep` while walking so the full list is never built.
+pub(crate) fn owned_paths(keep: impl Fn(&str) -> bool) -> Vec<String> {
+    let Some(alpm) = open() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for pkg in alpm.localdb().pkgs() {
+        let files = pkg.files();
+        for f in files.files() {
+            // alpm 5: File::name() is raw bytes.
+            let name = f.name();
+            if name.last() == Some(&b'/') {
+                continue;
+            }
+            let abs = format!("/{}", String::from_utf8_lossy(name));
+            if keep(&abs) {
+                out.push(abs);
+            }
+        }
+    }
+    out
+}
+
+/// path -> owning package (`pacman -Qo`), exact path match. Paths nobody
+/// owns are simply absent from the map.
+pub(crate) fn owners_of(paths: &[String]) -> HashMap<String, String> {
+    let Some(alpm) = open() else {
+        return HashMap::new();
+    };
+    let want: HashMap<&[u8], &String> = paths
+        .iter()
+        .map(|p| (p.trim_start_matches('/').as_bytes(), p))
+        .collect();
+    let mut out = HashMap::new();
+    for pkg in alpm.localdb().pkgs() {
+        let files = pkg.files();
+        for f in files.files() {
+            if let Some(orig) = want.get(f.name()) {
+                out.insert((*orig).clone(), pkg.name().to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Sync packages that satisfy each dependency atom, by exact name first,
+/// then by `provides`. Returns (package names, atoms nobody provides).
+pub(crate) fn sync_providers(deps: &[String]) -> (Vec<String>, Vec<String>) {
+    let Some(alpm) = open() else {
+        return (Vec::new(), deps.to_vec());
+    };
+    let mut found: Vec<String> = Vec::new();
+    let mut unresolved: Vec<String> = Vec::new();
+    for dep in deps {
+        let want = dep.as_str();
+        let mut hit: Option<String> = None;
+        for db in alpm.syncdbs() {
+            if let Ok(p) = db.pkg(want) {
+                hit = Some(p.name().to_string());
+                break;
+            }
+        }
+        if hit.is_none() {
+            'scan: for db in alpm.syncdbs() {
+                for p in db.pkgs() {
+                    if p.provides().iter().any(|d| d.name() == want) {
+                        hit = Some(p.name().to_string());
+                        break 'scan;
+                    }
+                }
+            }
+        }
+        match hit {
+            Some(h) => {
+                if !found.contains(&h) {
+                    found.push(h);
+                }
+            }
+            None => unresolved.push(dep.clone()),
+        }
+    }
+    (found, unresolved)
+}
+
+/// All sync package names, deduped, in pacman.conf order (`pacman -Ssq`).
+pub(crate) fn sync_pkg_names() -> Vec<String> {
+    let Some(alpm) = open() else {
+        return Vec::new();
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for db in alpm.syncdbs() {
+        for p in db.pkgs() {
+            if seen.insert(p.name().to_string()) {
+                out.push(p.name().to_string());
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]

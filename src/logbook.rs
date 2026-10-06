@@ -19,13 +19,37 @@
 //! tool's own loop, so each gets its own timer. A `pacman -S`/`-R`
 //! batch is one exit code for the whole transaction -- no per-package
 //! split, so that line carries every atom and the batch's own total.
+//!
+//! `--log PATH` session file (chronological, for bug reports):
+//! ```text
+//! ===
+//! emerge -at abs/nano
+//! ===
+//! --- build: nano ---
+//! <makepkg output>
+//! ===
+//! 2026-10-06 12:11:03  MERGE    abs    abs/nano-9.2-1  (22s)
+//! ```
 
+use std::fs::{File, OpenOptions};
 use std::io::Write;
+use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+use colored::Colorize;
 
 pub(crate) const LOG_FILE: &str = "/var/log/emerge.log";
 const DATE_BIN: &str = "/usr/bin/date";
+
+struct Session {
+    file: File,
+    /// Build output already written; next emerge.log line gets a `===`.
+    had_output: bool,
+}
+
+static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 
 /// Starts a build/merge timer:
 /// `let t = Timer::start(); ... log_merge_one("aur", &atom, t.elapsed());`
@@ -82,6 +106,73 @@ fn append(line: &str) {
         }
         let _ = c.wait();
     }
+    session_append_line(line);
+}
+
+/// Open `--log PATH` and write the command header. Best-effort.
+pub(crate) fn session_open(path: &Path, command_line: &str) {
+    match OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+    {
+        Ok(mut f) => {
+            let _ = writeln!(f, "===");
+            let _ = writeln!(f, "{}", command_line);
+            let _ = writeln!(f, "===");
+            let _ = f.flush();
+            if let Ok(mut slot) = SESSION.lock() {
+                *slot = Some(Session {
+                    file: f,
+                    had_output: false,
+                });
+            }
+        }
+        Err(e) => {
+            eprintln!(
+                "{} could not open session log '{}': {}",
+                ">>> Warning:".yellow().bold(),
+                path.display(),
+                e
+            );
+        }
+    }
+}
+
+fn session_append_line(line: &str) {
+    if let Ok(mut slot) = SESSION.lock() {
+        if let Some(s) = slot.as_mut() {
+            // After build output, open a final section for emerge.log lines.
+            if s.had_output {
+                let _ = writeln!(s.file, "===");
+                s.had_output = false;
+            }
+            let _ = writeln!(s.file, "{}", line);
+            let _ = s.file.flush();
+        }
+    }
+}
+
+/// Append build/command output to the session log.
+pub(crate) fn session_write_output(text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    if let Ok(mut slot) = SESSION.lock() {
+        if let Some(s) = slot.as_mut() {
+            s.had_output = true;
+            let _ = write!(s.file, "{}", text);
+            if !text.ends_with('\n') {
+                let _ = writeln!(s.file);
+            }
+            let _ = s.file.flush();
+        }
+    }
+}
+
+pub(crate) fn session_active() -> bool {
+    SESSION.lock().map(|s| s.is_some()).unwrap_or(false)
 }
 
 /// One line for a batch that installed together as a single pacman

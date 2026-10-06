@@ -8,10 +8,9 @@ url="https://undercat037.github.io/aura-emerge/"
 # Github repo: https://github.com/Undercat037/aura-emerge
 # Gitlab repo: https://gitlab.com/Undercat037/aura-emerge
 license=('GPL-3.0')
-depends=('git' 'sudo')
+depends=('git' 'sudo' 'bubblewrap')
 optdepends=('devtools: for --abs support (pkgctl repo clone)'
-            'gnupg: for PGP verification when building from ABS'
-            'bubblewrap: sandboxed builds (falls back to unsandboxed with --no-sandbox)')
+            'gnupg: for PGP verification when building from ABS')
 makedepends=('rust' 'cargo')
 conflicts=('portage' 'portage-git' 'aura-emerge')
 provides=('portageq')

@@ -146,22 +146,35 @@ impl Client {
     }
 
     /// `pacman -S`: install from sync dbs by `[repo/]name`.
-    pub(crate) fn install(&mut self, names: &[String]) -> Result<(), ClientError> {
-        let req = Request::Install(names.to_vec());
+    pub(crate) fn install(&mut self, names: &[String], needed: bool) -> Result<(), ClientError> {
+        let req = Request::Install {
+            needed,
+            names: names.to_vec(),
+        };
         self.request(&req, &mut |_| {})
     }
 
     /// Refresh sync dbs (`pacman -Sy`); `force` is `-Syy`.
-    pub(crate) fn sync(&mut self, force: bool) -> Result<(), ClientError> {
-        self.request(&Request::Sync { force }, &mut |_| {})
+    /// `on_event` gets `sync <repo> <updated|uptodate|failed>` per db.
+    pub(crate) fn sync(
+        &mut self,
+        force: bool,
+        on_event: &mut dyn FnMut(&str),
+    ) -> Result<(), ClientError> {
+        self.request(&Request::Sync { force }, on_event)
     }
 
     /// Full official upgrade (`pacman -Su`); `ignore` is `--ignore` names.
-    pub(crate) fn sysupgrade(&mut self, ignore: &[String]) -> Result<(), ClientError> {
+    /// `on_event` gets `pkg start|done <name>` per package.
+    pub(crate) fn sysupgrade(
+        &mut self,
+        ignore: &[String],
+        on_event: &mut dyn FnMut(&str),
+    ) -> Result<(), ClientError> {
         let req = Request::Sysupgrade {
             ignore: ignore.to_vec(),
         };
-        self.request(&req, &mut |_| {})
+        self.request(&req, on_event)
     }
 
     /// `pacman -U`: `specs` are `validate::spec` lines (sha256 + abs path).

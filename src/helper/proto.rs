@@ -83,7 +83,10 @@ pub(crate) enum Request {
         ignore: Vec<String>,
     },
     Quit,
-    Install(Vec<String>),
+    Install {
+        needed: bool,
+        names: Vec<String>,
+    },
     /// `-U`: `<sha256> <abs path>` per file (see `validate::file_spec`).
     /// On the wire the first ARG is `opts.id()`, then the files.
     InstallFiles {
@@ -113,7 +116,14 @@ impl Request {
             Request::Sync { force } => (if *force { "refresh" } else { "sync" }, vec![]),
             Request::Sysupgrade { ignore } => ("sysupgrade", ignore.clone()),
             Request::Quit => ("quit", vec![]),
-            Request::Install(n) => ("install", n.clone()),
+            Request::Install { needed, names } => {
+                let mut a = Vec::new();
+                if *needed {
+                    a.push("--needed".into());
+                }
+                a.extend(names.iter().cloned());
+                ("install", a)
+            }
             Request::InstallFiles { opts, files } => {
                 let mut a = vec![opts.id().to_string()];
                 a.extend(files.iter().cloned());
@@ -151,8 +161,16 @@ impl Request {
             }
             "quit" => none(Request::Quit, &args),
             "install" => {
-                validate::atoms(&args)?;
-                Ok(Request::Install(args))
+                let (needed, rest) = if args.first().map(String::as_str) == Some("--needed") {
+                    (true, args[1..].to_vec())
+                } else {
+                    (false, args)
+                };
+                validate::atoms(&rest)?;
+                Ok(Request::Install {
+                    needed,
+                    names: rest,
+                })
             }
             "installfile" => {
                 let (first, rest) = args
@@ -323,7 +341,10 @@ mod tests {
         roundtrip(Request::Sync { force: false });
         roundtrip(Request::Sync { force: true });
         roundtrip(Request::Quit);
-        roundtrip(Request::Install(vec!["extra/nano".into(), "vim".into()]));
+        roundtrip(Request::Install {
+            needed: false,
+            names: vec!["extra/nano".into(), "vim".into()],
+        });
         for mode in [RemoveMode::Plain, RemoveMode::Unmerge, RemoveMode::Prune] {
             roundtrip(Request::Remove {
                 mode,
@@ -449,7 +470,10 @@ mod tests {
     #[test]
     fn write_refuses_frame_forging() {
         let mut buf = Vec::new();
-        let evil = Request::Install(vec!["nano\nEND\nCMD sync".into()]);
+        let evil = Request::Install {
+            needed: false,
+            names: vec!["nano\nEND\nCMD sync".into()],
+        };
         assert!(write_request(&mut buf, &evil).is_err());
         assert!(buf.is_empty());
         let evil = Request::Append {

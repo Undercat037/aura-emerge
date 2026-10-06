@@ -8,14 +8,14 @@
 [![GitHub](https://img.shields.io/badge/GitHub-333333?style=flat-square&logo=github&logoColor=FFFFFF)](https://github.com/Undercat037/aura-emerge)
 [![GitLab](https://img.shields.io/badge/GitLab-333333?style=flat-square&logo=gitlab&logoColor=FC6D26)](https://gitlab.com/Undercat037/aura-emerge)
 
-en | [ua](UA-README.MD) | [ru](RU-README.MD)
+[en](README.MD) | [ua](UA-README.MD) | ru
 </div>
 
-> A standalone Gentoo-style `emerge` package manager for Arch Linux - installs from official repos, the AUR, and ABS; scans PKGBUILDs for supply-chain attack patterns before building; and runs untrusted build steps inside a `bwrap` sandbox.
+> Автономный пакетный менеджер в стиле Gentoo `emerge` для Arch Linux — ставит из официальных репозиториев, AUR и ABS; перед сборкой сканирует PKGBUILD на признаки атак на цепочку поставок; недоверенные шаги сборки выполняет в песочнице `bwrap`.
 
-Packages are tracked in a `world` file - install once, track forever.
+Пакеты учитываются в файле `world` — поставил один раз, отслеживается всегда.
 
-## Installation
+## Установка
 
 ### AUR
 ```bash
@@ -29,7 +29,7 @@ makepkg -si
 ```
 
 <details>
-<summary><h3>Manual/makepkg (Unstable)</h3></summary>
+<summary><h3>Вручную / makepkg (нестабильно)</h3></summary>
 
 ### Make
 ```bash
@@ -37,7 +37,7 @@ git clone https://github.com/Undercat037/aura-emerge.git
 cd aura-emerge
 make install
 ```
-### Manual build
+### Ручная сборка
 ```bash
 git clone https://github.com/Undercat037/aura-emerge.git
 cd aura-emerge
@@ -57,12 +57,12 @@ makepkg -si
 ```
 </details>
 
-**Dependencies:** `git`, `bubblewrap` (build sandbox for AUR/ABS)  
-**Optional:**
-- `devtools` - `--abs` support (`pkgctl repo clone`)
-- `gnupg` - automatic PGP key import (`--autopgp`)
+**Зависимости:** `git`, `bubblewrap` (песочница сборки для AUR/ABS)  
+**Опционально:**
+- `devtools` — поддержка `--abs` (`pkgctl repo clone`)
+- `gnupg` — автоматический импорт PGP-ключей (`--autopgp`)
 
-## Gentoo → Arch: make.conf equivalent
+## Gentoo → Arch: аналог make.conf
 
 Arch has no USE flags, but compilation can be tuned the same way as [Gentoo](https://wiki.gentoo.org/wiki/Main_Page)'s `/etc/portage/make.conf` via `/etc/makepkg.conf`:
 
@@ -464,68 +464,68 @@ emerge --install-pkgbuild ./scaner-test --ask
 <details>
 <summary><h2>Flags</h2></summary>
 
-| Flag | Description |
-|------|-------------|
-| `-s` | Search packages |
-| `--searchdesc` | Search by description |
-| `-sv` | Detailed package info |
-| `-u` | Full system upgrade (does not read world) |
-| `--devel` | With `-u` - also rebuild `-git`/`-hg`/`-svn`/`-bzr` packages whose upstream moved |
-| `--check-devel` | Report which devel packages have upstream changes (no rebuild) |
-| `-C` | Remove packages (unmerge) |
-| `-c` | Remove orphans (depclean) |
-| `-p` | Pretend (dry run) |
-| `-a` | Ask before acting |
-| `--sudoloop` | Keep sudo timestamp warm for the whole run |
-| `-1` | Install as dependency (oneshot) |
-| `-v` | Verbose output |
-| `-n` | Do not reinstall if present (noreplace) |
-| `--aur` | Force AUR (AUR-only dependencies are always resolved and built recursively) |
-| `--only-repos` | Official repos only |
-| `--abs` | Build from ABS (`pkgctl`), in bwrap sandbox |
-| `--no-sandbox` | Disable bwrap for AUR/ABS |
-| `--unshare-net-build` | No network during build()/check()/package() |
-| `--skippgp` | Skip PGP checks (ABS) |
-| `--autopgp` | Auto-import missing PGP keys (ABS) |
-| `--edit` | Edit PKGBUILD before building; regenerates `.SRCINFO` after save |
-| `--pkgbuild-view` | Show/diff PKGBUILD, confirm before building (offers `$EDITOR` on decline) |
-| `--install-pkgbuild <PATH>` | Build+install a local PKGBUILD checkout (scanner + bwrap) |
-| `--scan` | Audit-only PKGBUILD/.install scan, no build/install (AUR or `--install-pkgbuild`) |
-| `--skip-srcinfo-regen` | With `--edit` - do not regenerate `.SRCINFO` |
-| `--sync` | Sync package databases |
-| `--refresh` | Force `-Syy` (with `--sync` or `-u`) |
-| `--info` | System info |
-| `--news [N\|all]` | Arch Linux news |
-| `--check-news [N\|all]` | Alias for `--news` |
-| `--select` | Add to world without installing |
-| `--deselect` | Remove from world without unmerging |
-| `--prune` | Remove packages not in world |
-| `--regen` | Regenerate metadata cache |
-| `--regen-world` | Re-resolve repo prefixes in world |
-| `--regen-sets <SET>` | Re-resolve prefixes for one custom set |
-| `--regen-sort` | With `--regen-sets` - also sort the file |
-| `--regen-world-from-explicit` | Migration: seed world from `pacman -Qeq` |
-| `--err-install` | On `@world`, also retry `Err/` entries |
-| `--resume` | Resume interrupted transaction |
-| `--skipfirst` | Skip first package on resume |
-| `--undo` | Undo last install/unmerge |
-| `--clean-source-cache` | Wipe persistent VCS source cache |
-| `--batchinstall <FILE>` | Mass-install from a package list file |
-| `--list-sets` | List available `@sets` |
-| `--exclude <ATOM>` | Leave a package out of this run (repeatable/comma-separated) |
-| `--keep-going` | Don't stop a batch at the first failure; summarize at the end |
-| `--revdep-rebuild` | Find + fix binaries linking against a missing library |
-| `-t`, `--tree` | Show the plan as a dependency tree |
-| `-D`, `--deep[=N]` | With `-t`: nest N levels deep, or every level if bare |
-| `--ignore-default-opts` | Ignore `EMERGE_DEFAULT_OPTS` from make.conf for this run |
-| `--debug` | Show makepkg/compiler output live (also `AE_DEBUG=1`) |
-| `--log <PATH>` | Write a session log (command, emerge.log lines, full build output) for bug reports |
-| `-h` / `--help` | Help |
-| `-V` / `--version` | Version |
+| Флаг | Описание |
+|------|----------|
+| `-s` | Поиск пакетов |
+| `--searchdesc` | Поиск по описанию |
+| `-sv` | Подробная информация о пакете |
+| `-u` | Полное обновление системы (world не читает) |
+| `--devel` | С `-u` — также пересобрать `-git`/`-hg`/`-svn`/`-bzr`, у которых сдвинулся upstream |
+| `--check-devel` | Сообщить, у каких devel-пакетов есть изменения upstream (без пересборки) |
+| `-C` | Удалить пакеты (unmerge) |
+| `-c` | Удалить сироты (depclean) |
+| `-p` | Pretend (сухой прогон) |
+| `-a` | Спросить перед действием |
+| `--sudoloop` | Держать sudo timestamp тёплым на весь прогон |
+| `-1` | Поставить как зависимость (oneshot) |
+| `-v` | Подробный вывод |
+| `-n` | Не переустанавливать, если уже есть (noreplace) |
+| `--aur` | Только AUR (AUR-зависимости всегда резолвятся и собираются рекурсивно) |
+| `--only-repos` | Только официальные репозитории |
+| `--abs` | Сборка из ABS (`pkgctl`), в песочнице bwrap |
+| `--no-sandbox` | Отключить bwrap для AUR/ABS |
+| `--unshare-net-build` | Без сети на этапах build()/check()/package() |
+| `--skippgp` | Пропустить PGP-проверки (ABS) |
+| `--autopgp` | Автоимпорт недостающих PGP-ключей (ABS) |
+| `--edit` | Править PKGBUILD перед сборкой; после сохранения пересобирает `.SRCINFO` |
+| `--pkgbuild-view` | Показать/diff PKGBUILD, подтвердить перед сборкой |
+| `--install-pkgbuild <PATH>` | Собрать+поставить локальный checkout PKGBUILD (сканер + bwrap) |
+| `--scan` | Только аудит PKGBUILD/.install, без сборки/установки |
+| `--skip-srcinfo-regen` | С `--edit` — не пересобирать `.SRCINFO` |
+| `--sync` | Синхронизировать базы пакетов |
+| `--refresh` | Принудительно `-Syy` (с `--sync` или `-u`) |
+| `--info` | Информация о системе |
+| `--news [N\|all]` | Новости Arch Linux |
+| `--check-news [N\|all]` | Синоним `--news` |
+| `--select` | Добавить в world без установки |
+| `--deselect` | Убрать из world без удаления |
+| `--prune` | Удалить пакеты, которых нет в world |
+| `--regen` | Пересобрать кэш метаданных |
+| `--regen-world` | Заново проставить префиксы репозиториев в world |
+| `--regen-sets <SET>` | То же для одного пользовательского набора |
+| `--regen-sort` | С `--regen-sets` — ещё и отсортировать файл |
+| `--regen-world-from-explicit` | Миграция: заполнить world из `pacman -Qeq` |
+| `--err-install` | На `@world` также повторить записи `Err/` |
+| `--resume` | Продолжить прерванную транзакцию |
+| `--skipfirst` | Пропустить первый пакет при resume |
+| `--undo` | Отменить последнюю установку/удаление |
+| `--clean-source-cache` | Очистить постоянный кэш VCS-исходников |
+| `--batchinstall <FILE>` | Массовая установка из файла-списка |
+| `--list-sets` | Список доступных `@sets` |
+| `--exclude <ATOM>` | Исключить пакет из этого запуска |
+| `--keep-going` | Не останавливаться на первой ошибке в пакетной операции |
+| `--revdep-rebuild` | Найти и починить бинарники с битыми ссылками на библиотеки |
+| `-t`, `--tree` | Показать план как дерево зависимостей |
+| `-D`, `--deep[=N]` | С `-t`: глубина N уровней, или все уровни без числа |
+| `--ignore-default-opts` | Игнорировать `EMERGE_DEFAULT_OPTS` из make.conf |
+| `--debug` | Живой вывод makepkg/компилятора (также `AE_DEBUG=1`) |
+| `--log <PATH>` | Session-лог (команда, строки emerge.log, полный вывод сборки) для bug report |
+| `-h` / `--help` | Справка |
+| `-V` / `--version` | Версия |
 
-The `emerge(1)` man page is generated from the CLI via `clap_mangen` (`emerge --gen-manpage`), so it cannot drift from `--help`.
+Man-страница `emerge(1)` генерируется из CLI через `clap_mangen` (`emerge --gen-manpage`), поэтому не расходится с `--help`.
 </details>
 
-## Author/License
-Copyright (C) 2026 **Undercat037**
-GPL-3.0 license
+## Автор / лицензия
+Copyright (C) 2026 **Undercat037**  
+Лицензия GPL-3.0

@@ -17,16 +17,17 @@ use crate::config::Config;
 #[derive(Default)]
 pub(crate) struct Runtime {
     pub(crate) config: Config,
-    /// Bare package names from `--exclude` (and nothing else -- masks
-    /// are a separate, persistent layer, see `mask.rs`).
+    /// Bare package names from `--exclude` (masks are a separate layer).
     pub(crate) exclude: HashSet<String>,
     pub(crate) keep_going: bool,
     /// `FEATURES="candy"`, minus `--nospinner` / `-q`.
     pub(crate) candy: bool,
-    /// Show makepkg/compiler output live. On by `--debug`, `AE_DEBUG=1`,
-    /// or `--quiet-build=n`; off by default so the Gentoo-style
-    /// Emerging/Installing/Completed lines stay readable.
+    /// Live makepkg output (`--debug` / `AE_DEBUG=1` / `--quiet-build=n`).
     pub(crate) debug: bool,
+    /// `emerge -n` / pacman `--needed`.
+    pub(crate) noreplace: bool,
+    /// `--with-optdeps`: also install optdepends (as dependencies).
+    pub(crate) with_optdeps: bool,
 }
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
@@ -54,13 +55,11 @@ pub(crate) fn candy() -> bool {
     get().candy
 }
 
-/// Live makepkg/compiler output (not the `>>>` status lines).
 pub(crate) fn show_build_output() -> bool {
     get().debug
 }
 
-/// True if `--exclude` named this package (compared bare, so
-/// `--exclude extra/nano` and `--exclude nano` both hit `nano`).
+/// True if `--exclude` named this package (bare match).
 pub(crate) fn is_excluded(name: &str) -> bool {
     let bare = name.split('/').last().unwrap_or(name);
     get().exclude.contains(bare)

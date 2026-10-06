@@ -189,6 +189,37 @@ pub(crate) fn srcinfo_pkgbase(path: &Path) -> Option<String> {
     })
 }
 
+/// `[epoch:]pkgver-pkgrel` from a `.SRCINFO`. Static text; for VCS
+/// packages the real version only appears after `pkgver()` runs.
+pub(crate) fn srcinfo_version(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let (mut epoch, mut ver, mut rel) = (None, None, None);
+    for l in text.lines() {
+        let Some((k, v)) = l.trim().split_once('=') else {
+            continue;
+        };
+        let v = v.trim().to_string();
+        match k.trim() {
+            "epoch" if epoch.is_none() => epoch = Some(v),
+            "pkgver" if ver.is_none() => ver = Some(v),
+            "pkgrel" if rel.is_none() => rel = Some(v),
+            _ => {}
+        }
+    }
+    let ver = ver?;
+    let mut out = String::new();
+    if let Some(e) = epoch.filter(|e| e != "0" && !e.is_empty()) {
+        out.push_str(&e);
+        out.push(':');
+    }
+    out.push_str(&ver);
+    if let Some(r) = rel {
+        out.push('-');
+        out.push_str(&r);
+    }
+    Some(out)
+}
+
 /// Every `pkgname = ...` value in a `.SRCINFO` file - usually one, but
 /// several for a split package. Used by `--install-pkgbuild` to record
 /// world entries after a local build (no AUR/ABS resolution step

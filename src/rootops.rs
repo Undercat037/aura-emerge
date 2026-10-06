@@ -110,21 +110,21 @@ pub(crate) fn install_files(pins: &[Pinned], opts: FileOpts) -> Result<(), Strin
 }
 
 /// `pacman -S` through the root helper (libalpm transaction).
-pub(crate) fn install(names: &[String]) -> Result<(), String> {
+pub(crate) fn install(names: &[String], needed: bool) -> Result<(), String> {
     if names.is_empty() {
         return Ok(());
     }
-    with_helper(|c| c.install(names)).map_err(|e| e.to_string())
+    with_helper(|c| c.install(names, needed)).map_err(|e| e.to_string())
 }
 
 /// Refresh sync dbs (`-Sy` / `-Syy` when force).
-pub(crate) fn sync(force: bool) -> Result<(), String> {
-    with_helper(|c| c.sync(force)).map_err(|e| e.to_string())
+pub(crate) fn sync(force: bool, on_event: &mut dyn FnMut(&str)) -> Result<(), String> {
+    with_helper(|c| c.sync(force, on_event)).map_err(|e| e.to_string())
 }
 
 /// Official sysupgrade (`-Su`); `ignore` is holdback list.
-pub(crate) fn sysupgrade(ignore: &[String]) -> Result<(), String> {
-    with_helper(|c| c.sysupgrade(ignore)).map_err(|e| e.to_string())
+pub(crate) fn sysupgrade(ignore: &[String], on_event: &mut dyn FnMut(&str)) -> Result<(), String> {
+    with_helper(|c| c.sysupgrade(ignore, on_event)).map_err(|e| e.to_string())
 }
 
 /// Remove installed packages through the helper.

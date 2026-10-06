@@ -48,35 +48,56 @@ pub(crate) fn status_colored(status: &str) -> String {
 /// Quiet by default: stdout/stderr are captured so the Gentoo-style
 /// `>>> Emerging` / `>>> Installing` lines stay readable. On failure the
 /// captured log is dumped. Live output with `--debug`, `AE_DEBUG=1`, or
-/// `--quiet-build=n`.
+/// `--quiet-build=n`. With `--log PATH`, output is always captured into
+/// the session file (and still printed live when debug is on).
 fn run_build_cmd(mut cmd: Command, label: &str) -> Result<(), String> {
-    if crate::runtime::show_build_output() {
+    let logging = crate::logbook::session_active();
+    let live = crate::runtime::show_build_output();
+
+    // Live-only path: no session log, just inherit stdio.
+    if live && !logging {
         return if cmd.status().map(|s| s.success()).unwrap_or(false) {
             Ok(())
         } else {
             Err(String::new())
         };
     }
+
+    // Capture when quiet, or when a session log needs the full output.
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     match cmd.output() {
         Ok(out) => {
+            let combined = {
+                let mut s = String::new();
+                if !out.stdout.is_empty() {
+                    s.push_str(&String::from_utf8_lossy(&out.stdout));
+                    if !s.ends_with('\n') {
+                        s.push('\n');
+                    }
+                }
+                if !out.stderr.is_empty() {
+                    s.push_str(&String::from_utf8_lossy(&out.stderr));
+                }
+                s
+            };
+            if logging && !combined.is_empty() {
+                crate::logbook::session_write_output(&format!(
+                    "--- build: {} ---\n{}",
+                    label, combined
+                ));
+            }
             if out.status.success() {
+                // --debug + --log: replay captured output so the terminal
+                // still sees the full build while the file gets a copy.
+                if live && !combined.is_empty() {
+                    print!("{}", combined);
+                    if !combined.ends_with('\n') {
+                        println!();
+                    }
+                }
                 Ok(())
             } else {
-                let combined = {
-                    let mut s = String::new();
-                    if !out.stdout.is_empty() {
-                        s.push_str(&String::from_utf8_lossy(&out.stdout));
-                        if !s.ends_with('\n') {
-                            s.push('\n');
-                        }
-                    }
-                    if !out.stderr.is_empty() {
-                        s.push_str(&String::from_utf8_lossy(&out.stderr));
-                    }
-                    s
-                };
                 if !combined.trim().is_empty() {
                     eprintln!(
                         "{} build log for '{}' (re-run with {} or {} for live output):",
@@ -237,6 +258,63 @@ pub(crate) fn probe_official_split(pkgs: &[String]) -> (Vec<PkgInfo>, Vec<String
 }
 
 /// AUR RPC info → (found, missing). Missing is not a hard error.
+
+/// Suggest close package names when an exact atom is missing (Portage-style).
+pub(crate) fn print_similar_names(term: &str) {
+    let bare = term.split('/').last().unwrap_or(term);
+    if bare.is_empty() {
+        return;
+    }
+    eprintln!("{} searching for similar names...", "emerge:".yellow());
+
+    // Try full term, then progressively shorter prefixes (Portage-ish).
+    let mut stems: Vec<&str> = vec![bare];
+    if bare.len() > 4 {
+        stems.push(&bare[..bare.len().saturating_sub(2)]);
+    }
+    if bare.len() > 6 {
+        stems.push(&bare[..3]);
+    }
+    let mut hits: Vec<String> = Vec::new();
+    for stem in stems {
+        if stem.is_empty() {
+            continue;
+        }
+        for p in crate::alpm_db::search_sync(stem, false, true) {
+            hits.push(format!("{}/{}", p.repo, p.name));
+        }
+        if hits.len() >= 5 {
+            break;
+        }
+    }
+    if hits.len() < 5 {
+        for h in crate::aur::rpc_search(bare, false) {
+            hits.push(format!("aur/{}", h.name));
+            if hits.len() >= 8 {
+                break;
+            }
+        }
+    }
+    hits.sort_by(|a, b| {
+        let an = a.split('/').last().unwrap_or(a);
+        let bn = b.split('/').last().unwrap_or(b);
+        let ap = an.starts_with(bare) as i8;
+        let bp = bn.starts_with(bare) as i8;
+        bp.cmp(&ap).then_with(|| an.len().cmp(&bn.len()))
+    });
+    hits.dedup();
+    hits.truncate(5);
+    if hits.is_empty() {
+        eprintln!("{} no similar package names found.", "emerge:".yellow());
+        return;
+    }
+    eprintln!(
+        "{} Maybe you meant any of these: {}",
+        "emerge:".yellow(),
+        hits.join(", ")
+    );
+}
+
 pub(crate) fn resolve_aur_split(pkgs: &[String]) -> (Vec<PkgInfo>, Vec<String>) {
     let infos = crate::aur::rpc_info(pkgs);
     let by_name: HashMap<&str, &crate::aur::AurPkgInfo> =
@@ -283,7 +361,7 @@ pub(crate) fn print_emerge_plan(
             .bold()
     );
     println!();
-    println!("Calculating dependencies... done!");
+    crate::candy::calculating_deps_done();
     println!();
 
     let requested: HashSet<&str> = requested.iter().map(|p| bare_of(p)).collect();
@@ -294,13 +372,6 @@ pub(crate) fn print_emerge_plan(
     };
 
     for (p, depth) in &entries {
-        if p.status == "D" {
-            println!(
-                "{} {}: downgrading package!",
-                " *".yellow().bold(),
-                p.name.bold()
-            );
-        }
         let prefix = if *depth == 0 {
             String::new()
         } else {
@@ -327,6 +398,56 @@ pub(crate) fn print_emerge_plan(
 ///
 /// Accepted answers match Portage: empty / y / yes (case-insensitive).
 /// Anything else aborts.
+
+/// Source-built glibc is a footgun: a bad build can break every dynamic
+/// binary on the system (including pacman). Warn hard and require an
+/// explicit yes before abs/aur rebuilds of these packages.
+pub(crate) fn warn_critical_libc(names: &[String], source: &str) -> bool {
+    const CRITICAL: &[&str] = &["glibc", "lib32-glibc"];
+    let hits: Vec<&str> = names
+        .iter()
+        .map(|n| n.split('/').last().unwrap_or(n.as_str()))
+        .filter(|n| CRITICAL.iter().any(|c| c == n))
+        .collect();
+    if hits.is_empty() {
+        return true;
+    }
+    eprintln!();
+    eprintln!(
+        "{} about to rebuild {} from {}:",
+        "!!!".red().bold(),
+        hits.join(", ").bold(),
+        source.yellow().bold()
+    );
+    eprintln!(
+        "{} a failed or partial {} install can leave the system unable to run",
+        "!!!".red().bold(),
+        "glibc".bold()
+    );
+    eprintln!(
+        "{} dynamic binaries (including pacman). Prefer official repo packages",
+        "!!!".red().bold()
+    );
+    eprintln!(
+        "{} unless you intentionally need a source rebuild.",
+        "!!!".red().bold()
+    );
+    eprintln!();
+    print!(
+        "Really proceed with source {}? [{}/{}] ",
+        source,
+        "Yes".green().bold(),
+        "No".red().bold()
+    );
+    let _ = io::stdout().flush();
+    let answer = crate::read_line_raw();
+    let ok = matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes");
+    if !ok {
+        println!("{} Quitting.", ">>>".yellow().bold());
+    }
+    ok
+}
+
 pub(crate) fn confirm_merge(ask: bool) -> bool {
     confirm_action(ask, "merge")
 }
@@ -482,55 +603,30 @@ fn place_children<'a>(
 }
 
 pub(crate) fn print_emerge_emerging(pkgs: &[PkgInfo]) {
-    let total = pkgs.len();
-    let pfx = ">>>".green().bold();
-    println!("{} Verifying ebuild manifests", pfx);
-    for (i, p) in pkgs.iter().enumerate() {
-        println!(
-            "{} Emerging ({} of {}) {}",
-            pfx,
-            (i + 1).to_string().yellow().bold(),
-            total.to_string().yellow().bold(),
-            format_atom(p).green().bold()
-        );
-    }
+    // Plan size only; per-package lines are printed live by the
+    // installers (Installing / Compiling / Completed).
+    crate::progress::begin(pkgs.len());
     println!();
 }
 
-/// Refresh versions from pacman -Q after install (plan may be stale).
+/// Refresh versions from the local db after install (plan may be stale).
 pub(crate) fn refresh_installed_versions(pkgs: &mut [PkgInfo]) {
     for p in pkgs.iter_mut() {
-        let out = Command::new(PACMAN_BIN)
-            .args(["-Q", &p.name])
-            .env("LC_ALL", "C")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .output();
-        if let Ok(o) = out {
-            if o.status.success() {
-                let s = String::from_utf8_lossy(&o.stdout).into_owned();
-                if let Some(ver) = s.split_whitespace().nth(1) {
-                    if !ver.is_empty() {
-                        p.version = ver.to_string();
-                    }
-                }
+        if let Some(ver) = crate::alpm_db::installed_version(&p.name) {
+            if !ver.is_empty() {
+                p.version = ver;
             }
         }
     }
 }
 
+/// Final summary after a run. Per-package Installing/Completed are
+/// emitted live during `repo_install_landed`; this only prints Jobs.
 pub(crate) fn print_emerge_completed(pkgs: &[PkgInfo]) {
-    let total = pkgs.len();
-    let pfx = ">>>".green().bold();
-    for (i, p) in pkgs.iter().enumerate() {
-        let atom = format_atom(p).green().bold().to_string();
-        let n = (i + 1).to_string().yellow().bold().to_string();
-        let t = total.to_string().yellow().bold().to_string();
-        println!("{} Installing ({} of {}) {}", pfx, n, t, atom);
-        println!("{} Completed  ({} of {}) {}", pfx, n, t, atom);
+    if pkgs.is_empty() {
+        return;
     }
-    let tg = total.to_string().green().bold().to_string();
-    println!("{} Jobs: {} of {} complete", pfx, tg, tg);
+    crate::progress::finish();
     println!();
 }
 
@@ -818,34 +914,12 @@ fn choose_build_isolation(no_sandbox: bool) -> BuildIsolation {
 /// Not the same as already_satisfied (provides-aware).
 fn is_satisfiable_without_aur(name: &str) -> bool {
     let bare = name.split(['<', '>', '=']).next().unwrap_or(name);
-    let synced = Command::new(PACMAN_BIN)
-        .args(["-Si", bare])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if synced {
-        return true;
-    }
-    Command::new(PACMAN_BIN)
-        .args(["-Qi", bare])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    crate::alpm_db::find_sync(bare).is_some() || crate::alpm_db::is_installed(bare)
 }
 
-/// pacman -T: dep already satisfied (exact or provides).
+/// Dep already satisfied by the local db (exact name, provides, version).
 fn already_satisfied(name: &str) -> bool {
-    Command::new(PACMAN_BIN)
-        .args(["-T", name])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    crate::alpm_db::unsatisfied(&[name.to_string()]).is_empty()
 }
 
 /// Recursively build AUR pkg + unsatisfiable .SRCINFO deps.
@@ -1169,6 +1243,18 @@ fn resolve_and_build_aur(
         return None;
     }
 
+    // Stage 1: clone done -> Installing (scan / review / deps follow).
+    if !is_top_level {
+        crate::progress::grow(1);
+    }
+    let stage_n = crate::progress::take();
+    let stage_atom = crate::progress::atom(
+        "aur",
+        pkg,
+        &crate::aur::srcinfo_version(&dir.join(".SRCINFO")).unwrap_or_default(),
+    );
+    crate::progress::line(crate::progress::Stage::Installing, stage_n, &stage_atom);
+
     let fetched = crate::security::scan_aur_pkgbuilds_or_abort(&[pkgbase.clone()]);
     crate::security::verify_local_clone_or_rescan(&pkgbase, &dir, fetched.get(&pkgbase));
 
@@ -1266,6 +1352,8 @@ fn resolve_and_build_aur(
     }
 
     let build_started = std::time::SystemTime::now();
+    // Stage 2: deps are in, makepkg starts.
+    crate::progress::line(crate::progress::Stage::Compiling, stage_n, &stage_atom);
     let result = match isolation {
         BuildIsolation::Bwrap => build_with_sandbox(
             &dir,
@@ -1295,6 +1383,7 @@ fn resolve_and_build_aur(
     building.remove(&pkgbase);
     if let Some(tars) = &result {
         built.insert(pkgbase.clone(), tars.clone());
+        crate::progress::line(crate::progress::Stage::Completed, stage_n, &stage_atom);
     }
     result
 }
@@ -1377,6 +1466,9 @@ pub(crate) fn aur_install(
     unshare_net_build: bool,
     pkgbuild_view: bool,
 ) -> bool {
+    if !warn_critical_libc(pkgs, "AUR") {
+        return false;
+    }
     if !std::path::Path::new("/usr/bin/git").exists() {
         eprintln!(
             "{} required binary not found: /usr/bin/git",
@@ -1409,24 +1501,6 @@ pub(crate) fn aur_install(
         println!("{}: {} package(s)", "Total".bold(), bare.len());
         println!();
         return true;
-    }
-
-    // Refresh sync DBs before dep resolve.
-    println!(
-        "{} Synchronizing package databases...",
-        ">>>".green().bold()
-    );
-    if !Command::new(SUDO_BIN)
-        .args([PACMAN_BIN, "-Sy"])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-    {
-        eprintln!(
-            "{} failed to synchronize pacman databases",
-            ">>> Error:".red().bold()
-        );
-        return false;
     }
 
     // Pre-scan requested names; per-pkgbase scan still runs later.
@@ -1466,22 +1540,8 @@ pub(crate) fn aur_install(
     let mut built = HashMap::new();
     let mut all_ok = true;
 
+    crate::progress::reserve(bare.len());
     for (i, pkg) in bare.iter().enumerate() {
-        println!(
-            "{} Emerging ({} of {}) {} (AUR)",
-            ">>>".green().bold(),
-            (i + 1).to_string().yellow().bold(),
-            bare.len().to_string().yellow().bold(),
-            pkg.green().bold()
-        );
-        if !crate::runtime::show_build_output() {
-            println!(
-                "{} (build output hidden; pass {} or {} to watch)",
-                ">>>".dimmed(),
-                "--debug".cyan(),
-                "AE_DEBUG=1".cyan()
-            );
-        }
         let timer = crate::logbook::Timer::start();
         let result = resolve_and_build_aur(
             pkg,
@@ -1751,20 +1811,12 @@ pub(crate) fn check_devel_all() -> bool {
     true
 }
 
-pub(crate) fn aur_upgrade_all(
-    pretend: bool,
-    ask: bool,
-    skippgp: bool,
-    no_sandbox: bool,
-    skip_srcinfo_regen: bool,
-    unshare_net_build: bool,
-    devel: bool,
-) -> bool {
+pub(crate) fn aur_upgrade_plan(devel: bool) -> Vec<String> {
     let installed: Vec<(String, String)> = crate::alpm_db::foreign_packages();
 
     if installed.is_empty() {
         println!(">>> No foreign (AUR/local) packages installed - nothing to upgrade.");
-        return true;
+        return Vec::new();
     }
 
     let names: Vec<String> = installed.iter().map(|(n, _)| n.clone()).collect();
@@ -1850,7 +1902,7 @@ pub(crate) fn aur_upgrade_all(
 
     if to_upgrade.is_empty() {
         println!(">>> No AUR packages out of date.");
-        return true;
+        return Vec::new();
     }
 
     println!();
@@ -1872,13 +1924,23 @@ pub(crate) fn aur_upgrade_all(
     );
     println!();
 
-    if pretend {
+    to_upgrade.into_iter().map(|(n, _, _)| n).collect()
+}
+
+/// Full-upgrade AUR half: build the names from `aur_upgrade_plan`.
+pub(crate) fn aur_upgrade_names(
+    names: &[String],
+    ask: bool,
+    skippgp: bool,
+    no_sandbox: bool,
+    skip_srcinfo_regen: bool,
+    unshare_net_build: bool,
+) -> bool {
+    if names.is_empty() {
         return true;
     }
-
-    let upgrade_names: Vec<String> = to_upgrade.iter().map(|(n, _, _)| n.clone()).collect();
     aur_install(
-        &upgrade_names,
+        names,
         false,
         ask,
         false,
@@ -2027,21 +2089,21 @@ fn build_with_sandbox(
     match repo_deps {
         Some(deps) if !deps.is_empty() => {
             println!(
-                "{} Installing {} declared dependency(ies) via pacman...",
+                "{} Installing {} declared dependency(ies) via libalpm...",
                 ">>>".green().bold(),
                 deps.len()
             );
-            let mut args: Vec<&str> = vec![PACMAN_BIN, "-S", "--needed", "--asdeps"];
-            if !ask {
-                args.push("--noconfirm");
-            }
-            let dep_refs: Vec<&str> = deps.iter().map(String::as_str).collect();
-            let ok = Command::new(SUDO_BIN)
-                .args(&args)
-                .args(&dep_refs)
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
+            let mut dep_names: Vec<String> =
+                deps.iter().map(|d| strip_version_operator(d)).collect();
+            dep_names.sort();
+            dep_names.dedup();
+            let ok = match crate::alpm_install_quiet(&dep_names, true, true) {
+                Ok(()) => true,
+                Err(e) => {
+                    eprintln!("{} {}", ">>> Error:".red().bold(), e);
+                    false
+                }
+            };
             if !ok {
                 eprintln!(
                     "{} failed to install dependencies for '{}'",
@@ -2085,16 +2147,20 @@ fn build_with_sandbox(
     let build_cfg = build_config(build_dir);
     let conf_override = makepkg_conf_override(build_dir, &build_cfg);
     if let Some(path) = &conf_override {
-        println!(
-            "{} applying build flags from {}",
-            ">>>".green().bold(),
-            build_cfg
-                .files
-                .iter()
-                .map(|f| f.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+        // Same for every package: show once per run.
+        if crate::progress::once("build-flags") {
+            crate::progress::status_break();
+            println!(
+                "{} applying build flags from {}",
+                ">>>".green().bold(),
+                build_cfg
+                    .files
+                    .iter()
+                    .map(|f| f.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
         makepkg_args.push("--config");
         makepkg_args.push(path.as_str());
     }
@@ -2123,13 +2189,6 @@ fn build_with_sandbox(
             ">>>".green().bold(),
             user_configured.join(", "),
             if user_configured.len() == 1 { "it" } else { "them" }
-        );
-    }
-    if let Some(cache) = &default_source_cache {
-        println!(
-            "{} caching sources under {} -- VCS sources (-git/-hg/-svn) fetch incrementally on rebuild instead of re-cloning; pass SRCDEST in makepkg.conf to change this.",
-            ">>>".green().bold(),
-            cache.display()
         );
     }
 
@@ -2277,22 +2336,40 @@ fn build_with_sandbox(
         );
         return false;
     }
-    // package() output is untrusted: audit before the root install.
+    // Pin before audit so the helper installs only the audited bytes.
+    let pinned = match crate::rootops::pin(&pkg_files) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!(
+                "{} cannot read the built package(s): {}",
+                ">>> Error:".red().bold(),
+                e
+            );
+            return false;
+        }
+    };
     if !crate::security::audit_built_packages(&pkg_files, ask) {
         return false;
     }
-    // Plan confirmation already happened (or --ask was off). Never re-prompt pacman.
-    let mut args: Vec<&str> = vec![PACMAN_BIN, "-U", "--noconfirm"];
-    if oneshot {
-        args.push("--asdeps");
+    if !crate::rootops::unchanged(&pinned) {
+        eprintln!(
+            "{} a built package changed while it was being audited - not installing.",
+            ">>> Error:".red().bold()
+        );
+        return false;
     }
-    let pkg_refs: Vec<&str> = pkg_files.iter().map(String::as_str).collect();
-    Command::new(SUDO_BIN)
-        .args(&args)
-        .args(&pkg_refs)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    // -U through the root helper (libalpm), not sudo pacman.
+    let opts = crate::helper::validate::FileOpts {
+        needed: false,
+        asdeps: oneshot,
+    };
+    match crate::rootops::install_files(&pinned, opts) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("{} {}", ">>> Error:".red().bold(), e);
+            false
+        }
+    }
 }
 
 /// Every `*.pkg.tar.*` file this build actually produced.
@@ -2434,6 +2511,9 @@ pub(crate) fn abs_install(
     unshare_net_build: bool,
     pkgbuild_view: bool,
 ) -> bool {
+    if !warn_critical_libc(pkgs, "ABS") {
+        return false;
+    }
     for bin in &[PKGCTL_BIN, MAKEPKG_BIN] {
         if !std::path::Path::new(bin).exists() {
             eprintln!(">>> Fatal: required binary not found: {}", bin);
@@ -2491,16 +2571,9 @@ pub(crate) fn abs_install(
             .bold()
     );
     println!();
-    println!("Calculating dependencies... done!");
+    crate::candy::calculating_deps_done();
     println!();
     for p in &pkg_infos {
-        if p.status == "D" {
-            println!(
-                "{} {}: downgrading package!",
-                " *".yellow().bold(),
-                p.name.bold()
-            );
-        }
         let atom = format!("{} (ABS)", format_atom(p));
         println!(
             "[{}  {:<4} ] {}",
@@ -2514,6 +2587,13 @@ pub(crate) fn abs_install(
     println!();
 
     if pretend {
+        return true;
+    }
+
+    // --ask: same one-shot plan prompt as the AUR/repo paths in main.
+    // (main passes the real `cli.ask` for direct abs/ installs; upgrade
+    // already confirmed before calling us with ask=false.)
+    if !confirm_merge(ask) {
         return true;
     }
 
@@ -2538,16 +2618,12 @@ pub(crate) fn abs_install(
     }
     let mut all_ok = true;
 
+    crate::progress::reserve(pkg_infos.len());
     for (i, info) in pkg_infos.iter().enumerate() {
-        let pfx = ">>>".green().bold();
-        println!(
-            "{} Emerging ({} of {}) {} (ABS)",
-            pfx,
-            (i + 1).to_string().yellow().bold(),
-            pkg_infos.len().to_string().yellow().bold(),
-            format_atom(info).green().bold()
-        );
-        println!();
+        // Stage 1: clone + review.
+        let stage_n = crate::progress::take();
+        let stage_atom = format_atom(info);
+        crate::progress::line(crate::progress::Stage::Installing, stage_n, &stage_atom);
 
         let pkg_dir = build_base.join(&info.name);
 
@@ -2562,17 +2638,17 @@ pub(crate) fn abs_install(
         }
         let _ = std::fs::create_dir_all(&build_base);
 
-        println!(
-            "{} Fetching {} from ABS via pkgctl...",
-            ">>>".green().bold(),
-            info.name.green().bold()
-        );
-        let checkout_ok = Command::new(PKGCTL_BIN)
+        let mut clone = Command::new(PKGCTL_BIN);
+        clone
             .args(["repo", "clone", "--protocol=https", &info.name])
-            .current_dir(&build_base)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
+            .current_dir(&build_base);
+        if !crate::runtime::get().debug {
+            // Git progress is noise unless --debug / AE_DEBUG=1.
+            clone
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+        }
+        let checkout_ok = clone.status().map(|s| s.success()).unwrap_or(false);
 
         if !checkout_ok {
             eprintln!(
@@ -2628,6 +2704,8 @@ pub(crate) fn abs_install(
         }
 
         let timer = crate::logbook::Timer::start();
+        // Stage 2: makepkg.
+        crate::progress::line(crate::progress::Stage::Compiling, stage_n, &stage_atom);
         let build_ok = match isolation {
             BuildIsolation::Bwrap => build_with_sandbox(
                 &build_dir,
@@ -2643,6 +2721,7 @@ pub(crate) fn abs_install(
 
         if build_ok {
             crate::logbook::log_merge_one("abs", &format_atom(info), timer.elapsed());
+            crate::progress::line(crate::progress::Stage::Completed, stage_n, &stage_atom);
         } else {
             eprintln!(
                 "{} makepkg failed for '{}'",
@@ -2753,22 +2832,15 @@ pub(crate) fn pkgbuild_local_install(
         ensure_pgp_keys(&pkgbuild_path, false);
     }
 
-    let pfx = ">>>".green().bold();
-    println!(
-        "{} Emerging ({} of {}) {} (local)",
-        pfx,
-        "1".yellow().bold(),
-        "1".yellow().bold(),
-        label.green().bold()
+    crate::progress::reserve(1);
+    let stage_n = crate::progress::take();
+    let stage_atom = crate::progress::atom(
+        "local",
+        &label,
+        &crate::aur::srcinfo_version(&path.join(".SRCINFO")).unwrap_or_default(),
     );
-    if !crate::runtime::show_build_output() {
-        println!(
-            "{} (build output hidden; pass {} or {} to watch)",
-            ">>>".dimmed(),
-            "--debug".cyan(),
-            "AE_DEBUG=1".cyan()
-        );
-    }
+    crate::progress::line(crate::progress::Stage::Installing, stage_n, &stage_atom);
+    crate::progress::line(crate::progress::Stage::Compiling, stage_n, &stage_atom);
 
     let isolation = choose_build_isolation(no_sandbox);
     let build_ok = match isolation {
@@ -2778,26 +2850,7 @@ pub(crate) fn pkgbuild_local_install(
         BuildIsolation::None => legacy_makepkg_si(path, ask, oneshot, skippgp),
     };
     if build_ok {
-        println!(
-            "{} Installing ({} of {}) {}",
-            pfx,
-            "1".yellow().bold(),
-            "1".yellow().bold(),
-            label.green().bold()
-        );
-        println!(
-            "{} Completed  ({} of {}) {}",
-            pfx,
-            "1".yellow().bold(),
-            "1".yellow().bold(),
-            label.green().bold()
-        );
-        println!(
-            "{} Jobs: {} of {} complete",
-            pfx,
-            "1".green().bold(),
-            "1".green().bold()
-        );
+        crate::progress::line(crate::progress::Stage::Completed, stage_n, &stage_atom);
     }
     if !build_ok {
         eprintln!(
@@ -2844,29 +2897,14 @@ pub(crate) fn portageq_shim(args: &[String]) {
                 .or_else(|| args.get(2))
                 .map(String::as_str)
                 .unwrap_or("");
-            if let Ok(out) = Command::new(PACMAN_BIN)
-                .args(["-Q", pkg])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .output()
-            {
-                let s = String::from_utf8_lossy(&out.stdout);
-                for line in s.lines() {
-                    let mut p = line.splitn(2, ' ');
-                    if let (Some(n), Some(v)) = (p.next(), p.next()) {
-                        println!("{}-{}", n, v);
-                    }
-                }
+            if let Some(ver) = crate::alpm_db::installed_version(pkg) {
+                let bare = pkg.split('/').last().unwrap_or(pkg);
+                println!("{}-{}", bare, ver);
             }
         }
         "list_repo_pkgs" => {
-            if let Ok(out) = Command::new(PACMAN_BIN)
-                .args(["-Ssq"])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .output()
-            {
-                print!("{}", String::from_utf8_lossy(&out.stdout));
+            for name in crate::alpm_db::sync_pkg_names() {
+                println!("{}", name);
             }
         }
         // Unknown command - exit silently so fish doesn't crash
@@ -3144,14 +3182,12 @@ pub(crate) fn world_set_stats() -> Option<(usize, u64)> {
 
 /// emerge --info: system/build summary (Gentoo-style).
 pub(crate) fn print_system_info() {
-    let pacman_ver = cmd_stdout(PACMAN_BIN, &["--version"])
-        .and_then(|s| {
-            s.lines().find_map(|l| {
-                let lower = l.to_lowercase();
-                lower.find("pacman").map(|idx| l[idx..].trim().to_string())
-            })
-        })
-        .unwrap_or_else(|| "unknown".to_string());
+    // Crate (build-time) + libalpm (runtime): a mismatch explains breakage.
+    let pacman_ver = format!(
+        "alpm crate v{} - libalpm v{}",
+        env!("AE_ALPM_CRATE_VERSION"),
+        alpm::version()
+    );
     let kernel = cmd_stdout(UNAME_BIN, &["-r"]).unwrap_or_else(|| "unknown".to_string());
     let arch = cmd_stdout(UNAME_BIN, &["-m"]).unwrap_or_else(|| "unknown".to_string());
     let uname_full = cmd_stdout(UNAME_BIN, &["-srvm"]).unwrap_or_else(|| "unknown".to_string());
@@ -3308,20 +3344,7 @@ pub(crate) fn print_system_info() {
     }
 }
 
-// @preserved-rebuild: pacman -Qi deps → pacman -T → offer reinstall.
-
-/// pacman -Qi (all installed), LC_ALL=C.
-pub(crate) fn pacman_qi_all() -> Option<String> {
-    let out = Command::new(PACMAN_BIN)
-        .arg("-Qi")
-        .env("LC_ALL", "C")
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&out.stdout).to_string())
-}
+// @preserved-rebuild: installed deps → unsatisfied check → offer reinstall.
 
 /// "glibc>=2.38" → "glibc".
 pub(crate) fn strip_version_operator(atom: &str) -> String {
@@ -3331,46 +3354,7 @@ pub(crate) fn strip_version_operator(atom: &str) -> String {
     }
 }
 
-/// All "Depends On" from pacman -Qi (handles continuation lines).
-pub(crate) fn parse_depends_on_all(qi_text: &str) -> HashSet<String> {
-    let mut deps = HashSet::new();
-
-    for block in qi_text.split("\n\n") {
-        let mut capturing = false;
-        for line in block.lines() {
-            let leading_spaces = line.len() - line.trim_start().len();
-            let looks_like_new_field = leading_spaces == 0 && line.contains(" : ");
-
-            if looks_like_new_field {
-                capturing = false;
-                if let Some(rest) = line.strip_prefix("Depends On") {
-                    if let Some(colon_idx) = rest.find(':') {
-                        let value = rest[colon_idx + 1..].trim();
-                        if value != "None" && !value.is_empty() {
-                            for tok in value.split_whitespace() {
-                                deps.insert(strip_version_operator(tok));
-                            }
-                        }
-                        capturing = true;
-                    }
-                }
-                continue;
-            }
-
-            if capturing && leading_spaces > 0 {
-                for tok in line.trim().split_whitespace() {
-                    deps.insert(strip_version_operator(tok));
-                }
-            } else {
-                capturing = false;
-            }
-        }
-    }
-
-    deps
-}
-
-/// pacman -T: which atoms are currently unsatisfied.
+/// Which atoms are currently unsatisfied (libalpm, like `pacman -T`).
 pub(crate) fn missing_via_pacman_t(deps: &[String]) -> Vec<String> {
     if deps.is_empty() {
         return Vec::new();
@@ -3378,22 +3362,14 @@ pub(crate) fn missing_via_pacman_t(deps: &[String]) -> Vec<String> {
     crate::alpm_db::unsatisfied(deps)
 }
 
-/// @preserved-rebuild: find unsatisfied deps, offer pacman -S --asdeps.
-pub(crate) fn preserved_rebuild(pretend: bool, ask: bool) {
+/// @preserved-rebuild: find unsatisfied deps, offer to install them as deps.
+pub(crate) fn preserved_rebuild(pretend: bool, _ask: bool) {
     println!(
         "{} Checking installed packages for missing dependencies...",
         ">>>".green().bold()
     );
 
-    let qi = match pacman_qi_all() {
-        Some(s) => s,
-        None => {
-            eprintln!(">>> Error: failed to query installed packages (pacman -Qi).");
-            std::process::exit(1);
-        }
-    };
-
-    let all_deps = parse_depends_on_all(&qi);
+    let all_deps = crate::alpm_db::all_depends();
     if all_deps.is_empty() {
         println!(">>> No dependency information found.");
         return;
@@ -3445,14 +3421,21 @@ pub(crate) fn preserved_rebuild(pretend: bool, ask: bool) {
         return;
     }
 
-    // These are all official-repo dependencies (surfaced via `pacman -T`),
-    // so this is a plain pacman install -- no AUR resolution involved.
-    let mut args: Vec<&str> = vec![PACMAN_BIN, "-S", "--asdeps"];
-    if !ask {
-        args.push("--noconfirm");
+    // Missing deps may be provides (sonames, virtual names): map them to
+    // real sync packages first, libalpm installs by package name.
+    let (targets, unresolved) = crate::alpm_db::sync_providers(&missing);
+    if !unresolved.is_empty() {
+        eprintln!(
+            "{} no sync package provides: {}",
+            " *".yellow().bold(),
+            unresolved.join(", ")
+        );
     }
-    if run_cmd(SUDO_BIN, &args, &missing) {
-        mark_asdeps(&missing);
+    if targets.is_empty() {
+        return;
+    }
+    if let Err(e) = crate::alpm_install_quiet(&targets, true, true) {
+        eprintln!("{} {}", ">>> Error:".red().bold(), e);
     }
 }
 #[cfg(test)]
@@ -3562,58 +3545,5 @@ mod plan_tree_tests {
         let out = group_by_parent(vec![&app], vec![&a, &b], &deps, usize::MAX);
         assert_eq!(out.len(), 3);
         assert_eq!(out[0], (&app, 0));
-    }
-
-    #[test]
-    fn depends_on_map_parses_multi_block_and_continuation_lines() {
-        let text = "\
-Repository      : extra
-Name             : openconnect
-Version          : 9.12-1
-Depends On       : gnutls  libxml2  vpnc-scripts
-
-Repository      : extra
-Name             : vim
-Version          : 9.1-1
-Depends On       : None
-";
-        // Exercise the same block-splitting/parsing this function uses,
-        // without shelling out to pacman.
-        let mut map = HashMap::new();
-        for block in text.split("\n\n") {
-            let mut name = None;
-            let mut deps = HashSet::new();
-            let mut capturing = false;
-            for line in block.lines() {
-                if let Some((label, value)) = line.split_once(" : ") {
-                    let label = label.trim();
-                    capturing = label == "Depends On";
-                    if label == "Name" {
-                        name = Some(value.trim().to_string());
-                    } else if capturing {
-                        let value = value.trim();
-                        if value != "None" && !value.is_empty() {
-                            deps.extend(value.split_whitespace().map(strip_version_operator));
-                        }
-                    }
-                    continue;
-                }
-                if capturing {
-                    deps.extend(line.trim().split_whitespace().map(strip_version_operator));
-                }
-            }
-            if let Some(n) = name {
-                map.insert(n, deps);
-            }
-        }
-        assert_eq!(
-            map.get("openconnect").unwrap(),
-            &HashSet::from([
-                "gnutls".to_string(),
-                "libxml2".to_string(),
-                "vpnc-scripts".to_string()
-            ])
-        );
-        assert_eq!(map.get("vim").unwrap(), &HashSet::new());
     }
 }
