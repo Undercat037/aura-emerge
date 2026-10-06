@@ -49,7 +49,7 @@ emerge --gen-manpage | sudo tee /usr/share/man/man1/emerge.1 >/dev/null
 ```
 </details>
 
-**Зависимости:** `git`, `bubblewrap` (песочница сборки для AUR/ABS)
+**Зависимости:** `git`, `bubblewrap` (песочница сборки для AUR/ABS)   
 **Опционально:** `devtools` (поддержка `--abs`), `gnupg` (`--autopgp`, автоимпорт PGP-ключей)
 
 ## Использование
