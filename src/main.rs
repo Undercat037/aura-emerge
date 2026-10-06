@@ -198,8 +198,8 @@ FILES
     /etc/portage/world                      Explicitly-installed packages
     /etc/portage/sets/*                     Custom package sets (<name> or <name>.set)
     /etc/portage/make.conf                  Default flags (EMERGE_DEFAULT_OPTS) and
-                                            build-env overrides (CFLAGS, MAKEFLAGS, ...)
-    ~/.config/emerge/make.conf              Same, per-user; last file to set a key wins
+                                            build-env overrides (CFLAGS, MAKEFLAGS, ...);
+                                            system path only (no per-user file)
     /etc/portage/package.mask               Never-install list (file, or a directory of files)
     /etc/portage/package.env                Per-package build-env overrides: `atom env...`
                                             (file, or a directory of files)
@@ -318,8 +318,8 @@ struct Cli {
     check_devel: bool,
 
     /// Official repos only (never AUR)
-    #[arg(long = "only-repos")]
-    only_repos: bool,
+    #[arg(long = "repos")]
+    repos: bool,
 
     /// Build from ABS source
     #[arg(long = "abs")]
@@ -419,7 +419,7 @@ struct Cli {
     regen_world_from_explicit: bool,
 
     /// Search package descriptions
-    #[arg(long = "searchdesc")]
+    #[arg(short = 'S', long = "searchdesc")]
     searchdesc: bool,
 
     /// With -s: list the same name from every repo (like `pacman -Ss`)
@@ -508,7 +508,14 @@ struct Cli {
     changed_use: bool,
     #[arg(long = "backtrack")]
     backtrack: Option<u32>,
-    #[arg(long = "jobs")]
+    /// Max parallel official-repo installs (default 1)
+    #[arg(long = "jobsr", value_name = "N")]
+    jobsr: Option<u32>,
+    /// Max parallel AUR/ABS builds (default 1)
+    #[arg(long = "jobsa", value_name = "N")]
+    jobsa: Option<u32>,
+    /// Alias for --jobsr (Portage-style)
+    #[arg(long = "jobs", value_name = "N")]
     jobs: Option<u32>,
     #[arg(long = "load-average")]
     load_average: Option<f32>,
@@ -595,7 +602,7 @@ fn print_help() {
     println!("Options: -[1aCcDehNnpstuVv]");
     println!("          [ --abs                        ] [ --aur        ]");
     println!("          [ --skippgp                    ] [ --autopgp    ]");
-    println!("          [ --only-repos                                  ]");
+    println!("          [ --repos                                  ]");
     println!("          [ --edit                       ] [ --skip-srcinfo-regen ]");
     println!("          [ --pkgbuild-view              ] [ --emptytree  ]");
     println!("          [ --newuse                     ] [ --noreplace  ]");
@@ -841,6 +848,7 @@ pub(crate) fn sync_dbs(force: bool) -> bool {
     match res {
         Ok(()) => {
             SYNCED.store(true, Ordering::Relaxed);
+            crate::candy::mark_start();
             true
         }
         Err(e) => {
@@ -913,38 +921,92 @@ pub(crate) fn alpm_install_quiet(
     Ok(())
 }
 
-/// Official-repo install through libalpm, one package at a time with live
-/// Installing / Completed lines. `asdeps` = `--oneshot`.
+/// Official-repo install through libalpm with live Installing / Completed
+/// lines. Batches of up to `--jobsr` packages share one alpm transaction
+/// (shown as concurrent Installing, then Completed for each).
+/// `asdeps` = `--oneshot`. Targets may be bare or `repo/name`.
 pub(crate) fn repo_install_landed(names: &[String], asdeps: bool) -> (bool, Vec<String>) {
     let needed = runtime::get().noreplace;
+    let jobsr = runtime::get().jobsr.max(1) as usize;
     let total = names.len();
     if total == 0 {
         return (true, Vec::new());
     }
     progress::reserve(total);
-    // repo/name-version from the sync dbs (display only).
     let syncd = alpm_db::find_sync_many(names);
     let mut landed = Vec::new();
-    // One package at a time so Installing / Completed are real,
-    // not a post-hoc dump after a silent batch transaction.
-    for name in names.iter() {
-        let bare = name.split('/').last().unwrap_or(name);
-        let atom = match syncd.get(bare) {
-            Some(p) => progress::atom(&p.repo, &p.name, &p.version),
-            None => bare.to_string(),
-        };
-        let n = progress::take();
-        progress::line(progress::Stage::Installing, n, &atom);
-        match alpm_install_quiet(std::slice::from_ref(name), needed, asdeps) {
-            Ok(()) => {
-                landed.push(name.clone());
-                progress::line(progress::Stage::Completed, n, &atom);
+
+    // Pre-resolve display atoms + helper targets.
+    let items: Vec<(String, String, String)> = names
+        .iter()
+        .map(|name| {
+            let bare = name.split('/').last().unwrap_or(name);
+            match syncd.get(bare) {
+                Some(p) => {
+                    let atom = progress::atom(&p.repo, &p.name, &p.version);
+                    let target = if name.contains('/') {
+                        name.clone()
+                    } else {
+                        format!("{}/{}", p.repo, p.name)
+                    };
+                    (name.clone(), atom, target)
+                }
+                None => (name.clone(), bare.to_string(), name.clone()),
             }
-            Err(e) => {
-                eprintln!("{} {}: {}", ">>> Error:".red().bold(), name, e);
-                runtime::record_failure(name, "alpm install failed");
-                if !runtime::keep_going() {
-                    break;
+        })
+        .collect();
+
+    for chunk in items.chunks(jobsr) {
+        // Mark the whole wave as Installing first.
+        let mut wave: Vec<(usize, String, String, String)> = Vec::with_capacity(chunk.len());
+        for (name, atom, target) in chunk {
+            let n = progress::take();
+            progress::line(progress::Stage::Installing, n, atom);
+            wave.push((n, name.clone(), atom.clone(), target.clone()));
+        }
+        let targets: Vec<String> = wave.iter().map(|(_, _, _, t)| t.clone()).collect();
+        match alpm_install_quiet(&targets, needed, asdeps) {
+            Ok(()) => {
+                for (n, name, atom, _) in &wave {
+                    landed.push(name.clone());
+                    progress::line(progress::Stage::Completed, *n, atom);
+                }
+            }
+            Err(batch_err) => {
+                // Batch failed: fall back to one-by-one so keep-going
+                // can still land the rest of the wave.
+                if jobsr > 1 {
+                    eprintln!(
+                        "{} batch of {} failed ({}); retrying one at a time",
+                        ">>>".yellow().bold(),
+                        wave.len(),
+                        batch_err
+                    );
+                }
+                // Undo the concurrent RUNNING slots opened above; the
+                // one-by-one path will re-open them.
+                for (n, name, atom, target) in &wave {
+                    // Mark failed-looking complete slot so RUNNING drops;
+                    // real install below will emit a fresh Installing if needed.
+                    // Actually RUNNING was +1 per Installing; we need Completed
+                    // or a manual decrement. Emit Completed only on success.
+                    // For retry, decrement by treating as aborted install:
+                    let _ = n;
+                    match alpm_install_quiet(std::slice::from_ref(target), needed, asdeps) {
+                        Ok(()) => {
+                            landed.push(name.clone());
+                            progress::line(progress::Stage::Completed, *n, atom);
+                        }
+                        Err(e) => {
+                            // Close the running slot without a Completed line.
+                            progress::abort_one();
+                            eprintln!("{} {}: {}", ">>> Error:".red().bold(), name, e);
+                            runtime::record_failure(name, "alpm install failed");
+                            if !runtime::keep_going() {
+                                return (landed.len() == total, landed);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -983,7 +1045,7 @@ pub(crate) fn repo_install(names: &[String]) -> bool {
 /// `emerge -u abs/nano neovim`: upgrade only the named packages.
 /// Official → libalpm install (newer sync version); AUR/ABS → rebuild.
 fn upgrade_selected(cli: &Cli, targets: &[String]) -> anyhow::Result<()> {
-    crate::candy::calculating_deps_done();
+    crate::candy::calculating_deps_line();
     println!();
 
     let mut official: Vec<String> = Vec::new();
@@ -992,16 +1054,22 @@ fn upgrade_selected(cli: &Cli, targets: &[String]) -> anyhow::Result<()> {
 
     for raw in targets {
         let bare = raw.split('/').last().unwrap_or(raw).to_string();
-        if raw.starts_with("abs/") || cli.abs {
+        if raw.starts_with("abs/") || (cli.abs && !raw.contains('/')) {
             abs.push(bare);
             continue;
         }
-        if raw.starts_with("aur/") || cli.aur {
+        if raw.starts_with("aur/") || (cli.aur && !raw.contains('/')) {
             aur.push(bare);
             continue;
         }
-        if crate::alpm_db::find_sync_many(std::slice::from_ref(&bare)).contains_key(&bare) {
-            official.push(bare);
+        // Keep repo/name so the preferred db is used on install.
+        let lookup = if raw.contains('/') && !raw.starts_with("abs/") && !raw.starts_with("aur/") {
+            raw.clone()
+        } else {
+            bare.clone()
+        };
+        if crate::alpm_db::find_sync_many(std::slice::from_ref(&lookup)).contains_key(&bare) {
+            official.push(lookup);
         } else {
             aur.push(bare);
         }
@@ -1120,6 +1188,7 @@ fn upgrade_selected(cli: &Cli, targets: &[String]) -> anyhow::Result<()> {
             cli.skip_srcinfo_regen,
             cli.unshare_net_build,
             cli.pkgbuild_view,
+            true, // plan already shown in upgrade_selected
         );
         if !ok && !cli.keep_going {
             return Ok(());
@@ -1255,6 +1324,7 @@ fn action_from_short_char(c: char) -> Option<ActionKind> {
         'h' => Some(ActionKind::Help),
         'V' => Some(ActionKind::Version),
         's' => Some(ActionKind::Search),
+        'S' => Some(ActionKind::Search),
         'u' => Some(ActionKind::Update),
         'c' => Some(ActionKind::Depclean),
         'C' => Some(ActionKind::Unmerge),
@@ -1423,8 +1493,8 @@ fn build_resume_args(cli: &Cli, target_pkgs: &[String], has_world: bool) -> Vec<
     if cli.aur {
         args.push("--aur".to_string());
     }
-    if cli.only_repos {
-        args.push("--only-repos".to_string());
+    if cli.repos {
+        args.push("--repos".to_string());
     }
     if cli.abs {
         args.push("--abs".to_string());
@@ -1622,6 +1692,37 @@ fn print_sync_search_results(results: &[crate::alpm_db::AlpmPkg]) {
     }
 }
 
+fn print_abs_search_results(results: &[crate::alpm_db::AlpmPkg]) {
+    if results.is_empty() {
+        println!(">>> No ABS results found.");
+        return;
+    }
+    for p in results {
+        let mut tags = String::new();
+        if p.installed {
+            tags.push_str(&format!(" {}", "[installed]".cyan()));
+        }
+        if crate::mask::find(&p.name, Some("abs")).is_some()
+            || crate::mask::find(&p.name, None).is_some()
+        {
+            tags.push_str(&format!(" {}", "[masked]".red().bold()));
+        }
+        println!(
+            "{}/{} {}{}",
+            "abs".yellow().bold(),
+            p.name.bold(),
+            p.version.green(),
+            tags
+        );
+        if !p.description.is_empty() {
+            println!("    {}", p.description);
+        }
+        if p.base != p.name {
+            println!("    pkgbase: {}", p.base);
+        }
+    }
+}
+
 fn print_sync_info(pkg: &crate::alpm_db::AlpmPkg) {
     println!("{:<15}: {}", "Repository", pkg.repo.magenta().bold());
     println!("{:<15}: {}", "Name", pkg.name.bold());
@@ -1767,6 +1868,7 @@ fn reset_sigpipe() {}
 
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("--ae-service") {
+        // Root helper only. Real/effective uid checked inside guard::harden().
         std::process::exit(helper::run());
     }
     if std::env::args().nth(1).as_deref() == Some("--ae-ping") {
@@ -1778,6 +1880,18 @@ fn main() {
             }
         }
         return;
+    }
+    // Frontend must not run as real root (even after `sudo emerge ...`).
+    // Privilege stays inside `--ae-service` via the helper protocol.
+    // SAFETY: geteuid is a pure getter.
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!(
+            "{} refusing to run as root. Only `{}` may be root.",
+            "emerge:".red().bold(),
+            "--ae-service".cyan()
+        );
+        eprintln!("  Run as your normal user; sudo is prompted when the root helper is needed.");
+        std::process::exit(1);
     }
     let result = run();
 
@@ -1813,15 +1927,16 @@ fn run() -> anyhow::Result<()> {
     // ahead of what was typed, so a typed flag always wins; conflicts
     // (--aur/--abs, --skippgp/--autopgp, ...) are rejected here - see
     // config::CONFLICTS.
+    crate::candy::mark_start();
     let cfg = config::load();
     let effective_argv = config::build_argv(&argv, &cfg);
     let cli = Cli::parse_from(&effective_argv);
     enforce_action_priority(&cli, &effective_argv);
 
     // Everything read from deep inside the build path lands here once.
-    let candy_on = cfg.has_feature("candy") && !cli.nospinner && !cli.quiet;
-    // Live build output: --debug, AE_DEBUG=1, or Gentoo's --quiet-build=n.
-    // --quiet-build=y (or omitted) keeps the default quiet path.
+    let _ = cli.nospinner; // accepted for Portage compat, no-op
+                           // Live build output: --debug, AE_DEBUG=1, or Gentoo's --quiet-build=n.
+                           // --quiet-build=y (or omitted) keeps the default quiet path.
     let quiet_build_off = matches!(
         cli.quiet_build.as_deref().map(|s| s.trim()),
         Some("n" | "N" | "false" | "False" | "0" | "no" | "No")
@@ -1845,14 +1960,18 @@ fn run() -> anyhow::Result<()> {
             .join(" ");
         logbook::session_open(std::path::Path::new(path), &cmd_line);
     }
+    // --jobsr wins over legacy --jobs; both default to 1.
+    let jobsr = cli.jobsr.or(cli.jobs).unwrap_or(1).max(1);
+    let jobsa = cli.jobsa.unwrap_or(1).max(1);
     runtime::init(runtime::Runtime {
         config: cfg,
         exclude: collect_excludes(&cli.exclude),
         keep_going: cli.keep_going,
-        candy: candy_on,
         debug: debug_on,
         noreplace: cli.noreplace,
         with_optdeps: cli.with_optdeps,
+        jobsr,
+        jobsa,
     });
 
     if cli.moo {
@@ -2042,20 +2161,18 @@ fn run() -> anyhow::Result<()> {
         };
     }
 
-    // --aur/--abs/--only-repos and the other mutually exclusive pairs are
+    // --aur/--abs/--repos and the other mutually exclusive pairs are
     // rejected up in config::build_argv, before clap ever runs, so the
     // same table covers flags typed here and flags coming from
     // EMERGE_DEFAULT_OPTS. Note what is deliberately *not* in that table:
-    // --abs with --only-repos. ABS builds an official-repo package from
+    // --abs with --repos. ABS builds an official-repo package from
     // its own source, so "never the AUR" and "build it from source" are
     // two answers to two different questions and agree with each other.
     //
-    // --abs with a search is likewise no longer an error. ABS has no
-    // index of its own - an ABS package is an official-repo package, by
-    // the same pkgbase - so searching with --abs is a repo search, which
-    // is exactly what --only-repos does. Treating it as one beats
-    // refusing to search at all.
-    let repos_only_search = cli.only_repos || cli.abs;
+    // --abs with a search is likewise not an error. ABS has no index of
+    // its own, so the catalog is the Arch repos in the sync dbs
+    // (core/extra/multilib) - see alpm_db::search_abs.
+    let repos_only_search = cli.repos || cli.abs;
 
     // Detect @world / world in package list
     let has_world = cli.packages.iter().any(|p| p == "@world");
@@ -2104,6 +2221,7 @@ fn run() -> anyhow::Result<()> {
             .cloned()
             .collect::<Vec<_>>(),
     );
+    let from_custom_set = !custom_set_pkgs.is_empty();
     target_pkgs.extend(custom_set_pkgs);
 
     // --batchinstall <FILE>: fold in a one-off package list from an
@@ -2206,6 +2324,12 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // -s doesn't apply to these action sets
+    if (cli.search || cli.searchdesc) && (has_world || has_preserved_rebuild) {
+        eprintln!(">>> Error: @world / @preserved-rebuild can't be searched.");
+        std::process::exit(1);
+    }
+
     // 0. @preserved-rebuild: a standalone action, checked before search/
     //    install so `emerge @preserved-rebuild` (with no other packages)
     //    just runs the check-and-offer-to-fix flow.
@@ -2223,11 +2347,12 @@ fn run() -> anyhow::Result<()> {
 
         // Prefix routing for search terms:
         //   aur/nano              → AUR only, term "nano"
-        //   abs/nano              → repos only (no ABS catalog yet)
+        //   abs/nano              → ABS catalog (core/extra/multilib)
         //   cachyos-core-v3/nano  → repos, prefer that repo, term "nano"
-        //   nano                  → repos then AUR (unless --aur/--abs/--only-repos)
+        //   nano                  → repos then AUR (unless --aur/--abs/--repos)
         let mut force_aur = cli.aur;
-        let mut force_repos = cli.abs || cli.only_repos;
+        let mut force_repos = cli.abs || cli.repos;
+        let mut force_abs = cli.abs;
         let mut preferred_repo: Option<String> = None;
         let search_pkgs: Vec<String> = target_pkgs
             .iter()
@@ -2238,6 +2363,7 @@ fn run() -> anyhow::Result<()> {
                 }
                 if let Some(rest) = p.strip_prefix("abs/") {
                     force_repos = true;
+                    force_abs = true;
                     return rest.to_string();
                 }
                 if let Some((repo, name)) = p.split_once('/') {
@@ -2259,6 +2385,103 @@ fn run() -> anyhow::Result<()> {
         let target_pkgs = search_pkgs;
         let skip_aur = force_repos || repos_only_search;
         let only_aur = force_aur && !force_repos;
+
+        // @set / multi-atom: exact resolve each name (not one fuzzy join).
+        // emerge -s @fonts →
+        //   noto-fonts ... extra
+        //   ttf-comic-sans ... aur
+        //   missing-pkg ... not found
+        let from_set = from_custom_set;
+        let multi_exact = target_pkgs.len() > 1 || from_set;
+        if multi_exact && !cli.searchdesc {
+            // Batch AUR info once for names not in sync dbs.
+            let sync_map = alpm_db::find_sync_many(&target_pkgs);
+            let missing_sync: Vec<String> = target_pkgs
+                .iter()
+                .filter(|n| {
+                    let bare = n.split('/').last().unwrap_or(n);
+                    !sync_map.contains_key(bare)
+                })
+                .map(|n| n.split('/').last().unwrap_or(n).to_string())
+                .collect();
+            let aur_map: HashMap<String, aur::AurPkgInfo> = if only_aur {
+                aur::rpc_info(&target_pkgs)
+                    .into_iter()
+                    .map(|p| (p.name.clone(), p))
+                    .collect()
+            } else if skip_aur || missing_sync.is_empty() {
+                HashMap::new()
+            } else {
+                aur::rpc_info(&missing_sync)
+                    .into_iter()
+                    .map(|p| (p.name.clone(), p))
+                    .collect()
+            };
+
+            let width = target_pkgs
+                .iter()
+                .map(|n| n.split('/').last().unwrap_or(n).len())
+                .max()
+                .unwrap_or(8)
+                .max(8);
+
+            for raw in &target_pkgs {
+                let bare = raw.split('/').last().unwrap_or(raw);
+                if only_aur {
+                    if let Some(p) = aur_map.get(bare) {
+                        println!(
+                            "{:<width$}  {}  {}",
+                            bare,
+                            "aur".cyan(),
+                            p.version.dimmed(),
+                            width = width
+                        );
+                    } else {
+                        println!(
+                            "{:<width$}  {}",
+                            bare,
+                            "not found".red().bold(),
+                            width = width
+                        );
+                    }
+                    continue;
+                }
+                if let Some(p) = sync_map.get(bare) {
+                    println!(
+                        "{:<width$}  {}  {}",
+                        bare,
+                        p.repo.green(),
+                        p.version.dimmed(),
+                        width = width
+                    );
+                } else if !skip_aur {
+                    if let Some(p) = aur_map.get(bare) {
+                        println!(
+                            "{:<width$}  {}  {}",
+                            bare,
+                            "aur".cyan(),
+                            p.version.dimmed(),
+                            width = width
+                        );
+                    } else {
+                        println!(
+                            "{:<width$}  {}",
+                            bare,
+                            "not found".red().bold(),
+                            width = width
+                        );
+                    }
+                } else {
+                    println!(
+                        "{:<width$}  {}",
+                        bare,
+                        "not found".red().bold(),
+                        width = width
+                    );
+                }
+            }
+            return Ok(());
+        }
 
         // Rank: exact name match first, then preferred repo, then the rest.
         let rank_sync = |pkgs: &mut Vec<crate::alpm_db::AlpmPkg>| {
@@ -2285,6 +2508,33 @@ fn run() -> anyhow::Result<()> {
             });
         };
 
+        // Separate ABS source in a general search (shown wherever AUR is).
+        let abs_section = |term: &str| {
+            println!();
+            println!(
+                "{} Searching in {} for '{}'...",
+                ">>>".green().bold(),
+                "ABS".yellow().bold(),
+                term
+            );
+            let mut abs = crate::alpm_db::search_abs(term);
+            rank_sync(&mut abs);
+            print_abs_search_results(&abs);
+        };
+
+        if force_abs {
+            println!(
+                "{} Searching in {} for '{}'...",
+                ">>>".green().bold(),
+                "ABS".yellow().bold(),
+                term
+            );
+            let mut abs = crate::alpm_db::search_abs(&term);
+            rank_sync(&mut abs);
+            print_abs_search_results(&abs);
+            return Ok(());
+        }
+
         if cli.searchdesc {
             if !only_aur {
                 println!(
@@ -2295,6 +2545,9 @@ fn run() -> anyhow::Result<()> {
                 let mut sync = crate::alpm_db::search_sync(&term, true, cli.search_all);
                 rank_sync(&mut sync);
                 print_sync_search_results(&sync);
+            }
+            if !skip_aur {
+                abs_section(&term);
             }
             if !skip_aur {
                 println!();
@@ -2338,6 +2591,9 @@ fn run() -> anyhow::Result<()> {
                     rank_sync(&mut sync);
                     print_sync_search_results(&sync);
                     if !skip_aur {
+                        abs_section(&term);
+                    }
+                    if !skip_aur {
                         println!();
                         println!(
                             "{} Searching in {} for '{}'...",
@@ -2347,7 +2603,7 @@ fn run() -> anyhow::Result<()> {
                         );
                         print_aur_search_results(&aur::rpc_search(&term, false));
                     } else if preferred_repo.is_some() || force_repos {
-                        // repo/name or --abs/--only-repos: stay quiet if empty
+                        // repo/name or --abs/--repos: stay quiet if empty
                     }
                 }
             }
@@ -2364,6 +2620,9 @@ fn run() -> anyhow::Result<()> {
             let mut sync = crate::alpm_db::search_sync(&term, false, cli.search_all);
             rank_sync(&mut sync);
             print_sync_search_results(&sync);
+            if !skip_aur {
+                abs_section(&term);
+            }
             if !skip_aur {
                 println!();
                 println!(
@@ -2900,7 +3159,7 @@ fn run() -> anyhow::Result<()> {
             std::process::exit(1);
         }
 
-        crate::candy::calculating_deps_done();
+        crate::candy::calculating_deps_line();
         println!();
         println!(">>> Upgrading system (official repos)...");
         // --exclude and the mask both become `pacman --ignore`.
@@ -3045,6 +3304,7 @@ fn run() -> anyhow::Result<()> {
                 Err(e) => {
                     progress::status_break();
                     eprintln!("{} {}", ">>> Error:".red().bold(), e);
+                    progress::status_resume();
                     false
                 }
             }
@@ -3090,7 +3350,7 @@ fn run() -> anyhow::Result<()> {
 
     // 4. Depclean: orphans via libalpm, never remove world entries.
     if cli.depclean {
-        crate::candy::calculating_deps_done();
+        crate::candy::calculating_deps_line();
         println!(">>> Checking for orphaned packages...");
 
         {
@@ -3307,25 +3567,40 @@ fn run() -> anyhow::Result<()> {
         // Missing from repos+AUR (report at end; rest still install).
         let mut not_found: Vec<String> = Vec::new();
 
-        // abs/pkg and aur/pkg without --abs/--aur: route by prefix.
-        let force_abs = target_pkgs.iter().any(|p| p.starts_with("abs/"));
-        let force_aur = target_pkgs.iter().any(|p| p.starts_with("aur/"));
-        let target_pkgs: Vec<String> = target_pkgs
-            .iter()
-            .map(|p| {
-                p.strip_prefix("abs/")
-                    .or_else(|| p.strip_prefix("aur/"))
-                    .unwrap_or(p)
-                    .to_string()
-            })
-            .collect();
+        // Partition by source so a mixed batch
+        // (`aur/foo abs/bar repo/baz`) routes each atom correctly.
+        // Global --abs/--aur only claim bare names; an explicit
+        // `repo/name` always stays official, and `abs/`/`aur/` always
+        // win over the flag.
+        let mut abs_pkgs: Vec<String> = Vec::new();
+        let mut aur_pkgs: Vec<String> = Vec::new();
+        let mut rest_pkgs: Vec<String> = Vec::new();
+        for p in &target_pkgs {
+            if let Some(name) = p.strip_prefix("abs/") {
+                abs_pkgs.push(name.to_string());
+            } else if let Some(name) = p.strip_prefix("aur/") {
+                aur_pkgs.push(name.to_string());
+            } else if cli.abs {
+                abs_pkgs.push(p.split('/').last().unwrap_or(p).to_string());
+            } else if cli.aur {
+                // repo/name is official even under --aur
+                if p.contains('/') {
+                    rest_pkgs.push(p.clone());
+                } else {
+                    aur_pkgs.push(p.clone());
+                }
+            } else {
+                rest_pkgs.push(p.clone());
+            }
+        }
 
-        if cli.abs || force_abs {
+        // Pure ABS batch (no AUR/repo atoms): keep the dedicated path.
+        if !abs_pkgs.is_empty() && aur_pkgs.is_empty() && rest_pkgs.is_empty() {
             // abs_install prints its own plan; pass the real --ask so the
             // confirm prompt runs there (AUR/repo paths confirm in main
             // after print_emerge_plan instead).
             success = abs_install(
-                &target_pkgs,
+                &abs_pkgs,
                 cli.pretend,
                 cli.ask,
                 cli.oneshot,
@@ -3336,9 +3611,12 @@ fn run() -> anyhow::Result<()> {
                 cli.skip_srcinfo_regen,
                 cli.unshare_net_build,
                 cli.pkgbuild_view,
+                false, // own plan
             );
-        } else if cli.aur || force_aur {
-            let (pkg_infos, missing_aur) = resolve_aur_split(&target_pkgs);
+            progress::finish();
+        } else if !aur_pkgs.is_empty() && abs_pkgs.is_empty() && rest_pkgs.is_empty() {
+            // Pure AUR batch.
+            let (pkg_infos, missing_aur) = resolve_aur_split(&aur_pkgs);
             not_found = missing_aur;
             if pkg_infos.is_empty() {
                 eprintln!(">>> Error: none of the requested package(s) were found in the AUR:");
@@ -3348,7 +3626,7 @@ fn run() -> anyhow::Result<()> {
                 }
                 std::process::exit(1);
             }
-            print_emerge_plan(&pkg_infos, cli.tree, cli.deep, &target_pkgs);
+            print_emerge_plan(&pkg_infos, cli.tree, cli.deep, &aur_pkgs);
             if cli.pretend {
                 return Ok(());
             }
@@ -3373,7 +3651,273 @@ fn run() -> anyhow::Result<()> {
             if success {
                 installed_infos = pkg_infos;
             }
+            progress::finish();
+        } else if !abs_pkgs.is_empty() {
+            // Mixed abs + aur/repo: one plan, one confirm, shared Jobs counter.
+            let mut target_pkgs = rest_pkgs.clone();
+            target_pkgs.extend(aur_pkgs.iter().cloned());
+
+            let abs_infos: Vec<PkgInfo> = abs_pkgs
+                .iter()
+                .filter_map(|bare| {
+                    let version = packages::abs_get_version(bare);
+                    let status = packages::pkg_status(bare, &version);
+                    Some(PkgInfo {
+                        name: bare.clone(),
+                        version,
+                        repo: "abs".to_string(),
+                        status,
+                    })
+                })
+                .collect();
+
+            let (official_infos, missing) = if target_pkgs.is_empty() {
+                (Vec::new(), Vec::new())
+            } else {
+                probe_official_split(&target_pkgs)
+            };
+            let (aur_infos, missing_aur): (Vec<PkgInfo>, Vec<String>) =
+                if target_pkgs.is_empty() || cli.repos {
+                    not_found = missing.clone();
+                    (Vec::new(), Vec::new())
+                } else {
+                    let (ai, ma) = resolve_aur_split(&missing);
+                    not_found = ma;
+                    (ai, Vec::new())
+                };
+            let _ = missing_aur;
+
+            let mut all_infos = abs_infos.clone();
+            all_infos.extend(official_infos.clone());
+            all_infos.extend(aur_infos.clone());
+
+            if all_infos.is_empty() {
+                eprintln!(">>> Error: none of the requested package(s) could be resolved:");
+                for m in &not_found {
+                    eprintln!("    {}", m);
+                    packages::print_similar_names(m);
+                }
+                for a in &abs_pkgs {
+                    if !abs_infos.iter().any(|p| p.name == *a) {
+                        eprintln!("    abs/{}", a);
+                    }
+                }
+                std::process::exit(1);
+            }
+
+            // Include abs/ names in `requested` so --tree keeps them at
+            // depth 0 (otherwise nano looks like a dep of something else).
+            let mut plan_requested = target_pkgs.clone();
+            for a in &abs_pkgs {
+                plan_requested.push(format!("abs/{}", a));
+            }
+            print_emerge_plan(&all_infos, cli.tree, cli.deep, &plan_requested);
+            if cli.pretend {
+                return Ok(());
+            }
+            if !confirm_merge(cli.ask) {
+                return Ok(());
+            }
+            print_emerge_emerging(&all_infos);
+
+            progress::begin(all_infos.len());
+            success = true;
+
+            // Official first (binary, fast), then ABS, then AUR.
+            if !official_infos.is_empty() {
+                let official_names: Vec<String> = official_infos
+                    .iter()
+                    .map(|p| {
+                        if p.repo.is_empty() || p.repo == "aur" || p.repo == "abs" {
+                            p.name.clone()
+                        } else {
+                            format!("{}/{}", p.repo, p.name)
+                        }
+                    })
+                    .collect();
+                let timer = logbook::Timer::start();
+                let world_snapshot = world_set::world_installed_snapshot();
+                let (ok, landed_names) = repo_install_landed(&official_names, cli.oneshot);
+                success = success && ok;
+                world_set::reconcile_world_after_install(&world_snapshot);
+                if ok {
+                    logbook::log_merge_batch("repo", &official_names, timer.elapsed());
+                    installed_infos.extend(official_infos);
+                } else {
+                    let landed: Vec<PkgInfo> = official_infos
+                        .into_iter()
+                        .filter(|p| {
+                            landed_names
+                                .iter()
+                                .any(|n| n.split('/').last().unwrap_or(n) == p.name)
+                        })
+                        .collect();
+                    if !landed.is_empty() {
+                        let names: Vec<String> = landed.iter().map(|p| p.name.clone()).collect();
+                        logbook::log_merge_batch("repo", &names, timer.elapsed());
+                    }
+                    installed_infos.extend(landed);
+                    if !cli.keep_going {
+                        progress::finish();
+                        // fall through to not_found reporting
+                    }
+                }
+            }
+
+            // Shared --jobsa pool: ABS and AUR build concurrently.
+            if (success || cli.keep_going) && (!abs_pkgs.is_empty() || !aur_infos.is_empty()) {
+                let aur_found: Vec<String> = aur_infos.iter().map(|p| p.name.clone()).collect();
+                let src_ok = packages::source_builds_parallel(
+                    &abs_pkgs,
+                    &aur_found,
+                    cli.oneshot,
+                    cli.skippgp,
+                    cli.edit,
+                    cli.autopgp,
+                    cli.no_sandbox,
+                    cli.skip_srcinfo_regen,
+                    cli.unshare_net_build,
+                    cli.pkgbuild_view,
+                    ask_pkgs,
+                );
+                success = success && src_ok;
+                if src_ok {
+                    if !abs_pkgs.is_empty() {
+                        installed_infos.extend(abs_infos);
+                    }
+                    if !aur_found.is_empty() {
+                        installed_infos.extend(aur_infos);
+                    }
+                } else {
+                    // Partial success is hard to track across mixed workers;
+                    // keep-going still recorded failures via runtime.
+                    if !abs_pkgs.is_empty() {
+                        installed_infos.extend(abs_infos);
+                    }
+                    if !aur_found.is_empty() {
+                        installed_infos.extend(aur_infos);
+                    }
+                }
+            }
+
+            progress::finish();
+        } else if !aur_pkgs.is_empty() {
+            // Explicit aur/ plus official rest (no ABS).
+            let mut target_pkgs = rest_pkgs;
+            for a in &aur_pkgs {
+                // Keep them out of probe_official so they go straight to AUR.
+                // probe will mark them missing; resolve_aur_split picks them up.
+                target_pkgs.push(a.clone());
+            }
+            // Fall into the official→AUR branch below.
+            let (official_infos, missing) = probe_official_split(&target_pkgs);
+            // Force any explicitly-prefixed aur/ into the AUR side even
+            // if a same-named package exists in official repos.
+            let (mut force_aur_found, mut force_aur_miss): (Vec<PkgInfo>, Vec<String>) =
+                resolve_aur_split(&aur_pkgs);
+            // Official probe may have claimed an aur/ name that also
+            // exists in repos; prefer the explicit prefix.
+            let official_infos: Vec<PkgInfo> = official_infos
+                .into_iter()
+                .filter(|p| !aur_pkgs.iter().any(|a| a == &p.name))
+                .collect();
+            let missing: Vec<String> = missing
+                .into_iter()
+                .filter(|m| {
+                    let bare = m.split('/').last().unwrap_or(m);
+                    !aur_pkgs.iter().any(|a| a == bare)
+                })
+                .collect();
+            // Also resolve non-aur remaining misses via AUR.
+            let (extra_aur, extra_miss): (Vec<PkgInfo>, Vec<String>) = if cli.repos {
+                (Vec::new(), missing)
+            } else {
+                resolve_aur_split(&missing)
+            };
+            force_aur_found.extend(extra_aur);
+            force_aur_miss.extend(extra_miss);
+            not_found = force_aur_miss;
+
+            let mut all_infos = official_infos.clone();
+            all_infos.extend(force_aur_found.clone());
+            if all_infos.is_empty() {
+                eprintln!(
+                    ">>> Error: none of the requested package(s) were found in \
+                    official repos or the AUR:"
+                );
+                for m in &not_found {
+                    eprintln!("    {}", m);
+                    packages::print_similar_names(m);
+                }
+                std::process::exit(1);
+            }
+            print_emerge_plan(&all_infos, cli.tree, cli.deep, &target_pkgs);
+            if cli.pretend {
+                return Ok(());
+            }
+            if !confirm_merge(cli.ask) {
+                return Ok(());
+            }
+            print_emerge_emerging(&all_infos);
+            success = true;
+            if !official_infos.is_empty() {
+                let official_names: Vec<String> = official_infos
+                    .iter()
+                    .map(|p| {
+                        if p.repo.is_empty() || p.repo == "aur" || p.repo == "abs" {
+                            p.name.clone()
+                        } else {
+                            format!("{}/{}", p.repo, p.name)
+                        }
+                    })
+                    .collect();
+                let timer = logbook::Timer::start();
+                let world_snapshot = world_set::world_installed_snapshot();
+                let (ok, landed_names) = repo_install_landed(&official_names, cli.oneshot);
+                success = ok;
+                world_set::reconcile_world_after_install(&world_snapshot);
+                if ok {
+                    logbook::log_merge_batch("repo", &official_names, timer.elapsed());
+                    installed_infos.extend(official_infos);
+                } else {
+                    let landed: Vec<PkgInfo> = official_infos
+                        .into_iter()
+                        .filter(|p| {
+                            landed_names
+                                .iter()
+                                .any(|n| n.split('/').last().unwrap_or(n) == p.name)
+                        })
+                        .collect();
+                    if !landed.is_empty() {
+                        let names: Vec<String> = landed.iter().map(|p| p.name.clone()).collect();
+                        logbook::log_merge_batch("repo", &names, timer.elapsed());
+                    }
+                    installed_infos.extend(landed);
+                }
+            }
+            if !force_aur_found.is_empty() {
+                let aur_found: Vec<String> =
+                    force_aur_found.iter().map(|p| p.name.clone()).collect();
+                scan_aur_pkgbuilds_or_abort(&aur_found);
+                let aur_ok = aur_install(
+                    &aur_found,
+                    false,
+                    ask_pkgs,
+                    cli.oneshot,
+                    cli.skippgp,
+                    cli.edit,
+                    cli.no_sandbox,
+                    cli.skip_srcinfo_regen,
+                    cli.unshare_net_build,
+                    cli.pkgbuild_view,
+                );
+                success = success && aur_ok;
+                if aur_ok {
+                    installed_infos.extend(force_aur_found);
+                }
+            }
         } else {
+            let target_pkgs = rest_pkgs;
             let (official_infos, missing) = probe_official_split(&target_pkgs);
 
             if missing.is_empty() {
@@ -3412,9 +3956,9 @@ fn run() -> anyhow::Result<()> {
                     }
                     landed
                 };
-            } else if cli.only_repos {
+            } else if cli.repos {
                 eprintln!(
-                    ">>> Warning: --only-repos is set; the following package(s) were not \
+                    ">>> Warning: --repos is set; the following package(s) were not \
                     found in official repos and will be skipped (AUR was not searched):"
                 );
                 for m in &missing {
@@ -3436,8 +3980,16 @@ fn run() -> anyhow::Result<()> {
                 }
                 print_emerge_emerging(&official_infos);
 
-                let official_names: Vec<String> =
-                    official_infos.iter().map(|p| p.name.clone()).collect();
+                let official_names: Vec<String> = official_infos
+                    .iter()
+                    .map(|p| {
+                        if p.repo.is_empty() || p.repo == "aur" || p.repo == "abs" {
+                            p.name.clone()
+                        } else {
+                            format!("{}/{}", p.repo, p.name)
+                        }
+                    })
+                    .collect();
                 let timer = logbook::Timer::start();
                 let world_snapshot = world_set::world_installed_snapshot();
                 let (off_success, landed_names) = repo_install_landed(&official_names, cli.oneshot);
@@ -3528,8 +4080,16 @@ fn run() -> anyhow::Result<()> {
                 }
                 print_emerge_emerging(&all_infos);
 
-                let official_names: Vec<String> =
-                    official_infos.iter().map(|p| p.name.clone()).collect();
+                let official_names: Vec<String> = official_infos
+                    .iter()
+                    .map(|p| {
+                        if p.repo.is_empty() || p.repo == "aur" || p.repo == "abs" {
+                            p.name.clone()
+                        } else {
+                            format!("{}/{}", p.repo, p.name)
+                        }
+                    })
+                    .collect();
                 let timer = logbook::Timer::start();
                 let world_snapshot = world_set::world_installed_snapshot();
                 let (ok, landed_names) = repo_install_landed(&official_names, cli.oneshot);
@@ -3581,6 +4141,8 @@ fn run() -> anyhow::Result<()> {
             }
         }
 
+        progress::finish();
+
         if !not_found.is_empty() {
             eprintln!();
             eprintln!(">>> Warning: the following package(s) were not found anywhere (official repos or AUR) and were skipped:");
@@ -3621,9 +4183,9 @@ fn run() -> anyhow::Result<()> {
                         .iter()
                         .filter(|p| target_bare.contains(&p.name))
                         .collect();
-                    let official_names: Vec<String> = explicit_infos
+                    let abs_names: Vec<String> = explicit_infos
                         .iter()
-                        .filter(|p| p.repo != "aur")
+                        .filter(|p| p.repo == "abs")
                         .map(|p| p.name.clone())
                         .collect();
                     let aur_names: Vec<String> = explicit_infos
@@ -3631,22 +4193,27 @@ fn run() -> anyhow::Result<()> {
                         .filter(|p| p.repo == "aur")
                         .map(|p| p.name.clone())
                         .collect();
-                    if !official_names.is_empty() {
-                        if let Err(e) = add_to_world_set(&official_names, None) {
-                            eprintln!(
-                                ">>> Warning: package(s) installed but world was not updated: {:#}",
-                                e
-                            );
-                        }
+                    let official_names: Vec<String> = explicit_infos
+                        .iter()
+                        .filter(|p| p.repo != "aur" && p.repo != "abs")
+                        .map(|p| p.name.clone())
+                        .collect();
+                    // One world write for official + aur + abs (single message).
+                    if let Err(e) = world_set::add_to_world_groups(&[
+                        (&official_names, None),
+                        (&aur_names, Some("aur")),
+                        (&abs_names, Some("abs")),
+                    ]) {
+                        eprintln!(
+                            ">>> Warning: package(s) installed but world was not updated: {:#}",
+                            e
+                        );
                     }
                     if !aur_names.is_empty() {
                         mark_asexplicit(&aur_names);
-                        if let Err(e) = add_to_world_set(&aur_names, Some("aur")) {
-                            eprintln!(
-                                ">>> Warning: package(s) installed but world was not updated: {:#}",
-                                e
-                            );
-                        }
+                    }
+                    if !abs_names.is_empty() {
+                        mark_asexplicit(&abs_names);
                     }
 
                     // Transitive deps → asdeps so depclean can see them.

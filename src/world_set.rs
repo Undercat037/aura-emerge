@@ -737,7 +737,19 @@ pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
 }
 
 pub(crate) fn add_to_world_set(packages: &[String], forced_prefix: Option<&str>) -> Result<()> {
-    println!("{} Adding to world...", ">>>".green().bold());
+    if packages.is_empty() {
+        return Ok(());
+    }
+    add_to_world_groups(&[(packages, forced_prefix)])
+}
+
+/// One read → apply every (packages, prefix) group → one write.
+/// Single `>>> Adding to world...` line even when official + aur + abs
+/// all need updating (avoids the double-print from sequential calls).
+pub(crate) fn add_to_world_groups(groups: &[(&[String], Option<&str>)]) -> Result<()> {
+    if groups.iter().all(|(pkgs, _)| pkgs.is_empty()) {
+        return Ok(());
+    }
 
     // bare name → full "repo/name" entry
     let mut current_set: std::collections::HashMap<String, String> =
@@ -758,27 +770,33 @@ pub(crate) fn add_to_world_set(packages: &[String], forced_prefix: Option<&str>)
         Err(_) => {}
     }
 
-    let bares: Vec<String> = packages
-        .iter()
-        .map(|p| p.split('/').last().unwrap_or(p).to_string())
-        .collect();
-    let repos = get_pkg_repos_batch(&bares);
+    let mut all_bares: Vec<String> = Vec::new();
+    for (packages, _) in groups {
+        for pkg in *packages {
+            all_bares.push(pkg.split('/').last().unwrap_or(pkg).to_string());
+        }
+    }
+    let repos = get_pkg_repos_batch(&all_bares);
 
     let mut changed = false;
-    for pkg in packages {
-        let bare = pkg.split('/').last().unwrap_or(pkg).to_string();
-        let entry = pkg_world_entry_from(&bare, forced_prefix, &repos);
-        // Overwrite so stale prefixes get corrected.
-        let stale = current_set.get(&bare).map(|e| e != &entry).unwrap_or(true);
-        if stale {
-            current_set.insert(bare, entry);
-            changed = true;
+    for (packages, forced_prefix) in groups {
+        for pkg in *packages {
+            let bare = pkg.split('/').last().unwrap_or(pkg).to_string();
+            let entry = pkg_world_entry_from(&bare, *forced_prefix, &repos);
+            // Overwrite so stale prefixes get corrected.
+            let stale = current_set.get(&bare).map(|e| e != &entry).unwrap_or(true);
+            if stale {
+                current_set.insert(bare, entry);
+                changed = true;
+            }
         }
     }
 
     if !changed {
         return Ok(());
     }
+
+    println!("{} Adding to world...", ">>>".green().bold());
 
     let mut sorted: Vec<String> = current_set.into_values().collect();
     sorted.sort();

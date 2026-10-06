@@ -48,8 +48,8 @@ impl From<ProtoError> for ClientError {
 
 pub(crate) struct Client {
     child: Option<Child>,
-    rx: Box<dyn BufRead>,
-    tx: Box<dyn Write>,
+    rx: Box<dyn BufRead + Send>,
+    tx: Box<dyn Write + Send>,
     broken: bool,
 }
 
@@ -81,7 +81,11 @@ impl Client {
         }
     }
 
-    fn from_streams(rx: Box<dyn BufRead>, tx: Box<dyn Write>, child: Option<Child>) -> Client {
+    fn from_streams(
+        rx: Box<dyn BufRead + Send>,
+        tx: Box<dyn Write + Send>,
+        child: Option<Child>,
+    ) -> Client {
         Client {
             child,
             rx,

@@ -20,14 +20,16 @@ pub(crate) struct Runtime {
     /// Bare package names from `--exclude` (masks are a separate layer).
     pub(crate) exclude: HashSet<String>,
     pub(crate) keep_going: bool,
-    /// `FEATURES="candy"`, minus `--nospinner` / `-q`.
-    pub(crate) candy: bool,
     /// Live makepkg output (`--debug` / `AE_DEBUG=1` / `--quiet-build=n`).
     pub(crate) debug: bool,
     /// `emerge -n` / pacman `--needed`.
     pub(crate) noreplace: bool,
     /// `--with-optdeps`: also install optdepends (as dependencies).
     pub(crate) with_optdeps: bool,
+    /// Max concurrent official-repo installs (`--jobsr` / `--jobs`).
+    pub(crate) jobsr: u32,
+    /// Max concurrent AUR/ABS builds (`--jobsa`).
+    pub(crate) jobsa: u32,
 }
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
@@ -49,10 +51,6 @@ pub(crate) fn config() -> &'static Config {
 
 pub(crate) fn keep_going() -> bool {
     get().keep_going
-}
-
-pub(crate) fn candy() -> bool {
-    get().candy
 }
 
 pub(crate) fn show_build_output() -> bool {

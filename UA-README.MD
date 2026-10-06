@@ -87,35 +87,47 @@ sudo nvim /etc/makepkg.conf
 
 ## make.conf
 
-`/etc/portage/make.conf` (і `~/.config/emerge/make.conf` для власних налаштувань) - окремий конфіг самого aura-emerge, не `makepkg.conf`: аналог того, як Gentoo `make.conf` тримає і `EMERGE_DEFAULT_OPTS`, і `CFLAGS` в одному файлі. Спершу системний файл, потім користувацький; при збігу ключа перемагає останній.
+`/etc/portage/make.conf` — окремий конфіг самого aura-emerge (лише system path), не `makepkg.conf`: аналог того, як Gentoo `make.conf` тримає і `EMERGE_DEFAULT_OPTS`, і `CFLAGS` в одному файлі.
 
 ```bash
 sudo nvim /etc/portage/make.conf
 ```
 
-```toml
+```bash
 # Прапори, які підставляються перед будь-яким запуском, до того, що
 # набрано в командному рядку (той завжди перемагає при конфлікті).
 # Вимкнути для одного запуску: --ignore-default-opts.
-EMERGE_DEFAULT_OPTS = ["--pkgbuild-view", "--unshare-net-build"]
+EMERGE_DEFAULT_OPTS="--pkgbuild-view --unshare-net-build"
 
 # Прапори збірки, застосовуються через згенерований makepkg.conf
 # (makepkg --config) - перевизначають /etc/makepkg.conf, не чіпаючи його.
-[build]
-CFLAGS = "-march=native -O2 -pipe"
-CXXFLAGS = "$CFLAGS"
-RUSTFLAGS = "-C target-cpu=native"
-MAKEFLAGS = "-j$(nproc)"
-NINJAFLAGS = "-j$(nproc)"
-OPTIONS = ["strip", "docs", "!debug", "lto"]
-BUILDENV = ["!distcc", "color", "check", "!sign"]
+CFLAGS="-march=native -O2 -pipe"
+CXXFLAGS="$CFLAGS"
+RUSTFLAGS="-C target-cpu=native"
+MAKEFLAGS="-j$(nproc)"
+NINJAFLAGS="-j$(nproc)"
+OPTIONS=(strip docs !debug lto)
+BUILDENV=(!distcc color check !sign)
+
+# Перемикачі в стилі Portage, перекладаються в makepkg.
+FEATURES="ccache -test"
 ```
 
-Розпізнавані ключі: `EMERGE_DEFAULT_OPTS` на верхньому рівні, і в `[build]`: `CFLAGS`, `CXXFLAGS`, `CPPFLAGS`, `LDFLAGS`, `RUSTFLAGS`, `MAKEFLAGS`, `NINJAFLAGS`, `BUILDENV`, `OPTIONS`. Ключі збірки приймаються також на верхньому рівні, поза `[build]`.
+Розпізнавані ключі: `EMERGE_DEFAULT_OPTS`, `FEATURES`, `CFLAGS`, `CXXFLAGS`, `CPPFLAGS`, `LDFLAGS`, `RUSTFLAGS`, `MAKEFLAGS`, `NINJAFLAGS`, `BUILDENV`, `OPTIONS`. Синтаксис плоский, як присвоєння в bash: `KEY="..."` або `KEY=(a b c)`.
 
-Скаляри й списки взаємозамінні всюди - список склеюється пробілами, рядок розбивається по них. Значення розкриваються шеллом, коли makepkg читає згенерований конфіг, тож `-j$(nproc)` працює, і посилання на інший ключ вище по файлу теж - `CXXFLAGS = "$CFLAGS"`; TOML literal string (`'\$FOO'`) залишає долар буквальним.
+Токени `FEATURES` (`-name` вимикає токен), що мають аналог у makepkg, під час збірки вносяться в системні масиви; запис, який ви самі вказали в `BUILDENV`/`OPTIONS`, головніший:
 
-`EMERGE_DEFAULT_OPTS` приймає лише прапори-модифікатори (allowlist: `--ask`, `--verbose`, `--devel`, `--tree`, `--searchdesc`, `--exclude=<атом>` і подібні - див. [приклад файлу](misc/make.conf)) - перетворити кожен запуск на `--unmerge` не вийде. Конфліктні пари (`--aur`/`--abs`, `--aur`/`--only-repos`, `--no-sandbox`/`--unshare-net-build`, `--skippgp`/`--autopgp`, `--select`/`--deselect`) відхиляються, якщо обидва прапори активні - набрані вручну чи з конфігу; прапор з конфігу, що конфліктує з набраним вручну, просто відкидається, бо командний рядок - конкретніший намір. `--abs` і `--only-repos` конфліктом **не є** - ABS збирає офіційний пакунок з його ж джерела, тож ці два узгоджені.
+| `FEATURES`   | makepkg                  |
+|--------------|--------------------------|
+| `ccache`     | `BUILDENV` `ccache`      |
+| `distcc`     | `BUILDENV` `distcc`      |
+| `test`       | `BUILDENV` `check`       |
+| `nostrip`    | `OPTIONS` `!strip`       |
+| `splitdebug` | `OPTIONS` `debug`        |
+
+Скаляри й списки взаємозамінні всюди - список склеюється пробілами, рядок розбивається по них. Значення розкриваються шеллом, коли makepkg читає згенерований конфіг, тож `-j$(nproc)` працює, і посилання на інший ключ вище по файлу теж - `CXXFLAGS="$CFLAGS"`; значення в одинарних лапках (`'\$FOO'`) залишає долар буквальним.
+
+`EMERGE_DEFAULT_OPTS` приймає лише прапори-модифікатори (allowlist: `--ask`, `--verbose`, `--devel`, `--tree`, `--searchdesc`, `--exclude=<атом>` і подібні - див. [приклад файлу](misc/make.conf)) - перетворити кожен запуск на `--unmerge` не вийде. Конфліктні пари (`--aur`/`--abs`, `--aur`/`--repos`, `--no-sandbox`/`--unshare-net-build`, `--skippgp`/`--autopgp`, `--select`/`--deselect`) відхиляються, якщо обидва прапори активні - набрані вручну чи з конфігу; прапор з конфігу, що конфліктує з набраним вручну, просто відкидається, бо командний рядок - конкретніший намір. `--abs` і `--repos` конфліктом **не є** - ABS збирає офіційний пакунок з його ж джерела, тож ці два узгоджені.
 
 `--info` показує, що прочитано, і фактичне, розкрите шеллом значення кожного перевизначення.
 
@@ -209,7 +221,7 @@ emerge deepin-session --ask --tree --deep=3   # встановлення з по
 emerge neovim                              # офіційні репо, при відсутності - AUR
 emerge neovim-git --aur                    # лише AUR (AUR-only залежності збираються рекурсивно завжди)
 emerge ayugram-desktop-bin --aur --sudoloop   # те саме, але тримати sudo «теплим» протягом усієї рекурсивної збірки
-emerge neovim --only-repos                 # лише офіційні репо, без AUR
+emerge neovim --repos                 # лише офіційні репо, без AUR
 emerge neovim --abs                        # зібрати з ABS (pkgctl), у пісочниці bwrap
 emerge neovim --abs --no-sandbox           # ABS без пісочниці (звичайний makepkg -si)
 emerge neovim --abs --skippgp              # ABS, пропустити перевірку PGP
@@ -240,9 +252,11 @@ emerge --scan neovim-git --aur              # лише аудит, без збі
 emerge --install-pkgbuild ~/src/my-pkg --scan  # те саме для локального checkout
 emerge -u --devel                           # повне оновлення + перевірка upstream для -git/-hg/-svn/-bzr
 emerge --check-devel                        # лише звіт, які devel-пакунки зрушили upstream
-emerge -s neovim                           # пошук (репо + AUR)
-emerge -s neovim --only-repos              # пошук лише в офіційних репо
-emerge --searchdesc neovim                 # пошук за описом
+emerge -s neovim                           # пошук: репо, потім ABS, потім AUR (окремий блок на кожен)
+emerge -s neovim --repos                   # пошук лише в офіційних репо
+emerge -s abs/neovim                       # пошук лише в каталозі ABS (core/extra/multilib)
+emerge -s @fonts                           # звідки береться кожен пакунок набору: репо / aur / not found
+emerge -S neovim                           # пошук за описом (--searchdesc)
 emerge -sv neovim                          # детальна інформація
 emerge -sv neovim-git --aur                # детальна інформація лише з AUR
 emerge -1 htop                             # як залежність (не в world)
@@ -320,7 +334,7 @@ firefox
 emerge --batchinstall pkgs.txt
 ```
 
-Оскільки список зливається з `cli.packages`, працює з усіма іншими прапорами так само, як іменовані пакунки (`-p`, `-a`, `--aur`, `--abs`, `--only-repos`, ...).
+Оскільки список зливається з `cli.packages`, працює з усіма іншими прапорами так само, як іменовані пакунки (`-p`, `-a`, `--aur`, `--abs`, `--repos`, ...).
 
 ## Перегляд PKGBUILD
 
@@ -416,6 +430,8 @@ emerge @game-kit @dev-tools neovim
 
 `emerge --list-sets` і автодоповнення `emerge @<TAB>` показують доступні набори.
 
+`emerge -s @game-kit` шукає кожен пакунок набору за точною назвою й друкує, звідки він береться (репозиторій, `aur` або `not found`). `@world` і `@preserved-rebuild` - це дії, а не цілі пошуку: `-s @world` та `-s @preserved-rebuild` відхиляються з помилкою.
+
 ## --undo
 
 Скасовує останнє успішне встановлення або видалення (один крок історії):
@@ -467,7 +483,7 @@ emerge --install-pkgbuild ./scaner-test --ask
 | Прапор | Опис |
 |--------|------|
 | `-s` | Пошук пакунка |
-| `--searchdesc` | Пошук за описом |
+| `-S`, `--searchdesc` | Пошук за описом |
 | `-sv` | Детальна інформація |
 | `-u` | Повне оновлення системи (world не читається) |
 | `--devel` | Разом із `-u` - також перезібрати `-git`/`-hg`/`-svn`/`-bzr`, чий upstream зрушив |
@@ -481,7 +497,7 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `-v` | Детальний вивід |
 | `-n` | Не перевстановлювати (noreplace) |
 | `--aur` | Примусово AUR (AUR-only залежності завжди резолвляться і збираються рекурсивно) |
-| `--only-repos` | Лише офіційні репо |
+| `--repos` | Лише офіційні репо |
 | `--abs` | Зібрати з ABS (`pkgctl`), у пісочниці bwrap |
 | `--no-sandbox` | Вимкнути bwrap для AUR/ABS |
 | `--unshare-net-build` | Без мережі на етапі build()/check()/package() |

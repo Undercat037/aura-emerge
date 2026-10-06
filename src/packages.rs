@@ -254,7 +254,47 @@ pub(crate) fn probe_official_split(pkgs: &[String]) -> (Vec<PkgInfo>, Vec<String
         }
     }
 
+    // The lookups above only confirm the typed names exist. The plan
+    // itself must carry the dependencies too, or `--tree` has nothing
+    // to nest and "Calculating dependencies" would be a lie.
+    if missing.is_empty() && !found.is_empty() {
+        found = expand_with_deps(found);
+    }
+
     (found, missing)
+}
+
+/// Asks libalpm for the whole transaction (targets + deps, deps first).
+/// On failure keeps the bare targets and says why, so a broken resolve
+/// is visible instead of silently looking like "no dependencies".
+fn expand_with_deps(targets: Vec<PkgInfo>) -> Vec<PkgInfo> {
+    let atoms: Vec<String> = targets
+        .iter()
+        .map(|p| format!("{}/{}", p.repo, p.name))
+        .collect();
+    match crate::alpm_db::plan_sync(&atoms) {
+        Ok(planned) if !planned.is_empty() => planned
+            .into_iter()
+            .map(|p| {
+                let status = pkg_status(&p.name, &p.version);
+                PkgInfo {
+                    name: p.name,
+                    version: p.version,
+                    repo: p.repo,
+                    status,
+                }
+            })
+            .collect(),
+        Ok(_) => targets,
+        Err(e) => {
+            eprintln!(
+                "{} dependency resolution failed ({}); showing requested packages only",
+                ">>> Warning:".yellow().bold(),
+                e
+            );
+            targets
+        }
+    }
 }
 
 /// AUR RPC info → (found, missing). Missing is not a hard error.
@@ -1536,48 +1576,113 @@ pub(crate) fn aur_install(
         return false;
     }
 
-    let mut building = HashSet::new();
-    let mut built = HashMap::new();
-    let mut all_ok = true;
-
     crate::progress::reserve(bare.len());
-    for (i, pkg) in bare.iter().enumerate() {
-        let timer = crate::logbook::Timer::start();
-        let result = resolve_and_build_aur(
-            pkg,
-            &build_base,
-            ask,
-            skippgp,
-            oneshot,
-            edit,
-            true,
-            skip_srcinfo_regen,
-            isolation,
-            unshare_net_build,
-            &mut building,
-            &mut built,
-            pkgbuild_view,
-        );
-        if result.is_some() {
-            crate::logbook::log_merge_one("aur", pkg, timer.elapsed());
-        }
-        if result.is_none() {
-            all_ok = false;
-            crate::runtime::record_failure(pkg, "AUR build failed");
-            let left = bare.len() - (i + 1);
-            if !crate::runtime::keep_going() && left > 0 {
-                eprintln!(
-                    "{} stopping after the first failure - {} package(s) not attempted. Pass {} to build the rest and get a summary at the end.",
-                    ">>> Error:".red().bold(),
-                    left,
-                    "--keep-going".cyan()
-                );
-                break;
+    let jobsa = crate::runtime::get().jobsa.max(1) as usize;
+
+    // jobsa == 1 (or single package): sequential, shared dep cache.
+    // jobsa > 1: parallel top-level builds; each worker has its own
+    // building/built map (shared AUR deps may be built more than once,
+    // which is safe — the second install is a no-op / reinstall).
+    if jobsa <= 1 || bare.len() <= 1 {
+        let mut building = HashSet::new();
+        let mut built = HashMap::new();
+        let mut all_ok = true;
+        for (i, pkg) in bare.iter().enumerate() {
+            let timer = crate::logbook::Timer::start();
+            let result = resolve_and_build_aur(
+                pkg,
+                &build_base,
+                ask,
+                skippgp,
+                oneshot,
+                edit,
+                true,
+                skip_srcinfo_regen,
+                isolation,
+                unshare_net_build,
+                &mut building,
+                &mut built,
+                pkgbuild_view,
+            );
+            if result.is_some() {
+                crate::logbook::log_merge_one("aur", pkg, timer.elapsed());
+            }
+            if result.is_none() {
+                all_ok = false;
+                crate::runtime::record_failure(pkg, "AUR build failed");
+                let left = bare.len() - (i + 1);
+                if !crate::runtime::keep_going() && left > 0 {
+                    eprintln!(
+                        "{} stopping after the first failure - {} package(s) not attempted. Pass {} to build the rest and get a summary at the end.",
+                        ">>> Error:".red().bold(),
+                        left,
+                        "--keep-going".cyan()
+                    );
+                    break;
+                }
             }
         }
+        return all_ok;
     }
 
-    all_ok
+    use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+    use std::sync::{Arc, Mutex};
+
+    let all_ok = Arc::new(AtomicBool::new(true));
+    let queue: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(bare.clone()));
+    let workers = jobsa.min(bare.len());
+
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let queue = queue.clone();
+            let all_ok = all_ok.clone();
+            let build_base = &build_base;
+            scope.spawn(move || {
+                loop {
+                    if !all_ok.load(AtomicOrdering::Relaxed) && !crate::runtime::keep_going() {
+                        break;
+                    }
+                    let pkg = {
+                        let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
+                        q.pop()
+                    };
+                    let Some(pkg) = pkg else { break };
+                    let mut building = HashSet::new();
+                    let mut built = HashMap::new();
+                    let timer = crate::logbook::Timer::start();
+                    let result = resolve_and_build_aur(
+                        &pkg,
+                        build_base,
+                        ask,
+                        skippgp,
+                        oneshot,
+                        edit,
+                        true,
+                        skip_srcinfo_regen,
+                        isolation,
+                        unshare_net_build,
+                        &mut building,
+                        &mut built,
+                        pkgbuild_view,
+                    );
+                    if result.is_some() {
+                        crate::logbook::log_merge_one("aur", &pkg, timer.elapsed());
+                    } else {
+                        all_ok.store(false, AtomicOrdering::Relaxed);
+                        crate::runtime::record_failure(&pkg, "AUR build failed");
+                        if !crate::runtime::keep_going() {
+                            // Drop remaining so other workers exit.
+                            let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
+                            q.clear();
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+    });
+
+    all_ok.load(AtomicOrdering::Relaxed)
 }
 
 /// Upgrades every foreign (AUR-or-local) installed package newer in the
@@ -2149,8 +2254,7 @@ fn build_with_sandbox(
     if let Some(path) = &conf_override {
         // Same for every package: show once per run.
         if crate::progress::once("build-flags") {
-            crate::progress::status_break();
-            println!(
+            crate::progress::note(&format!(
                 "{} applying build flags from {}",
                 ">>>".green().bold(),
                 build_cfg
@@ -2159,7 +2263,7 @@ fn build_with_sandbox(
                     .map(|f| f.display().to_string())
                     .collect::<Vec<_>>()
                     .join(", ")
-            );
+            ));
         }
         makepkg_args.push("--config");
         makepkg_args.push(path.as_str());
@@ -2498,6 +2602,8 @@ fn legacy_makepkg_si(build_dir: &std::path::Path, ask: bool, oneshot: bool, skip
 
 /// Build and install packages from ABS via `pkgctl repo clone` + `makepkg -si`
 /// (or, by default, the bwrap-sandboxed equivalent -- see `build_with_sandbox`).
+/// `skip_plan`: when true, the caller already printed the emerge plan and
+/// confirmed — do not print another plan or prompt (mixed abs+aur+repo).
 pub(crate) fn abs_install(
     pkgs: &[String],
     pretend: bool,
@@ -2510,6 +2616,7 @@ pub(crate) fn abs_install(
     skip_srcinfo_regen: bool,
     unshare_net_build: bool,
     pkgbuild_view: bool,
+    skip_plan: bool,
 ) -> bool {
     if !warn_critical_libc(pkgs, "ABS") {
         return false;
@@ -2563,37 +2670,41 @@ pub(crate) fn abs_install(
 
     let isolation = choose_build_isolation(no_sandbox);
 
-    println!();
-    println!(
-        "{}",
-        "These are the packages that would be merged, in order:"
-            .green()
-            .bold()
-    );
-    println!();
-    crate::candy::calculating_deps_done();
-    println!();
-    for p in &pkg_infos {
-        let atom = format!("{} (ABS)", format_atom(p));
+    if !skip_plan {
+        println!();
         println!(
-            "[{}  {:<4} ] {}",
-            "ebuild".green(),
-            status_colored(&p.status),
-            atom.green().bold()
+            "{}",
+            "These are the packages that would be merged, in order:"
+                .green()
+                .bold()
         );
-    }
-    println!();
-    println!("{}: {} package(s)", "Total".bold(), pkg_infos.len());
-    println!();
+        println!();
+        crate::candy::calculating_deps_done();
+        println!();
+        for p in &pkg_infos {
+            let atom = format!("{} (ABS)", format_atom(p));
+            println!(
+                "[{}  {:<4} ] {}",
+                "ebuild".green(),
+                status_colored(&p.status),
+                atom.green().bold()
+            );
+        }
+        println!();
+        println!("{}: {} package(s)", "Total".bold(), pkg_infos.len());
+        println!();
 
-    if pretend {
-        return true;
-    }
+        if pretend {
+            return true;
+        }
 
-    // --ask: same one-shot plan prompt as the AUR/repo paths in main.
-    // (main passes the real `cli.ask` for direct abs/ installs; upgrade
-    // already confirmed before calling us with ask=false.)
-    if !confirm_merge(ask) {
+        // --ask: same one-shot plan prompt as the AUR/repo paths in main.
+        // (main passes the real `cli.ask` for direct abs/ installs; upgrade
+        // already confirmed before calling us with ask=false.)
+        if !confirm_merge(ask) {
+            return true;
+        }
+    } else if pretend {
         return true;
     }
 
@@ -2616,151 +2727,469 @@ pub(crate) fn abs_install(
             return false;
         }
     }
-    let mut all_ok = true;
-
     crate::progress::reserve(pkg_infos.len());
-    for (i, info) in pkg_infos.iter().enumerate() {
-        // Stage 1: clone + review.
-        let stage_n = crate::progress::take();
-        let stage_atom = format_atom(info);
-        crate::progress::line(crate::progress::Stage::Installing, stage_n, &stage_atom);
+    // Interactive edit/view must stay sequential on the main thread.
+    let jobsa = if edit || pkgbuild_view {
+        1
+    } else {
+        crate::runtime::get().jobsa.max(1) as usize
+    };
+    abs_build_many(
+        &pkg_infos,
+        &build_base,
+        ask,
+        oneshot,
+        skippgp,
+        edit,
+        autopgp,
+        skip_srcinfo_regen,
+        isolation,
+        unshare_net_build,
+        pkgbuild_view,
+        jobsa,
+    )
+}
 
-        let pkg_dir = build_base.join(&info.name);
+/// Build one ABS package (clone → optional edit/view → makepkg → install).
+/// Safe to call from a worker thread (progress I/O is locked).
+fn abs_build_one(
+    info: &PkgInfo,
+    build_base: &std::path::Path,
+    ask: bool,
+    oneshot: bool,
+    skippgp: bool,
+    edit: bool,
+    autopgp: bool,
+    skip_srcinfo_regen: bool,
+    isolation: BuildIsolation,
+    unshare_net_build: bool,
+    pkgbuild_view: bool,
+) -> bool {
+    let stage_n = crate::progress::take();
+    let stage_atom = format_atom(info);
+    crate::progress::line(crate::progress::Stage::Installing, stage_n, &stage_atom);
 
-        if !pkg_dir.starts_with(&build_base) {
-            eprintln!(">>> Error: suspicious path for '{}' - skipping", info.name);
-            all_ok = false;
-            continue;
-        }
+    let pkg_dir = build_base.join(&info.name);
+    if !pkg_dir.starts_with(build_base) {
+        eprintln!(">>> Error: suspicious path for '{}' - skipping", info.name);
+        crate::progress::abort_one();
+        return false;
+    }
 
-        if pkg_dir.exists() {
-            let _ = std::fs::remove_dir_all(&pkg_dir);
-        }
-        let _ = std::fs::create_dir_all(&build_base);
+    if pkg_dir.exists() {
+        let _ = std::fs::remove_dir_all(&pkg_dir);
+    }
+    let _ = std::fs::create_dir_all(build_base);
 
-        let mut clone = Command::new(PKGCTL_BIN);
+    let mut clone = Command::new(PKGCTL_BIN);
+    clone
+        .args(["repo", "clone", "--protocol=https", &info.name])
+        .current_dir(build_base);
+    if !crate::runtime::get().debug {
         clone
-            .args(["repo", "clone", "--protocol=https", &info.name])
-            .current_dir(&build_base);
-        if !crate::runtime::get().debug {
-            // Git progress is noise unless --debug / AE_DEBUG=1.
-            clone
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null());
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+    }
+    let checkout_ok = clone.status().map(|s| s.success()).unwrap_or(false);
+    if !checkout_ok {
+        eprintln!(
+            "{} pkgctl repo clone failed for '{}'",
+            ">>> Error:".red().bold(),
+            info.name
+        );
+        eprintln!(
+            "{} package may not exist in ABS (it must be a pkgbase, not a split-package output name). Try without --abs or use --aur.",
+            ">>> Note:".yellow().bold()
+        );
+        crate::progress::abort_one();
+        crate::runtime::record_failure(&info.name, "ABS clone failed");
+        return false;
+    }
+
+    let build_dir = pkg_dir.clone();
+
+    if edit {
+        let editor = std::env::var("EDITOR")
+            .or_else(|_| std::env::var("VISUAL"))
+            .unwrap_or_else(|_| "nano".to_string());
+        let pkgbuild = build_dir.join("PKGBUILD");
+        println!(
+            "{} Opening {} in {}...",
+            ">>>".green().bold(),
+            "PKGBUILD".bold(),
+            editor.green().bold()
+        );
+        println!(
+            "{} Save and close the editor to continue building.",
+            ">>>".yellow().bold()
+        );
+        Command::new(&editor).arg(&pkgbuild).status().ok();
+        reset_terminal_colors_after_editor();
+        maybe_regen_srcinfo(&build_dir, skip_srcinfo_regen);
+    }
+
+    if pkgbuild_view {
+        let outcome = pkgbuild_view_step(&info.name, &build_dir);
+        if !outcome.proceed {
+            let _ = std::fs::remove_dir_all(&pkg_dir);
+            crate::progress::abort_one();
+            return false;
         }
-        let checkout_ok = clone.status().map(|s| s.success()).unwrap_or(false);
-
-        if !checkout_ok {
-            eprintln!(
-                "{} pkgctl repo clone failed for '{}'",
-                ">>> Error:".red().bold(),
-                info.name
-            );
-            eprintln!("{} package may not exist in ABS (it must be a pkgbase, not a split-package output name). Try without --abs or use --aur.", ">>> Note:".yellow().bold());
-            all_ok = false;
-            continue;
-        }
-
-        // pkgctl clones into <build_base>/<pkg>/ with PKGBUILD at top.
-        let build_dir = pkg_dir.clone();
-
-        // --edit for ABS (top-level).
-        if edit {
-            let editor = std::env::var("EDITOR")
-                .or_else(|_| std::env::var("VISUAL"))
-                .unwrap_or_else(|_| "nano".to_string());
-            let pkgbuild = build_dir.join("PKGBUILD");
-            println!(
-                "{} Opening {} in {}...",
-                ">>>".green().bold(),
-                "PKGBUILD".bold(),
-                editor.green().bold()
-            );
-            println!(
-                "{} Save and close the editor to continue building.",
-                ">>>".yellow().bold()
-            );
-            Command::new(&editor).arg(&pkgbuild).status().ok();
-            reset_terminal_colors_after_editor();
+        if outcome.edited {
             maybe_regen_srcinfo(&build_dir, skip_srcinfo_regen);
         }
+    }
 
-        // --pkgbuild-view for ABS (same as AUR path).
-        if pkgbuild_view {
-            let outcome = pkgbuild_view_step(&info.name, &build_dir);
-            if !outcome.proceed {
-                let _ = std::fs::remove_dir_all(&pkg_dir);
-                all_ok = false;
-                continue;
-            }
-            if outcome.edited {
-                maybe_regen_srcinfo(&build_dir, skip_srcinfo_regen);
-            }
-        }
+    if !skippgp {
+        ensure_pgp_keys(&build_dir.join("PKGBUILD"), autopgp);
+    }
 
-        // Check/import validpgpkeys before makepkg.
+    let timer = crate::logbook::Timer::start();
+    crate::progress::line(crate::progress::Stage::Compiling, stage_n, &stage_atom);
+    let build_ok = match isolation {
+        BuildIsolation::Bwrap => build_with_sandbox(
+            &build_dir,
+            &info.name,
+            ask,
+            oneshot,
+            skippgp,
+            &[],
+            unshare_net_build,
+        ),
+        BuildIsolation::None => legacy_makepkg_si(&build_dir, ask, oneshot, skippgp),
+    };
+
+    let _ = std::fs::remove_dir_all(&pkg_dir);
+
+    if build_ok {
+        crate::logbook::log_merge_one("abs", &format_atom(info), timer.elapsed());
+        crate::progress::line(crate::progress::Stage::Completed, stage_n, &stage_atom);
+        true
+    } else {
+        eprintln!(
+            "{} makepkg failed for '{}'",
+            ">>> Error:".red().bold(),
+            info.name
+        );
         if !skippgp {
-            ensure_pgp_keys(&build_dir.join("PKGBUILD"), autopgp);
+            eprintln!(
+                "{} if this failed on a missing PGP key not listed in validpgpkeys, \
+                find the key ID in the error above and run:",
+                ">>> Hint:".yellow().bold()
+            );
+            eprintln!(
+                ">>>   gpg --keyserver {} --recv-keys <key-id>",
+                PGP_KEYSERVER
+            );
+            eprintln!(">>> Or retry with --autopgp (auto-import) or --skippgp (bypass checks).");
         }
+        crate::progress::abort_one();
+        crate::runtime::record_failure(&info.name, "ABS build failed");
+        false
+    }
+}
 
-        let timer = crate::logbook::Timer::start();
-        // Stage 2: makepkg.
-        crate::progress::line(crate::progress::Stage::Compiling, stage_n, &stage_atom);
-        let build_ok = match isolation {
-            BuildIsolation::Bwrap => build_with_sandbox(
-                &build_dir,
-                &info.name,
+/// Build ABS packages with up to `jobsa` concurrent workers.
+fn abs_build_many(
+    pkg_infos: &[PkgInfo],
+    build_base: &std::path::Path,
+    ask: bool,
+    oneshot: bool,
+    skippgp: bool,
+    edit: bool,
+    autopgp: bool,
+    skip_srcinfo_regen: bool,
+    isolation: BuildIsolation,
+    unshare_net_build: bool,
+    pkgbuild_view: bool,
+    jobsa: usize,
+) -> bool {
+    if pkg_infos.is_empty() {
+        return true;
+    }
+    if jobsa <= 1 || pkg_infos.len() <= 1 {
+        let mut all_ok = true;
+        for info in pkg_infos {
+            if !abs_build_one(
+                info,
+                build_base,
                 ask,
                 oneshot,
                 skippgp,
-                &[],
+                edit,
+                autopgp,
+                skip_srcinfo_regen,
+                isolation,
                 unshare_net_build,
-            ),
-            BuildIsolation::None => legacy_makepkg_si(&build_dir, ask, oneshot, skippgp),
-        };
-
-        if build_ok {
-            crate::logbook::log_merge_one("abs", &format_atom(info), timer.elapsed());
-            crate::progress::line(crate::progress::Stage::Completed, stage_n, &stage_atom);
-        } else {
-            eprintln!(
-                "{} makepkg failed for '{}'",
-                ">>> Error:".red().bold(),
-                info.name
-            );
-            if !skippgp {
-                eprintln!(
-                    "{} if this failed on a missing PGP key not listed in validpgpkeys, \
-                    find the key ID in the error above and run:",
-                    ">>> Hint:".yellow().bold()
-                );
-                eprintln!(
-                    ">>>   gpg --keyserver {} --recv-keys <key-id>",
-                    PGP_KEYSERVER
-                );
-                eprintln!(
-                    ">>> Or retry with --autopgp (auto-import) or --skippgp (bypass checks)."
-                );
-            }
-            all_ok = false;
-            crate::runtime::record_failure(&info.name, "ABS build failed");
-            let left = pkg_infos.len() - (i + 1);
-            if !crate::runtime::keep_going() && left > 0 {
-                eprintln!(
-                    "{} stopping after the first failure - {} package(s) not attempted. Pass {} to build the rest and get a summary at the end.",
-                    ">>> Error:".red().bold(),
-                    left,
-                    "--keep-going".cyan()
-                );
-                let _ = std::fs::remove_dir_all(&pkg_dir);
-                break;
+                pkgbuild_view,
+            ) {
+                all_ok = false;
+                if !crate::runtime::keep_going() {
+                    break;
+                }
             }
         }
-
-        let _ = std::fs::remove_dir_all(&pkg_dir);
+        return all_ok;
     }
 
-    all_ok
+    use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+    use std::sync::{Arc, Mutex};
+
+    let all_ok = Arc::new(AtomicBool::new(true));
+    let queue: Arc<Mutex<Vec<PkgInfo>>> = Arc::new(Mutex::new(pkg_infos.to_vec()));
+    let workers = jobsa.min(pkg_infos.len());
+
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let queue = queue.clone();
+            let all_ok = all_ok.clone();
+            scope.spawn(move || loop {
+                if !all_ok.load(AtomicOrdering::Relaxed) && !crate::runtime::keep_going() {
+                    break;
+                }
+                let info = {
+                    let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
+                    q.pop()
+                };
+                let Some(info) = info else { break };
+                if !abs_build_one(
+                    &info,
+                    build_base,
+                    ask,
+                    oneshot,
+                    skippgp,
+                    edit,
+                    autopgp,
+                    skip_srcinfo_regen,
+                    isolation,
+                    unshare_net_build,
+                    pkgbuild_view,
+                ) {
+                    all_ok.store(false, AtomicOrdering::Relaxed);
+                    if !crate::runtime::keep_going() {
+                        let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
+                        q.clear();
+                        break;
+                    }
+                }
+            });
+        }
+    });
+
+    all_ok.load(AtomicOrdering::Relaxed)
+}
+
+/// Shared --jobsa pool for mixed abs/ + aur/ builds (both sources at once).
+/// Official-repo packages are expected to be installed already.
+pub(crate) fn source_builds_parallel(
+    abs_pkgs: &[String],
+    aur_pkgs: &[String],
+    oneshot: bool,
+    skippgp: bool,
+    edit: bool,
+    autopgp: bool,
+    no_sandbox: bool,
+    skip_srcinfo_regen: bool,
+    unshare_net_build: bool,
+    pkgbuild_view: bool,
+    ask_aur: bool,
+) -> bool {
+    #[derive(Clone)]
+    enum Job {
+        Abs(PkgInfo),
+        Aur(String),
+    }
+
+    let isolation = choose_build_isolation(no_sandbox);
+
+    // Prepare ABS infos + build base.
+    let abs_infos: Vec<PkgInfo> = abs_pkgs
+        .iter()
+        .filter_map(|bare| {
+            if !validate_pkg(bare) || bare.contains('/') {
+                eprintln!(">>> Error: invalid package name '{}' - skipping", bare);
+                return None;
+            }
+            if let Some(entry) = crate::mask::find(bare, Some("abs")) {
+                eprintln!(
+                    "{} '{}' is masked by {}",
+                    ">>> Error:".red().bold(),
+                    bare,
+                    entry.describe()
+                );
+                crate::runtime::record_failure(bare, "masked");
+                return None;
+            }
+            let version = abs_get_version(bare);
+            let status = pkg_status(bare, &version);
+            Some(PkgInfo {
+                name: bare.clone(),
+                version,
+                repo: "abs".to_string(),
+                status,
+            })
+        })
+        .collect();
+
+    if !abs_infos.is_empty() {
+        for bin in &[PKGCTL_BIN, MAKEPKG_BIN] {
+            if !std::path::Path::new(bin).exists() {
+                eprintln!(">>> Fatal: required binary not found: {}", bin);
+                return false;
+            }
+        }
+        if !warn_critical_libc(
+            &abs_infos.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
+            "ABS",
+        ) {
+            return false;
+        }
+    }
+    if !aur_pkgs.is_empty() {
+        if !warn_critical_libc(aur_pkgs, "AUR") {
+            return false;
+        }
+        if !std::path::Path::new("/usr/bin/git").exists() {
+            eprintln!(
+                "{} required binary not found: /usr/bin/git",
+                ">>> Fatal:".red().bold()
+            );
+            return false;
+        }
+        crate::security::scan_aur_pkgbuilds_or_abort(aur_pkgs);
+    }
+
+    let abs_base = abs_build_base();
+    if !abs_infos.is_empty() {
+        if abs_base.exists() {
+            if let Err(e) = clear_build_base(&abs_base) {
+                eprintln!(
+                    "{} could not clear stale ABS build directory {}: {}",
+                    ">>> Fatal:".red().bold(),
+                    abs_base.display(),
+                    e
+                );
+                return false;
+            }
+        }
+        let _ = std::fs::create_dir_all(&abs_base);
+    }
+
+    let aur_base = aur_build_base();
+    if !aur_pkgs.is_empty() {
+        if aur_base.exists() {
+            if let Err(e) = clear_build_base(&aur_base) {
+                eprintln!(
+                    "{} could not clear stale AUR build directory {}: {}",
+                    ">>> Fatal:".red().bold(),
+                    aur_base.display(),
+                    e
+                );
+                return false;
+            }
+        }
+        if std::fs::create_dir_all(&aur_base).is_err() {
+            eprintln!(
+                "{} could not create AUR build directory {}",
+                ">>> Fatal:".red().bold(),
+                aur_base.display()
+            );
+            return false;
+        }
+    }
+
+    let mut jobs: Vec<Job> = abs_infos.iter().cloned().map(Job::Abs).collect();
+    jobs.extend(aur_pkgs.iter().cloned().map(Job::Aur));
+    if jobs.is_empty() {
+        return true;
+    }
+
+    crate::progress::reserve(jobs.len());
+
+    // Interactive edit/view forces serial.
+    let jobsa = if edit || pkgbuild_view {
+        1
+    } else {
+        crate::runtime::get().jobsa.max(1) as usize
+    };
+
+    use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+    use std::sync::{Arc, Mutex};
+
+    let all_ok = Arc::new(AtomicBool::new(true));
+    let queue: Arc<Mutex<Vec<Job>>> = Arc::new(Mutex::new(jobs));
+    let workers = jobsa.min(queue.lock().map(|q| q.len()).unwrap_or(1).max(1));
+
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let queue = queue.clone();
+            let all_ok = all_ok.clone();
+            let abs_base = &abs_base;
+            let aur_base = &aur_base;
+            scope.spawn(move || loop {
+                if !all_ok.load(AtomicOrdering::Relaxed) && !crate::runtime::keep_going() {
+                    break;
+                }
+                let job = {
+                    let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
+                    q.pop()
+                };
+                let Some(job) = job else { break };
+                let ok = match job {
+                    Job::Abs(info) => abs_build_one(
+                        &info,
+                        abs_base,
+                        false,
+                        oneshot,
+                        skippgp,
+                        edit,
+                        autopgp,
+                        skip_srcinfo_regen,
+                        isolation,
+                        unshare_net_build,
+                        pkgbuild_view,
+                    ),
+                    Job::Aur(pkg) => {
+                        let mut building = HashSet::new();
+                        let mut built = HashMap::new();
+                        let timer = crate::logbook::Timer::start();
+                        let result = resolve_and_build_aur(
+                            &pkg,
+                            aur_base,
+                            ask_aur,
+                            skippgp,
+                            oneshot,
+                            edit,
+                            true,
+                            skip_srcinfo_regen,
+                            isolation,
+                            unshare_net_build,
+                            &mut building,
+                            &mut built,
+                            pkgbuild_view,
+                        );
+                        if result.is_some() {
+                            crate::logbook::log_merge_one("aur", &pkg, timer.elapsed());
+                            true
+                        } else {
+                            crate::runtime::record_failure(&pkg, "AUR build failed");
+                            false
+                        }
+                    }
+                };
+                if !ok {
+                    all_ok.store(false, AtomicOrdering::Relaxed);
+                    if !crate::runtime::keep_going() {
+                        let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
+                        q.clear();
+                        break;
+                    }
+                }
+            });
+        }
+    });
+
+    all_ok.load(AtomicOrdering::Relaxed)
 }
 
 // ── --install-pkgbuild: install an arbitrary local PKGBUILD checkout ──────────
@@ -3215,6 +3644,11 @@ pub(crate) fn print_system_info() {
         println!("KiB Mem:    {} total, {} free", mem_total, mem_free);
         println!("KiB Swap:   {} total, {} free", swap_total, swap_free);
     }
+    let rt = crate::runtime::get();
+    println!(
+        "Jobs:       --jobsr={} (repo), --jobsa={} (aur/abs)",
+        rt.jobsr, rt.jobsa
+    );
     println!();
 
     println!("Repositories:");
@@ -3273,13 +3707,7 @@ pub(crate) fn print_system_info() {
     // order they actually apply.
     let cfg = crate::runtime::config();
     if cfg.files.is_empty() {
-        println!(
-            "make.conf: none found ({}, {})",
-            crate::config::SYSTEM_CONF,
-            crate::config::user_conf_path()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "~/.config/emerge/make.conf".to_string())
-        );
+        println!("make.conf: none found ({})", crate::config::SYSTEM_CONF);
     } else {
         println!(
             "make.conf: {}",
@@ -3305,6 +3733,19 @@ pub(crate) fn print_system_info() {
                 .cloned()
                 .unwrap_or_else(|| "?".to_string());
             println!("    {}=\"{}\"  (overrides makepkg.conf)", key, shown);
+        }
+        // BUILDENV/OPTIONS that only FEATURES touched.
+        let mut seen: Vec<&str> = cfg.build_vars.iter().map(|(k, _)| k.as_str()).collect();
+        for (arr, _) in crate::config::feature_edits(cfg) {
+            if seen.contains(&arr) {
+                continue;
+            }
+            seen.push(arr);
+            let shown = resolved
+                .get(arr)
+                .cloned()
+                .unwrap_or_else(|| "?".to_string());
+            println!("    {}=\"{}\"  (from FEATURES)", arr, shown);
         }
     }
 

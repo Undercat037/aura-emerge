@@ -6,44 +6,42 @@
 //! hashes its own root-owned copy and refuses on mismatch. So the bytes
 //! that get installed are the bytes that were audited.
 
-use std::cell::RefCell;
 use std::fs::{self, OpenOptions};
 use std::io::{self, ErrorKind};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
+use std::sync::Mutex;
 
 use crate::helper::client::{Client, ClientError};
 use crate::helper::sha256;
 use crate::helper::validate::{self, FileOpts};
 
-thread_local! {
-    static HELPER: RefCell<Option<Client>> = const { RefCell::new(None) };
-}
+/// Process-wide helper: one sudo prompt, safe across worker threads
+/// (parallel --jobsr / --jobsa).
+static HELPER: Mutex<Option<Client>> = Mutex::new(None);
 
 /// Runs `f` on the shared helper, starting it on first use. A dead
 /// connection is dropped, so the next call starts a fresh helper.
 pub(crate) fn with_helper<T>(
     f: impl FnOnce(&mut Client) -> Result<T, ClientError>,
 ) -> Result<T, ClientError> {
-    HELPER.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        if slot.is_none() {
-            *slot = Some(Client::start()?);
-        }
-        let r = match slot.as_mut() {
-            Some(c) => f(c),
-            None => Err(ClientError::Broken),
-        };
-        let dead = match &r {
-            Err(ClientError::Broken) => true,
-            Err(ClientError::Proto(e)) => e.is_fatal(),
-            _ => false,
-        };
-        if dead {
-            *slot = None;
-        }
-        r
-    })
+    let mut slot = HELPER.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.is_none() {
+        *slot = Some(Client::start()?);
+    }
+    let r = match slot.as_mut() {
+        Some(c) => f(c),
+        None => Err(ClientError::Broken),
+    };
+    let dead = match &r {
+        Err(ClientError::Broken) => true,
+        Err(ClientError::Proto(e)) => e.is_fatal(),
+        _ => false,
+    };
+    if dead {
+        *slot = None;
+    }
+    r
 }
 
 /// A file as it was when it got audited.

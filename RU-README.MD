@@ -11,9 +11,9 @@
 [en](README.MD) | [ua](UA-README.MD) | ru
 </div>
 
-> Автономный пакетный менеджер в стиле Gentoo `emerge` для Arch Linux — ставит из официальных репозиториев, AUR и ABS; перед сборкой сканирует PKGBUILD на признаки атак на цепочку поставок; недоверенные шаги сборки выполняет в песочнице `bwrap`.
+> Автономный менеджер пакетов `emerge` в стиле Gentoo для Arch Linux: ставит пакеты из официальных репозиториев, AUR и ABS; перед сборкой сканирует PKGBUILD на признаки атак на цепочку поставок; ненадёжные шаги сборки выполняет внутри песочницы `bwrap`.
 
-Пакеты учитываются в файле `world` — поставил один раз, отслеживается всегда.
+Пакеты учитываются в файле `world` - установил один раз, отслеживается всегда.
 
 ## Установка
 
@@ -29,7 +29,7 @@ makepkg -si
 ```
 
 <details>
-<summary><h3>Вручную / makepkg (нестабильно)</h3></summary>
+<summary><h3>Вручную/makepkg (нестабильно)</h3></summary>
 
 ### Make
 ```bash
@@ -59,126 +59,138 @@ makepkg -si
 
 **Зависимости:** `git`, `bubblewrap` (песочница сборки для AUR/ABS)  
 **Опционально:**
-- `devtools` — поддержка `--abs` (`pkgctl repo clone`)
-- `gnupg` — автоматический импорт PGP-ключей (`--autopgp`)
+- `devtools` - поддержка `--abs` (`pkgctl repo clone`)
+- `gnupg` - автоматический импорт PGP-ключей (`--autopgp`)
 
 ## Gentoo → Arch: аналог make.conf
 
-Arch has no USE flags, but compilation can be tuned the same way as [Gentoo](https://wiki.gentoo.org/wiki/Main_Page)'s `/etc/portage/make.conf` via `/etc/makepkg.conf`:
+В Arch нет USE-флагов, но компиляцию можно настроить так же, как в `/etc/portage/make.conf` у [Gentoo](https://wiki.gentoo.org/wiki/Main_Page), - через `/etc/makepkg.conf`:
 
 ```bash
 sudo nvim /etc/makepkg.conf
 ```
 
-| Gentoo (`make.conf`)         | Arch (`makepkg.conf`)         | Purpose                      |
-|------------------------------|-------------------------------|------------------------------|
-| `CFLAGS="-O2 -march=native"` | `CFLAGS="-O2 -march=native"`  | Compiler optimisation flags  |
-| `CXXFLAGS="-O2 -march=..."`  | `CXXFLAGS="-O2 -march=..."`   | C++ compiler flags           |
-| `RUSTFLAGS="-C opt-level=3"` | `RUSTFLAGS="-C opt-level=3"`  | Rust compiler flags          |
-| `MAKEOPTS="-j$(nproc)"`      | `MAKEFLAGS="-j$(nproc)"`      | Parallel build jobs          |
-| `USE="lto"`                  | `OPTIONS+=(lto)`              | Link-time optimisation       |
-| `FEATURES="ccache"`          | `BUILDENV+=(ccache)`          | Build cache                  |
-| `PORTDIR` / `PKGDIR`         | `PKGDEST`, `SRCDEST`          | Build artefact directories   |
+| Gentoo (`make.conf`)         | Arch (`makepkg.conf`)         | Назначение                       |
+|------------------------------|-------------------------------|----------------------------------|
+| `CFLAGS="-O2 -march=native"` | `CFLAGS="-O2 -march=native"`  | Флаги оптимизации компилятора    |
+| `CXXFLAGS="-O2 -march=..."`  | `CXXFLAGS="-O2 -march=..."`   | Флаги компилятора C++            |
+| `RUSTFLAGS="-C opt-level=3"` | `RUSTFLAGS="-C opt-level=3"`  | Флаги компилятора Rust           |
+| `MAKEOPTS="-j$(nproc)"`      | `MAKEFLAGS="-j$(nproc)"`      | Параллельные задачи сборки       |
+| `USE="lto"`                  | `OPTIONS+=(lto)`              | Оптимизация на этапе компоновки  |
+| `FEATURES="ccache"`          | `BUILDENV+=(ccache)`          | Кэш сборки                       |
+| `PORTDIR` / `PKGDIR`         | `PKGDEST`, `SRCDEST`          | Каталоги артефактов сборки       |
 
-See [GCC optimization flags](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html) and [rustc codegen options](https://doc.rust-lang.org/rustc/codegen-options/index.html).
+См. [флаги оптимизации GCC](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html) и [параметры кодогенерации rustc](https://doc.rust-lang.org/rustc/codegen-options/index.html).
 
-[**→ Example makepkg.conf**](misc/makepkg.conf)
+[**→ Пример makepkg.conf**](misc/makepkg.conf)
 
 ## make.conf
 
-`/etc/portage/make.conf` (and `~/.config/emerge/make.conf` for per-user overrides) is aura-emerge's own config file, separate from `makepkg.conf` - the Gentoo `make.conf` split between `EMERGE_DEFAULT_OPTS` and `CFLAGS` in one file. System file first, then the user one; last file to set a key wins.
+`/etc/portage/make.conf` — собственный конфигурационный файл aura-emerge (только system path), отдельный от `makepkg.conf`: как в Gentoo, где `EMERGE_DEFAULT_OPTS` и `CFLAGS` живут в одном `make.conf`.
 
 ```bash
 sudo nvim /etc/portage/make.conf
 ```
 
-```toml
-# Flags spliced into every invocation, before whatever's typed on the
-# command line (which always wins on a conflict). Disable for one run
-# with --ignore-default-opts.
-EMERGE_DEFAULT_OPTS = ["--pkgbuild-view", "--unshare-net-build"]
+```bash
+# Флаги, подставляемые в каждый запуск перед тем, что набрано в
+# командной строке (при конфликте командная строка всегда главнее).
+# Отключить для одного запуска: --ignore-default-opts.
+EMERGE_DEFAULT_OPTS="--pkgbuild-view --unshare-net-build"
 
-# Build flags, applied via a generated makepkg.conf (makepkg --config) -
-# override /etc/makepkg.conf without touching it.
-[build]
-CFLAGS = "-march=native -O2 -pipe"
-CXXFLAGS = "$CFLAGS"
-RUSTFLAGS = "-C target-cpu=native"
-MAKEFLAGS = "-j$(nproc)"
-NINJAFLAGS = "-j$(nproc)"
-OPTIONS = ["strip", "docs", "!debug", "lto"]
-BUILDENV = ["!distcc", "color", "check", "!sign"]
+# Флаги сборки, применяются через сгенерированный makepkg.conf
+# (makepkg --config) - переопределяют /etc/makepkg.conf, не трогая его.
+CFLAGS="-march=native -O2 -pipe"
+CXXFLAGS="$CFLAGS"
+RUSTFLAGS="-C target-cpu=native"
+MAKEFLAGS="-j$(nproc)"
+NINJAFLAGS="-j$(nproc)"
+OPTIONS=(strip docs !debug lto)
+BUILDENV=(!distcc color check !sign)
+
+# Переключатели в стиле Portage, переводятся в makepkg.
+FEATURES="ccache -test"
 ```
 
-Recognized keys: `EMERGE_DEFAULT_OPTS` at the top level, and in `[build]`: `CFLAGS`, `CXXFLAGS`, `CPPFLAGS`, `LDFLAGS`, `RUSTFLAGS`, `MAKEFLAGS`, `NINJAFLAGS`, `BUILDENV`, `OPTIONS`. Build keys are also accepted at the top level, outside `[build]`.
+Распознаваемые ключи: `EMERGE_DEFAULT_OPTS`, `FEATURES`, `CFLAGS`, `CXXFLAGS`, `CPPFLAGS`, `LDFLAGS`, `RUSTFLAGS`, `MAKEFLAGS`, `NINJAFLAGS`, `BUILDENV`, `OPTIONS`. Синтаксис плоский, как присваивание в bash: `KEY="..."` или `KEY=(a b c)`.
 
-Scalars and lists are interchangeable everywhere - a list is joined with spaces, a string is split on them. Values are shell-expanded when makepkg sources the generated config, so `-j$(nproc)` works, and so does a reference to another key set above it, like `CXXFLAGS = "$CFLAGS"`; a TOML literal string (`'\$FOO'`) keeps a dollar sign literal.
+Токены `FEATURES` (`-name` выключает токен), у которых есть аналог в makepkg, при сборке вносятся в системные массивы; запись, которую вы сами указали в `BUILDENV`/`OPTIONS`, главнее:
 
-`EMERGE_DEFAULT_OPTS` only accepts modifier flags (an allowlist: `--ask`, `--verbose`, `--devel`, `--tree`, `--searchdesc`, `--exclude=<atom>`, and similar - see the [example file](misc/make.conf)) - it can't turn every run into `--unmerge`. Conflicting pairs (`--aur`/`--abs`, `--aur`/`--only-repos`, `--no-sandbox`/`--unshare-net-build`, `--skippgp`/`--autopgp`, `--select`/`--deselect`) are rejected if both end up set, whether typed or from the config; a config default that conflicts with something typed on the command line is dropped instead, since the command line is the more specific intent. `--abs` and `--only-repos` are **not** a conflict - ABS builds an official-repo package from its own source, so the two agree.
+| `FEATURES`   | makepkg                  |
+|--------------|--------------------------|
+| `ccache`     | `BUILDENV` `ccache`      |
+| `distcc`     | `BUILDENV` `distcc`      |
+| `test`       | `BUILDENV` `check`       |
+| `nostrip`    | `OPTIONS` `!strip`       |
+| `splitdebug` | `OPTIONS` `debug`        |
 
-`--info` shows what was read and the effective, shell-expanded value of each override.
+Скаляры и списки взаимозаменяемы везде: список склеивается через пробел, строка разбивается по пробелам. Значения раскрываются оболочкой, когда makepkg читает сгенерированный конфиг, поэтому `-j$(nproc)` работает, как и ссылка на другой ключ, заданный выше, например `CXXFLAGS="$CFLAGS"`; значение в одинарных кавычках (`'\$FOO'`) оставляет знак доллара как есть.
 
-[**→ Example make.conf**](misc/make.conf)
+`EMERGE_DEFAULT_OPTS` принимает только флаги-модификаторы (белый список: `--ask`, `--verbose`, `--devel`, `--tree`, `--searchdesc`, `--exclude=<atom>` и подобные - см. [файл-пример](misc/make.conf)), так что превратить каждый запуск в `--unmerge` нельзя. Конфликтующие пары (`--aur`/`--abs`, `--aur`/`--repos`, `--no-sandbox`/`--unshare-net-build`, `--skippgp`/`--autopgp`, `--select`/`--deselect`) отклоняются, если заданы обе, неважно - набраны или пришли из конфига; значение из конфига, конфликтующее с набранным в командной строке, отбрасывается, поскольку командная строка выражает более конкретное намерение. `--abs` и `--repos` **не** конфликтуют: ABS собирает пакет официального репозитория из его же исходников, так что они согласуются.
 
-## Mask (/etc/portage/package.mask)
+`--info` показывает, что было прочитано, и итоговое значение каждого переопределения после раскрытия оболочкой.
 
-Portage's `package.mask`, for Arch atoms: packages this machine never installs, checked even as a transitive AUR dependency and even when requested by name. One entry per line, `*` glob allowed, optional repo prefix, optional trailing `# reason`. `/etc/portage/package.mask` may be a single file or a directory: in a directory every regular file is read (any name, no extension needed, dotfiles skipped) in filename order. A leaf symlink is refused (`O_NOFOLLOW` open).
+[**→ Пример make.conf**](misc/make.conf)
+
+## Маска (/etc/portage/package.mask)
+
+`package.mask` из Portage, для атомов Arch: пакеты, которые эта машина никогда не ставит; проверяется даже для транзитивной зависимости из AUR и даже при запросе по имени. Одна запись на строку, допускается глоб `*`, необязательный префикс репозитория, необязательный завершающий `# комментарий`. `/etc/portage/package.mask` может быть одним файлом или каталогом: в каталоге читается каждый обычный файл (любое имя, расширение не нужно, файлы с точки пропускаются) в порядке имён. Символьная ссылка на конечный файл отклоняется (открытие с `O_NOFOLLOW`).
 
 ```
-ayugram-desktop-bin            # specific package, any source
-aur/*-bin                      # never install AUR -bin packages
-*-git                          # no devel packages on this box
-extra/nano                     # specific package from a specific repo
+ayugram-desktop-bin            # конкретный пакет, из любого источника
+aur/*-bin                      # никогда не ставить -bin пакеты из AUR
+*-git                          # на этой машине без devel-пакетов
+extra/nano                     # конкретный пакет из конкретного репозитория
 ```
 
-A masked package hard-stops the request - not a prompt, no override flag. Separate from `--exclude` below: a mask is a standing, persistent decision; `--exclude` is scoped to one run.
+Замаскированный пакет жёстко останавливает запрос - без вопроса и без флага для обхода. Это отдельно от `--exclude` ниже: маска - постоянное решение, а `--exclude` действует на один запуск.
 
 ## package.env (/etc/portage/package.env)
 
-Portage's `package.env`: build flags for individual packages. Each entry is an atom followed by one or more env file names from `/etc/portage/env/`; those files are laid over [make.conf](#makeconf) for that package's build only. `/etc/portage/package.env` may be a single file or a directory of files (any name, dotfiles skipped, read in filename order), same as `package.mask`.
+`package.env` из Portage: флаги сборки для отдельных пакетов. Каждая запись - атом и одно или несколько имён env-файлов из `/etc/portage/env/`; эти файлы накладываются поверх [make.conf](#makeconf) только на сборку этого пакета. `/etc/portage/package.env` может быть одним файлом или каталогом файлов (любое имя, файлы с точки пропускаются, чтение в порядке имён), как и `package.mask`.
 
 ```
 # /etc/portage/package.env/neovim
-abs/neovim  lto.conf            # repo prefix and '*' work like in package.mask
-aur/*-git   no-lto  fast        # several envs, applied in the order named
+abs/neovim  lto.conf            # префикс репозитория и '*' работают как в package.mask
+aur/*-git   no-lto  fast        # несколько env, применяются в указанном порядке
 ```
 
 ```bash
-# /etc/portage/env/lto.conf  (make.conf syntax; only build keys count)
+# /etc/portage/env/lto.conf  (синтаксис make.conf; значимы только ключи сборки)
 CFLAGS="-march=znver3 -O2 -pipe"
 MAKEFLAGS="-j16"
 OPTIONS="strip docs !debug lto"
 ```
 
-Layering: `make.conf`, then every matching entry in file and line order, then each env file in the order it is named. The last layer to set a key wins, and the key is replaced whole, not merged - an `OPTIONS` in an env file replaces the one from `make.conf`, so list every option you want. If two layers set the same key to different values, the build prints which one won. A package matches by its pkgbase or any of its pkgnames.
+Наложение: `make.conf`, затем каждая подходящая запись в порядке файлов и строк, затем каждый env-файл в том порядке, в котором он назван. Побеждает слой, задавший ключ последним, причём ключ заменяется целиком, а не сливается: `OPTIONS` в env-файле заменяет `OPTIONS` из `make.conf`, поэтому перечисляйте все нужные опции. Если два слоя задают один ключ разными значениями, сборка напишет, какое победило. Пакет подходит по своему pkgbase или любому из pkgname.
 
-Only AUR/ABS builds are affected (official packages aren't built here). `EMERGE_DEFAULT_OPTS` in an env file is ignored with a warning. A symlinked file, an invalid entry, or a missing env file is skipped with a warning naming the file and line; the rest still applies. The build prints the files it used: `>>> applying build flags from /etc/portage/make.conf, /etc/portage/env/lto.conf`.
+Затрагиваются только сборки AUR/ABS (официальные пакеты здесь не собираются). `EMERGE_DEFAULT_OPTS` в env-файле игнорируется с предупреждением. Файл-символьная ссылка, некорректная запись или отсутствующий env-файл пропускаются с предупреждением, где указаны файл и строка; остальное применяется. Сборка выводит использованные файлы: `>>> applying build flags from /etc/portage/make.conf, /etc/portage/env/lto.conf`.
 
 ## --exclude / --keep-going
 
-`--exclude <atom>` (repeatable, or comma-separated) leaves a package out of the current run - like `--exclude` in Portage. Applies to installs, `-u` (via `pacman --ignore`), `@world` provisioning, `--depclean`/`--prune` (protects from removal), and `--revdep-rebuild`.
+`--exclude <atom>` (повторяемый или через запятую) исключает пакет из текущего запуска - как `--exclude` в Portage. Действует на установки, `-u` (через `pacman --ignore`), подготовку `@world`, `--depclean`/`--prune` (защищает от удаления) и `--revdep-rebuild`.
 
 ```bash
-emerge -u --exclude linux --exclude aur/ayugram-desktop-bin   # upgrade everything except these
-emerge --exclude firefox @world                               # provision, skip firefox even if missing
+emerge -u --exclude linux --exclude aur/ayugram-desktop-bin   # обновить всё, кроме этих
+emerge --exclude firefox @world                               # подготовка, пропустить firefox, даже если его нет
 ```
 
-`--keep-going` doesn't stop a batch (`@world`, `-u`, `--batchinstall`, multi-package installs) at the first failure - it keeps going, collects what failed, and prints a summary at the end with a non-zero exit. `--resume` after a `--keep-going` run retries only the packages that failed, not the whole batch.
+`--keep-going` не останавливает пакетную операцию (`@world`, `-u`, `--batchinstall`, установку нескольких пакетов) на первой ошибке: она продолжается, запоминает сбои и в конце печатает сводку с ненулевым кодом выхода. `--resume` после запуска с `--keep-going` повторяет только упавшие пакеты, а не весь пакет целиком.
 
 ```bash
-emerge -u --keep-going                # full upgrade, don't stop on one bad AUR package
+emerge -u --keep-going                # полное обновление, не останавливаться на одном плохом пакете из AUR
 emerge --batchinstall pkgs.txt --keep-going
-emerge --resume                       # retries just what failed last time
+emerge --resume                       # повторяет только то, что упало в прошлый раз
 ```
 
 ## -t/--tree, --deep
 
-`-t`/`--tree` shows the plan (with `-p`/`--pretend`, or right before a real install) as a dependency tree instead of a flat list, `emerge -pt`-style. One level of nesting by default - what was typed at depth 0, whatever it pulled in as a dependency indented under it - attributed by cross-referencing `pacman -Si`'s "Depends On" for each requested package against everything else in the plan. Add `--deep` to nest through however many levels the actual dependency chain goes, or `--deep=N` to cap it at N levels, instead of stopping at direct deps.
+`-t`/`--tree` показывает план (с `-p`/`--pretend` или прямо перед реальной установкой) в виде дерева зависимостей вместо плоского списка, как `emerge -pt`. По умолчанию один уровень вложенности: набранное - на глубине 0, всё, что оно притянуло как зависимости, - с отступом под ним; принадлежность определяется сопоставлением «Depends On» из `pacman -Si` для каждого запрошенного пакета со всем остальным в плане. Добавьте `--deep`, чтобы вложенность шла на сколько уровней уходит реальная цепочка зависимостей, или `--deep=N`, чтобы ограничить её N уровнями вместо остановки на прямых зависимостях.
 
 ```bash
-emerge -apt noctalia --aur     # ask + pretend + tree: preview before building
-emerge -pt noctalia --aur --deep   # same, but nested all the way down
-emerge deepin-session --ask --tree --deep=3   # install, tree capped at 3 levels
+emerge -apt noctalia --aur     # ask + pretend + tree: просмотр перед сборкой
+emerge -pt noctalia --aur --deep   # то же, но вложенность до самого низа
+emerge deepin-session --ask --tree --deep=3   # установка, дерево не глубже 3 уровней
 ```
 
 ```
@@ -187,11 +199,11 @@ emerge deepin-session --ask --tree --deep=3   # install, tree capped at 3 levels
 [ebuild  N ]   `-- sdbus-cpp-2.3.1-1.1
 ```
 
-A dependency pacman pulled in that isn't literally named in anyone's "Depends On" (resolved via a `provides`, or beyond `--deep`'s reach) still shows, just without a specific parent to nest under - real information, not a fabricated tree. For a pure `--aur` install, the plan step doesn't resolve transitive AUR-only dependencies yet, so `-t` there is currently flat, the same as without it.
+Зависимость, которую притянул pacman, но которая буквально не названа ни в чьём «Depends On» (разрешена через `provides` или лежит за пределами `--deep`), всё равно показывается, просто без конкретного родителя, под которым её можно вложить: это реальная информация, а не выдуманное дерево. Для чистой установки через `--aur` шаг плана пока не разрешает транзитивные зависимости, присутствующие только в AUR, поэтому `-t` там сейчас плоский, как и без него.
 
-## Merge/unmerge log
+## Журнал merge/unmerge
 
-`/var/log/emerge.log` - Portage's `emerge.log`, for pacman/AUR/ABS atoms. Append-only, one line per event, written the same way other root-owned `/etc/portage/*` state is (`sudo tee`, best-effort - a failed log write never fails the merge/unmerge that already happened).
+`/var/log/emerge.log` - `emerge.log` из Portage, для атомов pacman/AUR/ABS. Только дозапись, одна строка на событие; пишется так же, как прочее состояние `/etc/portage/*`, принадлежащее root (`sudo tee`, по возможности - неудачная запись в журнал никогда не проваливает merge/unmerge, который уже произошёл).
 
 ```
 2026-09-21 08:51:44  MERGE    aur    noctalia-5.1.0-1.1        (12s)
@@ -200,113 +212,115 @@ A dependency pacman pulled in that isn't literally named in anyone's "Depends On
 2026-09-21 09:10:05  UNMERGE  -      old-package-2.0-1
 ```
 
-Duration is only ever real: AUR/ABS packages build one at a time in this tool's own loop, so each gets its own timer; a `pacman -S`/`-Syu` transaction is one exit code for the whole batch, so that line carries every atom in it and the batch's own total, not a guessed-at split. `--info` shows a running total (merge/unmerge counts, cumulative build time).
+Длительность всегда настоящая: пакеты AUR/ABS собираются по одному в собственном цикле этого инструмента, поэтому у каждого свой таймер; транзакция `pacman -S`/`-Syu` - это один код возврата на всю пачку, так что такая строка содержит все атомы и общее время пачки, а не выдуманное разбиение. `--info` показывает накопленные итоги (число merge/unmerge, суммарное время сборки).
 
-## Usage
+## Использование
 
 ```bash
-emerge neovim                              # official repos, falls back to AUR
-emerge neovim-git --aur                    # AUR only (AUR-only deps built recursively)
-emerge ayugram-desktop-bin --aur --sudoloop   # same, but keep sudo warm through the whole recursive build
-emerge neovim --only-repos                 # official repos only, never touch AUR
-emerge neovim --abs                        # build from ABS (pkgctl), in bwrap sandbox
-emerge neovim --abs --no-sandbox           # ABS without sandbox (plain makepkg -si)
-emerge neovim --abs --skippgp              # ABS, skip PGP signature checks
-emerge neovim --abs --autopgp              # ABS, auto-import missing PGP keys
-emerge neovim --abs --edit                 # ABS, edit PKGBUILD ($EDITOR), regenerates .SRCINFO
-emerge neovim-git --aur --edit             # AUR, edit PKGBUILD, regenerates .SRCINFO
-emerge neovim-git --aur --edit --skip-srcinfo-regen  # edit without regenerating .SRCINFO
-emerge neovim-git --aur --unshare-net-build     # no network during build()/check()/package()
-emerge -c                                  # remove orphans (depclean)
-emerge -C neovim                           # remove package (unmerge)
-emerge @world                              # provision: install missing entries from world
-emerge @world --err-install                   # also retry Err/ (unknown-source) entries normally
-emerge -u @world                           # full system upgrade (repos + AUR); does not read world
-emerge -u @world --refresh                 # upgrade with forced -Syy first
-emerge --sync                              # sync package databases
-emerge @game-kit                           # custom set from /etc/portage/sets/game-kit[.set]
-emerge @game-kit neovim                    # sets + plain packages
-emerge --list-sets                         # list available @sets
-emerge --info                              # system info (Gentoo-style emerge --info)
-emerge --news                              # Arch Linux news, flags unread
-emerge --news 3                            # read item 3 in full
-emerge --news all                          # mark all as read
-emerge neovim-git --aur --edit --pkgbuild-view  # view/diff the PKGBUILD too, on top of --edit
-emerge neovim --abs --pkgbuild-view        # same for an ABS build
-emerge --install-pkgbuild ~/src/my-pkg        # build+install a local PKGBUILD checkout (scanner + bwrap, like AUR/ABS)
+emerge neovim                              # официальные репозитории, при неудаче - AUR
+emerge neovim-git --aur                    # только AUR (зависимости только из AUR собираются рекурсивно)
+emerge ayugram-desktop-bin --aur --sudoloop   # то же, но sudo держится «тёплым» на всю рекурсивную сборку
+emerge neovim --repos                 # только официальные репозитории, AUR не трогать
+emerge neovim --abs                        # сборка из ABS (pkgctl), в песочнице bwrap
+emerge neovim --abs --no-sandbox           # ABS без песочницы (обычный makepkg -si)
+emerge neovim --abs --skippgp              # ABS, пропустить проверку PGP-подписей
+emerge neovim --abs --autopgp              # ABS, автоимпорт недостающих PGP-ключей
+emerge neovim --abs --edit                 # ABS, правка PKGBUILD ($EDITOR), перегенерирует .SRCINFO
+emerge neovim-git --aur --edit             # AUR, правка PKGBUILD, перегенерирует .SRCINFO
+emerge neovim-git --aur --edit --skip-srcinfo-regen  # правка без перегенерации .SRCINFO
+emerge neovim-git --aur --unshare-net-build     # без сети во время build()/check()/package()
+emerge -c                                  # удалить сирот (depclean)
+emerge -C neovim                           # удалить пакет (unmerge)
+emerge @world                              # подготовка: поставить недостающее из world
+emerge @world --err-install                   # заодно обычным путём повторить записи Err/ (неизвестный источник)
+emerge -u @world                           # полное обновление системы (репозитории + AUR); world не читает
+emerge -u @world --refresh                 # обновление с принудительным -Syy в начале
+emerge --sync                              # синхронизировать базы пакетов
+emerge @game-kit                           # пользовательский набор из /etc/portage/sets/game-kit[.set]
+emerge @game-kit neovim                    # наборы + обычные пакеты
+emerge --list-sets                         # список доступных @наборов
+emerge --info                              # информация о системе (как emerge --info в Gentoo)
+emerge --news                              # новости Arch Linux, непрочитанные помечаются
+emerge --news 3                            # прочитать запись 3 целиком
+emerge --news all                          # пометить всё прочитанным
+emerge neovim-git --aur --edit --pkgbuild-view  # показать/сравнить и PKGBUILD, поверх --edit
+emerge neovim --abs --pkgbuild-view        # то же для сборки из ABS
+emerge --install-pkgbuild ~/src/my-pkg        # собрать+установить локальный PKGBUILD (сканер + bwrap, как AUR/ABS)
 emerge --install-pkgbuild ~/src/my-pkg --pkgbuild-view --skippgp
-emerge --scan neovim-git --aur              # audit only, no build
-emerge --install-pkgbuild ~/src/my-pkg --scan  # same, for a local checkout
-emerge -u --devel                           # full upgrade + upstream check for -git/-hg/-svn/-bzr
-emerge --check-devel                        # just report which devel packages moved upstream
-emerge -s neovim                           # search (repos + AUR)
-emerge -s neovim --only-repos              # search official repos only
-emerge --searchdesc neovim                 # search by description
-emerge -sv neovim                          # detailed package info
-emerge -sv neovim-git --aur                # detailed info from AUR only
-emerge -1 htop                             # install as dependency (not added to world)
-emerge -n neovim                           # do not reinstall if present (--noreplace)
-emerge -p neovim                           # dry run
-emerge -a neovim                           # ask before acting
-emerge --select neovim                     # add to world without installing
-emerge --deselect neovim                   # remove from world without unmerging
-emerge --prune                             # remove packages not in world
-emerge --regen                             # regenerate package metadata cache
-emerge --regen-world                       # re-resolve repo prefixes in world
-emerge --regen-sets @game-kit              # re-resolve prefixes for one custom set
-emerge --regen-sets @game-kit --regen-sort # same + alphabetically sort the file
-emerge --regen-world-from-explicit         # one-time migration from pacman -Qeq
-emerge --resume                            # resume interrupted transaction
-emerge --resume --skipfirst                # resume, skip first package
-emerge --undo                              # undo last install/unmerge
-emerge --clean-source-cache                # wipe persistent VCS source cache (-git/-hg/-svn)
-emerge @preserved-rebuild                  # check installed packages for missing deps
-emerge @preserved-rebuild -p               # pretend: list only
-emerge @preserved-rebuild -a               # ask before each pacman prompt
-emerge --batchinstall pkgs.txt              # mass-install from a list file
-emerge --batchinstall pkgs.txt --aur -a     # combine with any other flag
-emerge -u --exclude linux                   # upgrade, hold one package back
-emerge -u --keep-going                      # upgrade, don't stop on the first failure
-emerge --revdep-rebuild                     # find + fix broken library links
-emerge --revdep-rebuild -p                  # same, list only
+emerge --scan neovim-git --aur              # только аудит, без сборки
+emerge --install-pkgbuild ~/src/my-pkg --scan  # то же для локального каталога
+emerge -u --devel                           # полное обновление + проверка апстрима для -git/-hg/-svn/-bzr
+emerge --check-devel                        # только сообщить, какие devel-пакеты сдвинулись в апстриме
+emerge -s neovim                           # поиск: репозитории, затем ABS, затем AUR (отдельный блок на каждый)
+emerge -s neovim --repos                   # поиск только по официальным репозиториям
+emerge -s abs/neovim                       # поиск только по каталогу ABS (core/extra/multilib)
+emerge -s @fonts                           # откуда берётся каждый пакет набора: репо / aur / not found
+emerge -S neovim                           # поиск по описанию (--searchdesc)
+emerge -sv neovim                          # подробная информация о пакете
+emerge -sv neovim-git --aur                # подробная информация только из AUR
+emerge -1 htop                             # установить как зависимость (в world не добавляется)
+emerge -n neovim                           # не переустанавливать, если уже есть (--noreplace)
+emerge -p neovim                           # пробный прогон
+emerge -a neovim                           # спросить перед действием
+emerge --select neovim                     # добавить в world без установки
+emerge --deselect neovim                   # убрать из world без удаления
+emerge --prune                             # удалить пакеты, которых нет в world
+emerge --regen                             # пересоздать кэш метаданных пакетов
+emerge --regen-world                       # заново определить префиксы репозиториев в world
+emerge --regen-sets @game-kit              # заново определить префиксы для одного пользовательского набора
+emerge --regen-sets @game-kit --regen-sort # то же + отсортировать файл по алфавиту
+emerge --regen-world-from-explicit         # разовая миграция из pacman -Qeq
+emerge --resume                            # продолжить прерванную транзакцию
+emerge --resume --skipfirst                # продолжить, пропустив первый пакет
+emerge --undo                              # отменить последнюю установку/удаление
+emerge --clean-source-cache                # очистить постоянный кэш исходников VCS (-git/-hg/-svn)
+emerge @preserved-rebuild                  # проверить установленные пакеты на недостающие зависимости
+emerge @preserved-rebuild -p               # pretend: только список
+emerge @preserved-rebuild -a               # спрашивать перед каждым запросом pacman
+emerge --batchinstall pkgs.txt              # массовая установка из файла со списком
+emerge --batchinstall pkgs.txt --aur -a     # сочетается с любым другим флагом
+emerge -u --exclude linux                   # обновить, удержав один пакет
+emerge -u --keep-going                      # обновить, не останавливаясь на первой ошибке
+emerge --revdep-rebuild                     # найти и починить битые ссылки на библиотеки
+emerge --revdep-rebuild -p                  # то же, только список
 ```
 
-## Sandbox
+## Песочница
 
-**AUR and ABS** builds run PKGBUILD `pkgver()` / `prepare()` / `build()` / `check()` / `package()` inside [`bwrap`](https://github.com/containers/bubblewrap) (required; see `--no-sandbox` to opt out):
+Сборки **AUR и ABS** выполняют `pkgver()` / `prepare()` / `build()` / `check()` / `package()` из PKGBUILD внутри [`bwrap`](https://github.com/containers/bubblewrap) (обязательно; отказаться можно через `--no-sandbox`):
 
-- empty tmpfs over `/home` and `/run` (no real `$HOME`, no session D-Bus / ssh-agent / gpg-agent);
-- `--clearenv` plus a small allowlist (`PATH`, `TERM`, `LANG`, build destinations, …);
-- public-only GnuPG keyring copy (no private keys);
-- PKGBUILD and `*.install` re-bound read-only after the writable build dir bind;
-- writes only in the build dir (+ configured `PKGDEST` / `SRCDEST` / …);
-- network shared by default; other namespaces torn down;
-- `package()`'s `fakeroot` uses a nested uid-0 `bwrap`; the shim lives under `/var/tmp` (not under `/run` or the writable build dir).
+- пустой tmpfs поверх `/home` и `/run` (нет настоящего `$HOME`, нет сессионной D-Bus / ssh-agent / gpg-agent);
+- `--clearenv` плюс небольшой белый список (`PATH`, `TERM`, `LANG`, каталоги назначения сборки, …);
+- копия связки ключей GnuPG только с публичными ключами (без приватных);
+- PKGBUILD и `*.install` повторно монтируются только для чтения после монтирования каталога сборки на запись;
+- запись только в каталог сборки (+ настроенные `PKGDEST` / `SRCDEST` / …);
+- сеть по умолчанию общая; остальные пространства имён отключены;
+- `fakeroot` в `package()` использует вложенный `bwrap` с uid 0; шим лежит в `/var/tmp` (не в `/run` и не в каталоге сборки, доступном на запись).
 
-**Third gate before install:** the finished `*.pkg.tar.*` is audited (`bsdtar`) for setuid/setgid, `.INSTALL` scripts, and sensitive paths (alpm hooks, systemd units, sudoers, udev, …). `.INSTALL` content is re-scanned with the same PKGBUILD scanner. With `-a`/`--ask` you must confirm; with `--noconfirm` it warns and continues.
+**Третий барьер перед установкой:** готовый `*.pkg.tar.*` проверяется (`bsdtar`) на setuid/setgid, скрипты `.INSTALL` и чувствительные пути (хуки alpm, юниты systemd, sudoers, udev, …). Содержимое `.INSTALL` повторно сканируется тем же сканером PKGBUILD. С `-a`/`--ask` нужно подтвердить; с `--noconfirm` выдаётся предупреждение и работа продолжается.
 
-Dependency install (`pacman -S`) and the final `pacman -U` stay **outside** the sandbox — they do not run PKGBUILD code.
+Установка зависимостей (`pacman -S`) и финальный `pacman -U` остаются **вне** песочницы - они не выполняют код PKGBUILD.
 
-| Flag | Effect |
+| Флаг | Эффект |
 |------|--------|
-| `--no-sandbox` | Disable bwrap; plain `makepkg -si` |
-| `--unshare-net-build` | Download/`prepare()` keep network; `build()`/`check()`/`package()` run with network off |
+| `--no-sandbox` | Отключить bwrap; обычный `makepkg -si` |
+| `--unshare-net-build` | Загрузка/`prepare()` с сетью; `build()`/`check()`/`package()` выполняются без сети |
 
-`bubblewrap` is a hard dependency. If it is missing the build is refused; only an explicit `--no-sandbox` runs `makepkg` unisolated.
+`bubblewrap` - жёсткая зависимость. Если его нет, сборка отклоняется; только явный `--no-sandbox` запускает `makepkg` без изоляции.
 
-## Source cache (SRCDEST)
+## Кэш исходников (SRCDEST)
 
-For `-git` / `-hg` / `-svn` packages, aura-emerge defaults to a persistent `SRCDEST` under `~/.cache/aura-emerge/sources` (or `$XDG_CACHE_HOME/aura-emerge/sources`). Makepkg then does an incremental `git fetch` instead of a full re-clone every run.
+Для пакетов `-git` / `-hg` / `-svn` aura-emerge по умолчанию использует постоянный `SRCDEST` в `~/.cache/aura-emerge/sources` (или `$XDG_CACHE_HOME/aura-emerge/sources`). Тогда makepkg делает инкрементальный `git fetch` вместо полного повторного клонирования при каждом запуске.
 
 ```bash
-emerge --clean-source-cache   # delete that cache
+emerge --clean-source-cache   # удалить этот кэш
 ```
 
-If `makepkg.conf` already sets `SRCDEST`, that value is used instead.
+Если `makepkg.conf` уже задаёт `SRCDEST`, используется это значение.
 
-## Batch install
+## Пакетная установка
 
-`--batchinstall <FILE>` reads a plain-text package list and folds it into the normal package list before anything runs - same format as a [custom set](#custom-sets) (one atom per line, `#` comments allowed), but from any path you give directly, no need to register it under `/etc/portage/sets/` first.
+`--batchinstall <FILE>` читает текстовый список пакетов и вливает его в обычный список пакетов до начала работы: тот же формат, что у [пользовательского набора](#пользовательские-наборы) (один атом на строку, допускаются комментарии `#`), но из любого указанного вами пути, без предварительной регистрации в `/etc/portage/sets/`.
 
 ```
 # pkgs.txt
@@ -319,60 +333,60 @@ firefox
 emerge --batchinstall pkgs.txt
 ```
 
-Since it's folded in alongside `cli.packages`, it combines with every other flag exactly like typed-out names would (`-p`, `-a`, `--aur`, `--abs`, `--only-repos`, ...).
+Поскольку список вливается рядом с `cli.packages`, он сочетается со всеми остальными флагами точно так же, как набранные вручную имена (`-p`, `-a`, `--aur`, `--abs`, `--repos`, ...).
 
-## PKGBUILD review
+## Просмотр PKGBUILD
 
-`--pkgbuild-view` shows the PKGBUILD about to be built right before the build starts, and asks for confirmation - a diff against the last-shown copy of that pkgbase when one's cached under `~/.cache/aura-emerge/pkgbuild-view/`, the full file the first time. Declining offers to open it in `$EDITOR` right there instead of just skipping the package. Combines with `--edit` (which runs first, so the view/diff reflects whatever you just edited). Applies to `--aur`/plain AUR-fallback installs and `--abs`, always only for a directly-requested package - never for a recursively-pulled-in AUR dependency, and never for a batch path (`@world` provisioning, `-u`, `--undo`).
+`--pkgbuild-view` показывает PKGBUILD, который вот-вот будет собран, прямо перед началом сборки и просит подтверждения: diff с последней показанной копией этого pkgbase, если она закэширована в `~/.cache/aura-emerge/pkgbuild-view/`, а в первый раз - весь файл. При отказе предлагается открыть его в `$EDITOR` прямо там, а не просто пропустить пакет. Сочетается с `--edit` (тот выполняется первым, так что просмотр/diff отражают только что сделанные правки). Применяется к установкам через `--aur`/обычному откату на AUR и к `--abs`, всегда только для напрямую запрошенного пакета - никогда для рекурсивно притянутой зависимости из AUR и никогда для пакетных путей (подготовка `@world`, `-u`, `--undo`).
 
 ```bash
 emerge neovim-git --aur --pkgbuild-view
-emerge neovim --abs --edit --pkgbuild-view   # edit first, then view/diff the result
+emerge neovim --abs --edit --pkgbuild-view   # сначала правка, затем просмотр/diff результата
 ```
 
-`--install-pkgbuild <PATH>` builds and installs an arbitrary local PKGBUILD checkout through the same pipeline as an AUR/ABS install - scanner, then the bwrap sandbox - instead of a bare, unaudited `makepkg -si`. `PATH` must contain a `PKGBUILD`; if there's no `.SRCINFO` yet, one is generated (`makepkg --printsrcinfo`, same as `--edit` does) so dependencies resolve statically. Combines with `--pkgbuild-view`, `-a`/`--ask`, `-1`/`--oneshot`, `--skippgp`, `--no-sandbox`, `--unshare-net-build`, `--skip-srcinfo-regen`; not compatible with any package/`@set` argument or `--aur`/`--abs`. Recorded in `world` with the `Err/` prefix (source unknown - see [world](#worldset)) unless `-1`/`--oneshot` is also given.
+`--install-pkgbuild <PATH>` собирает и устанавливает произвольный локальный каталог с PKGBUILD через тот же конвейер, что и установка из AUR/ABS - сканер, затем песочница bwrap, - вместо голого непроверенного `makepkg -si`. В `PATH` должен лежать `PKGBUILD`; если `.SRCINFO` ещё нет, он генерируется (`makepkg --printsrcinfo`, как делает `--edit`), чтобы зависимости разрешались статически. Сочетается с `--pkgbuild-view`, `-a`/`--ask`, `-1`/`--oneshot`, `--skippgp`, `--no-sandbox`, `--unshare-net-build`, `--skip-srcinfo-regen`; несовместим с любым аргументом-пакетом/`@набором` и с `--aur`/`--abs`. Записывается в `world` с префиксом `Err/` (источник неизвестен - см. [world](#world)), если не указан также `-1`/`--oneshot`.
 
 ```bash
 emerge --install-pkgbuild ~/src/my-pkg
 emerge --install-pkgbuild ~/src/my-pkg --pkgbuild-view --skippgp
 ```
 
-`--scan` audits a PKGBUILD (+ `.install`) without building or installing anything - fetches straight from cgit for an AUR package name, or reads a local checkout directly with `--install-pkgbuild <PATH> --scan`. Same findings/report as the normal pre-build scan, minus the "Continue anyway?" gate (nothing to continue to). Exits non-zero on any finding, so it's usable in a script. Not yet wired up for `--abs`.
+`--scan` проверяет PKGBUILD (+ `.install`), ничего не собирая и не устанавливая: для имени пакета AUR берёт файлы прямо из cgit, для локального каталога читает его напрямую через `--install-pkgbuild <PATH> --scan`. Те же находки/отчёт, что и при обычном сканировании перед сборкой, только без вопроса «Continue anyway?» (продолжать некуда). Завершается с ненулевым кодом при любой находке, так что годится для скриптов. Для `--abs` пока не подключён.
 
 ```bash
 emerge --scan neovim-git --aur
 emerge --install-pkgbuild ~/src/my-pkg --scan
 ```
 
-## Devel package upstream check
+## Проверка апстрима devel-пакетов
 
-Arch's `-git`/`-hg`/`-svn`/`-bzr` convention has `pkgver()` compute the version at build time from the VCS history - but the version *recorded on the AUR page itself* only moves when the maintainer manually re-pushes it, which for an actively-developed package can lag real upstream activity by weeks or months. Plain `-u` only ever compares that recorded AUR version, so it routinely never flags these for a rebuild even when upstream has moved on.
+В соглашении Arch для `-git`/`-hg`/`-svn`/`-bzr` версию вычисляет `pkgver()` во время сборки по истории VCS, но версия, *записанная на самой странице AUR*, сдвигается только когда сопровождающий вручную перезаливает пакет, а для активно развиваемого проекта это может отставать от реального апстрима на недели и месяцы. Обычный `-u` сравнивает лишь эту записанную версию из AUR, поэтому такие пакеты регулярно не помечаются на пересборку, даже если апстрим давно ушёл вперёд.
 
-`--devel` (with `-u`) and `--check-devel` (standalone, report-only) close that gap: for every installed devel package, they parse the `git+` source URL straight out of its PKGBUILD and run `git ls-remote` against it directly - no local clone needed - comparing the result against the hash last seen (`~/.cache/aura-emerge/devel.state`). git-only for now; `-hg`/`-svn`/`-bzr` packages are recognized but reported as "couldn't determine" rather than silently skipped.
+`--devel` (с `-u`) и `--check-devel` (отдельно, только отчёт) закрывают этот разрыв: для каждого установленного devel-пакета они достают URL источника `git+` прямо из его PKGBUILD и выполняют по нему `git ls-remote` напрямую, без локального клона, сравнивая результат с хэшем, увиденным в прошлый раз (`~/.cache/aura-emerge/devel.state`). Пока только git; пакеты `-hg`/`-svn`/`-bzr` распознаются, но выводятся как «couldn't determine», а не молча пропускаются.
 
 ```bash
-emerge -u --devel        # normal full upgrade, plus rebuild any devel package whose upstream moved
-emerge --check-devel     # just report which ones moved, no rebuild
+emerge -u --devel        # обычное полное обновление + пересборка devel-пакетов, чей апстрим сдвинулся
+emerge --check-devel     # только сообщить, какие сдвинулись, без пересборки
 ```
 
 ## @preserved-rebuild
 
-Arch has no preserved-libs tracking. `@preserved-rebuild` collects every installed package’s declared dependencies (`pacman -Qi`), feeds the deduplicated list to `pacman -T`, and offers to reinstall unsatisfied ones via `pacman -S --asdeps` (so they don’t look “explicit” and get vacuumed into world by a later `--regen-world-from-explicit`).
+В Arch нет учёта preserved-libs. `@preserved-rebuild` собирает объявленные зависимости каждого установленного пакета (`pacman -Qi`), передаёт дедуплицированный список в `pacman -T` и предлагает переустановить неудовлетворённые через `pacman -S --asdeps` (чтобы они не выглядели «явными» и их не затянуло в world последующим `--regen-world-from-explicit`).
 
 ## --revdep-rebuild
 
-Not the same check as `@preserved-rebuild` above, which only sees *declared* dependencies via `pacman -T`. `--revdep-rebuild` reads installed ELF files directly (`DT_NEEDED`, `DT_RPATH`/`DT_RUNPATH`) and finds binaries linking against a `.so` that no longer exists - the classic post-`openssl`/`icu`/`boost`-bump breakage Gentoo handles via preserved-libs and Arch doesn't, out of the box.
+Это не та же проверка, что `@preserved-rebuild` выше, который видит только *объявленные* зависимости через `pacman -T`. `--revdep-rebuild` читает установленные ELF-файлы напрямую (`DT_NEEDED`, `DT_RPATH`/`DT_RUNPATH`) и находит бинарники, которые линкуются с уже не существующим `.so`: классическая поломка после обновления `openssl`/`icu`/`boost`, которую Gentoo решает через preserved-libs, а Arch «из коробки» - нет.
 
-Foreign (AUR/local) packages get rebuilt through the normal sandboxed path; official-repo packages can't be rebuilt on a binary distro, so their missing libraries are looked up in the file database (`pacman -F`) and the packages that provide them are offered for install instead. `--exclude` and the [mask](#mask-etcemergemask) both apply.
+Чужие (AUR/локальные) пакеты пересобираются обычным путём через песочницу; пакеты официальных репозиториев в бинарном дистрибутиве пересобрать нельзя, поэтому недостающие библиотеки ищутся в базе файлов (`pacman -F`), а пакеты, которые их предоставляют, предлагаются к установке. `--exclude` и [маска](#маска-etcportagepackagemask) действуют оба.
 
 ```bash
-emerge --revdep-rebuild       # scan, then ask before fixing anything
-emerge --revdep-rebuild -p    # scan only, list what's broken
+emerge --revdep-rebuild       # просканировать, затем спросить перед исправлением
+emerge --revdep-rebuild -p    # только скан, показать что сломано
 ```
 
 ## world
 
-Path: `/etc/portage/world`. Every explicitly installed package is added automatically and removed on unmerge. Editable by hand (one package per line).
+Путь: `/etc/portage/world`. Каждый явно установленный пакет добавляется автоматически и убирается при удалении. Можно править вручную (один пакет на строку).
 
 ```
 cachyos-extra-v3/rust-analyzer
@@ -383,75 +397,77 @@ abs/nano
 extra/firefox
 ```
 
-Prefixes: official repo name, `aur/`, `abs/`, `Err/` (source unknown).
+Префиксы: имя официального репозитория, `aur/`, `abs/`, `Err/` (источник неизвестен).
 
-> **On `Err/`:** used both for a genuinely local build with no traceable origin and for an `abs/`/`aur/` entry that later became unresolvable. `--regen-world` / `--regen-sets` preserve a known `abs/`/`aur/` prefix instead of collapsing it to `Err/` on the first re-resolution miss.
+> **Об `Err/`:** используется и для действительно локальной сборки без прослеживаемого происхождения, и для записи `abs/`/`aur/`, которая позже перестала разрешаться. `--regen-world` / `--regen-sets` сохраняют известный префикс `abs/`/`aur/`, а не сворачивают его в `Err/` при первом же промахе повторного разрешения.
 
-Batch installs no longer abort the whole request if one name is missing - the rest still install, and missing names are reported at the end with a non-zero exit code.
+Пакетные установки больше не прерывают весь запрос, если одного имени нет: остальное всё равно ставится, а отсутствующие имена выводятся в конце с ненулевым кодом выхода.
 
-### `@world` has two meanings
+### У `@world` два значения
 
-- **`emerge @world` (no `-u`)** - *provision*. Installs whatever `world` lists that isn’t already on the system; already-installed packages are left alone. Prefix decides the source. Keep `world` in dotfiles, clone on a fresh machine, run `emerge @world`.
-- **`emerge -u @world`** (or `emerge -u`) - *upgrade*. Upgrades everything already installed (repos + AUR). Does not read `world`.
-- **`emerge --sync`** - database refresh only (`-Sy` / `-Syy`).
+- **`emerge @world` (без `-u`)** - *подготовка*. Ставит всё, что указано в `world` и ещё не стоит в системе; уже установленные пакеты не трогаются. Источник определяет префикс. Держите `world` в dotfiles, клонируйте на новой машине, запускайте `emerge @world`.
+- **`emerge -u @world`** (или `emerge -u`) - *обновление*. Обновляет всё уже установленное (репозитории + AUR). `world` не читает.
+- **`emerge --sync`** - только обновление баз (`-Sy` / `-Syy`).
 
-## Custom sets
+## Пользовательские наборы
 
-`/etc/portage/sets/<name>` (or `<name>.set`) is invoked as `@<name>`:
+`/etc/portage/sets/<name>` (или `<name>.set`) вызывается как `@<name>`:
 
 ```
-# /etc/portage/sets/game-kit   (or game-kit.set)
+# /etc/portage/sets/game-kit   (или game-kit.set)
 steam
 lutris
 gamemode
 aur/protonup-qt
 ```
 
-One package per line, `#` comments allowed. If both `game-kit` and `game-kit.set` exist, `@game-kit` is rejected as ambiguous until one is removed. Sets combine freely:
+Один пакет на строку, допускаются комментарии `#`. Если существуют и `game-kit`, и `game-kit.set`, `@game-kit` отклоняется как неоднозначный, пока один из файлов не удалён. Наборы свободно комбинируются:
 
 ```bash
 emerge @game-kit @dev-tools neovim
 ```
 
-`emerge --list-sets` and shell completion (`emerge @<TAB>`) list available sets.
+`emerge --list-sets` и автодополнение оболочки (`emerge @<TAB>`) показывают доступные наборы.
+
+`emerge -s @game-kit` ищет каждый пакет набора по точному имени и печатает, откуда он берётся (репозиторий, `aur` или `not found`). `@world` и `@preserved-rebuild` - это действия, а не цели поиска: `-s @world` и `-s @preserved-rebuild` отклоняются с ошибкой.
 
 ## --undo
 
-Reverses the last successful install or unmerge (one step of history):
+Откатывает последнюю успешную установку или удаление (один шаг истории):
 
-- **after install** - removes only packages that were brand-new in that run;
-- **after unmerge** - reinstalls from the recorded source (`Err/`/`abs/` are listed only);
-- **after `-u`** - not supported (no version snapshot).
+- **после установки** - удаляет только пакеты, которые в этом запуске были совершенно новыми;
+- **после удаления** - переустанавливает из записанного источника (`Err/`/`abs/` только перечисляются);
+- **после `-u`** - не поддерживается (нет снимка версий).
 
 ```bash
 emerge --undo
 ```
 
-## News
+## Новости
 
-`emerge --news` fetches the official [Arch Linux news RSS feed](https://archlinux.org/feeds/news/). Read state lives in `~/.cache/aura-emerge/news.state` (no root needed).
+`emerge --news` получает официальную [RSS-ленту новостей Arch Linux](https://archlinux.org/feeds/news/). Состояние прочитанного хранится в `~/.cache/aura-emerge/news.state` (root не нужен).
 
 ```bash
-emerge --news        # list, unread marked [N]
-emerge --news 3      # read item 3
-emerge --news all    # mark all as read
+emerge --news        # список, непрочитанные помечены [N]
+emerge --news 3      # прочитать запись 3
+emerge --news all    # пометить всё прочитанным
 ```
 
-## Security: PKGBUILD scanning
+## Безопасность: сканирование PKGBUILD
 
-Before every AUR install, the raw `PKGBUILD` (and any `.install` hook) is fetched from cgit and scanned in two layers:
+Перед каждой установкой из AUR исходный `PKGBUILD` (и любой хук `.install`) загружается из cgit и сканируется в два слоя:
 
-1. **AST** (`tree-sitter-bash`) — `curl|sh`, `base64`/`xxd | sh`, `source <(curl …)`, `eval "$(curl …)"`, `sudo`/`pkexec`/`doas`, inline exec for **python / perl / ruby / node / lua**, `sh`/`bash`/`dash`/`ash` `-c` with a suspicious payload, top-level command substitution, string-concatenation evasions, etc.
-2. **Line heuristics** — `chmod 777`, raw IPv4, foreign package managers (`npm install …`), paste sites, `.onion`, anti-sandbox probes, known campaign IOCs (Atomic Arch, openconnect-sso, 2018 `compromised.txt`, …).
+1. **AST** (`tree-sitter-bash`) - `curl|sh`, `base64`/`xxd | sh`, `source <(curl …)`, `eval "$(curl …)"`, `sudo`/`pkexec`/`doas`, inline-выполнение для **python / perl / ruby / node / lua**, `sh`/`bash`/`dash`/`ash` `-c` с подозрительной нагрузкой, подстановка команд на верхнем уровне, обходы через конкатенацию строк и т. д.
+2. **Построчные эвристики** - `chmod 777`, «голые» IPv4, сторонние менеджеры пакетов (`npm install …`), paste-сайты, `.onion`, проверки на антипесочницу, известные IOC кампаний (Atomic Arch, openconnect-sso, `compromised.txt` 2018 года, …).
 
-Findings are `Suspicious` or `ConfirmedIoc`. A hit does not hard-block — file/line, cgit link, `Continue anyway? [y/N]`.
+Находки бывают `Suspicious` или `ConfirmedIoc`. Срабатывание не блокирует жёстко: файл/строка, ссылка на cgit, `Continue anyway? [y/N]`.
 
-**Also hardened:** Arch news RSS text is sanitized (no ANSI/bidi injection into the terminal or `news.state`); config/mask/env/world files are opened with `O_NOFOLLOW` so a leaf symlink cannot be raced in; Rust dependencies are gated with [`cargo deny`](https://github.com/EmbarkStudios/cargo-deny) (`make deny`).
+**Также усилено:** текст RSS новостей Arch очищается (нельзя внедрить ANSI/bidi в терминал или `news.state`); файлы конфига/маски/env/world открываются с `O_NOFOLLOW`, поэтому символьную ссылку на конечный файл нельзя подсунуть через гонку; Rust-зависимости проходят через [`cargo deny`](https://github.com/EmbarkStudios/cargo-deny) (`make deny`).
 
-AUR and ABS builds are additionally constrained by the [bwrap sandbox](#sandbox) and the pre-`pacman -U` package archive audit.
+Сборки AUR и ABS дополнительно ограничены [песочницей bwrap](#песочница) и аудитом архива пакета перед `pacman -U`.
 
 <details>
-<summary><h3>Testing(post-install)</h3></summary>
+<summary><h3>Тестирование (после установки)</h3></summary>
 
 ```bash
 git clone https://github.com/Undercat037/aura-emerge.git
@@ -462,70 +478,70 @@ emerge --install-pkgbuild ./scaner-test --ask
 
 
 <details>
-<summary><h2>Flags</h2></summary>
+<summary><h2>Флаги</h2></summary>
 
 | Флаг | Описание |
 |------|----------|
 | `-s` | Поиск пакетов |
-| `--searchdesc` | Поиск по описанию |
+| `-S`, `--searchdesc` | Поиск по описанию |
 | `-sv` | Подробная информация о пакете |
 | `-u` | Полное обновление системы (world не читает) |
-| `--devel` | С `-u` — также пересобрать `-git`/`-hg`/`-svn`/`-bzr`, у которых сдвинулся upstream |
-| `--check-devel` | Сообщить, у каких devel-пакетов есть изменения upstream (без пересборки) |
+| `--devel` | С `-u` - заодно пересобрать пакеты `-git`/`-hg`/`-svn`/`-bzr`, чей апстрим сдвинулся |
+| `--check-devel` | Показать, у каких devel-пакетов изменился апстрим (без пересборки) |
 | `-C` | Удалить пакеты (unmerge) |
-| `-c` | Удалить сироты (depclean) |
-| `-p` | Pretend (сухой прогон) |
+| `-c` | Удалить сирот (depclean) |
+| `-p` | Pretend (пробный прогон) |
 | `-a` | Спросить перед действием |
-| `--sudoloop` | Держать sudo timestamp тёплым на весь прогон |
-| `-1` | Поставить как зависимость (oneshot) |
+| `--sudoloop` | Держать метку времени sudo «тёплой» весь запуск |
+| `-1` | Установить как зависимость (oneshot) |
 | `-v` | Подробный вывод |
 | `-n` | Не переустанавливать, если уже есть (noreplace) |
-| `--aur` | Только AUR (AUR-зависимости всегда резолвятся и собираются рекурсивно) |
-| `--only-repos` | Только официальные репозитории |
+| `--aur` | Принудительно AUR (зависимости только из AUR всегда разрешаются и собираются рекурсивно) |
+| `--repos` | Только официальные репозитории |
 | `--abs` | Сборка из ABS (`pkgctl`), в песочнице bwrap |
 | `--no-sandbox` | Отключить bwrap для AUR/ABS |
-| `--unshare-net-build` | Без сети на этапах build()/check()/package() |
-| `--skippgp` | Пропустить PGP-проверки (ABS) |
+| `--unshare-net-build` | Без сети во время build()/check()/package() |
+| `--skippgp` | Пропустить проверки PGP (ABS) |
 | `--autopgp` | Автоимпорт недостающих PGP-ключей (ABS) |
-| `--edit` | Править PKGBUILD перед сборкой; после сохранения пересобирает `.SRCINFO` |
-| `--pkgbuild-view` | Показать/diff PKGBUILD, подтвердить перед сборкой |
-| `--install-pkgbuild <PATH>` | Собрать+поставить локальный checkout PKGBUILD (сканер + bwrap) |
-| `--scan` | Только аудит PKGBUILD/.install, без сборки/установки |
-| `--skip-srcinfo-regen` | С `--edit` — не пересобирать `.SRCINFO` |
+| `--edit` | Править PKGBUILD перед сборкой; после сохранения перегенерирует `.SRCINFO` |
+| `--pkgbuild-view` | Показать/сравнить PKGBUILD, подтвердить перед сборкой (при отказе предлагает `$EDITOR`) |
+| `--install-pkgbuild <PATH>` | Собрать+установить локальный каталог с PKGBUILD (сканер + bwrap) |
+| `--scan` | Только аудит PKGBUILD/.install, без сборки/установки (AUR или `--install-pkgbuild`) |
+| `--skip-srcinfo-regen` | С `--edit` - не перегенерировать `.SRCINFO` |
 | `--sync` | Синхронизировать базы пакетов |
-| `--refresh` | Принудительно `-Syy` (с `--sync` или `-u`) |
+| `--refresh` | Принудительный `-Syy` (с `--sync` или `-u`) |
 | `--info` | Информация о системе |
 | `--news [N\|all]` | Новости Arch Linux |
-| `--check-news [N\|all]` | Синоним `--news` |
+| `--check-news [N\|all]` | Псевдоним `--news` |
 | `--select` | Добавить в world без установки |
 | `--deselect` | Убрать из world без удаления |
 | `--prune` | Удалить пакеты, которых нет в world |
-| `--regen` | Пересобрать кэш метаданных |
-| `--regen-world` | Заново проставить префиксы репозиториев в world |
-| `--regen-sets <SET>` | То же для одного пользовательского набора |
-| `--regen-sort` | С `--regen-sets` — ещё и отсортировать файл |
+| `--regen` | Пересоздать кэш метаданных |
+| `--regen-world` | Заново определить префиксы репозиториев в world |
+| `--regen-sets <SET>` | Заново определить префиксы для одного пользовательского набора |
+| `--regen-sort` | С `--regen-sets` - заодно отсортировать файл |
 | `--regen-world-from-explicit` | Миграция: заполнить world из `pacman -Qeq` |
-| `--err-install` | На `@world` также повторить записи `Err/` |
+| `--err-install` | При `@world` заодно повторять записи `Err/` |
 | `--resume` | Продолжить прерванную транзакцию |
-| `--skipfirst` | Пропустить первый пакет при resume |
+| `--skipfirst` | Пропустить первый пакет при продолжении |
 | `--undo` | Отменить последнюю установку/удаление |
-| `--clean-source-cache` | Очистить постоянный кэш VCS-исходников |
-| `--batchinstall <FILE>` | Массовая установка из файла-списка |
-| `--list-sets` | Список доступных `@sets` |
-| `--exclude <ATOM>` | Исключить пакет из этого запуска |
-| `--keep-going` | Не останавливаться на первой ошибке в пакетной операции |
-| `--revdep-rebuild` | Найти и починить бинарники с битыми ссылками на библиотеки |
+| `--clean-source-cache` | Очистить постоянный кэш исходников VCS |
+| `--batchinstall <FILE>` | Массовая установка из файла со списком пакетов |
+| `--list-sets` | Список доступных `@наборов` |
+| `--exclude <ATOM>` | Исключить пакет из этого запуска (повторяемый/через запятую) |
+| `--keep-going` | Не останавливать пакетную операцию на первой ошибке; сводка в конце |
+| `--revdep-rebuild` | Найти и починить бинарники, линкующиеся с отсутствующей библиотекой |
 | `-t`, `--tree` | Показать план как дерево зависимостей |
-| `-D`, `--deep[=N]` | С `-t`: глубина N уровней, или все уровни без числа |
-| `--ignore-default-opts` | Игнорировать `EMERGE_DEFAULT_OPTS` из make.conf |
-| `--debug` | Живой вывод makepkg/компилятора (также `AE_DEBUG=1`) |
-| `--log <PATH>` | Session-лог (команда, строки emerge.log, полный вывод сборки) для bug report |
+| `-D`, `--deep[=N]` | С `-t`: вложенность на N уровней, а без значения - на все |
+| `--ignore-default-opts` | Игнорировать `EMERGE_DEFAULT_OPTS` из make.conf на этот запуск |
+| `--debug` | Показывать вывод makepkg/компилятора вживую (также `AE_DEBUG=1`) |
+| `--log <PATH>` | Записать лог сессии (команда, строки emerge.log, полный вывод сборки) для баг-репортов |
 | `-h` / `--help` | Справка |
 | `-V` / `--version` | Версия |
 
-Man-страница `emerge(1)` генерируется из CLI через `clap_mangen` (`emerge --gen-manpage`), поэтому не расходится с `--help`.
+Страница руководства `emerge(1)` генерируется из CLI через `clap_mangen` (`emerge --gen-manpage`), поэтому не может разойтись с `--help`.
 </details>
 
-## Автор / лицензия
-Copyright (C) 2026 **Undercat037**  
+## Автор/Лицензия
+Copyright (C) 2026 **Undercat037**
 Лицензия GPL-3.0

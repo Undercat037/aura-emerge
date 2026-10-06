@@ -433,47 +433,6 @@ pub(crate) fn revdep_rebuild(
         }
     }
 
-    println!();
-    println!(
-        "{}",
-        "These packages have binaries linking against missing libraries:"
-            .yellow()
-            .bold()
-    );
-    println!();
-    for (pkg, (files, missing)) in &by_pkg {
-        println!(
-            "[{} {:<4}] {} ({} file(s))",
-            "ebuild".green(),
-            "R".cyan().bold(),
-            pkg.yellow().bold(),
-            files.len()
-        );
-        for so in missing {
-            println!("      missing: {}", so.red());
-        }
-        for f in files.iter().take(3) {
-            println!("      {}", f.dimmed());
-        }
-        if files.len() > 3 {
-            println!(
-                "      {}",
-                format!("... and {} more", files.len() - 3).dimmed()
-            );
-        }
-    }
-    if !orphan_files.is_empty() {
-        println!();
-        println!(
-            "{} {} broken file(s) belong to no installed package (left alone):",
-            " *".yellow().bold(),
-            orphan_files.len()
-        );
-        for b in orphan_files.iter().take(10) {
-            println!("     {} ({})", b.path, b.missing.join(", "));
-        }
-    }
-
     // --exclude / mask still apply here too.
     let all_pkgs: Vec<String> = by_pkg.keys().cloned().collect();
     let (candidates, excluded) = crate::runtime::split_excluded(&all_pkgs);
@@ -484,6 +443,42 @@ pub(crate) fn revdep_rebuild(
     let foreign = foreign_packages();
     let (to_rebuild, repo_pkgs): (Vec<String>, Vec<String>) =
         candidates.into_iter().partition(|p| foreign.contains(p));
+
+    // Only AUR/local packages can actually be rebuilt on a binary distro.
+    // Show those as [ebuild R]; official packages are summarised below
+    // (provider install), not listed as rebuild candidates.
+    println!();
+    if !to_rebuild.is_empty() {
+        println!(
+            "{}",
+            "These AUR/local packages have binaries linking against missing libraries:"
+                .yellow()
+                .bold()
+        );
+        println!();
+        for pkg in &to_rebuild {
+            let (files, missing) = by_pkg.get(pkg).unwrap();
+            println!(
+                "[{} {:<4}] {} ({} file(s))",
+                "ebuild".green(),
+                "R".cyan().bold(),
+                pkg.yellow().bold(),
+                files.len()
+            );
+            for so in missing {
+                println!("      missing: {}", so.red());
+            }
+            for f in files.iter().take(3) {
+                println!("      {}", f.dimmed());
+            }
+            if files.len() > 3 {
+                println!(
+                    "      {}",
+                    format!("... and {} more", files.len() - 3).dimmed()
+                );
+            }
+        }
+    }
 
     // Repo packages: fix is whatever ships the lost soname.
     let mut missing_sonames: BTreeSet<String> = BTreeSet::new();
@@ -512,6 +507,35 @@ pub(crate) fn revdep_rebuild(
     let (kept_installs, masked_installs) = crate::mask::split_masked(&kept_installs, None);
     crate::mask::report_blocked(&masked_installs);
     to_install = kept_installs;
+
+    if !repo_pkgs.is_empty() {
+        println!();
+        println!(
+            "{} {} official-repo package(s) also link against missing libraries \
+            (cannot rebuild on a binary distro; will try provider packages instead):",
+            " *".yellow().bold(),
+            repo_pkgs.len()
+        );
+        // Compact: list packages, not every broken file.
+        let shown: Vec<&str> = repo_pkgs.iter().map(|s| s.as_str()).take(12).collect();
+        print!("     {}", shown.join(", "));
+        if repo_pkgs.len() > 12 {
+            print!(", ... and {} more", repo_pkgs.len() - 12);
+        }
+        println!();
+    }
+
+    if !orphan_files.is_empty() {
+        println!();
+        println!(
+            "{} {} broken file(s) belong to no installed package (left alone):",
+            " *".yellow().bold(),
+            orphan_files.len()
+        );
+        for b in orphan_files.iter().take(10) {
+            println!("     {} ({})", b.path, b.missing.join(", "));
+        }
+    }
 
     println!();
     if !to_rebuild.is_empty() {

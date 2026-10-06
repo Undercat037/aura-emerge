@@ -1352,6 +1352,7 @@ pub(crate) fn scan_aur_pkgbuilds_or_abort(
     if to_scan.is_empty() {
         // Every package here was already scanned earlier in this run
         // (and, if flagged, already confirmed) -- nothing new to say.
+        crate::progress::status_resume();
         return fetched;
     }
 
@@ -1410,6 +1411,7 @@ pub(crate) fn scan_aur_pkgbuilds_or_abort(
     }
 
     if per_pkg_findings.is_empty() {
+        crate::progress::status_resume();
         return fetched;
     }
 
@@ -1425,6 +1427,7 @@ pub(crate) fn scan_aur_pkgbuilds_or_abort(
         .collect();
 
     if flagged_pkgs.is_empty() {
+        crate::progress::status_resume();
         return fetched;
     }
 
@@ -1490,6 +1493,7 @@ pub(crate) fn scan_aur_pkgbuilds_or_abort(
         memo.confirmed.insert((*pkg).clone());
     }
 
+    crate::progress::status_resume();
     fetched
 }
 

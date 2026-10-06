@@ -1,4 +1,4 @@
-//! `/etc/portage/make.conf` and `~/.config/emerge/make.conf`.
+//! `/etc/portage/make.conf` only (system path; no per-user override).
 //!
 //! Two jobs in one file, like real Portage's `make.conf`:
 //!   * `EMERGE_DEFAULT_OPTS` -- flags spliced into argv before clap
@@ -111,31 +111,16 @@ pub(crate) struct Config {
     pub(crate) files: Vec<PathBuf>,
 }
 
-/// `$XDG_CONFIG_HOME/emerge/make.conf`, else `~/.config/emerge/make.conf`.
-pub(crate) fn user_conf_path() -> Option<PathBuf> {
-    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        if !xdg.is_empty() {
-            return Some(PathBuf::from(xdg).join("emerge/make.conf"));
-        }
-    }
-    let home = std::env::var("HOME").ok()?;
-    if home.is_empty() {
-        return None;
-    }
-    Some(PathBuf::from(home).join(".config/emerge/make.conf"))
-}
-
-/// Reads the system config, then the user one; later wins per key.
-/// Missing files are fine; a symlinked one is refused, as elsewhere.
+/// Reads `/etc/portage/make.conf` only. Per-user
+/// `~/.config/emerge/make.conf` is intentionally not read (root-owned
+/// system config is the single source of truth).
+/// Missing file is fine; a symlink is refused, as elsewhere.
 pub(crate) fn load() -> Config {
     let mut vars: HashMap<String, BuildValue> = HashMap::new();
     let mut default_flags: Vec<String> = Vec::new();
     let mut files: Vec<PathBuf> = Vec::new();
 
-    let mut paths: Vec<PathBuf> = vec![PathBuf::from(SYSTEM_CONF)];
-    if let Some(user) = user_conf_path() {
-        paths.push(user);
-    }
+    let paths: Vec<PathBuf> = vec![PathBuf::from(SYSTEM_CONF)];
 
     for path in paths {
         if !path.is_file() {
@@ -388,6 +373,7 @@ pub(crate) fn load_env_file(path: &Path) -> Option<Vec<(String, BuildValue)>> {
 
 impl Config {
     /// Is `name` on in `FEATURES`? Last mention wins, `-name` is off.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn has_feature(&self, name: &str) -> bool {
         let mut on = false;
         for t in &self.features {
@@ -463,10 +449,56 @@ fn valid_array_token(t: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || "!_-+.".contains(c))
 }
 
+/// Portage `FEATURES` that have a makepkg twin:
+/// (feature, makepkg array, token, inverted). Anything else (candy, ...) is
+/// not a makepkg matter and is skipped here.
+const FEATURE_MAP: &[(&str, &str, &str, bool)] = &[
+    ("ccache", "BUILDENV", "ccache", false),
+    ("distcc", "BUILDENV", "distcc", false),
+    ("test", "BUILDENV", "check", false),
+    ("nostrip", "OPTIONS", "strip", true),
+    ("splitdebug", "OPTIONS", "debug", false),
+];
+
+/// `FEATURES` -> `(array, token)` edits; token may start with `!`. Only
+/// features named in FEATURES (on, or `-off`) give an edit. A token the
+/// user wrote in an explicit BUILDENV/OPTIONS wins over FEATURES.
+pub(crate) fn feature_edits(cfg: &Config) -> Vec<(&'static str, String)> {
+    let mut out = Vec::new();
+    for (feat, arr, tok, inv) in FEATURE_MAP {
+        let mut state: Option<bool> = None;
+        for t in &cfg.features {
+            if t.as_str() == *feat {
+                state = Some(true);
+            } else if t.strip_prefix('-') == Some(*feat) {
+                state = Some(false);
+            }
+        }
+        let Some(on) = state else { continue };
+        let explicit = cfg.build_vars.iter().any(|(k, v)| {
+            k.as_str() == *arr && v.tokens().iter().any(|x| x.trim_start_matches('!') == *tok)
+        });
+        if explicit {
+            continue;
+        }
+        let enable = on != *inv;
+        out.push((
+            *arr,
+            if enable {
+                tok.to_string()
+            } else {
+                format!("!{}", tok)
+            },
+        ));
+    }
+    out
+}
+
 /// makepkg.conf that sources the system one then overrides it with
 /// this config's build vars. `None` if none are set (the common case).
 pub(crate) fn makepkg_override_conf(cfg: &Config) -> Option<String> {
-    if cfg.build_vars.is_empty() {
+    let edits = feature_edits(cfg);
+    if cfg.build_vars.is_empty() && edits.is_empty() {
         return None;
     }
 
@@ -510,6 +542,18 @@ pub(crate) fn makepkg_override_conf(cfg: &Config) -> Option<String> {
     if !exports.is_empty() {
         out.push_str(&format!("export {}\n", exports.join(" ")));
     }
+    if !edits.is_empty() {
+        // Edit the system arrays in place: drop `tok`/`!tok`, add ours.
+        out.push_str("\n# FEATURES -> makepkg arrays\n");
+        out.push_str(
+            "_ae_set() { local -n _a=\"$1\"; local _t=\"${2#!}\" _i; \
+for _i in \"${!_a[@]}\"; do [[ \"${_a[_i]#!}\" == \"$_t\" ]] && unset \"_a[_i]\"; done; \
+_a+=(\"$2\"); }\n",
+        );
+        for (arr, tok) in &edits {
+            out.push_str(&format!("_ae_set {} '{}'\n", arr, tok));
+        }
+    }
     Some(out)
 }
 
@@ -527,7 +571,7 @@ const ALLOWED_DEFAULTS: &[(&str, bool)] = &[
     ("--oneshot", false),
     ("--aur", false),
     ("--abs", false),
-    ("--only-repos", false),
+    ("--repos", false),
     ("--skippgp", false),
     ("--autopgp", false),
     ("--no-sandbox", false),
@@ -552,6 +596,8 @@ const ALLOWED_DEFAULTS: &[(&str, bool)] = &[
     ("--exclude", true),
     ("--color", true),
     ("--jobs", true),
+    ("--jobsr", true),
+    ("--jobsa", true),
     ("--load-average", true),
     ("--backtrack", true),
     ("--with-bdeps", true),
@@ -562,7 +608,7 @@ const ALLOWED_DEFAULTS: &[(&str, bool)] = &[
 /// they are.
 const CONFLICTS: &[(&str, &str, &str)] = &[
     ("--aur", "--abs", "they name two different build sources for the same package"),
-    ("--aur", "--only-repos", "one forces the AUR, the other forbids it"),
+    ("--aur", "--repos", "one forces the AUR, the other forbids it"),
     (
         "--no-sandbox",
         "--unshare-net-build",
@@ -756,6 +802,28 @@ mod config_tests {
     }
 
     #[test]
+    fn features_map_to_makepkg_arrays() {
+        let c = parse("FEATURES=\"ccache -test nostrip candy\"\n");
+        assert_eq!(
+            feature_edits(&c),
+            vec![
+                ("BUILDENV", "ccache".to_string()),
+                ("BUILDENV", "!check".to_string()),
+                ("OPTIONS", "!strip".to_string()),
+            ]
+        );
+        let conf = makepkg_override_conf(&c).unwrap();
+        assert!(conf.contains("_ae_set BUILDENV 'ccache'"));
+        assert!(conf.contains("_ae_set OPTIONS '!strip'"));
+    }
+
+    #[test]
+    fn explicit_buildenv_beats_features() {
+        let c = parse("FEATURES=ccache\nBUILDENV=(!ccache color)\n");
+        assert!(feature_edits(&c).is_empty());
+    }
+
+    #[test]
     fn features_are_read_but_not_build_vars() {
         let cfg = parse("FEATURES=\"candy ccache\"\nCFLAGS=\"-O2\"\n");
         assert_eq!(cfg.features, vec!["candy", "ccache"]);
@@ -899,7 +967,7 @@ mod config_tests {
     }
 
     #[test]
-    fn abs_and_only_repos_are_not_a_conflict() {
-        assert!(find_conflict(&["--abs".to_string(), "--only-repos".to_string()]).is_none());
+    fn abs_and_repos_are_not_a_conflict() {
+        assert!(find_conflict(&["--abs".to_string(), "--repos".to_string()]).is_none());
     }
 }

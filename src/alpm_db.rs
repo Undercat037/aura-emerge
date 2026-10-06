@@ -1,9 +1,10 @@
-//! Read-only libalpm. No transactions / -U / helper.
+//! Read-only libalpm. No commits / -U / helper (a prepare-only plan is the
+//! one transaction allowed here).
 //! Alpm is !Send — open handle per call.
 
 use std::collections::HashMap;
 
-use alpm::{Alpm, Package, PackageReason, SigLevel};
+use alpm::{Alpm, Package, PackageReason, PrepareData, SigLevel, TransFlag};
 use alpm_utils::alpm_with_conf;
 use alpm_utils::config::Config as PacmanConfig;
 
@@ -14,6 +15,8 @@ pub(crate) struct AlpmPkg {
     pub(crate) repo: String,
     pub(crate) description: String,
     pub(crate) installed: bool,
+    /// pkgbase (ABS clone name); equals `name` when not split.
+    pub(crate) base: String,
 }
 
 /// User-side handle: read-only queries. Signature verification is
@@ -48,6 +51,7 @@ fn pkg_to_info(pkg: &Package, repo: &str, installed: bool) -> AlpmPkg {
         repo: repo.to_string(),
         description: pkg.desc().unwrap_or("").to_string(),
         installed,
+        base: pkg.base().unwrap_or_else(|| pkg.name()).to_string(),
     }
 }
 
@@ -129,18 +133,40 @@ pub(crate) fn installed_version(name: &str) -> Option<String> {
         .map(|p| p.version().to_string())
 }
 
+/// Lookup sync packages. `repo/name` pins the repo; a miss in that repo
+/// is a miss (no fallback to other dbs). Bare names take the first db
+/// that has them (pacman.conf order).
 pub(crate) fn find_sync_many(names: &[String]) -> HashMap<String, AlpmPkg> {
     let Some(alpm) = open() else {
         return HashMap::new();
     };
     let mut out = HashMap::new();
     for name in names {
-        let bare = bare(name);
-        for db in alpm.syncdbs() {
-            if let Ok(pkg) = db.pkg(bare) {
-                out.insert(bare.to_string(), pkg_to_info(pkg, db.name(), false));
-                break;
+        let (pinned, bare_name) = match name.split_once('/') {
+            Some((r, n))
+                if !r.is_empty()
+                    && !n.is_empty()
+                    && r != "aur"
+                    && r != "abs"
+                    && r != "Err"
+                    && r.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') =>
+            {
+                (Some(r), n)
             }
+            _ => (None, bare(name)),
+        };
+        if let Some(repo) = pinned {
+            if let Some(pkg) = sync_pkg(&alpm, Some(repo), bare_name) {
+                // Key by bare so callers that strip prefixes still match;
+                // the AlpmPkg carries the real repo name.
+                out.insert(bare_name.to_string(), pkg_to_info(pkg, repo, false));
+            }
+            continue;
+        }
+        if let Some(pkg) = sync_pkg(&alpm, None, bare_name) {
+            let repo = pkg.db().map(|d| d.name()).unwrap_or("");
+            out.insert(bare_name.to_string(), pkg_to_info(pkg, repo, false));
         }
     }
     out
@@ -153,11 +179,79 @@ pub(crate) fn probe_sync_split(names: &[String]) -> (Vec<AlpmPkg>, Vec<String>) 
     for name in names {
         let bare = bare(name).to_string();
         match found_map.get(&bare) {
-            Some(p) => found.push(p.clone()),
+            Some(p) => {
+                // If the caller pinned a repo, require the found pkg is
+                // from that repo (find_sync_many already enforces this,
+                // but re-check so a bare-name collision can't sneak in).
+                if let Some((repo, _)) = name.split_once('/') {
+                    if repo != "aur"
+                        && repo != "abs"
+                        && repo != "Err"
+                        && !repo.is_empty()
+                        && p.repo != repo
+                    {
+                        missing.push(name.clone());
+                        continue;
+                    }
+                }
+                found.push(p.clone());
+            }
             None => missing.push(name.clone()),
         }
     }
     (found, missing)
+}
+
+/// First sync db (pacman.conf order) holding `name`; `repo` pins one.
+fn sync_pkg<'a>(alpm: &'a Alpm, repo: Option<&str>, name: &str) -> Option<&'a Package> {
+    alpm.syncdbs()
+        .iter()
+        .filter(|d| repo.map_or(true, |r| d.name() == r))
+        .find_map(|d| d.pkg(name).ok())
+}
+
+/// Full install plan for `targets` (`[repo/]name`): the targets plus
+/// whatever libalpm pulls in, deps first -- what `pacman -Sp` printed.
+/// Prepare only, nothing is committed. NO_LOCK, so a normal user can
+/// run it (same as pacman does for -p).
+pub(crate) fn plan_sync(targets: &[String]) -> Result<Vec<AlpmPkg>, String> {
+    let mut alpm = open().ok_or_else(|| "cannot open libalpm".to_string())?;
+    alpm.trans_init(TransFlag::NO_LOCK)
+        .map_err(|e| format!("trans_init: {}", e))?;
+    let res = plan_in(&mut alpm, targets);
+    let _ = alpm.trans_release();
+    res
+}
+
+fn plan_in(alpm: &mut Alpm, targets: &[String]) -> Result<Vec<AlpmPkg>, String> {
+    for t in targets {
+        let (repo, name) = match t.split_once('/') {
+            Some((r, n)) => (Some(r), n),
+            None => (None, t.as_str()),
+        };
+        let pkg = sync_pkg(alpm, repo, name).ok_or_else(|| format!("{}: not found", t))?;
+        alpm.trans_add_pkg(pkg)
+            .map_err(|e| format!("{}: {}", t, e))?;
+    }
+    if let Err(e) = alpm.trans_prepare() {
+        if let Some(PrepareData::UnsatisfiedDeps(list)) = e.data() {
+            let top: Vec<String> = list
+                .iter()
+                .take(4)
+                .map(|d| format!("{} needs {}", d.target(), d.depend()))
+                .collect();
+            if !top.is_empty() {
+                return Err(format!("unsatisfied: {}", top.join(", ")));
+            }
+        }
+        return Err(format!("prepare: {}", e));
+    }
+    // trans_add() is already dependency-sorted by prepare.
+    Ok(alpm
+        .trans_add()
+        .iter()
+        .map(|p| pkg_to_info(p, p.db().map_or("", |d| d.name()), false))
+        .collect())
 }
 
 pub(crate) fn pkg_status(name: &str, new_ver: &str) -> String {
@@ -334,6 +428,18 @@ pub(crate) fn search_sync(term: &str, _in_desc: bool, all_repos: bool) -> Vec<Al
         }
     }
     out
+}
+
+/// Arch repos whose sources live in the ABS GitLab (what `--abs` can clone).
+const ABS_REPOS: [&str; 3] = ["core", "extra", "multilib"];
+
+/// ABS catalog search: the Arch repos above only, one row per name.
+pub(crate) fn search_abs(term: &str) -> Vec<AlpmPkg> {
+    let mut seen = std::collections::HashSet::new();
+    search_sync(term, false, true)
+        .into_iter()
+        .filter(|p| ABS_REPOS.contains(&p.repo.as_str()) && seen.insert(p.name.clone()))
+        .collect()
 }
 
 /// Exact sync lookup by bare name.

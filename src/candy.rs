@@ -1,16 +1,8 @@
-//! `FEATURES="candy"` and `--moo`. Cosmetic only, never touches stdout
-//! (the spinner draws on stderr, so pipes stay clean).
+//! `--moo` and the Portage-style "Calculating dependencies" lines.
+//! Cosmetic only; the lines go to stdout, nothing animates.
 
-use std::io::{IsTerminal, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
-
-const BANNER: &str = "Gentoo Rocks (Arch)";
-/// Visible width of the scrolling window.
-const WIDTH: usize = 20;
-const TICK: Duration = Duration::from_millis(80);
+use std::sync::Mutex;
+use std::time::Instant;
 
 const MOO: &str = r#"
 
@@ -26,93 +18,40 @@ const MOO: &str = r#"
                 ||     ||
 "#;
 
+/// Start of the current resolve phase (run start, reset after a db sync
+/// so network time is not counted as resolution).
+static MARK: Mutex<Option<Instant>> = Mutex::new(None);
+
 /// `emerge --moo`.
 pub(crate) fn moo() {
     println!("{}", MOO.trim_matches('\n'));
 }
 
-/// Frame `tick` of the marquee: BANNER scrolling through a WIDTH window.
-pub(crate) fn scroll_frame(tick: usize) -> String {
-    let cycle: Vec<char> = BANNER
-        .chars()
-        .chain(std::iter::repeat(' ').take(WIDTH))
-        .collect();
-    (0..WIDTH)
-        .map(|i| cycle[(tick + i) % cycle.len()])
-        .collect()
-}
-
-/// Pure part of the on/off decision.
-fn wanted(candy: bool, tty: bool, term: Option<&str>) -> bool {
-    candy && tty && term.map_or(true, |t| t != "dumb")
-}
-
-/// Marquee on stderr while it lives; the line is wiped on drop.
-/// Marquee on stderr while work runs; wiped on drop.
-pub(crate) struct Spinner {
-    stop: Arc<AtomicBool>,
-    handle: Option<JoinHandle<()>>,
-}
-
-impl Spinner {
-    /// `None` unless candy is on (`--nospinner`/`-q` already folded into
-    /// `crate::runtime::candy()`) and stderr is a real terminal.
-    /// Spinner with a fixed prefix (e.g. "Calculating dependencies ").
-    pub(crate) fn start_with(prefix: Option<&'static str>) -> Option<Spinner> {
-        let term = std::env::var("TERM").ok();
-        if !wanted(
-            crate::runtime::candy(),
-            std::io::stderr().is_terminal(),
-            term.as_deref(),
-        ) {
-            return None;
-        }
-        let stop = Arc::new(AtomicBool::new(false));
-        let flag = Arc::clone(&stop);
-        let prefix_owned = prefix.map(|s| s.to_string());
-        let handle = thread::spawn(move || {
-            let mut tick = 0usize;
-            while !flag.load(Ordering::Relaxed) {
-                let mut err = std::io::stderr().lock();
-                if let Some(ref p) = prefix_owned {
-                    let _ = write!(err, "\r{}{}", p, scroll_frame(tick));
-                } else {
-                    let _ = write!(err, "\r{}", scroll_frame(tick));
-                }
-                let _ = err.flush();
-                drop(err);
-                tick = tick.wrapping_add(1);
-                thread::sleep(TICK);
-            }
-        });
-        Some(Spinner {
-            stop,
-            handle: Some(handle),
-        })
+/// Begin timing the resolve phase.
+pub(crate) fn mark_start() {
+    if let Ok(mut m) = MARK.lock() {
+        *m = Some(Instant::now());
     }
 }
 
-/// Print "Calculating dependencies ... done!" with an optional candy marquee.
-pub(crate) fn calculating_deps_done() {
-    let spin = Spinner::start_with(Some("Calculating dependencies "));
-    // Tiny yield so a frame paints when work is instant.
-    if spin.is_some() {
-        thread::sleep(Duration::from_millis(120));
-    }
-    drop(spin);
+fn took_line(secs: f64) -> String {
+    format!("Dependency resolution took {:.2} s", secs)
+}
+
+/// "Calculating dependencies ... done!" only.
+pub(crate) fn calculating_deps_line() {
     println!("Calculating dependencies ... done!");
 }
 
-impl Drop for Spinner {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(h) = self.handle.take() {
-            let _ = h.join();
-        }
-        let mut err = std::io::stderr().lock();
-        let _ = write!(err, "\r\x1b[K");
-        let _ = err.flush();
-    }
+/// The line above plus how long resolution took since `mark_start`.
+pub(crate) fn calculating_deps_done() {
+    calculating_deps_line();
+    let secs = MARK
+        .lock()
+        .ok()
+        .and_then(|m| m.map(|t| t.elapsed().as_secs_f64()))
+        .unwrap_or(0.0);
+    println!("{}", took_line(secs));
 }
 
 #[cfg(test)]
@@ -120,27 +59,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn frames_have_fixed_width() {
-        for t in 0..100 {
-            assert_eq!(scroll_frame(t).chars().count(), WIDTH);
-        }
-    }
-
-    #[test]
-    fn marquee_scrolls_and_wraps() {
-        assert!(scroll_frame(0).starts_with("Gentoo Rocks"));
-        assert!(scroll_frame(1).starts_with("entoo Rocks"));
-        let period = BANNER.chars().count() + WIDTH;
-        assert_eq!(scroll_frame(3), scroll_frame(3 + period));
-    }
-
-    #[test]
-    fn needs_candy_and_a_real_terminal() {
-        assert!(wanted(true, true, Some("xterm-256color")));
-        assert!(wanted(true, true, None));
-        assert!(!wanted(false, true, Some("xterm")));
-        assert!(!wanted(true, false, Some("xterm")));
-        assert!(!wanted(true, true, Some("dumb")));
+    fn took_line_has_two_decimals() {
+        assert_eq!(took_line(1.666), "Dependency resolution took 1.67 s");
+        assert_eq!(took_line(0.0), "Dependency resolution took 0.00 s");
     }
 
     #[test]

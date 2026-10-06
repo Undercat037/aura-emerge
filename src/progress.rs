@@ -1,11 +1,15 @@
-//! Shared `>>> Verb (n of m) atom` status lines.
+//! Shared `>>> Verb (n of m) atom` status lines + live Jobs footer.
 //!
 //! One run-wide counter so repo, AUR and ABS stages number consistently
-//! (`(15 of 16)` after 14 repo packages). Lines are printed at real
-//! stage boundaries only.
+//! (`(15 of 16)` after 14 repo packages). The Jobs line is rewritten in
+//! place (no extra newline) so it stays at the bottom of the TTY until
+//! `finish()`. Load avg refreshes on a background tick while a job runs.
 
 use std::io::{IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Mutex;
+use std::thread;
+use std::time::Duration;
 
 use colored::Colorize;
 
@@ -13,8 +17,12 @@ static TOTAL: AtomicUsize = AtomicUsize::new(0);
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 static DONE: AtomicUsize = AtomicUsize::new(0);
 static RUNNING: AtomicUsize = AtomicUsize::new(0);
-/// A live `>>> Jobs:` line is on screen right above the cursor.
+/// A live `>>> Jobs:` line occupies the current TTY row (no trailing newline).
 static SHOWN: AtomicBool = AtomicBool::new(false);
+/// Background Load-avg ticker is running.
+static TICKING: AtomicBool = AtomicBool::new(false);
+/// Serializes all Jobs / stage line I/O across worker threads.
+static OUT: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Copy)]
 pub(crate) enum Stage {
@@ -42,6 +50,7 @@ pub(crate) fn begin(total: usize) {
     DONE.store(0, Ordering::Relaxed);
     RUNNING.store(0, Ordering::Relaxed);
     SHOWN.store(false, Ordering::Relaxed);
+    start_ticker();
 }
 
 /// Make room for `n` more packages if the plan did not cover them.
@@ -50,6 +59,7 @@ pub(crate) fn reserve(n: usize) {
     if TOTAL.load(Ordering::Relaxed) < need {
         TOTAL.store(need, Ordering::Relaxed);
     }
+    start_ticker();
 }
 
 /// A dependency discovered mid-run (AUR deps are found after clone).
@@ -62,17 +72,30 @@ pub(crate) fn take() -> usize {
     NEXT.fetch_add(1, Ordering::Relaxed) + 1
 }
 
+/// Drop one RUNNING slot without printing Completed (failed install).
+pub(crate) fn abort_one() {
+    let _ = RUNNING.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |r| {
+        Some(r.saturating_sub(1))
+    });
+}
+
 /// `atom` is `repo/name-version` (or bare `name-version`).
-/// On a TTY the Jobs line is kept right below the newest line: erased,
-/// the line printed, Jobs redrawn. Not pinned - it scrolls with the output.
+/// Erase Jobs → print stage line → redraw Jobs on the next row (in place).
 pub(crate) fn line(stage: Stage, n: usize, atom: &str) {
     match stage {
-        Stage::Installing | Stage::Compiling => RUNNING.store(1, Ordering::Relaxed),
+        // Installing opens a slot; Compiling keeps it; Completed closes it.
+        Stage::Installing => {
+            RUNNING.fetch_add(1, Ordering::Relaxed);
+        }
+        Stage::Compiling => {}
         Stage::Completed => {
-            RUNNING.store(0, Ordering::Relaxed);
+            let _ = RUNNING.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |r| {
+                Some(r.saturating_sub(1))
+            });
             DONE.fetch_add(1, Ordering::Relaxed);
         }
     }
+    let _g = OUT.lock().unwrap_or_else(|e| e.into_inner());
     status_erase();
     let total = TOTAL.load(Ordering::Relaxed).max(n);
     println!(
@@ -86,39 +109,102 @@ pub(crate) fn line(stage: Stage, n: usize, atom: &str) {
     status_draw();
 }
 
-/// Remove the live Jobs line (call before printing anything else).
+/// Remove the live Jobs line so other output can print cleanly.
+/// Call `status_resume()` afterwards (or the next `line`/`finish`).
 pub(crate) fn status_break() {
+    let _g = OUT.lock().unwrap_or_else(|e| e.into_inner());
     status_erase();
 }
 
-/// End of run: leave one final Jobs line in the scrollback.
-pub(crate) fn finish() {
+/// Put the Jobs line back at the bottom after `status_break` + other output.
+pub(crate) fn status_resume() {
+    let _g = OUT.lock().unwrap_or_else(|e| e.into_inner());
+    status_draw();
+}
+
+/// One-shot note above the Jobs line: erase → print → redraw Jobs.
+pub(crate) fn note(text: &str) {
+    let _g = OUT.lock().unwrap_or_else(|e| e.into_inner());
     status_erase();
-    let total = TOTAL.load(Ordering::Relaxed);
+    println!("{}", text);
+    status_draw();
+}
+
+/// End of run: leave one final Jobs line in the scrollback (with newline).
+/// Idempotent: a second call is a no-op.
+pub(crate) fn finish() {
+    stop_ticker();
+    let _g = OUT.lock().unwrap_or_else(|e| e.into_inner());
+    status_erase();
+    let total = TOTAL.swap(0, Ordering::Relaxed);
     if total == 0 {
         return;
     }
     let done = DONE.load(Ordering::Relaxed);
     println!("{}", jobs_text(done, total, 0));
+    SHOWN.store(false, Ordering::Relaxed);
 }
 
+/// Clear the Jobs row in place (Jobs was drawn without a trailing newline).
 fn status_erase() {
     if SHOWN.swap(false, Ordering::Relaxed) {
-        print!("\x1b[1A\r\x1b[2K");
+        print!("\r\x1b[2K");
         let _ = std::io::stdout().flush();
     }
 }
 
+/// Draw Jobs on the current row without a newline so it stays the last line.
 fn status_draw() {
     if !std::io::stdout().is_terminal() || crate::runtime::get().debug {
         return;
     }
     let total = TOTAL.load(Ordering::Relaxed);
+    if total == 0 {
+        return;
+    }
     let done = DONE.load(Ordering::Relaxed);
     let running = RUNNING.load(Ordering::Relaxed);
-    println!("{}", jobs_text(done, total, running));
+    // \r\x1b[2K: rewrite this row; no \n — cursor stays on the Jobs line.
+    print!("\r\x1b[2K{}", jobs_text(done, total, running));
     let _ = std::io::stdout().flush();
     SHOWN.store(true, Ordering::Relaxed);
+}
+
+fn start_ticker() {
+    if !std::io::stdout().is_terminal() || crate::runtime::get().debug {
+        return;
+    }
+    if TICKING.swap(true, Ordering::Relaxed) {
+        return; // already running
+    }
+    thread::spawn(|| {
+        while TICKING.load(Ordering::Relaxed) {
+            thread::sleep(Duration::from_millis(750));
+            if !TICKING.load(Ordering::Relaxed) {
+                break;
+            }
+            // Only refresh while a Jobs line is live.
+            if SHOWN.load(Ordering::Relaxed) {
+                let total = TOTAL.load(Ordering::Relaxed);
+                if total == 0 {
+                    continue;
+                }
+                let done = DONE.load(Ordering::Relaxed);
+                let running = RUNNING.load(Ordering::Relaxed);
+                // Rewrite in place under OUT so we don't race with line().
+                if let Ok(_g) = OUT.try_lock() {
+                    if SHOWN.load(Ordering::Relaxed) {
+                        print!("\r\x1b[2K{}", jobs_text(done, total, running));
+                        let _ = std::io::stdout().flush();
+                    }
+                }
+            }
+        }
+    });
+}
+
+fn stop_ticker() {
+    TICKING.store(false, Ordering::Relaxed);
 }
 
 /// `>>> Jobs: 0 of 136 complete, 3 running, 3 merge wait      Load avg: ...`

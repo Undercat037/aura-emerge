@@ -86,35 +86,47 @@ See [GCC optimization flags](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options
 
 ## make.conf
 
-`/etc/portage/make.conf` (and `~/.config/emerge/make.conf` for per-user overrides) is aura-emerge's own config file, separate from `makepkg.conf` - the Gentoo `make.conf` split between `EMERGE_DEFAULT_OPTS` and `CFLAGS` in one file. System file first, then the user one; last file to set a key wins.
+`/etc/portage/make.conf` is aura-emerge's own config file (system only), separate from `makepkg.conf` - the Gentoo `make.conf` split between `EMERGE_DEFAULT_OPTS` and `CFLAGS` in one file.
 
 ```bash
 sudo nvim /etc/portage/make.conf
 ```
 
-```toml
+```bash
 # Flags spliced into every invocation, before whatever's typed on the
 # command line (which always wins on a conflict). Disable for one run
 # with --ignore-default-opts.
-EMERGE_DEFAULT_OPTS = ["--pkgbuild-view", "--unshare-net-build"]
+EMERGE_DEFAULT_OPTS="--pkgbuild-view --unshare-net-build"
 
 # Build flags, applied via a generated makepkg.conf (makepkg --config) -
 # override /etc/makepkg.conf without touching it.
-[build]
-CFLAGS = "-march=native -O2 -pipe"
-CXXFLAGS = "$CFLAGS"
-RUSTFLAGS = "-C target-cpu=native"
-MAKEFLAGS = "-j$(nproc)"
-NINJAFLAGS = "-j$(nproc)"
-OPTIONS = ["strip", "docs", "!debug", "lto"]
-BUILDENV = ["!distcc", "color", "check", "!sign"]
+CFLAGS="-march=native -O2 -pipe"
+CXXFLAGS="$CFLAGS"
+RUSTFLAGS="-C target-cpu=native"
+MAKEFLAGS="-j$(nproc)"
+NINJAFLAGS="-j$(nproc)"
+OPTIONS=(strip docs !debug lto)
+BUILDENV=(!distcc color check !sign)
+
+# Portage-style switches, mapped to makepkg.
+FEATURES="ccache -test"
 ```
 
-Recognized keys: `EMERGE_DEFAULT_OPTS` at the top level, and in `[build]`: `CFLAGS`, `CXXFLAGS`, `CPPFLAGS`, `LDFLAGS`, `RUSTFLAGS`, `MAKEFLAGS`, `NINJAFLAGS`, `BUILDENV`, `OPTIONS`. Build keys are also accepted at the top level, outside `[build]`.
+Recognized keys: `EMERGE_DEFAULT_OPTS`, `FEATURES`, `CFLAGS`, `CXXFLAGS`, `CPPFLAGS`, `LDFLAGS`, `RUSTFLAGS`, `MAKEFLAGS`, `NINJAFLAGS`, `BUILDENV`, `OPTIONS`. Syntax is flat bash-style assignment, `KEY="..."` or `KEY=(a b c)`.
 
-Scalars and lists are interchangeable everywhere - a list is joined with spaces, a string is split on them. Values are shell-expanded when makepkg sources the generated config, so `-j$(nproc)` works, and so does a reference to another key set above it, like `CXXFLAGS = "$CFLAGS"`; a TOML literal string (`'\$FOO'`) keeps a dollar sign literal.
+`FEATURES` tokens (`-name` turns one off) that have a makepkg twin are folded into the system arrays when building; an entry you wrote in `BUILDENV`/`OPTIONS` yourself wins:
 
-`EMERGE_DEFAULT_OPTS` only accepts modifier flags (an allowlist: `--ask`, `--verbose`, `--devel`, `--tree`, `--searchdesc`, `--exclude=<atom>`, and similar - see the [example file](misc/make.conf)) - it can't turn every run into `--unmerge`. Conflicting pairs (`--aur`/`--abs`, `--aur`/`--only-repos`, `--no-sandbox`/`--unshare-net-build`, `--skippgp`/`--autopgp`, `--select`/`--deselect`) are rejected if both end up set, whether typed or from the config; a config default that conflicts with something typed on the command line is dropped instead, since the command line is the more specific intent. `--abs` and `--only-repos` are **not** a conflict - ABS builds an official-repo package from its own source, so the two agree.
+| `FEATURES`   | makepkg                  |
+|--------------|--------------------------|
+| `ccache`     | `BUILDENV` `ccache`      |
+| `distcc`     | `BUILDENV` `distcc`      |
+| `test`       | `BUILDENV` `check`       |
+| `nostrip`    | `OPTIONS` `!strip`       |
+| `splitdebug` | `OPTIONS` `debug`        |
+
+Scalars and lists are interchangeable everywhere - a list is joined with spaces, a string is split on them. Values are shell-expanded when makepkg sources the generated config, so `-j$(nproc)` works, and so does a reference to another key set above it, like `CXXFLAGS="$CFLAGS"`; a single-quoted value (`'\$FOO'`) keeps a dollar sign literal.
+
+`EMERGE_DEFAULT_OPTS` only accepts modifier flags (an allowlist: `--ask`, `--verbose`, `--devel`, `--tree`, `--searchdesc`, `--exclude=<atom>`, and similar - see the [example file](misc/make.conf)) - it can't turn every run into `--unmerge`. Conflicting pairs (`--aur`/`--abs`, `--aur`/`--repos`, `--no-sandbox`/`--unshare-net-build`, `--skippgp`/`--autopgp`, `--select`/`--deselect`) are rejected if both end up set, whether typed or from the config; a config default that conflicts with something typed on the command line is dropped instead, since the command line is the more specific intent. `--abs` and `--repos` are **not** a conflict - ABS builds an official-repo package from its own source, so the two agree.
 
 `--info` shows what was read and the effective, shell-expanded value of each override.
 
@@ -208,7 +220,7 @@ Duration is only ever real: AUR/ABS packages build one at a time in this tool's 
 emerge neovim                              # official repos, falls back to AUR
 emerge neovim-git --aur                    # AUR only (AUR-only deps built recursively)
 emerge ayugram-desktop-bin --aur --sudoloop   # same, but keep sudo warm through the whole recursive build
-emerge neovim --only-repos                 # official repos only, never touch AUR
+emerge neovim --repos                 # official repos only, never touch AUR
 emerge neovim --abs                        # build from ABS (pkgctl), in bwrap sandbox
 emerge neovim --abs --no-sandbox           # ABS without sandbox (plain makepkg -si)
 emerge neovim --abs --skippgp              # ABS, skip PGP signature checks
@@ -239,9 +251,11 @@ emerge --scan neovim-git --aur              # audit only, no build
 emerge --install-pkgbuild ~/src/my-pkg --scan  # same, for a local checkout
 emerge -u --devel                           # full upgrade + upstream check for -git/-hg/-svn/-bzr
 emerge --check-devel                        # just report which devel packages moved upstream
-emerge -s neovim                           # search (repos + AUR)
-emerge -s neovim --only-repos              # search official repos only
-emerge --searchdesc neovim                 # search by description
+emerge -s neovim                           # search: repos, then ABS, then AUR (one block each)
+emerge -s neovim --repos                   # search official repos only
+emerge -s abs/neovim                       # search the ABS catalog only (core/extra/multilib)
+emerge -s @fonts                           # where each package of a set comes from: repo / aur / not found
+emerge -S neovim                           # search by description (--searchdesc)
 emerge -sv neovim                          # detailed package info
 emerge -sv neovim-git --aur                # detailed info from AUR only
 emerge -1 htop                             # install as dependency (not added to world)
@@ -319,7 +333,7 @@ firefox
 emerge --batchinstall pkgs.txt
 ```
 
-Since it's folded in alongside `cli.packages`, it combines with every other flag exactly like typed-out names would (`-p`, `-a`, `--aur`, `--abs`, `--only-repos`, ...).
+Since it's folded in alongside `cli.packages`, it combines with every other flag exactly like typed-out names would (`-p`, `-a`, `--aur`, `--abs`, `--repos`, ...).
 
 ## PKGBUILD review
 
@@ -415,6 +429,8 @@ emerge @game-kit @dev-tools neovim
 
 `emerge --list-sets` and shell completion (`emerge @<TAB>`) list available sets.
 
+`emerge -s @game-kit` looks up every package of the set by exact name and prints where it comes from (repository, `aur` or `not found`). `@world` and `@preserved-rebuild` are actions, not search targets: `-s @world` and `-s @preserved-rebuild` are rejected with an error.
+
 ## --undo
 
 Reverses the last successful install or unmerge (one step of history):
@@ -467,7 +483,7 @@ emerge --install-pkgbuild ./scaner-test --ask
 | Flag | Description |
 |------|-------------|
 | `-s` | Search packages |
-| `--searchdesc` | Search by description |
+| `-S`, `--searchdesc` | Search by description |
 | `-sv` | Detailed package info |
 | `-u` | Full system upgrade (does not read world) |
 | `--devel` | With `-u` - also rebuild `-git`/`-hg`/`-svn`/`-bzr` packages whose upstream moved |
@@ -481,7 +497,7 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `-v` | Verbose output |
 | `-n` | Do not reinstall if present (noreplace) |
 | `--aur` | Force AUR (AUR-only dependencies are always resolved and built recursively) |
-| `--only-repos` | Official repos only |
+| `--repos` | Official repos only |
 | `--abs` | Build from ABS (`pkgctl`), in bwrap sandbox |
 | `--no-sandbox` | Disable bwrap for AUR/ABS |
 | `--unshare-net-build` | No network during build()/check()/package() |
