@@ -406,7 +406,7 @@ emerge --install-pkgbuild ./scaner-test --ask
 
 | Flag | Description |
 |------|-------------|
-| `-s` | Search packages |
+| `-s`, `--search` | Search packages |
 | `-S`, `--searchdesc` | Search by description |
 | `-sv` | Detailed package info |
 | `-u` | Full system upgrade (doesn't read world) |
