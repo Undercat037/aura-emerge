@@ -49,7 +49,7 @@ emerge --gen-manpage | sudo tee /usr/share/man/man1/emerge.1 >/dev/null
 ```
 </details>
 
-**Dependencies:** `git`, `bubblewrap` (build sandbox for AUR/ABS)   
+**Dependencies:** `git`, `bubblewrap` (build sandbox for AUR/ABS)
 **Optional:** `devtools` (`--abs` support), `gnupg` (`--autopgp`, automatic PGP key import)
 
 ## Usage
@@ -405,63 +405,75 @@ emerge --install-pkgbuild ./scaner-test --ask
 <summary><h2>Flags</h2></summary>
 
 | Flag | Description |
-|------|-------------|
+|------|------|
 | `-s`, `--search` | Search packages |
 | `-S`, `--searchdesc` | Search by description |
+| `--search-all` | With `-s`: list the same name from every repo (like `pacman -Ss`) |
 | `-sv` | Detailed package info |
-| `-u` | Full system upgrade (doesn't read world) |
+| `-v`, `--verbose` | Verbose output / detailed search info (`-sv`) |
+| `-u`, `--update` | Full system upgrade (doesn't read world) |
 | `--devel` | With `-u`: also rebuild `-git`/`-hg`/`-svn`/`-bzr` packages whose upstream moved |
 | `--check-devel` | Report devel packages with upstream changes (no rebuild) |
-| `-C` | Remove packages (unmerge) |
-| `-c` | Remove orphans (depclean) |
-| `-p` | Pretend (dry run) |
-| `-a` | Ask before acting |
-| `--sudoloop` | Keep the sudo timestamp warm for the whole run |
-| `-1` | Install as dependency (oneshot) |
-| `-v` | Verbose output |
-| `-n` | Don't reinstall if present (noreplace) |
-| `--aur` | Force AUR (AUR-only dependencies are always built recursively) |
-| `--repos` | Official repos only |
+| `-C`, `--unmerge` | Remove packages (unmerge) |
+| `-c`, `--depclean` | Remove orphans (depclean) |
+| `--show-protected` | With `-c`: list orphans kept only because they're in world |
+| `-p`, `--pretend` | Pretend (dry run) |
+| `-a`, `--ask` | Ask before acting |
+| `--sudoloop` | Keep the sudo timestamp warm (refreshed every 60 s) for the whole run |
+| `-1`, `--oneshot` | Install as dependency (skip world) |
+| `-n`, `--noreplace` | Don't reinstall if present (`pacman --needed`) |
+| `--with-optdeps` | Also install optional dependencies of official-repo packages |
+| `-N`, `--newuse` | Include installed packages with changed USE flags |
+| `-e`, `--emptytree` | Reinstall all world packages |
+| `--aur` | Force AUR only (AUR-only dependencies are always built recursively) |
+| `--repos` | Official repos only (never AUR) |
 | `--abs` | Build from ABS (`pkgctl`) in the bwrap sandbox |
-| `--no-sandbox` | Disable bwrap for AUR/ABS |
-| `--unshare-net-build` | No network during build()/check()/package() |
-| `--skippgp` | Skip PGP checks (ABS) |
-| `--autopgp` | Auto-import missing PGP keys (ABS) |
-| `--edit` | Edit PKGBUILD before building; regenerates `.SRCINFO` after save |
-| `--pkgbuild-view` | Show/diff PKGBUILD and confirm before building (offers `$EDITOR` on decline) |
-| `--install-pkgbuild <PATH>` | Build and install a local PKGBUILD checkout (scanner + bwrap) |
-| `--scan` | Audit PKGBUILD/.install only, no build/install (AUR or `--install-pkgbuild`) |
+| `--no-sandbox` | Disable bwrap for AUR/ABS; plain unisolated makepkg |
+| `--unshare-net-build` | No network during build()/check()/package() (`prepare()` still has network) |
+| `--skippgp` | Skip PGP checks on ABS builds (`--skippgpcheck`) |
+| `--autopgp` | Auto-import missing PGP keys before `--abs` builds |
+| `--edit` | Edit PKGBUILD in `$EDITOR` before building (top-level package only); regenerates `.SRCINFO` after save |
 | `--skip-srcinfo-regen` | With `--edit`: don't regenerate `.SRCINFO` |
+| `--pkgbuild-view` | Show/diff PKGBUILD and confirm before building (top-level package only; offers `$EDITOR` on decline) |
+| `--install-pkgbuild <PATH>` | Build and install a local PKGBUILD checkout (scanner + bwrap); recorded in world as `Err/` unless `-1` |
+| `--scan` | Audit PKGBUILD/.install only, no build/install; non-zero exit on findings (AUR or `--install-pkgbuild`) |
 | `--sync` | Sync package databases |
 | `--refresh` | Force `-Syy` (with `--sync` or `-u`) |
-| `--info` | System info |
-| `--news [N\|all]` | Arch Linux news |
+| `--info` | System info, like Gentoo's `emerge --info` |
+| `--news [N\|all]` | Arch Linux news: bare lists items, `N` reads one, `all` marks all as read |
 | `--check-news [N\|all]` | Alias for `--news` |
 | `--select` | Add to world without installing |
 | `--deselect` | Remove from world without unmerging |
+| `--check-world` | List world entries that are missing or not explicitly installed |
 | `--prune` | Remove packages not in world |
-| `--regen` | Regenerate metadata cache |
+| `--regen` | Regenerate package metadata cache |
 | `--regen-world` | Re-resolve repo prefixes in world |
-| `--regen-sets <SET>` | Re-resolve prefixes for one custom set |
-| `--regen-sort` | With `--regen-sets`: also sort the file |
-| `--regen-world-from-explicit` | Migration: seed world from `pacman -Qeq` |
-| `--err-install` | With `@world`: also retry `Err/` entries |
+| `--regen-sets <SET>` | Re-resolve prefixes in a custom set (`@game-kit` or `game-kit`) |
+| `--regen-sort` | With `--regen-sets`: also sort the file (drops comments and grouping) |
+| `--regen-world-from-explicit` | Migration: seed world from `pacman -Qeq` (one-time) |
+| `--err-install` | With `@world`: also install `Err/` (unknown-source) entries |
 | `--resume` | Resume an interrupted transaction |
 | `--skipfirst` | With `--resume`: skip the first package |
-| `--undo` | Undo the last install/unmerge |
-| `--clean-source-cache` | Wipe the persistent VCS source cache |
-| `--batchinstall <FILE>` | Mass-install from a package list file |
-| `--list-sets` | List available `@sets` |
+| `--undo` | Undo the last install/unmerge (one step; `-u` is not reversible) |
+| `--clean-source-cache` | Wipe the persistent VCS source cache and exit |
+| `--batchinstall <FILE>` | Mass-install from a text list (same format as a custom set) |
+| `--list-sets` | List available `@sets` (also used by shell completion) |
 | `--exclude <ATOM>` | Leave a package out of this run (repeatable/comma-separated) |
-| `--keep-going` | Don't stop a batch at the first failure; summarize at the end |
-| `--revdep-rebuild` | Find and fix binaries linked to a missing library |
+| `--keep-going` | Don't stop a batch at the first failure; report failures at the end |
+| `--revdep-rebuild` | Rebuild packages whose binaries link against a missing library |
 | `-t`, `--tree` | Show the plan as a dependency tree |
 | `-D`, `--deep[=N]` | With `-t`: nest N levels, or all levels if bare |
+| `--jobsr <N>` | Max parallel official-repo installs (default 1) |
+| `--jobsa <N>` | Max parallel AUR/ABS builds (default 1) |
+| `--jobs <N>` | Alias for `--jobsr` (Portage-style) |
+| `--verbose-conflicts` | Verbose slot/conflict info (informational) |
 | `--ignore-default-opts` | Ignore `EMERGE_DEFAULT_OPTS` from make.conf for this run |
-| `--debug` | Show makepkg/compiler output live (also `AE_DEBUG=1`) |
-| `--log <PATH>` | Write a session log (command, emerge.log lines, full build output) for bug reports |
+| `--debug` | Show makepkg/compiler output live (also `AE_DEBUG=1`); by default it's hidden to keep the `>>>` lines readable, and a failed build still dumps the captured log |
+| `--log <PATH>` | Write a session log (command, emerge.log lines, full build output) for bug reports - no `| tee` needed |
 | `-h`, `--help` | Help |
 | `-V`, `--version` | Version |
+
+Also present in `--help` but not described in the man page yet: `-q`/`--quiet`, `--nospinner`, `--noconfmem`, `--color`, `--columns`, `-O`/`--nodeps`, `-o`/`--onlydeps`, `--complete-graph`, `--changed-use`, `--backtrack`, `--load-average`, `-k`, `-K`, `-g`, `-G`, `-b`, `-B`, `-f`, `-F`, `-l`/`--changelog`, `--newrepo`, `--reinstall`, `--quiet-build`, `--with-bdeps`, `-A`/`--alert`, `--metadata`, `--clean`, `--config`.
 
 The `emerge(1)` man page is generated from the CLI (`emerge --gen-manpage`), so it can't drift from `--help`.
 </details>
