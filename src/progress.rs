@@ -74,7 +74,7 @@ pub(crate) fn take() -> usize {
 
 /// Drop one RUNNING slot without printing Completed (failed install).
 pub(crate) fn abort_one() {
-    let _ = RUNNING.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |r| {
+    let _ = RUNNING.try_update(Ordering::Relaxed, Ordering::Relaxed, |r| {
         Some(r.saturating_sub(1))
     });
 }
@@ -89,7 +89,7 @@ pub(crate) fn line(stage: Stage, n: usize, atom: &str) {
         }
         Stage::Compiling => {}
         Stage::Completed => {
-            let _ = RUNNING.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |r| {
+            let _ = RUNNING.try_update(Ordering::Relaxed, Ordering::Relaxed, |r| {
                 Some(r.saturating_sub(1))
             });
             DONE.fetch_add(1, Ordering::Relaxed);
