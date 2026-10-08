@@ -17,11 +17,13 @@
 
 ## Встановлення
 
+**AUR**
+
 ```bash
-paru -S aura-emerge          # через AUR-хелпер
+paru -S aura-emerge
 ```
 
-або звичайним makepkg:
+або звичайним **makepkg**:
 
 ```bash
 git clone https://aur.archlinux.org/aura-emerge.git
@@ -32,11 +34,15 @@ makepkg -si
 <details>
 <summary><h3>Збірка з вихідного коду (нестабільно)</h3></summary>
 
+**Git makepkg**
+
 ```bash
 git clone https://github.com/Undercat037/aura-emerge.git
 cd aura-emerge
-make install            # або вручну:
+make install
 ```
+
+**Вручну**
 
 ```bash
 cargo build --release

@@ -16,12 +16,12 @@ en | [ua](UA-README.MD) | [ru](RU-README.MD)
 Packages are tracked in a `world` file - install once, track forever.
 
 ## Installation
-
+**AUR helper**
 ```bash
-paru -S aura-emerge          # AUR helper
+paru -S aura-emerge 
 ```
 
-or with plain makepkg:
+or with plain **makepkg**:
 
 ```bash
 git clone https://aur.archlinux.org/aura-emerge.git
@@ -32,11 +32,14 @@ makepkg -si
 <details>
 <summary><h3>Build from source (unstable)</h3></summary>
 
+**Git makepkg**
+
 ```bash
 git clone https://github.com/Undercat037/aura-emerge.git
 cd aura-emerge
-make install            # or build by hand:
+make install           
 ```
+**Manual**
 
 ```bash
 cargo build --release
