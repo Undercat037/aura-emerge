@@ -52,7 +52,7 @@ emerge --gen-manpage | sudo tee /usr/share/man/man1/emerge.1 >/dev/null
 ```
 </details>
 
-**Dependencies:** `git`, `bubblewrap` (build sandbox for AUR/ABS)
+**Dependencies:** `git`, `bubblewrap` (build sandbox for AUR/ABS)     
 **Optional:** `devtools` (`--abs` support), `gnupg` (`--autopgp`, automatic PGP key import)
 
 ## Usage

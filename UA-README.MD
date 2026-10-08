@@ -55,7 +55,7 @@ emerge --gen-manpage | sudo tee /usr/share/man/man1/emerge.1 >/dev/null
 ```
 </details>
 
-**Залежності:** `git`, `bubblewrap` (пісочниця збірки для AUR/ABS)
+**Залежності:** `git`, `bubblewrap` (пісочниця збірки для AUR/ABS)     
 **Опційно:** `devtools` (підтримка `--abs`), `gnupg` (`--autopgp`, автоімпорт PGP-ключів)
 
 ## Використання
