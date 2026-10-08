@@ -1283,7 +1283,7 @@ fn resolve_and_build_aur(
         return None;
     }
 
-    // Stage 1: clone done -> Installing (scan / review / deps follow).
+    // Stage 1: clone done -> Emerging (scan / review / deps follow).
     if !is_top_level {
         crate::progress::grow(1);
     }
@@ -1293,7 +1293,7 @@ fn resolve_and_build_aur(
         pkg,
         &crate::aur::srcinfo_version(&dir.join(".SRCINFO")).unwrap_or_default(),
     );
-    crate::progress::line(crate::progress::Stage::Installing, stage_n, &stage_atom);
+    crate::progress::line(crate::progress::Stage::Emerging, stage_n, &stage_atom);
 
     let fetched = crate::security::scan_aur_pkgbuilds_or_abort(&[pkgbase.clone()]);
     crate::security::verify_local_clone_or_rescan(&pkgbase, &dir, fetched.get(&pkgbase));
@@ -1393,7 +1393,7 @@ fn resolve_and_build_aur(
 
     let build_started = std::time::SystemTime::now();
     // Stage 2: deps are in, makepkg starts.
-    crate::progress::line(crate::progress::Stage::Compiling, stage_n, &stage_atom);
+    crate::progress::line(crate::progress::Stage::Installing, stage_n, &stage_atom);
     let result = match isolation {
         BuildIsolation::Bwrap => build_with_sandbox(
             &dir,
@@ -2102,7 +2102,8 @@ fn install_local_tarballs(tarballs: &[String], ask: bool, mark_asdeps: bool) -> 
         needed: true,
         asdeps: mark_asdeps,
     };
-    match crate::rootops::install_files(&pinned, opts) {
+    match crate::rootops::install_files(&pinned, opts, &mut |ev| crate::progress::on_hook_event(ev))
+    {
         Ok(()) => {
             for t in tarballs {
                 let name = std::path::Path::new(t)
@@ -2467,7 +2468,8 @@ fn build_with_sandbox(
         needed: false,
         asdeps: oneshot,
     };
-    match crate::rootops::install_files(&pinned, opts) {
+    match crate::rootops::install_files(&pinned, opts, &mut |ev| crate::progress::on_hook_event(ev))
+    {
         Ok(()) => true,
         Err(e) => {
             eprintln!("{} {}", ">>> Error:".red().bold(), e);
@@ -2767,7 +2769,7 @@ fn abs_build_one(
 ) -> bool {
     let stage_n = crate::progress::take();
     let stage_atom = format_atom(info);
-    crate::progress::line(crate::progress::Stage::Installing, stage_n, &stage_atom);
+    crate::progress::line(crate::progress::Stage::Emerging, stage_n, &stage_atom);
 
     let pkg_dir = build_base.join(&info.name);
     if !pkg_dir.starts_with(build_base) {
@@ -2845,7 +2847,7 @@ fn abs_build_one(
     }
 
     let timer = crate::logbook::Timer::start();
-    crate::progress::line(crate::progress::Stage::Compiling, stage_n, &stage_atom);
+    crate::progress::line(crate::progress::Stage::Installing, stage_n, &stage_atom);
     let build_ok = match isolation {
         BuildIsolation::Bwrap => build_with_sandbox(
             &build_dir,
@@ -3268,8 +3270,8 @@ pub(crate) fn pkgbuild_local_install(
         &label,
         &crate::aur::srcinfo_version(&path.join(".SRCINFO")).unwrap_or_default(),
     );
+    crate::progress::line(crate::progress::Stage::Emerging, stage_n, &stage_atom);
     crate::progress::line(crate::progress::Stage::Installing, stage_n, &stage_atom);
-    crate::progress::line(crate::progress::Stage::Compiling, stage_n, &stage_atom);
 
     let isolation = choose_build_isolation(no_sandbox);
     let build_ok = match isolation {

@@ -26,13 +26,28 @@ pub(crate) trait Backend {
     fn sysupgrade(&mut self, _ignore: &[String], _emit: &mut dyn FnMut(&str)) -> io::Result<()> {
         unsupported()
     }
-    fn install(&mut self, _names: &[String], _needed: bool) -> io::Result<()> {
+    fn install(
+        &mut self,
+        _names: &[String],
+        _needed: bool,
+        _emit: &mut dyn FnMut(&str),
+    ) -> io::Result<()> {
         unsupported()
     }
-    fn install_files(&mut self, _opts: FileOpts, _specs: &[String]) -> io::Result<()> {
+    fn install_files(
+        &mut self,
+        _opts: FileOpts,
+        _specs: &[String],
+        _emit: &mut dyn FnMut(&str),
+    ) -> io::Result<()> {
         unsupported()
     }
-    fn remove(&mut self, _mode: RemoveMode, _names: &[String]) -> io::Result<()> {
+    fn remove(
+        &mut self,
+        _mode: RemoveMode,
+        _names: &[String],
+        _emit: &mut dyn FnMut(&str),
+    ) -> io::Result<()> {
         unsupported()
     }
     fn set_reason(&mut self, _explicit: bool, _names: &[String]) -> io::Result<()> {
@@ -56,20 +71,35 @@ impl Backend for Real {
         pkgdb::sysupgrade(ignore, emit)
     }
 
-    fn install(&mut self, names: &[String], needed: bool) -> io::Result<()> {
-        pkgdb::install(names, needed)
+    fn install(
+        &mut self,
+        names: &[String],
+        needed: bool,
+        emit: &mut dyn FnMut(&str),
+    ) -> io::Result<()> {
+        pkgdb::install(names, needed, emit)
     }
 
-    fn install_files(&mut self, opts: FileOpts, specs: &[String]) -> io::Result<()> {
-        pkgdb::install_files(opts, specs)
+    fn install_files(
+        &mut self,
+        opts: FileOpts,
+        specs: &[String],
+        emit: &mut dyn FnMut(&str),
+    ) -> io::Result<()> {
+        pkgdb::install_files(opts, specs, emit)
     }
 
     fn set_reason(&mut self, explicit: bool, names: &[String]) -> io::Result<()> {
         pkgdb::set_reason(explicit, names)
     }
 
-    fn remove(&mut self, mode: RemoveMode, names: &[String]) -> io::Result<()> {
-        pkgdb::remove(mode, names)
+    fn remove(
+        &mut self,
+        mode: RemoveMode,
+        names: &[String],
+        emit: &mut dyn FnMut(&str),
+    ) -> io::Result<()> {
+        pkgdb::remove(mode, names, emit)
     }
 }
 
@@ -83,9 +113,15 @@ fn dispatch<B: Backend, W: Write>(be: &mut B, req: &Request, out: &mut W) -> io:
         Request::Sysupgrade { ignore } => be.sysupgrade(ignore, &mut |t| {
             let _ = proto::write_response(out, &Response::Event(t.to_string()));
         }),
-        Request::Install { names, needed } => be.install(names, *needed),
-        Request::InstallFiles { opts, files } => be.install_files(*opts, files),
-        Request::Remove { mode, names } => be.remove(*mode, names),
+        Request::Install { names, needed } => be.install(names, *needed, &mut |t| {
+            let _ = proto::write_response(out, &Response::Event(t.to_string()));
+        }),
+        Request::InstallFiles { opts, files } => be.install_files(*opts, files, &mut |t| {
+            let _ = proto::write_response(out, &Response::Event(t.to_string()));
+        }),
+        Request::Remove { mode, names } => be.remove(*mode, names, &mut |t| {
+            let _ = proto::write_response(out, &Response::Event(t.to_string()));
+        }),
         Request::SetReason { explicit, names } => be.set_reason(*explicit, names),
         Request::Append { target, line } => be.append(*target, line),
     }
@@ -165,7 +201,12 @@ mod tests {
             Ok(())
         }
 
-        fn install(&mut self, names: &[String], _needed: bool) -> io::Result<()> {
+        fn install(
+            &mut self,
+            names: &[String],
+            _needed: bool,
+            _emit: &mut dyn FnMut(&str),
+        ) -> io::Result<()> {
             if self.fail {
                 return Err(io::Error::new(ErrorKind::Other, "boom"));
             }
@@ -173,7 +214,12 @@ mod tests {
             Ok(())
         }
 
-        fn install_files(&mut self, opts: FileOpts, specs: &[String]) -> io::Result<()> {
+        fn install_files(
+            &mut self,
+            opts: FileOpts,
+            specs: &[String],
+            _emit: &mut dyn FnMut(&str),
+        ) -> io::Result<()> {
             if self.fail {
                 return Err(io::Error::new(ErrorKind::Other, "boom"));
             }
@@ -189,7 +235,12 @@ mod tests {
             Ok(())
         }
 
-        fn remove(&mut self, mode: RemoveMode, names: &[String]) -> io::Result<()> {
+        fn remove(
+            &mut self,
+            mode: RemoveMode,
+            names: &[String],
+            _emit: &mut dyn FnMut(&str),
+        ) -> io::Result<()> {
             if self.fail {
                 return Err(io::Error::new(ErrorKind::Other, "boom"));
             }

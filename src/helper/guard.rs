@@ -18,7 +18,11 @@ pub(crate) const EXPECTED_EXE: &str = "/usr/bin/emerge";
 pub(crate) const FD_IN: i32 = 3;
 pub(crate) const FD_OUT: i32 = 4;
 
-const SAFE_PATH: &str = "/usr/bin";
+/// PATH for the helper and for hook/scriptlet children.
+/// Absolute Exec= paths in hooks do not need this, but many `.install`
+/// scriptlets and third-party hooks call bare `depmod`/`mkinitcpio`/…
+/// Arch merges sbin→bin; keep both for non-merged roots and containers.
+const SAFE_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 /// prctl() is variadic and wants full-width args.
 const ZERO: libc::c_ulong = 0;
 
@@ -161,6 +165,9 @@ fn clean_env() {
     }
     std::env::set_var("PATH", SAFE_PATH);
     std::env::set_var("LANG", "C");
+    std::env::set_var("LC_ALL", "C");
+    // Hooks/scriptlets that touch $HOME (gpg, user unit paths, …).
+    std::env::set_var("HOME", "/root");
 }
 
 /// Closes every fd >= `min`.

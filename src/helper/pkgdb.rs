@@ -1,9 +1,17 @@
 //! Helper-side libalpm: package db writes, runs as root.
 //! No `crate::` imports: std, alpm, alpm-utils and siblings only.
 //! Alpm is !Send and caches the db, so a fresh handle per request.
+//!
+//! Hooks: libalpm runs every `*.hook` under the configured HookDirs during
+//! `trans_commit` (system dirs from pacman.conf + `/etc/portage/hooks`).
+//! Event lines on the wire:
+//!   `pkg start|done <name>`
+//!   `hook start|done pre|post`
+//!   `hook run <pos>/<total> <name> [<desc…>]`
 
 use std::io::{self, ErrorKind};
 use std::path::PathBuf;
+use std::sync::mpsc;
 
 use alpm::{Alpm, PackageReason, PrepareData, SigLevel, TransFlag};
 use alpm_utils::alpm_with_conf;
@@ -11,6 +19,19 @@ use alpm_utils::config::Config;
 
 use super::stage::Stage;
 use super::validate::{self, FileOpts, RemoveMode};
+
+/// HookDirs that must always be registered. `pacman-conf` / the
+/// `pacmanconf` crate often expand a commented-out `HookDir` in
+/// `/etc/pacman.conf` to only `/etc/pacman.d/hooks/` (or nothing) and
+/// **omit** `/usr/share/libalpm/hooks/`, where package-provided hooks
+/// live (`60-depmod.hook`, `90-dracut-install.hook`, `70-dkms-*.hook`, …).
+/// Empty / wrong hookdirs ⇒ silent installs and a broken boot after a
+/// kernel upgrade. Missing directories are fine: libalpm skips them.
+const REQUIRED_HOOK_DIRS: &[&str] = &[
+    "/usr/share/libalpm/hooks/",
+    "/etc/pacman.d/hooks/",
+    "/etc/portage/hooks/",
+];
 
 fn fail(msg: impl Into<String>) -> io::Error {
     io::Error::new(ErrorKind::Other, msg.into())
@@ -22,7 +43,99 @@ fn fail(msg: impl Into<String>) -> io::Error {
 /// ownership" on `/etc/pacman.d/gnupg`).
 fn open() -> io::Result<Alpm> {
     let conf = Config::new().map_err(|e| fail(format!("pacman.conf: {}", e)))?;
-    alpm_with_conf(&conf).map_err(|e| fail(format!("libalpm: {}", e)))
+    let mut alpm = alpm_with_conf(&conf).map_err(|e| fail(format!("libalpm: {}", e)))?;
+    ensure_hook_dirs(&mut alpm);
+    Ok(alpm)
+}
+
+/// Register every required HookDir if not already present (idempotent).
+fn ensure_hook_dirs(alpm: &mut Alpm) {
+    let existing: Vec<String> = alpm.hookdirs().iter().map(|s| s.to_string()).collect();
+    for dir in REQUIRED_HOOK_DIRS {
+        let already = existing
+            .iter()
+            .any(|e| e.trim_end_matches('/') == dir.trim_end_matches('/'));
+        if !already {
+            let _ = alpm.add_hookdir(*dir);
+        }
+    }
+}
+
+/// New-side package name of an install/upgrade step (removes are skipped
+/// for the `pkg start/done` progress line; removals still fire hooks).
+fn op_name(op: alpm::PackageOperation) -> Option<String> {
+    use alpm::PackageOperation as P;
+    match op {
+        P::Install(p) | P::Upgrade(p, _) | P::Reinstall(p, _) | P::Downgrade(p, _) => {
+            Some(p.name().to_string())
+        }
+        P::Remove(_) => None,
+    }
+}
+
+/// Wire libalpm package + hook events onto `tx` (non-blocking best-effort).
+/// Must be called **before** `trans_init` / `trans_commit`.
+///
+/// The frontend owns the terminal (Jobs footer + `>>>` lines); the helper
+/// only ships events on the protocol channel so the Jobs line can stay
+/// pinned at the bottom via `progress::note`.
+fn wire_events(alpm: &mut Alpm, tx: mpsc::Sender<String>) {
+    alpm.set_event_cb((), move |ev, _| match ev.event() {
+        alpm::Event::PackageOperationStart(e) => {
+            if let Some(n) = op_name(e.operation()) {
+                let _ = tx.send(format!("pkg start {}", n));
+            }
+        }
+        alpm::Event::PackageOperationDone(e) => {
+            if let Some(n) = op_name(e.operation()) {
+                let _ = tx.send(format!("pkg done {}", n));
+            }
+        }
+        alpm::Event::HookStart(e) => {
+            let when = match e.when() {
+                alpm::HookWhen::PreTransaction => "pre",
+                alpm::HookWhen::PostTransaction => "post",
+            };
+            let _ = tx.send(format!("hook start {}", when));
+        }
+        alpm::Event::HookDone(e) => {
+            let when = match e.when() {
+                alpm::HookWhen::PreTransaction => "pre",
+                alpm::HookWhen::PostTransaction => "post",
+            };
+            let _ = tx.send(format!("hook done {}", when));
+        }
+        alpm::Event::HookRunStart(e) => {
+            let name = e.name();
+            let pos = e.position();
+            let total = e.total();
+            let line = match e.desc().filter(|d| !d.is_empty()) {
+                Some(d) => format!("hook run {}/{} {} {}", pos, total, name, d),
+                None => format!("hook run {}/{} {}", pos, total, name),
+            };
+            let _ = tx.send(line);
+        }
+        _ => {}
+    });
+}
+
+/// Run `work` on a fresh Alpm handle in a worker thread; forward events live.
+/// Alpm is !Send, so the handle is created inside the worker (same pattern as
+/// `sync` / `sysupgrade`).
+fn with_live_events(
+    emit: &mut dyn FnMut(&str),
+    work: impl FnOnce(mpsc::Sender<String>) -> io::Result<()> + Send,
+) -> io::Result<()> {
+    std::thread::scope(|s| {
+        let (tx, rx) = mpsc::channel::<String>();
+        let worker = s.spawn(move || work(tx));
+        for ev in rx {
+            emit(&ev);
+        }
+        worker
+            .join()
+            .unwrap_or_else(|_| Err(fail("alpm worker panicked")))
+    })
 }
 
 /// `pacman -D --asexplicit` / `--asdeps`.
@@ -94,14 +207,42 @@ fn flags_for(mode: RemoveMode) -> TransFlag {
 }
 
 /// `pacman -R*` as root. Hooks and scriptlets run as usual.
-pub(crate) fn remove(mode: RemoveMode, names: &[String]) -> io::Result<()> {
-    let mut alpm = open()?;
-    remove_in(&mut alpm, mode, names)
+/// `emit` gets `pkg`/`hook` event lines live (same format as install/sysupgrade).
+pub(crate) fn remove(
+    mode: RemoveMode,
+    names: &[String],
+    emit: &mut dyn FnMut(&str),
+) -> io::Result<()> {
+    let names = names.to_vec();
+    with_live_events(emit, move |tx| {
+        let mut alpm = open()?;
+        remove_in_with(&mut alpm, mode, &names, tx)
+    })
 }
 
 /// Same, on a given handle. All-or-nothing: an unknown name aborts
 /// before anything is queued, like pacman's "target not found".
-pub(crate) fn remove_in(alpm: &mut Alpm, mode: RemoveMode, names: &[String]) -> io::Result<()> {
+/// Events are drained after commit (for tests on a fixture handle).
+pub(crate) fn remove_in(
+    alpm: &mut Alpm,
+    mode: RemoveMode,
+    names: &[String],
+    emit: &mut dyn FnMut(&str),
+) -> io::Result<()> {
+    let (tx, rx) = mpsc::channel::<String>();
+    let res = remove_in_with(alpm, mode, names, tx);
+    for ev in rx.try_iter() {
+        emit(&ev);
+    }
+    res
+}
+
+fn remove_in_with(
+    alpm: &mut Alpm,
+    mode: RemoveMode,
+    names: &[String],
+    tx: mpsc::Sender<String>,
+) -> io::Result<()> {
     let mut bare = Vec::with_capacity(names.len());
     for n in names {
         let a = validate::atom(n).map_err(|r| fail(format!("bad name: {:?}", r)))?;
@@ -111,6 +252,7 @@ pub(crate) fn remove_in(alpm: &mut Alpm, mode: RemoveMode, names: &[String]) -> 
         return Err(fail("no packages"));
     }
 
+    wire_events(alpm, tx);
     alpm.trans_init(flags_for(mode))
         .map_err(|e| fail(format!("db lock: {}", e)))?;
     let res = run_remove(alpm, &bare);
@@ -248,36 +390,12 @@ pub(crate) fn sysupgrade_in(alpm: &mut Alpm, ignore: &[String]) -> io::Result<()
     sysupgrade_in_with(alpm, ignore, &tx)
 }
 
-/// New-side package name of an install/upgrade step (removes are skipped).
-fn op_name(op: alpm::PackageOperation) -> Option<String> {
-    use alpm::PackageOperation as P;
-    match op {
-        P::Install(p) | P::Upgrade(p, _) | P::Reinstall(p, _) | P::Downgrade(p, _) => {
-            Some(p.name().to_string())
-        }
-        P::Remove(_) => None,
-    }
-}
-
 fn sysupgrade_in_with(
     alpm: &mut Alpm,
     ignore: &[String],
-    tx: &std::sync::mpsc::Sender<String>,
+    tx: &mpsc::Sender<String>,
 ) -> io::Result<()> {
-    let cb_tx = tx.clone();
-    alpm.set_event_cb((), move |ev, _| match ev.event() {
-        alpm::Event::PackageOperationStart(e) => {
-            if let Some(n) = op_name(e.operation()) {
-                let _ = cb_tx.send(format!("pkg start {}", n));
-            }
-        }
-        alpm::Event::PackageOperationDone(e) => {
-            if let Some(n) = op_name(e.operation()) {
-                let _ = cb_tx.send(format!("pkg done {}", n));
-            }
-        }
-        _ => {}
-    });
+    wire_events(alpm, tx.clone());
     for n in ignore {
         let a = validate::atom(n).map_err(|r| fail(format!("bad ignore: {:?}", r)))?;
         let _ = alpm.add_ignorepkg(a.name);
@@ -298,15 +416,43 @@ fn sysupgrade_in_with(
 }
 
 /// `pacman -S`: install from the sync dbs by `[repo/]name`.
-pub(crate) fn install(names: &[String], needed: bool) -> io::Result<()> {
-    let mut alpm = open()?;
-    install_in(&mut alpm, names, needed)
+/// `emit` gets `pkg`/`hook` event lines live.
+pub(crate) fn install(
+    names: &[String],
+    needed: bool,
+    emit: &mut dyn FnMut(&str),
+) -> io::Result<()> {
+    let names = names.to_vec();
+    with_live_events(emit, move |tx| {
+        let mut alpm = open()?;
+        install_in_with(&mut alpm, &names, needed, tx)
+    })
 }
 
 /// Same, on a given handle. All-or-nothing: an unknown target aborts
 /// before anything is queued. Deps are resolved by libalpm; they get
 /// the `asdeps` reason, the named targets stay explicit.
-pub(crate) fn install_in(alpm: &mut Alpm, names: &[String], needed: bool) -> io::Result<()> {
+/// Events are drained after commit (for tests on a fixture handle).
+pub(crate) fn install_in(
+    alpm: &mut Alpm,
+    names: &[String],
+    needed: bool,
+    emit: &mut dyn FnMut(&str),
+) -> io::Result<()> {
+    let (tx, rx) = mpsc::channel::<String>();
+    let res = install_in_with(alpm, names, needed, tx);
+    for ev in rx.try_iter() {
+        emit(&ev);
+    }
+    res
+}
+
+fn install_in_with(
+    alpm: &mut Alpm,
+    names: &[String],
+    needed: bool,
+    tx: mpsc::Sender<String>,
+) -> io::Result<()> {
     let mut targets = Vec::with_capacity(names.len());
     for n in names {
         let a = validate::atom(n).map_err(|r| fail(format!("bad name: {:?}", r)))?;
@@ -325,6 +471,7 @@ pub(crate) fn install_in(alpm: &mut Alpm, names: &[String], needed: bool) -> io:
     if needed {
         flags |= TransFlag::NEEDED;
     }
+    wire_events(alpm, tx);
     alpm.trans_init(flags)
         .map_err(|e| fail(format!("db lock: {}", e)))?;
     let res = run_install(alpm, &targets);
@@ -365,20 +512,44 @@ fn run_install(alpm: &mut Alpm, targets: &[(Option<&str>, &str)]) -> io::Result<
 /// copied into a root-private dir and hash-checked *before* libalpm
 /// sees them (closes the audit -> install TOCTOU); the stage dir is
 /// removed when this returns.
-pub(crate) fn install_files(opts: FileOpts, specs: &[String]) -> io::Result<()> {
+/// `emit` gets `pkg`/`hook` event lines live.
+pub(crate) fn install_files(
+    opts: FileOpts,
+    specs: &[String],
+    emit: &mut dyn FnMut(&str),
+) -> io::Result<()> {
     let mut stage = Stage::create()?;
     let paths = stage.copy_specs(specs)?;
-    let mut alpm = open()?;
-    let level = alpm.local_file_siglevel();
-    install_files_in(&mut alpm, &paths, level, opts)
+    with_live_events(emit, move |tx| {
+        let mut alpm = open()?;
+        let level = alpm.local_file_siglevel();
+        install_files_in_with(&mut alpm, &paths, level, opts, tx)
+    })
 }
 
 /// Same, on a given handle and already-staged files.
+/// Events are drained after commit (for tests on a fixture handle).
 pub(crate) fn install_files_in(
     alpm: &mut Alpm,
     files: &[PathBuf],
     level: SigLevel,
     opts: FileOpts,
+    emit: &mut dyn FnMut(&str),
+) -> io::Result<()> {
+    let (tx, rx) = mpsc::channel::<String>();
+    let res = install_files_in_with(alpm, files, level, opts, tx);
+    for ev in rx.try_iter() {
+        emit(&ev);
+    }
+    res
+}
+
+fn install_files_in_with(
+    alpm: &mut Alpm,
+    files: &[PathBuf],
+    level: SigLevel,
+    opts: FileOpts,
+    tx: mpsc::Sender<String>,
 ) -> io::Result<()> {
     if files.is_empty() {
         return Err(fail("no packages"));
@@ -390,6 +561,7 @@ pub(crate) fn install_files_in(
     if opts.asdeps {
         flags |= TransFlag::ALL_DEPS;
     }
+    wire_events(alpm, tx);
     alpm.trans_init(flags)
         .map_err(|e| fail(format!("db lock: {}", e)))?;
     let res = run_install_files(alpm, files, level);
@@ -603,7 +775,13 @@ mod tests {
     fn remove_deletes_files_and_db_entry() {
         let fx = Fixture::new("rm", &[]);
         fx.add("foo", "1.0-1", &["usr/bin/foo"], &[], false);
-        remove_in(&mut fx.handle(), RemoveMode::Plain, &names(&["foo"])).unwrap();
+        remove_in(
+            &mut fx.handle(),
+            RemoveMode::Plain,
+            &names(&["foo"]),
+            &mut |_| {},
+        )
+        .unwrap();
         assert!(!fx.installed("foo"));
         assert!(!fx.root.join("usr/bin/foo").exists());
         assert!(!fx.root.join("db/db.lck").exists());
@@ -617,6 +795,7 @@ mod tests {
             &mut fx.handle(),
             RemoveMode::Plain,
             &names(&["foo", "nope"]),
+            &mut |_| {},
         )
         .unwrap_err()
         .to_string();
@@ -632,13 +811,24 @@ mod tests {
         fx.add("lib", "1-1", &["usr/lib/lib"], &[], false);
         fx.add("app", "1-1", &["usr/bin/app"], &["lib"], false);
 
-        let err = remove_in(&mut fx.handle(), RemoveMode::Plain, &names(&["lib"]))
-            .unwrap_err()
-            .to_string();
+        let err = remove_in(
+            &mut fx.handle(),
+            RemoveMode::Plain,
+            &names(&["lib"]),
+            &mut |_| {},
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.starts_with("unsatisfied:"), "{}", err);
         assert!(fx.installed("lib"));
 
-        remove_in(&mut fx.handle(), RemoveMode::Unmerge, &names(&["lib"])).unwrap();
+        remove_in(
+            &mut fx.handle(),
+            RemoveMode::Unmerge,
+            &names(&["lib"]),
+            &mut |_| {},
+        )
+        .unwrap();
         assert!(!fx.installed("lib"));
         assert!(fx.installed("app"));
     }
@@ -649,7 +839,13 @@ mod tests {
         fx.add("dep", "1-1", &["usr/lib/dep"], &[], true);
         fx.add("keep", "1-1", &["usr/lib/keep"], &[], false);
         fx.add("app", "1-1", &["usr/bin/app"], &["dep", "keep"], false);
-        remove_in(&mut fx.handle(), RemoveMode::Prune, &names(&["app"])).unwrap();
+        remove_in(
+            &mut fx.handle(),
+            RemoveMode::Prune,
+            &names(&["app"]),
+            &mut |_| {},
+        )
+        .unwrap();
         assert!(!fx.installed("app"));
         assert!(!fx.installed("dep"));
         assert!(fx.installed("keep"));
@@ -659,8 +855,14 @@ mod tests {
     fn remove_rejects_bad_names_and_empty_list() {
         let fx = Fixture::new("rmbad", &[]);
         fx.add("foo", "1.0-1", &["usr/bin/foo"], &[], false);
-        assert!(remove_in(&mut fx.handle(), RemoveMode::Plain, &names(&["--nodeps"])).is_err());
-        assert!(remove_in(&mut fx.handle(), RemoveMode::Plain, &[]).is_err());
+        assert!(remove_in(
+            &mut fx.handle(),
+            RemoveMode::Plain,
+            &names(&["--nodeps"]),
+            &mut |_| {}
+        )
+        .is_err());
+        assert!(remove_in(&mut fx.handle(), RemoveMode::Plain, &[], &mut |_| {}).is_err());
         assert!(fx.installed("foo"));
     }
 
@@ -781,7 +983,7 @@ mod tests {
     #[test]
     fn install_unknown_target_aborts_and_unlocks() {
         let fx = Fixture::new("inmiss", &[]);
-        let err = install_in(&mut fx.handle(), &names(&["nope"]), false)
+        let err = install_in(&mut fx.handle(), &names(&["nope"]), false, &mut |_| {})
             .unwrap_err()
             .to_string();
         assert_eq!(err, "target not found: nope");
@@ -791,8 +993,14 @@ mod tests {
     #[test]
     fn install_rejects_bad_names_and_empty_list() {
         let fx = Fixture::new("inbad", &[]);
-        assert!(install_in(&mut fx.handle(), &names(&["--noconfirm"]), false).is_err());
-        assert!(install_in(&mut fx.handle(), &[], false).is_err());
+        assert!(install_in(
+            &mut fx.handle(),
+            &names(&["--noconfirm"]),
+            false,
+            &mut |_| {}
+        )
+        .is_err());
+        assert!(install_in(&mut fx.handle(), &[], false, &mut |_| {}).is_err());
         assert!(!fx.root.join("db/db.lck").exists());
     }
 
@@ -800,7 +1008,7 @@ mod tests {
     fn install_with_held_lock_is_an_error() {
         let fx = Fixture::new("inlock", &[]);
         fs::write(fx.root.join("db/db.lck"), "").unwrap();
-        let err = install_in(&mut fx.handle(), &names(&["foo"]), false).unwrap_err();
+        let err = install_in(&mut fx.handle(), &names(&["foo"]), false, &mut |_| {}).unwrap_err();
         assert!(err.to_string().starts_with("db lock:"));
     }
 
@@ -809,9 +1017,14 @@ mod tests {
         let fx = Fixture::new("inrepo", &[]);
         let url = make_repo(&fx);
         sync_in(&mut repo_handle(&fx, &url), false).unwrap();
-        let err = install_in(&mut repo_handle(&fx, &url), &names(&["other/foo"]), false)
-            .unwrap_err()
-            .to_string();
+        let err = install_in(
+            &mut repo_handle(&fx, &url),
+            &names(&["other/foo"]),
+            false,
+            &mut |_| {},
+        )
+        .unwrap_err()
+        .to_string();
         assert_eq!(err, "target not found: other/foo");
         assert!(!fx.installed("foo"));
     }
@@ -822,7 +1035,13 @@ mod tests {
         let url = make_repo(&fx);
         sync_in(&mut repo_handle(&fx, &url), false).unwrap();
         // `test/foo` and bare `foo` both resolve.
-        install_in(&mut repo_handle(&fx, &url), &names(&["test/foo"]), false).unwrap();
+        install_in(
+            &mut repo_handle(&fx, &url),
+            &names(&["test/foo"]),
+            false,
+            &mut |_| {},
+        )
+        .unwrap();
         assert!(fx.installed("foo"));
         assert!(fx.root.join("usr/bin/foo").exists());
         assert_eq!(reason(&fx, "foo"), PackageReason::Explicit);
@@ -839,6 +1058,7 @@ mod tests {
             &[file],
             SigLevel::NONE,
             FileOpts::default(),
+            &mut |_| {},
         )
         .unwrap();
         assert!(fx.installed("foo"));
@@ -858,13 +1078,19 @@ mod tests {
             &[junk],
             SigLevel::NONE,
             FileOpts::default(),
+            &mut |_| {},
         )
         .unwrap_err();
         assert!(err.to_string().starts_with("junk.pkg:"), "{}", err);
         assert!(!fx.root.join("db/db.lck").exists());
-        assert!(
-            install_files_in(&mut fx.handle(), &[], SigLevel::NONE, FileOpts::default()).is_err()
-        );
+        assert!(install_files_in(
+            &mut fx.handle(),
+            &[],
+            SigLevel::NONE,
+            FileOpts::default(),
+            &mut |_| {},
+        )
+        .is_err());
     }
 
     #[test]
@@ -876,10 +1102,17 @@ mod tests {
             needed: true,
             asdeps: true,
         };
-        install_files_in(&mut fx.handle(), &[file.clone()], SigLevel::NONE, opts).unwrap();
+        install_files_in(
+            &mut fx.handle(),
+            &[file.clone()],
+            SigLevel::NONE,
+            opts,
+            &mut |_| {},
+        )
+        .unwrap();
         assert_eq!(reason(&fx, "foo"), PackageReason::Depend);
         // Same version again with --needed: nothing to do, still success.
-        install_files_in(&mut fx.handle(), &[file], SigLevel::NONE, opts).unwrap();
+        install_files_in(&mut fx.handle(), &[file], SigLevel::NONE, opts, &mut |_| {}).unwrap();
         assert!(fx.installed("foo"));
         assert!(!fx.root.join("db/db.lck").exists());
     }

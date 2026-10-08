@@ -26,18 +26,18 @@ static OUT: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Copy)]
 pub(crate) enum Stage {
-    /// Fetching / cloning / writing files.
+    /// Fetch / resolve / start of work (repo extract, AUR clone).
+    Emerging,
+    /// Active makepkg / compile (AUR/ABS only; repos skip this).
     Installing,
-    /// Active makepkg run (AUR/ABS/local).
-    Compiling,
     Completed,
 }
 
 impl Stage {
     fn word(self) -> &'static str {
         match self {
+            Stage::Emerging => "Emerging",
             Stage::Installing => "Installing",
-            Stage::Compiling => "Compiling",
             Stage::Completed => "Completed",
         }
     }
@@ -83,11 +83,11 @@ pub(crate) fn abort_one() {
 /// Erase Jobs → print stage line → redraw Jobs on the next row (in place).
 pub(crate) fn line(stage: Stage, n: usize, atom: &str) {
     match stage {
-        // Installing opens a slot; Compiling keeps it; Completed closes it.
-        Stage::Installing => {
+        // Emerging opens a slot; Installing keeps it; Completed closes it.
+        Stage::Emerging => {
             RUNNING.fetch_add(1, Ordering::Relaxed);
         }
-        Stage::Compiling => {}
+        Stage::Installing => {}
         Stage::Completed => {
             let _ = RUNNING.try_update(Ordering::Relaxed, Ordering::Relaxed, |r| {
                 Some(r.saturating_sub(1))
@@ -128,6 +128,54 @@ pub(crate) fn note(text: &str) {
     status_erase();
     println!("{}", text);
     status_draw();
+}
+
+/// Handle a helper `hook …` event, keeping the Jobs footer pinned.
+///
+///   `hook start pre|post`           → `>>> Running pre/post-transaction hooks...`
+///   `hook run N/M name [desc…]`     → `>>> (N of M) desc`
+///   `hook done …`                   → no-op
+pub(crate) fn on_hook_event(ev: &str) {
+    let mut it = ev.split_whitespace();
+    let (Some("hook"), Some(kind)) = (it.next(), it.next()) else {
+        return;
+    };
+    match kind {
+        "start" => {
+            let when = it.next().unwrap_or("post");
+            let label = if when == "pre" {
+                "pre-transaction"
+            } else {
+                "post-transaction"
+            };
+            note(&format!(
+                "{} Running {} hooks...",
+                ">>>".green().bold(),
+                label
+            ));
+        }
+        "run" => {
+            // `hook run 1/3 name Optional description words…`
+            let Some(frac) = it.next() else {
+                return;
+            };
+            let (pos, total) = frac
+                .split_once('/')
+                .and_then(|(a, b)| Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?)))
+                .unwrap_or((0, 0));
+            let name = it.next().unwrap_or("?");
+            let desc: String = it.collect::<Vec<_>>().join(" ");
+            let shown = if desc.is_empty() { name } else { desc.as_str() };
+            note(&format!(
+                "{} ({} of {}) {}",
+                ">>>".green().bold(),
+                pos.to_string().yellow().bold(),
+                total.to_string().yellow().bold(),
+                shown
+            ));
+        }
+        _ => {}
+    }
 }
 
 /// End of run: leave one final Jobs line in the scrollback (with newline).

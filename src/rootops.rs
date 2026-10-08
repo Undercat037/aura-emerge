@@ -102,17 +102,27 @@ pub(crate) fn specs(pins: &[Pinned]) -> Result<Vec<String>, String> {
 }
 
 /// `pacman -U` through the root helper.
-pub(crate) fn install_files(pins: &[Pinned], opts: FileOpts) -> Result<(), String> {
+/// `on_event` gets live `pkg`/`hook` lines (pass `&mut |_| {}` if quiet).
+pub(crate) fn install_files(
+    pins: &[Pinned],
+    opts: FileOpts,
+    on_event: &mut dyn FnMut(&str),
+) -> Result<(), String> {
     let lines = specs(pins)?;
-    with_helper(|c| c.install_files(opts, &lines)).map_err(|e| e.to_string())
+    with_helper(|c| c.install_files(opts, &lines, on_event)).map_err(|e| e.to_string())
 }
 
 /// `pacman -S` through the root helper (libalpm transaction).
-pub(crate) fn install(names: &[String], needed: bool) -> Result<(), String> {
+/// `on_event` gets live `pkg start|done` and `hook …` lines.
+pub(crate) fn install(
+    names: &[String],
+    needed: bool,
+    on_event: &mut dyn FnMut(&str),
+) -> Result<(), String> {
     if names.is_empty() {
         return Ok(());
     }
-    with_helper(|c| c.install(names, needed)).map_err(|e| e.to_string())
+    with_helper(|c| c.install(names, needed, on_event)).map_err(|e| e.to_string())
 }
 
 /// Refresh sync dbs (`-Sy` / `-Syy` when force).
@@ -126,14 +136,16 @@ pub(crate) fn sysupgrade(ignore: &[String], on_event: &mut dyn FnMut(&str)) -> R
 }
 
 /// Remove installed packages through the helper.
+/// `on_event` gets live `pkg`/`hook` lines (pass `&mut |_| {}` if quiet).
 pub(crate) fn remove(
     mode: crate::helper::validate::RemoveMode,
     names: &[String],
+    on_event: &mut dyn FnMut(&str),
 ) -> Result<(), String> {
     if names.is_empty() {
         return Ok(());
     }
-    with_helper(|c| c.remove(mode, names)).map_err(|e| e.to_string())
+    with_helper(|c| c.remove(mode, names, on_event)).map_err(|e| e.to_string())
 }
 
 /// `pacman -D --asexplicit` / `--asdeps`.

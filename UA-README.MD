@@ -196,6 +196,21 @@ OPTIONS="strip docs !debug lto"
 - **Область:** лише збірки AUR/ABS. `EMERGE_DEFAULT_OPTS` в env-файлі ігнорується з попередженням.
 - **Помилки:** символьне посилання, некоректний запис або відсутній env-файл пропускаються з попередженням (з файлом і рядком); решта застосовується.
 
+
+### Хуки alpm
+
+libalpm виконує хуки pacman під час кожної встановлення, видалення, `-U` і
+`-Su` — той самий шлях `depmod` / DKMS / dracut / `grub-mkconfig`, що й у
+звичайного `pacman`. Порядок пошуку:
+
+1. `/usr/share/libalpm/hooks/` (з пакетів)
+2. `/etc/pacman.d/hooks/` (адмінські, з `HookDir` у `pacman.conf`)
+3. `/etc/portage/hooks/` (користувацькі хуки aura-emerge; той самий формат `.hook`)
+
+Створіть `/etc/portage/hooks/` для локальних хуків, не чіпаючи шляхи pacman.
+За збігу імен перемагає раніший каталог. Формат: [man 5 alpm-hooks](https://man.archlinux.org/man/alpm-hooks.5).
+Приклад і нотатки: [`misc/hooks/`](misc/hooks/).
+
 ## Можливості
 
 ### `--exclude` і `--keep-going`
@@ -472,8 +487,6 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `--log <PATH>` | Записати лог сесії (команда, рядки emerge.log, повний вивід збірки) для баг-репортів - `| tee` не потрібен |
 | `-h`, `--help` | Довідка |
 | `-V`, `--version` | Версія |
-
-Є в `--help`, але поки не описані в man-сторінці: `-q`/`--quiet`, `--nospinner`, `--noconfmem`, `--color`, `--columns`, `-O`/`--nodeps`, `-o`/`--onlydeps`, `--complete-graph`, `--changed-use`, `--backtrack`, `--load-average`, `-k`, `-K`, `-g`, `-G`, `-b`, `-B`, `-f`, `-F`, `-l`/`--changelog`, `--newrepo`, `--reinstall`, `--quiet-build`, `--with-bdeps`, `-A`/`--alert`, `--metadata`, `--clean`, `--config`.
 
 Сторінка посібника `emerge(1)` генерується з CLI (`emerge --gen-manpage`), тому не може розійтися з `--help`.
 </details>

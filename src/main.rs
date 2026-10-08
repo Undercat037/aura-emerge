@@ -98,6 +98,10 @@ libalpm directly for official-repo packages, and builds AUR and ABS packages its
 rather than shelling out to another AUR helper. \
 It tracks every explicitly requested package in /etc/portage/world, independent \
 of whatever pacman's own dependency graph currently looks like.\n\n\
+libalpm runs the normal pacman hooks (depmod, DKMS, dracut/mkinitcpio, \
+grub-mkconfig, …) on every install, remove, -U and -Su. Hook directories are \
+/usr/share/libalpm/hooks/, /etc/pacman.d/hooks/, and /etc/portage/hooks/ \
+(see FILES).\n\n\
 Three operations that look similar are kept deliberately distinct: refreshing the \
 package databases (--sync), upgrading everything already installed (-u / -u @world), \
 and making sure this machine actually has everything world says it should \
@@ -194,6 +198,17 @@ EXAMPLES
     emerge --news 3                 Read news item 3 in full
     emerge --news all               Dismiss all news notifications
 
+ALPM HOOKS
+    libalpm executes every matching *.hook during trans_commit (install,
+    remove, -U, -Su) — same mechanism as pacman. Search order:
+
+        /usr/share/libalpm/hooks/           Package-shipped hooks
+        /etc/pacman.d/hooks/                Admin hooks (HookDir in pacman.conf)
+        /etc/portage/hooks/                 aura-emerge user hooks (same format)
+
+    Earlier directories win on name collisions. Format: alpm-hooks(5).
+    Example and notes: misc/hooks/ in the source tree.
+
 FILES
     /etc/portage/world                      Explicitly-installed packages
     /etc/portage/sets/*                     Custom package sets (<name> or <name>.set)
@@ -204,8 +219,11 @@ FILES
     /etc/portage/package.env                Per-package build-env overrides: `atom env...`
                                             (file, or a directory of files)
     /etc/portage/env/<name>                 Env files for package.env, make.conf syntax
+    /etc/portage/hooks/                     User alpm hooks (*.hook); see ALPM HOOKS
     /etc/portage/resume.state                Saved state for --resume
     /etc/portage/lastaction.state            Last install/unmerge step, for --undo
+    /usr/share/libalpm/hooks/               System alpm hooks (from packages)
+    /etc/pacman.d/hooks/                    Admin alpm hooks (pacman HookDir)
     /var/log/emerge.log                     Append-only merge/unmerge event log, with
                                             build time for AUR/ABS packages; stats
                                             shown in --info
@@ -370,7 +388,6 @@ struct Cli {
     with_optdeps: bool,
 
     // Dummy flags for compatibility
-    /// Include installed pkgs with changed USE flags
     #[arg(short = 'N', long = "newuse")]
     newuse: bool,
 
@@ -599,31 +616,34 @@ fn print_help() {
     println!("   emerge < --sync | --info | --list-sets >");
     println!("   emerge --resume [ --pretend | --ask | --skipfirst ]");
     println!("   emerge --help");
-    println!("Options: -[1aCcDehNnpstuVv]");
-    println!("          [ --abs                        ] [ --aur        ]");
-    println!("          [ --skippgp                    ] [ --autopgp    ]");
-    println!("          [ --repos                                  ]");
-    println!("          [ --edit                       ] [ --skip-srcinfo-regen ]");
-    println!("          [ --pkgbuild-view              ] [ --emptytree  ]");
-    println!("          [ --newuse                     ] [ --noreplace  ]");
-    println!("          [ --oneshot                    ] [ --pretend    ]");
-    println!("          [ --skipfirst                  ] [ --refresh    ]");
-    println!("          [ --no-sandbox                 ] [ --unshare-net-build ]");
-    println!("          [ --devel                      ] [ --sudoloop   ]");
-    println!("          [ --verbose-conflicts          ] [ --with-bdeps ]");
-    println!("          [ --err-install                ] [ --regen-sort ]");
-    println!("          [ --deep[=N]                   ] [ --keep-going ]");
-    println!("          [ --exclude <ATOM>             ] [ --ignore-default-opts ]");
+    println!("Options: -[1aCcDehnpstuVv]");
+    println!("          [ --abs                   ] [ --aur                       ]");
+    println!("          [ --skippgp               ] [ --autopgp                   ]");
+    println!("          [ --repos                 ] [ --jobsr=N   | --jobsa=N     ]");
+    println!("          [ --edit                  ] [ --skip-srcinfo-regen        ]");
+    println!("          [ --pkgbuild-view         ] [ --emptytree                 ]");
+    println!("          [ --noreplace             ] [ --with-optdeps              ]");
+    println!("          [ --oneshot               ] [ --pretend                   ]");
+    println!("          [ --skipfirst             ] [ --refresh                   ]");
+    println!("          [ --no-sandbox            ] [ --unshare-net-build         ]");
+    println!("          [ --devel                 ] [ --sudoloop                  ]");
+    println!("          [ --verbose-conflicts     ] [ --with-bdeps                ]");
+    println!("          [ --err-install           ] [ --regen-sort                ]");
+    println!("          [ --deep[=N]              ] [ --keep-going                ]");
+    println!("          [ --exclude <ATOM>        ] [ --ignore-default-opts       ]");
     println!("Actions:  [ --depclean  | --deselect | --prune      | --check-world ]");
     println!("          [ --regen     | --resume   | --search     | --searchdesc  ]");
     println!("          [ --select    | --sync     | --unmerge    | --update      ]");
     println!("          [ --regen-world | --version | --info | --regen-world-from-explicit ]");
     println!("          [ --list-sets | --regen-sets @<name>  | --news [N|all]    ]");
-    println!("          [ --check-news [N|all]  | --check-devel | --undo           ]");
+    println!("          [ --check-news [N|all]  | --check-devel | --undo          ]");
     println!("          [ --scan <pkg...>       | --install-pkgbuild <PATH>       ]");
     println!("          [ --batchinstall <FILE> | --clean-source-cache            ]");
     println!("          [ --revdep-rebuild                                        ]");
     println!("Sets:     [ @world | @preserved-rebuild | @<custom-sets>            ]");
+    println!();
+    println!("Hooks:    /usr/share/libalpm/hooks/  /etc/pacman.d/hooks/  /etc/portage/hooks/");
+    println!("          (libalpm runs *.hook on install/remove/-U/-Su; see man emerge)");
     println!();
     println!("Full docs, examples and flag-by-flag details: man emerge");
     println!("README: https://github.com/Undercat037/aura-emerge");
@@ -883,6 +903,7 @@ fn unmerge_loop(names: &[String]) -> (bool, Vec<String>) {
         match rootops::remove(
             helper::validate::RemoveMode::Unmerge,
             std::slice::from_ref(name),
+            &mut |ev| progress::on_hook_event(ev),
         ) {
             Ok(()) => removed.push(name.clone()),
             Err(e) => {
@@ -914,7 +935,7 @@ pub(crate) fn alpm_install_quiet(
     } else {
         Vec::new()
     };
-    rootops::install(names, needed)?;
+    rootops::install(names, needed, &mut |_| {})?;
     if !fresh.is_empty() {
         let _ = rootops::set_reason(false, &fresh);
     }
@@ -922,8 +943,11 @@ pub(crate) fn alpm_install_quiet(
 }
 
 /// Official-repo install through libalpm with live Installing / Completed
-/// lines. Batches of up to `--jobsr` packages share one alpm transaction
-/// (shown as concurrent Installing, then Completed for each).
+/// lines driven by helper `pkg start|done` events (one package finishes
+/// before the next starts inside the transaction). Batches of up to
+/// `--jobsr` packages still share one alpm transaction (faster; hooks run
+/// once per batch). Hooks are printed via `progress::note` so the Jobs
+/// footer stays pinned.
 /// `asdeps` = `--oneshot`. Targets may be bare or `repo/name`.
 pub(crate) fn repo_install_landed(names: &[String], asdeps: bool) -> (bool, Vec<String>) {
     let needed = runtime::get().noreplace;
@@ -936,72 +960,124 @@ pub(crate) fn repo_install_landed(names: &[String], asdeps: bool) -> (bool, Vec<
     let syncd = alpm_db::find_sync_many(names);
     let mut landed = Vec::new();
 
-    // Pre-resolve display atoms + helper targets.
-    let items: Vec<(String, String, String)> = names
+    // Pre-resolve display atoms + helper targets. Keyed by bare name for
+    // matching helper `pkg start|done <name>` events.
+    let mut atoms: HashMap<String, String> = HashMap::new();
+    let mut targets_for: HashMap<String, String> = HashMap::new();
+    // bare → original request string (for world / landed reporting)
+    let mut orig_of: HashMap<String, String> = HashMap::new();
+    let order: Vec<String> = names
         .iter()
         .map(|name| {
-            let bare = name.split('/').last().unwrap_or(name);
-            match syncd.get(bare) {
+            let bare = name.split('/').last().unwrap_or(name).to_string();
+            orig_of.insert(bare.clone(), name.clone());
+            match syncd.get(bare.as_str()) {
                 Some(p) => {
-                    let atom = progress::atom(&p.repo, &p.name, &p.version);
+                    atoms.insert(bare.clone(), progress::atom(&p.repo, &p.name, &p.version));
                     let target = if name.contains('/') {
                         name.clone()
                     } else {
                         format!("{}/{}", p.repo, p.name)
                     };
-                    (name.clone(), atom, target)
+                    targets_for.insert(bare.clone(), target);
                 }
-                None => (name.clone(), bare.to_string(), name.clone()),
+                None => {
+                    atoms.insert(bare.clone(), bare.clone());
+                    targets_for.insert(bare.clone(), name.clone());
+                }
             }
+            bare
         })
         .collect();
 
-    for chunk in items.chunks(jobsr) {
-        // Mark the whole wave as Installing first.
-        let mut wave: Vec<(usize, String, String, String)> = Vec::with_capacity(chunk.len());
-        for (name, atom, target) in chunk {
-            let n = progress::take();
-            progress::line(progress::Stage::Installing, n, atom);
-            wave.push((n, name.clone(), atom.clone(), target.clone()));
-        }
-        let targets: Vec<String> = wave.iter().map(|(_, _, _, t)| t.clone()).collect();
-        match alpm_install_quiet(&targets, needed, asdeps) {
+    for chunk in order.chunks(jobsr) {
+        let targets: Vec<String> = chunk
+            .iter()
+            .filter_map(|b| targets_for.get(b).cloned())
+            .collect();
+        let mut nums: HashMap<String, usize> = HashMap::new();
+        let mut wave_ok: HashMap<String, bool> = HashMap::new();
+
+        let mut on_event = |ev: &str| {
+            if ev.starts_with("hook ") {
+                progress::on_hook_event(ev);
+                return;
+            }
+            let mut it = ev.split_whitespace();
+            let (Some("pkg"), Some(kind), Some(name)) = (it.next(), it.next(), it.next()) else {
+                return;
+            };
+            let atom = atoms.get(name).cloned().unwrap_or_else(|| name.to_string());
+            match kind {
+                "start" => {
+                    if !atoms.contains_key(name) {
+                        progress::grow(1);
+                    }
+                    let n = progress::take();
+                    nums.insert(name.to_string(), n);
+                    progress::line(progress::Stage::Emerging, n, &atom);
+                }
+                "done" => {
+                    if let Some(&n) = nums.get(name) {
+                        wave_ok.insert(name.to_string(), true);
+                        progress::line(progress::Stage::Completed, n, &atom);
+                    }
+                }
+                _ => {}
+            }
+        };
+
+        match rootops::install(&targets, needed, &mut on_event) {
             Ok(()) => {
-                for (n, name, atom, _) in &wave {
-                    landed.push(name.clone());
-                    progress::line(progress::Stage::Completed, *n, atom);
+                for b in chunk {
+                    if *wave_ok.get(b).unwrap_or(&false) || alpm_db::is_installed(b) {
+                        landed.push(orig_of.get(b).cloned().unwrap_or_else(|| b.clone()));
+                    }
+                }
+                if asdeps {
+                    let fresh: Vec<String> = chunk
+                        .iter()
+                        .filter(|b| wave_ok.get(*b).copied().unwrap_or(false))
+                        .cloned()
+                        .collect();
+                    if !fresh.is_empty() {
+                        let _ = rootops::set_reason(false, &fresh);
+                    }
                 }
             }
             Err(batch_err) => {
-                // Batch failed: fall back to one-by-one so keep-going
-                // can still land the rest of the wave.
                 if jobsr > 1 {
                     eprintln!(
                         "{} batch of {} failed ({}); retrying one at a time",
                         ">>>".yellow().bold(),
-                        wave.len(),
+                        chunk.len(),
                         batch_err
                     );
                 }
-                // Undo the concurrent RUNNING slots opened above; the
-                // one-by-one path will re-open them.
-                for (n, name, atom, target) in &wave {
-                    // Mark failed-looking complete slot so RUNNING drops;
-                    // real install below will emit a fresh Installing if needed.
-                    // Actually RUNNING was +1 per Installing; we need Completed
-                    // or a manual decrement. Emit Completed only on success.
-                    // For retry, decrement by treating as aborted install:
-                    let _ = n;
-                    match alpm_install_quiet(std::slice::from_ref(target), needed, asdeps) {
+                // Close any Emerging slots that never got Completed.
+                for (name, &n) in &nums {
+                    if !wave_ok.get(name).copied().unwrap_or(false) {
+                        let _ = n;
+                        progress::abort_one();
+                    }
+                }
+                for b in chunk {
+                    if landed.iter().any(|x| x == b) {
+                        continue;
+                    }
+                    let target = targets_for.get(b).cloned().unwrap_or_else(|| b.clone());
+                    let atom = atoms.get(b).cloned().unwrap_or_else(|| b.clone());
+                    let n = progress::take();
+                    progress::line(progress::Stage::Emerging, n, &atom);
+                    match alpm_install_quiet(std::slice::from_ref(&target), needed, asdeps) {
                         Ok(()) => {
-                            landed.push(name.clone());
-                            progress::line(progress::Stage::Completed, *n, atom);
+                            landed.push(orig_of.get(b).cloned().unwrap_or_else(|| b.clone()));
+                            progress::line(progress::Stage::Completed, n, &atom);
                         }
                         Err(e) => {
-                            // Close the running slot without a Completed line.
                             progress::abort_one();
-                            eprintln!("{} {}: {}", ">>> Error:".red().bold(), name, e);
-                            runtime::record_failure(name, "alpm install failed");
+                            eprintln!("{} {}: {}", ">>> Error:".red().bold(), b, e);
+                            runtime::record_failure(b, "alpm install failed");
                             if !runtime::keep_going() {
                                 return (landed.len() == total, landed);
                             }
@@ -1029,7 +1105,7 @@ fn install_optdeps(landed: &[String]) {
         ">>>".green().bold(),
         extra.join(", ")
     );
-    if let Err(e) = rootops::install(&extra, true) {
+    if let Err(e) = rootops::install(&extra, true, &mut |_| {}) {
         eprintln!("{} optdeps: {}", ">>> Error:".red().bold(), e);
         return;
     }
@@ -2807,7 +2883,9 @@ fn run() -> anyhow::Result<()> {
         if !confirm_action(cli.ask, "unmerge") {
             return Ok(());
         }
-        match rootops::remove(helper::validate::RemoveMode::Prune, &to_remove) {
+        match rootops::remove(helper::validate::RemoveMode::Prune, &to_remove, &mut |ev| {
+            progress::on_hook_event(ev)
+        }) {
             Ok(()) => logbook::log_unmerge(&to_remove),
             Err(e) => eprintln!("{} {}", ">>> Error:".red().bold(), e),
         }
@@ -2910,13 +2988,16 @@ fn run() -> anyhow::Result<()> {
                 if cli.pretend {
                     return Ok(());
                 }
-                let success = match rootops::remove(helper::validate::RemoveMode::Plain, &bare) {
-                    Ok(()) => true,
-                    Err(e) => {
-                        eprintln!("{} {}", ">>> Error:".red().bold(), e);
-                        false
-                    }
-                };
+                let success =
+                    match rootops::remove(helper::validate::RemoveMode::Plain, &bare, &mut |ev| {
+                        progress::on_hook_event(ev)
+                    }) {
+                        Ok(()) => true,
+                        Err(e) => {
+                            eprintln!("{} {}", ">>> Error:".red().bold(), e);
+                            false
+                        }
+                    };
                 if success {
                     if let Err(e) = remove_from_world_set(&bare) {
                         eprintln!(
@@ -3245,7 +3326,8 @@ fn run() -> anyhow::Result<()> {
             // `plan <n>` from the helper: how many packages libalpm queued.
             let mut tx_size: Option<usize> = None;
             let mut done_pkgs = 0usize;
-            // Helper: `pkg start|done <name>` per package, live.
+            // Helper: `pkg start|done <name>` and `hook …`, live.
+            // Hooks go through progress::note so the Jobs footer stays pinned.
             let mut show = |ev: &str| {
                 let mut it = ev.split_whitespace();
                 let (Some(head), Some(kind)) = (it.next(), it.next()) else {
@@ -3253,6 +3335,10 @@ fn run() -> anyhow::Result<()> {
                 };
                 if head == "plan" {
                     tx_size = kind.parse().ok();
+                    return;
+                }
+                if head == "hook" {
+                    progress::on_hook_event(ev);
                     return;
                 }
                 let (true, Some(name)) = (head == "pkg", it.next()) else {
@@ -3266,7 +3352,7 @@ fn run() -> anyhow::Result<()> {
                         }
                         let n = progress::take();
                         nums.insert(name.to_string(), n);
-                        progress::line(progress::Stage::Installing, n, &atom);
+                        progress::line(progress::Stage::Emerging, n, &atom);
                     }
                     "done" => {
                         if let Some(&n) = nums.get(name) {

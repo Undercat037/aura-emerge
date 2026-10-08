@@ -141,21 +141,33 @@ impl Client {
     }
 
     /// Removes installed packages; `mode` picks the pacman -R flavour.
-    pub(crate) fn remove(&mut self, mode: RemoveMode, names: &[String]) -> Result<(), ClientError> {
+    /// `on_event` gets `pkg`/`hook` lines live.
+    pub(crate) fn remove(
+        &mut self,
+        mode: RemoveMode,
+        names: &[String],
+        on_event: &mut dyn FnMut(&str),
+    ) -> Result<(), ClientError> {
         let req = Request::Remove {
             mode,
             names: names.to_vec(),
         };
-        self.request(&req, &mut |_| {})
+        self.request(&req, on_event)
     }
 
     /// `pacman -S`: install from sync dbs by `[repo/]name`.
-    pub(crate) fn install(&mut self, names: &[String], needed: bool) -> Result<(), ClientError> {
+    /// `on_event` gets `pkg start|done` and `hook …` lines live.
+    pub(crate) fn install(
+        &mut self,
+        names: &[String],
+        needed: bool,
+        on_event: &mut dyn FnMut(&str),
+    ) -> Result<(), ClientError> {
         let req = Request::Install {
             needed,
             names: names.to_vec(),
         };
-        self.request(&req, &mut |_| {})
+        self.request(&req, on_event)
     }
 
     /// Refresh sync dbs (`pacman -Sy`); `force` is `-Syy`.
@@ -182,16 +194,18 @@ impl Client {
     }
 
     /// `pacman -U`: `specs` are `validate::spec` lines (sha256 + abs path).
+    /// `on_event` gets `pkg`/`hook` lines live.
     pub(crate) fn install_files(
         &mut self,
         opts: FileOpts,
         specs: &[String],
+        on_event: &mut dyn FnMut(&str),
     ) -> Result<(), ClientError> {
         let req = Request::InstallFiles {
             opts,
             files: specs.to_vec(),
         };
-        self.request(&req, &mut |_| {})
+        self.request(&req, on_event)
     }
 
     /// `pacman -D --asexplicit` (true) / `--asdeps` (false).

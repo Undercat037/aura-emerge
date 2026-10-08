@@ -473,8 +473,6 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `-h`, `--help` | Справка |
 | `-V`, `--version` | Версия |
 
-Есть в `--help`, но пока не описаны в man-странице: `-q`/`--quiet`, `--nospinner`, `--noconfmem`, `--color`, `--columns`, `-O`/`--nodeps`, `-o`/`--onlydeps`, `--complete-graph`, `--changed-use`, `--backtrack`, `--load-average`, `-k`, `-K`, `-g`, `-G`, `-b`, `-B`, `-f`, `-F`, `-l`/`--changelog`, `--newrepo`, `--reinstall`, `--quiet-build`, `--with-bdeps`, `-A`/`--alert`, `--metadata`, `--clean`, `--config`.
-
 Страница руководства `emerge(1)` генерируется из CLI (`emerge --gen-manpage`), поэтому не может разойтись с `--help`.
 </details>
 
