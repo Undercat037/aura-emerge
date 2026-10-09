@@ -15,6 +15,7 @@ mod aur;
 mod bash_ast;
 mod candy;
 mod config;
+mod theme;
 mod helper;
 mod logbook;
 mod mask;
@@ -46,6 +47,7 @@ mod http {
 use clap::Parser;
 use clap_complete::Shell;
 use colored::Colorize;
+use crate::theme::Themed;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, BufRead, Write};
@@ -778,15 +780,15 @@ fn maybe_news_banner() {
         if n > 0 {
             println!(
                 " {} {}: {} news item(s) need reading for repository '{}'.",
-                "*".yellow().bold(),
-                "IMPORTANT".yellow().bold(),
+                "*".t_yellow().bold(),
+                "IMPORTANT".t_yellow().bold(),
                 n,
                 "arch".bold()
             );
             println!(
                 " {} Use {} to view new items.",
-                "*".yellow().bold(),
-                "emerge --news".cyan()
+                "*".t_yellow().bold(),
+                "emerge --news".t_cyan()
             );
             println!();
         }
@@ -797,12 +799,12 @@ fn maybe_news_banner() {
 fn sync_line(name: &str, state: Option<&str>) -> String {
     let label = format!("{}...", name);
     let tail = match state {
-        Some("updated") => format!(" {}", "done".green().bold()),
-        Some("failed") => format!(" {}", "failed".red().bold()),
+        Some("updated") => format!(" {}", "done".t_green().bold()),
+        Some("failed") => format!(" {}", "failed".t_red().bold()),
         // Pending, or already current: no verdict.
         _ => String::new(),
     };
-    format!("{} {}{}", ">>>".green().bold(), label, tail)
+    format!("{} {}{}", ">>>".t_green().bold(), label, tail)
 }
 
 /// Portage-style db sync through the helper (live, one line per repo in
@@ -820,7 +822,7 @@ pub(crate) fn sync_dbs(force: bool) -> bool {
 
     println!(
         "{} Syncing package databases{}...",
-        ">>>".green().bold(),
+        ">>>".t_green().bold(),
         if force { " (force refresh)" } else { "" }
     );
     let names = alpm_db::sync_db_names();
@@ -872,7 +874,7 @@ pub(crate) fn sync_dbs(force: bool) -> bool {
             true
         }
         Err(e) => {
-            eprintln!("{} {}", ">>> Error:".red().bold(), e);
+            eprintln!("{} {}", ">>> Error:".t_red().bold(), e);
             false
         }
     }
@@ -895,10 +897,10 @@ fn unmerge_loop(names: &[String]) -> (bool, Vec<String>) {
         };
         println!(
             "{} Unmerging ({} of {}) {}...",
-            ">>>".green().bold(),
-            (i + 1).to_string().yellow().bold(),
-            total.to_string().yellow().bold(),
-            progress::atom(&repo, bare, &ver).green().bold()
+            ">>>".t_green().bold(),
+            (i + 1).to_string().t_yellow().bold(),
+            total.to_string().t_yellow().bold(),
+            progress::atom(&repo, bare, &ver).t_green().bold()
         );
         match rootops::remove(
             helper::validate::RemoveMode::Unmerge,
@@ -907,7 +909,7 @@ fn unmerge_loop(names: &[String]) -> (bool, Vec<String>) {
         ) {
             Ok(()) => removed.push(name.clone()),
             Err(e) => {
-                eprintln!("{} {}: {}", ">>> Error:".red().bold(), name, e);
+                eprintln!("{} {}: {}", ">>> Error:".t_red().bold(), name, e);
                 ok = false;
                 if !runtime::keep_going() {
                     break;
@@ -1049,7 +1051,7 @@ pub(crate) fn repo_install_landed(names: &[String], asdeps: bool) -> (bool, Vec<
                 if jobsr > 1 {
                     eprintln!(
                         "{} batch of {} failed ({}); retrying one at a time",
-                        ">>>".yellow().bold(),
+                        ">>>".t_yellow().bold(),
                         chunk.len(),
                         batch_err
                     );
@@ -1076,7 +1078,7 @@ pub(crate) fn repo_install_landed(names: &[String], asdeps: bool) -> (bool, Vec<
                         }
                         Err(e) => {
                             progress::abort_one();
-                            eprintln!("{} {}: {}", ">>> Error:".red().bold(), b, e);
+                            eprintln!("{} {}: {}", ">>> Error:".t_red().bold(), b, e);
                             runtime::record_failure(b, "alpm install failed");
                             if !runtime::keep_going() {
                                 return (landed.len() == total, landed);
@@ -1102,11 +1104,11 @@ fn install_optdeps(landed: &[String]) {
     }
     println!(
         "{} Optional dependencies: {}",
-        ">>>".green().bold(),
+        ">>>".t_green().bold(),
         extra.join(", ")
     );
     if let Err(e) = rootops::install(&extra, true, &mut |_| {}) {
-        eprintln!("{} optdeps: {}", ">>> Error:".red().bold(), e);
+        eprintln!("{} optdeps: {}", ">>> Error:".t_red().bold(), e);
         return;
     }
     // Keep them removable by --depclean.
@@ -1165,9 +1167,9 @@ fn upgrade_selected(cli: &Cli, targets: &[String]) -> anyhow::Result<()> {
             };
             println!(
                 "[{} {:<4}] {} [{} -> {}]",
-                "ebuild".green(),
-                "U".yellow().bold(),
-                atom.yellow().bold(),
+                "ebuild".t_green(),
+                "U".t_yellow().bold(),
+                atom.t_yellow().bold(),
                 old,
                 newv
             );
@@ -1176,16 +1178,16 @@ fn upgrade_selected(cli: &Cli, targets: &[String]) -> anyhow::Result<()> {
         } else if crate::alpm_db::is_installed(name) {
             println!(
                 "[{} {:<4}] {} (already up to date)",
-                "ebuild".green(),
-                "R".cyan().bold(),
-                name.green().bold()
+                "ebuild".t_green(),
+                "R".t_cyan().bold(),
+                name.t_green().bold()
             );
         } else {
             println!(
                 "[{} {:<4}] {}",
-                "ebuild".green(),
-                "N".green().bold(),
-                name.green().bold()
+                "ebuild".t_green(),
+                "N".t_green().bold(),
+                name.t_green().bold()
             );
             official_todo.push(name.clone());
             plan_count += 1;
@@ -1194,18 +1196,18 @@ fn upgrade_selected(cli: &Cli, targets: &[String]) -> anyhow::Result<()> {
     for name in &aur {
         println!(
             "[{} {:<4}] {} (AUR rebuild)",
-            "ebuild".green(),
-            "U".yellow().bold(),
-            format!("aur/{}", name).yellow().bold()
+            "ebuild".t_green(),
+            "U".t_yellow().bold(),
+            format!("aur/{}", name).t_yellow().bold()
         );
         plan_count += 1;
     }
     for name in &abs {
         println!(
             "[{} {:<4}] {} (ABS rebuild)",
-            "ebuild".green(),
-            "U".yellow().bold(),
-            format!("abs/{}", name).yellow().bold()
+            "ebuild".t_green(),
+            "U".t_yellow().bold(),
+            format!("abs/{}", name).t_yellow().bold()
         );
         plan_count += 1;
     }
@@ -1270,7 +1272,7 @@ fn upgrade_selected(cli: &Cli, targets: &[String]) -> anyhow::Result<()> {
             return Ok(());
         }
     }
-    println!("{} Jobs complete", ">>>".green().bold());
+    println!("{} Jobs complete", ">>>".t_green().bold());
     Ok(())
 }
 
@@ -1551,9 +1553,9 @@ fn save_failed_resume(cli: &Cli) -> bool {
     save_resume_state(&build_resume_args(cli, &bare, false));
     println!(
         "{} {} package(s) failed; `{}` will retry just those.",
-        ">>>".yellow().bold(),
+        ">>>".t_yellow().bold(),
         bare.len(),
-        "emerge --resume".cyan()
+        "emerge --resume".t_cyan()
     );
     true
 }
@@ -1748,18 +1750,18 @@ fn print_sync_search_results(results: &[crate::alpm_db::AlpmPkg]) {
     for p in results {
         let mut tags = String::new();
         if p.installed {
-            tags.push_str(&format!(" {}", "[installed]".cyan()));
+            tags.push_str(&format!(" {}", "[installed]".t_cyan()));
         }
         if crate::mask::find(&p.name, Some(p.repo.as_str())).is_some()
             || crate::mask::find(&p.name, None).is_some()
         {
-            tags.push_str(&format!(" {}", "[masked]".red().bold()));
+            tags.push_str(&format!(" {}", "[masked]".t_red().bold()));
         }
         println!(
             "{}/{} {}{}",
-            p.repo.magenta().bold(),
+            p.repo.t_magenta().bold(),
             p.name.bold(),
-            p.version.green(),
+            p.version.t_green(),
             tags
         );
         if !p.description.is_empty() {
@@ -1776,18 +1778,18 @@ fn print_abs_search_results(results: &[crate::alpm_db::AlpmPkg]) {
     for p in results {
         let mut tags = String::new();
         if p.installed {
-            tags.push_str(&format!(" {}", "[installed]".cyan()));
+            tags.push_str(&format!(" {}", "[installed]".t_cyan()));
         }
         if crate::mask::find(&p.name, Some("abs")).is_some()
             || crate::mask::find(&p.name, None).is_some()
         {
-            tags.push_str(&format!(" {}", "[masked]".red().bold()));
+            tags.push_str(&format!(" {}", "[masked]".t_red().bold()));
         }
         println!(
             "{}/{} {}{}",
-            "abs".yellow().bold(),
+            "abs".t_yellow().bold(),
             p.name.bold(),
-            p.version.green(),
+            p.version.t_green(),
             tags
         );
         if !p.description.is_empty() {
@@ -1800,9 +1802,9 @@ fn print_abs_search_results(results: &[crate::alpm_db::AlpmPkg]) {
 }
 
 fn print_sync_info(pkg: &crate::alpm_db::AlpmPkg) {
-    println!("{:<15}: {}", "Repository", pkg.repo.magenta().bold());
+    println!("{:<15}: {}", "Repository", pkg.repo.t_magenta().bold());
     println!("{:<15}: {}", "Name", pkg.name.bold());
-    println!("{:<15}: {}", "Version", pkg.version.green());
+    println!("{:<15}: {}", "Version", pkg.version.t_green());
     println!("{:<15}: {}", "Description", pkg.description);
     println!();
 }
@@ -1814,22 +1816,22 @@ fn print_aur_search_results(results: &[aur::AurPkgInfo]) {
     }
     for r in results {
         let ood = if r.out_of_date {
-            " [out of date]".red().bold().to_string()
+            " [out of date]".t_red().bold().to_string()
         } else {
             String::new()
         };
         let masked = if crate::mask::find(&r.name, Some("aur")).is_some()
             || crate::mask::find(&r.name, None).is_some()
         {
-            format!(" {}", "[masked]".red().bold())
+            format!(" {}", "[masked]".t_red().bold())
         } else {
             String::new()
         };
         println!(
             "{}/{} {}{}{} ({} votes, {:.2} popularity)",
-            "aur".magenta().bold(),
+            "aur".t_magenta().bold(),
             r.name.bold(),
-            r.version.green(),
+            r.version.t_green(),
             ood,
             masked,
             r.num_votes,
@@ -1849,10 +1851,10 @@ fn print_aur_info_results(results: &[aur::AurPkgInfo]) {
         return;
     }
     for r in results {
-        println!("{:<15}: {}", "Repository", "aur".magenta().bold());
+        println!("{:<15}: {}", "Repository", "aur".t_magenta().bold());
         println!("{:<15}: {}", "Name", r.name.bold());
         println!("{:<15}: {}", "Package Base", r.pkgbase);
-        println!("{:<15}: {}", "Version", r.version.green());
+        println!("{:<15}: {}", "Version", r.version.t_green());
         println!(
             "{:<15}: {}",
             "Maintainer",
@@ -1864,7 +1866,7 @@ fn print_aur_info_results(results: &[aur::AurPkgInfo]) {
             "{:<15}: {}",
             "Out of Date",
             if r.out_of_date {
-                "Yes".red().bold().to_string()
+                "Yes".t_red().bold().to_string()
             } else {
                 "No".to_string()
             }
@@ -1963,8 +1965,8 @@ fn main() {
     if unsafe { libc::geteuid() } == 0 {
         eprintln!(
             "{} refusing to run as root. Only `{}` may be root.",
-            "emerge:".red().bold(),
-            "--ae-service".cyan()
+            "emerge:".t_red().bold(),
+            "--ae-service".t_cyan()
         );
         eprintln!("  Run as your normal user; sudo is prompted when the root helper is needed.");
         std::process::exit(1);
@@ -1977,7 +1979,7 @@ fn main() {
     let had_failures = runtime::print_failure_summary();
 
     if let Err(e) = result {
-        eprintln!("{} {:#}", ">>> Error:".red().bold(), e);
+        eprintln!("{} {:#}", ">>> Error:".t_red().bold(), e);
         std::process::exit(1);
     }
     if had_failures {
@@ -2005,12 +2007,20 @@ fn run() -> anyhow::Result<()> {
     // config::CONFLICTS.
     crate::candy::mark_start();
     let cfg = config::load();
+    theme::init(&cfg.colors);
     let effective_argv = config::build_argv(&argv, &cfg);
     let cli = Cli::parse_from(&effective_argv);
     enforce_action_priority(&cli, &effective_argv);
 
     // Everything read from deep inside the build path lands here once.
-    let _ = cli.nospinner; // accepted for Portage compat, no-op
+    // --color=y|n|auto: `auto` leaves `colored` to its own tty/NO_COLOR check.
+    if let Some(c) = cli.color.as_deref() {
+        match config::parse_yes_no(c) {
+            Some(on) => colored::control::set_override(on),
+            None if c.eq_ignore_ascii_case("auto") => {}
+            None => eprintln!(">>> Warning: --color={}: expected y, n or auto", c),
+        }
+    }
                            // Live build output: --debug, AE_DEBUG=1, or Gentoo's --quiet-build=n.
                            // --quiet-build=y (or omitted) keeps the default quiet path.
     let quiet_build_off = matches!(
@@ -2046,6 +2056,8 @@ fn run() -> anyhow::Result<()> {
         debug: debug_on,
         noreplace: cli.noreplace,
         with_optdeps: cli.with_optdeps,
+        nospinner: cli.nospinner,
+        load_average: cli.load_average.filter(|v| v.is_finite() && *v > 0.0),
         jobsr,
         jobsa,
     });
@@ -2118,13 +2130,13 @@ fn run() -> anyhow::Result<()> {
                 if std::fs::remove_dir_all(&dir).is_ok() {
                     println!(
                         "{} removed source cache at {}",
-                        ">>>".green().bold(),
+                        ">>>".t_green().bold(),
                         dir.display()
                     );
                 } else {
                     eprintln!(
                         "{} could not remove {}",
-                        ">>> Error:".red().bold(),
+                        ">>> Error:".t_red().bold(),
                         dir.display()
                     );
                     std::process::exit(1);
@@ -2132,11 +2144,11 @@ fn run() -> anyhow::Result<()> {
             }
             Some(dir) => println!(
                 "{} no source cache to remove ({} doesn't exist).",
-                ">>>".green().bold(),
+                ">>>".t_green().bold(),
                 dir.display()
             ),
             None => {
-                eprintln!("{} could not determine $HOME", ">>> Error:".red().bold());
+                eprintln!("{} could not determine $HOME", ">>> Error:".t_red().bold());
                 std::process::exit(1);
             }
         }
@@ -2202,7 +2214,7 @@ fn run() -> anyhow::Result<()> {
         if cli.pretend {
             println!(
                 "{} Would scan and build {} (--pretend: not building).",
-                ">>>".green().bold(),
+                ">>>".t_green().bold(),
                 path.display()
             );
             return Ok(());
@@ -2230,7 +2242,7 @@ fn run() -> anyhow::Result<()> {
                         );
                     }
                 }
-                println!("{} Installed: {}", ">>>".green().bold(), names.join(", "));
+                println!("{} Installed: {}", ">>>".t_green().bold(), names.join(", "));
                 Ok(())
             }
             None => std::process::exit(1),
@@ -2333,7 +2345,7 @@ fn run() -> anyhow::Result<()> {
         if target_pkgs.is_empty() && requested > 0 && !has_world {
             println!(
                 "{} Every requested package was excluded - nothing to do.",
-                ">>>".green().bold()
+                ">>>".t_green().bold()
             );
             return Ok(());
         }
@@ -2508,7 +2520,7 @@ fn run() -> anyhow::Result<()> {
                         println!(
                             "{:<width$}  {}  {}",
                             bare,
-                            "aur".cyan(),
+                            "aur".t_cyan(),
                             p.version.dimmed(),
                             width = width
                         );
@@ -2516,7 +2528,7 @@ fn run() -> anyhow::Result<()> {
                         println!(
                             "{:<width$}  {}",
                             bare,
-                            "not found".red().bold(),
+                            "not found".t_red().bold(),
                             width = width
                         );
                     }
@@ -2526,7 +2538,7 @@ fn run() -> anyhow::Result<()> {
                     println!(
                         "{:<width$}  {}  {}",
                         bare,
-                        p.repo.green(),
+                        p.repo.t_green(),
                         p.version.dimmed(),
                         width = width
                     );
@@ -2535,7 +2547,7 @@ fn run() -> anyhow::Result<()> {
                         println!(
                             "{:<width$}  {}  {}",
                             bare,
-                            "aur".cyan(),
+                            "aur".t_cyan(),
                             p.version.dimmed(),
                             width = width
                         );
@@ -2543,7 +2555,7 @@ fn run() -> anyhow::Result<()> {
                         println!(
                             "{:<width$}  {}",
                             bare,
-                            "not found".red().bold(),
+                            "not found".t_red().bold(),
                             width = width
                         );
                     }
@@ -2551,7 +2563,7 @@ fn run() -> anyhow::Result<()> {
                     println!(
                         "{:<width$}  {}",
                         bare,
-                        "not found".red().bold(),
+                        "not found".t_red().bold(),
                         width = width
                     );
                 }
@@ -2589,8 +2601,8 @@ fn run() -> anyhow::Result<()> {
             println!();
             println!(
                 "{} Searching in {} for '{}'...",
-                ">>>".green().bold(),
-                "ABS".yellow().bold(),
+                ">>>".t_green().bold(),
+                "ABS".t_yellow().bold(),
                 term
             );
             let mut abs = crate::alpm_db::search_abs(term);
@@ -2601,8 +2613,8 @@ fn run() -> anyhow::Result<()> {
         if force_abs {
             println!(
                 "{} Searching in {} for '{}'...",
-                ">>>".green().bold(),
-                "ABS".yellow().bold(),
+                ">>>".t_green().bold(),
+                "ABS".t_yellow().bold(),
                 term
             );
             let mut abs = crate::alpm_db::search_abs(&term);
@@ -2615,7 +2627,7 @@ fn run() -> anyhow::Result<()> {
             if !only_aur {
                 println!(
                     "{} Searching descriptions for '{}'...",
-                    ">>>".green().bold(),
+                    ">>>".t_green().bold(),
                     term
                 );
                 let mut sync = crate::alpm_db::search_sync(&term, true, cli.search_all);
@@ -2629,8 +2641,8 @@ fn run() -> anyhow::Result<()> {
                 println!();
                 println!(
                     "{} Searching {} descriptions for '{}'...",
-                    ">>>".green().bold(),
-                    "AUR".cyan().bold(),
+                    ">>>".t_green().bold(),
+                    "AUR".t_cyan().bold(),
                     term
                 );
                 print_aur_search_results(&aur::rpc_search(&term, true));
@@ -2642,8 +2654,8 @@ fn run() -> anyhow::Result<()> {
             if only_aur {
                 println!(
                     "{} Searching in {} for '{}'...",
-                    ">>>".green().bold(),
-                    "AUR".cyan().bold(),
+                    ">>>".t_green().bold(),
+                    "AUR".t_cyan().bold(),
                     term
                 );
                 let info = aur::rpc_info(&target_pkgs);
@@ -2655,14 +2667,14 @@ fn run() -> anyhow::Result<()> {
             } else {
                 let found = probe_official(&target_pkgs).is_some();
                 if found {
-                    println!("{} Searching for '{}'...", ">>>".green().bold(), term);
+                    println!("{} Searching for '{}'...", ">>>".t_green().bold(), term);
                     for name in &target_pkgs {
                         if let Some(p) = crate::alpm_db::find_sync(name) {
                             print_sync_info(&p);
                         }
                     }
                 } else {
-                    println!("{} Searching for '{}'...", ">>>".green().bold(), term);
+                    println!("{} Searching for '{}'...", ">>>".t_green().bold(), term);
                     let mut sync = crate::alpm_db::search_sync(&term, false, cli.search_all);
                     rank_sync(&mut sync);
                     print_sync_search_results(&sync);
@@ -2673,8 +2685,8 @@ fn run() -> anyhow::Result<()> {
                         println!();
                         println!(
                             "{} Searching in {} for '{}'...",
-                            ">>>".green().bold(),
-                            "AUR".cyan().bold(),
+                            ">>>".t_green().bold(),
+                            "AUR".t_cyan().bold(),
                             term
                         );
                         print_aur_search_results(&aur::rpc_search(&term, false));
@@ -2686,13 +2698,13 @@ fn run() -> anyhow::Result<()> {
         } else if only_aur {
             println!(
                 "{} Searching in {} for '{}'...",
-                ">>>".green().bold(),
-                "AUR".cyan().bold(),
+                ">>>".t_green().bold(),
+                "AUR".t_cyan().bold(),
                 term
             );
             print_aur_search_results(&aur::rpc_search(&term, false));
         } else {
-            println!("{} Searching for '{}'...", ">>>".green().bold(), term);
+            println!("{} Searching for '{}'...", ">>>".t_green().bold(), term);
             let mut sync = crate::alpm_db::search_sync(&term, false, cli.search_all);
             rank_sync(&mut sync);
             print_sync_search_results(&sync);
@@ -2703,8 +2715,8 @@ fn run() -> anyhow::Result<()> {
                 println!();
                 println!(
                     "{} Searching in {} for '{}'...",
-                    ">>>".green().bold(),
-                    "AUR".cyan().bold(),
+                    ">>>".t_green().bold(),
+                    "AUR".t_cyan().bold(),
                     term
                 );
                 print_aur_search_results(&aur::rpc_search(&term, false));
@@ -2729,7 +2741,7 @@ fn run() -> anyhow::Result<()> {
     if cli.regen {
         println!(
             "{} Regenerating package metadata cache...",
-            ">>>".green().bold()
+            ">>>".t_green().bold()
         );
         run_cmd(SUDO_BIN, &[PACMAN_BIN, "-Fy"], &[]);
         return Ok(());
@@ -2786,13 +2798,13 @@ fn run() -> anyhow::Result<()> {
                 asdeps.push(entry.clone());
             }
         }
-        println!("{} World audit", ">>>".green().bold());
+        println!("{} World audit", ">>>".t_green().bold());
         println!("    entries: {}", world_lines.len());
         println!("    not installed: {}", missing.len());
         println!("    installed asdeps (not explicit): {}", asdeps.len());
         if !missing.is_empty() {
             println!();
-            println!("{} not installed:", " *".yellow().bold());
+            println!("{} not installed:", " *".t_yellow().bold());
             for e in &missing {
                 println!("    {}", e);
             }
@@ -2801,7 +2813,7 @@ fn run() -> anyhow::Result<()> {
             println!();
             println!(
                 "{} in world but install reason is dependency:",
-                " *".yellow().bold()
+                " *".t_yellow().bold()
             );
             for e in &asdeps {
                 println!("    {}", e);
@@ -2822,7 +2834,7 @@ fn run() -> anyhow::Result<()> {
     if cli.regen_world_from_explicit {
         println!(
             "{} Seeding world from explicitly installed packages...",
-            ">>>".green().bold()
+            ">>>".t_green().bold()
         );
         let explicit = crate::alpm_db::explicit_names();
         if explicit.is_empty() {
@@ -2839,7 +2851,7 @@ fn run() -> anyhow::Result<()> {
 
     // --prune: remove installed packages not in world
     if cli.prune {
-        println!("{} Pruning packages not in world...", ">>>".green().bold());
+        println!("{} Pruning packages not in world...", ">>>".t_green().bold());
         if !is_safe_path(WORLD_SET_FILE) {
             eprintln!(
                 ">>> Warning: {} is a symlink - refusing to read",
@@ -2872,7 +2884,7 @@ fn run() -> anyhow::Result<()> {
         }
         println!();
         for p in &to_remove {
-            println!("[{}] {}", "unmerge".red().bold(), p);
+            println!("[{}] {}", "unmerge".t_red().bold(), p);
         }
         println!();
         println!("Total: {} package(s) to prune", to_remove.len());
@@ -2887,7 +2899,7 @@ fn run() -> anyhow::Result<()> {
             progress::on_hook_event(ev)
         }) {
             Ok(()) => logbook::log_unmerge(&to_remove),
-            Err(e) => eprintln!("{} {}", ">>> Error:".red().bold(), e),
+            Err(e) => eprintln!("{} {}", ">>> Error:".t_red().bold(), e),
         }
         return Ok(());
     }
@@ -2921,7 +2933,7 @@ fn run() -> anyhow::Result<()> {
                 }
                 println!(
                     "{} emerge {}",
-                    ">>> Resuming:".green().bold(),
+                    ">>> Resuming:".t_green().bold(),
                     args.join(" ")
                 );
 
@@ -2946,7 +2958,7 @@ fn run() -> anyhow::Result<()> {
                     std::process::exit(1);
                 }
                 if let Err(e) = rootops::sysupgrade(&[], &mut |_| {}) {
-                    eprintln!("{} {}", ">>> Error:".red().bold(), e);
+                    eprintln!("{} {}", ">>> Error:".t_red().bold(), e);
                     std::process::exit(1);
                 }
             }
@@ -2971,14 +2983,14 @@ fn run() -> anyhow::Result<()> {
                     pre-upgrade snapshot. Check `pacman -Qi <pkg>` / the pacman log \
                     (/var/log/pacman.log) and downgrade specific packages manually if needed \
                     (`pacman -U` against a cached .pkg.tar.* in /var/cache/pacman/pkg/).",
-                    ">>> Error:".red().bold()
+                    ">>> Error:".t_red().bold()
                 );
                 std::process::exit(1);
             }
             Some((kind, atoms)) if kind == "install" => {
                 println!(
                     "{} Undoing last install - removing: {}",
-                    ">>>".green().bold(),
+                    ">>>".t_green().bold(),
                     atoms.join(", ")
                 );
                 let bare: Vec<String> = atoms
@@ -2994,7 +3006,7 @@ fn run() -> anyhow::Result<()> {
                     }) {
                         Ok(()) => true,
                         Err(e) => {
-                            eprintln!("{} {}", ">>> Error:".red().bold(), e);
+                            eprintln!("{} {}", ">>> Error:".t_red().bold(), e);
                             false
                         }
                     };
@@ -3016,7 +3028,7 @@ fn run() -> anyhow::Result<()> {
             Some((kind, atoms)) if kind == "unmerge" => {
                 println!(
                     "{} Undoing last unmerge - reinstalling: {}",
-                    ">>>".green().bold(),
+                    ">>>".t_green().bold(),
                     atoms.join(", ")
                 );
                 if cli.pretend {
@@ -3110,7 +3122,7 @@ fn run() -> anyhow::Result<()> {
             None => {
                 println!(
                     "{} Nothing to undo - no saved action found.",
-                    ">>>".green().bold()
+                    ">>>".t_green().bold()
                 );
             }
         }
@@ -3161,7 +3173,7 @@ fn run() -> anyhow::Result<()> {
     if provision_after_install {
         println!(
             "{} Installing specified packages, then provisioning the rest of world...",
-            ">>>".green().bold()
+            ">>>".t_green().bold()
         );
     }
 
@@ -3191,7 +3203,7 @@ fn run() -> anyhow::Result<()> {
             } else {
                 eprintln!(
                     "{} not everything installed successfully.",
-                    ">>> Warning:".yellow().bold()
+                    ">>> Warning:".t_yellow().bold()
                 );
                 save_failed_resume(&cli);
                 if runtime::any_failures() {
@@ -3248,7 +3260,7 @@ fn run() -> anyhow::Result<()> {
         if !ignores.is_empty() {
             println!(
                 "{} holding back {} package(s) (--exclude / {}): {}",
-                ">>>".yellow().bold(),
+                ">>>".t_yellow().bold(),
                 ignores.len(),
                 MASK_FILE,
                 ignores.join(", ")
@@ -3281,9 +3293,9 @@ fn run() -> anyhow::Result<()> {
                 };
                 println!(
                     "[{} {:<4}] {} [{} -> {}]",
-                    "ebuild".green(),
-                    "U".yellow().bold(),
-                    atom.yellow().bold(),
+                    "ebuild".t_green(),
+                    "U".t_yellow().bold(),
+                    atom.t_yellow().bold(),
                     old,
                     newv
                 );
@@ -3389,7 +3401,7 @@ fn run() -> anyhow::Result<()> {
                 }
                 Err(e) => {
                     progress::status_break();
-                    eprintln!("{} {}", ">>> Error:".red().bold(), e);
+                    eprintln!("{} {}", ">>> Error:".t_red().bold(), e);
                     progress::status_resume();
                     false
                 }
@@ -3404,8 +3416,8 @@ fn run() -> anyhow::Result<()> {
         } else if !ok1 && !cli.keep_going {
             eprintln!(
                 "{} the official-repo upgrade failed - skipping the AUR upgrade. Pass {} to continue anyway.",
-                ">>> Error:".red().bold(),
-                "--keep-going".cyan()
+                ">>> Error:".t_red().bold(),
+                "--keep-going".t_cyan()
             );
             false
         } else {
@@ -3422,7 +3434,7 @@ fn run() -> anyhow::Result<()> {
         progress::finish();
 
         println!();
-        println!("{} Auto-cleaning packages...", ">>>".green().bold());
+        println!("{} Auto-cleaning packages...", ">>>".t_green().bold());
 
         if !cli.pretend {
             if ok1 && ok2 && !runtime::any_failures() {
@@ -3476,7 +3488,7 @@ fn run() -> anyhow::Result<()> {
                     println!();
                     println!(
                         "{} {} orphan(s) not removed (listed in world, install reason is dependency):",
-                        ">>>".yellow().bold(),
+                        ">>>".t_yellow().bold(),
                         protected.len()
                     );
                     for p in &protected {
@@ -3487,7 +3499,7 @@ fn run() -> anyhow::Result<()> {
                     println!(
                         ">>> {} package(s) skipped (tracked in world). Pass {} to list them.",
                         protected.len(),
-                        "--show-protected".cyan()
+                        "--show-protected".t_cyan()
                     );
                 }
             }
@@ -3503,7 +3515,7 @@ fn run() -> anyhow::Result<()> {
 
             println!();
             for o in &orphans {
-                println!("[{}] {}", "unmerge".red().bold(), o);
+                println!("[{}] {}", "unmerge".t_red().bold(), o);
             }
             println!();
             println!("Total: {} orphaned package(s) to remove", orphans.len());
@@ -3538,7 +3550,7 @@ fn run() -> anyhow::Result<()> {
         if installed_targets.is_empty() {
             eprintln!(
                 "{} not installed: {}",
-                ">>> Error:".red().bold(),
+                ">>> Error:".t_red().bold(),
                 not_installed.join(", ")
             );
             std::process::exit(1);
@@ -3546,13 +3558,13 @@ fn run() -> anyhow::Result<()> {
         for m in &not_installed {
             eprintln!(
                 "{} not installed, skipped: {}",
-                ">>> Warning:".yellow().bold(),
+                ">>> Warning:".t_yellow().bold(),
                 m
             );
         }
         let target_pkgs = installed_targets;
 
-        let star = " *".yellow().bold();
+        let star = " *".t_yellow().bold();
         println!(
             "{} This action can remove important packages! In order to be safer, use",
             star
@@ -3591,14 +3603,14 @@ fn run() -> anyhow::Result<()> {
         println!();
         println!(
             "{} {} packages are slated for removal.",
-            ">>>".green().bold(),
-            "'Selected'".yellow().bold()
+            ">>>".t_green().bold(),
+            "'Selected'".t_yellow().bold()
         );
         println!(
             "{} {} and {} packages will not be removed.",
-            ">>>".green().bold(),
-            "'Protected'".green(),
-            "'omitted'".cyan()
+            ">>>".t_green().bold(),
+            "'Protected'".t_green(),
+            "'omitted'".t_cyan()
         );
         println!();
 
@@ -4249,7 +4261,7 @@ fn run() -> anyhow::Result<()> {
             if !cli.oneshot {
                 if cli.abs {
                     if success {
-                        println!("{} Auto-cleaning packages...", ">>>".green().bold());
+                        println!("{} Auto-cleaning packages...", ">>>".t_green().bold());
                         mark_asexplicit(&target_pkgs);
                         if let Err(e) = add_to_world_set(&target_pkgs, Some("abs")) {
                             eprintln!(
@@ -4259,7 +4271,7 @@ fn run() -> anyhow::Result<()> {
                         }
                     }
                 } else if !installed_infos.is_empty() {
-                    println!("{} Auto-cleaning packages...", ">>>".green().bold());
+                    println!("{} Auto-cleaning packages...", ">>>".t_green().bold());
                     // world only gets explicitly requested names.
                     let target_bare: HashSet<String> = target_pkgs
                         .iter()
@@ -4317,7 +4329,7 @@ fn run() -> anyhow::Result<()> {
             if !success {
                 eprintln!(
                     "{} not all requested packages were installed successfully.",
-                    ">>> Warning:".yellow().bold()
+                    ">>> Warning:".t_yellow().bold()
                 );
                 save_failed_resume(&cli);
                 if runtime::any_failures() {

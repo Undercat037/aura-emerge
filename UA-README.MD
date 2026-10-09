@@ -17,13 +17,11 @@
 
 ## Встановлення
 
-**AUR**
-
 ```bash
-paru -S aura-emerge
+paru -S aura-emerge          # через AUR-хелпер
 ```
 
-або звичайним **makepkg**:
+або звичайним makepkg:
 
 ```bash
 git clone https://aur.archlinux.org/aura-emerge.git
@@ -34,15 +32,11 @@ makepkg -si
 <details>
 <summary><h3>Збірка з вихідного коду (нестабільно)</h3></summary>
 
-**Git makepkg**
-
 ```bash
 git clone https://github.com/Undercat037/aura-emerge.git
 cd aura-emerge
-make install
+make install            # або вручну:
 ```
-
-**Вручну**
 
 ```bash
 cargo build --release
@@ -55,7 +49,7 @@ emerge --gen-manpage | sudo tee /usr/share/man/man1/emerge.1 >/dev/null
 ```
 </details>
 
-**Залежності:** `git`, `bubblewrap` (пісочниця збірки для AUR/ABS)     
+**Залежності:** `git`, `bubblewrap` (пісочниця збірки для AUR/ABS)
 **Опційно:** `devtools` (підтримка `--abs`), `gnupg` (`--autopgp`, автоімпорт PGP-ключів)
 
 ## Використання
@@ -133,7 +127,11 @@ emerge --revdep-rebuild             # полагодити бінарники з
 ```bash
 # Прапори за замовчуванням, підставляються перед набраним вами (командний рядок головніший).
 # Вимкнути для одного запуску: --ignore-default-opts.
-EMERGE_DEFAULT_OPTS="--pkgbuild-view --unshare-net-build"
+EMERGE_DEFAULT_OPTS="--jobsr=8 --tree --deep"
+
+# Кольори рядків статусу (ролі: ok, warn, error, info, special).
+# #RRGGBB або імена (red, bright-cyan, …). Останнє згадування ролі перемагає.
+COLORS="ok=#FFB3AE warn=#E7BDB9 error=#FDB1AC info=#E7BDB9 special=#cba6f7"
 
 # Прапори збірки (застосовуються через згенерований makepkg.conf)
 CFLAGS="-march=native -O2 -pipe"
@@ -148,8 +146,10 @@ BUILDENV=(!distcc color check !sign)
 FEATURES="ccache -test"
 ```
 
-**Ключі:** `EMERGE_DEFAULT_OPTS`, `FEATURES`, `CFLAGS`, `CXXFLAGS`, `CPPFLAGS`, `LDFLAGS`, `RUSTFLAGS`, `MAKEFLAGS`, `NINJAFLAGS`, `BUILDENV`, `OPTIONS`.
+**Ключі:** `EMERGE_DEFAULT_OPTS`, `COLORS`, `FEATURES`, `CFLAGS`, `CXXFLAGS`, `CPPFLAGS`, `LDFLAGS`, `RUSTFLAGS`, `MAKEFLAGS`, `NINJAFLAGS`, `BUILDENV`, `OPTIONS`.
 **Синтаксис:** як у bash - `KEY="..."` або `KEY=(a b c)`. Рядки та списки взаємозамінні, значення розкриваються оболонкою (`$(nproc)` і `$CFLAGS` працюють; одинарні лапки залишать `$` як є).
+
+`COLORS` задає палітру для статусного виводу: токени `role=colour`. Ролі: `ok`, `warn`, `error`, `info`, `special`. Колір — `#RRGGBB` або ім'я (`red`, `bright-cyan`, …). Невідомі ролі й кольори пропускаються з попередженням.
 
 Токени `FEATURES` (`-name` вимикає токен) перекладаються в аналоги makepkg. Те, що ви самі вказали в `BUILDENV`/`OPTIONS`, головніше.
 
@@ -161,7 +161,7 @@ FEATURES="ccache -test"
 | `nostrip`    | `OPTIONS` `!strip`  |
 | `splitdebug` | `OPTIONS` `debug`   |
 
-`EMERGE_DEFAULT_OPTS` приймає лише прапори-модифікатори (`--ask`, `--verbose`, `--devel`, `--tree`, `--searchdesc`, `--exclude=<atom>`, ...), тож перетворити кожен запуск на `--unmerge` не можна. Конфліктні пари відхиляються, якщо задано обидва: `--aur`/`--abs`, `--aur`/`--repos`, `--no-sandbox`/`--unshare-net-build`, `--skippgp`/`--autopgp`, `--select`/`--deselect`. Якщо значення з конфігу конфліктує з командним рядком, воно відкидається. `--abs` і `--repos` **не** конфліктують.
+`EMERGE_DEFAULT_OPTS` приймає лише прапори-модифікатори (`--ask`, `--verbose`, `--devel`, `--tree`, `--deep`, `--jobsr=N`, `--jobsa=N`, `--searchdesc`, `--exclude=<atom>`, ...), тож перетворити кожен запуск на `--unmerge` не можна. Конфліктні пари відхиляються, якщо задано обидва: `--aur`/`--abs`, `--aur`/`--repos`, `--no-sandbox`/`--unshare-net-build`, `--skippgp`/`--autopgp`, `--select`/`--deselect`. Якщо значення з конфігу конфліктує з командним рядком, воно відкидається. `--abs` і `--repos` **не** конфліктують.
 
 `emerge --info` показує, що було прочитано, і підсумкове значення кожного перевизначення. [**→ Приклад make.conf**](misc/make.conf)
 
@@ -201,21 +201,6 @@ OPTIONS="strip docs !debug lto"
 - **Збіг:** за pkgbase або будь-яким із pkgname.
 - **Область:** лише збірки AUR/ABS. `EMERGE_DEFAULT_OPTS` в env-файлі ігнорується з попередженням.
 - **Помилки:** символьне посилання, некоректний запис або відсутній env-файл пропускаються з попередженням (з файлом і рядком); решта застосовується.
-
-
-### Хуки alpm
-
-libalpm виконує хуки pacman під час кожної встановлення, видалення, `-U` і
-`-Su` — той самий шлях `depmod` / DKMS / dracut / `grub-mkconfig`, що й у
-звичайного `pacman`. Порядок пошуку:
-
-1. `/usr/share/libalpm/hooks/` (з пакетів)
-2. `/etc/pacman.d/hooks/` (адмінські, з `HookDir` у `pacman.conf`)
-3. `/etc/portage/hooks/` (користувацькі хуки aura-emerge; той самий формат `.hook`)
-
-Створіть `/etc/portage/hooks/` для локальних хуків, не чіпаючи шляхи pacman.
-За збігу імен перемагає раніший каталог. Формат: [man 5 alpm-hooks](https://man.archlinux.org/man/alpm-hooks.5).
-Приклад і нотатки: [`misc/hooks/`](misc/hooks/).
 
 ## Можливості
 

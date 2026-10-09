@@ -7,6 +7,7 @@
 //! to the on-disk read-state file.
 
 use colored::Colorize;
+use crate::theme::Themed;
 use std::fs;
 use std::io::Write;
 
@@ -215,7 +216,7 @@ pub(crate) fn unread_count_quiet() -> Option<usize> {
 
 /// `--news` arg: "" = list, "all" = mark all read, N = show item N.
 pub(crate) fn run_news(arg: &str) {
-    println!("{} Fetching Arch Linux news...", ">>>".green().bold());
+    println!("{} Fetching Arch Linux news...", ">>>".t_green().bold());
     let Some(xml) = fetch_feed() else {
         eprintln!(">>> Error: could not fetch {}", NEWS_FEED_URL);
         std::process::exit(1);
@@ -240,7 +241,7 @@ pub(crate) fn run_news(arg: &str) {
             save_read_guids(&read);
             println!(
                 "{} Marked {} item(s) as read.",
-                ">>>".green().bold(),
+                ">>>".t_green().bold(),
                 items.len()
             );
         }
@@ -266,7 +267,7 @@ pub(crate) fn run_news(arg: &str) {
 fn list_news(items: &[NewsItem], read: &std::collections::HashSet<String>) {
     println!(
         "{} Arch Linux News (https://archlinux.org/news/)",
-        ">>>".green().bold()
+        ">>>".t_green().bold()
     );
     let mut unread_count = 0;
     for (i, it) in items.iter().enumerate() {
@@ -275,7 +276,7 @@ fn list_news(items: &[NewsItem], read: &std::collections::HashSet<String>) {
             unread_count += 1;
         }
         let marker = if is_unread {
-            "N".yellow().bold().to_string()
+            "N".t_yellow().bold().to_string()
         } else {
             " ".to_string()
         };
@@ -295,16 +296,16 @@ fn list_news(items: &[NewsItem], read: &std::collections::HashSet<String>) {
     if unread_count > 0 {
         println!(
             "{} {} new news item(s). Use `emerge --news <N>` to read one, `emerge --news all` to dismiss all.",
-            ">>>".green().bold(),
+            ">>>".t_green().bold(),
             unread_count
         );
     } else {
-        println!("{} No new news items.", ">>>".green().bold());
+        println!("{} No new news items.", ">>>".t_green().bold());
     }
 }
 
 fn print_full(item: &NewsItem) {
-    println!("{} {}", ">>>".green().bold(), item.title.bold());
+    println!("{} {}", ">>>".t_green().bold(), item.title.bold());
     println!("    {}: {}", "Date".dimmed(), short_date(&item.pub_date));
     println!("    {}: {}", "Link".dimmed(), item.link);
     println!();

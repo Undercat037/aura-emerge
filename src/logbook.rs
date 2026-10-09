@@ -39,6 +39,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use colored::Colorize;
+use crate::theme::Themed;
 
 pub(crate) const LOG_FILE: &str = "/var/log/emerge.log";
 const DATE_BIN: &str = "/usr/bin/date";
@@ -132,7 +133,7 @@ pub(crate) fn session_open(path: &Path, command_line: &str) {
         Err(e) => {
             eprintln!(
                 "{} could not open session log '{}': {}",
-                ">>> Warning:".yellow().bold(),
+                ">>> Warning:".t_yellow().bold(),
                 path.display(),
                 e
             );

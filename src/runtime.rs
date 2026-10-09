@@ -10,6 +10,7 @@
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 
+use crate::theme::Themed;
 use colored::Colorize;
 
 use crate::config::Config;
@@ -26,6 +27,10 @@ pub(crate) struct Runtime {
     pub(crate) noreplace: bool,
     /// `--with-optdeps`: also install optdepends (as dependencies).
     pub(crate) with_optdeps: bool,
+    /// `--nospinner`: no live Jobs row.
+    pub(crate) nospinner: bool,
+    /// `--load-average`: hold new builds while the 1-min load is above this.
+    pub(crate) load_average: Option<f32>,
     /// Max concurrent official-repo installs (`--jobsr` / `--jobs`).
     pub(crate) jobsr: u32,
     /// Max concurrent AUR/ABS builds (`--jobsa`).
@@ -57,6 +62,64 @@ pub(crate) fn show_build_output() -> bool {
     get().debug
 }
 
+// ── --load-average ────────────────────────────────────────────────────────────
+
+/// Builds running right now; only touched when `--load-average` is set.
+static ACTIVE_JOBS: Mutex<usize> = Mutex::new(0);
+static LOAD_NOTE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// One running build's place in the pool; freed on drop.
+pub(crate) struct JobSlot(bool);
+
+impl Drop for JobSlot {
+    fn drop(&mut self) {
+        if self.0 {
+            let mut n = ACTIVE_JOBS.lock().unwrap_or_else(|e| e.into_inner());
+            *n = n.saturating_sub(1);
+        }
+    }
+}
+
+/// 1-minute load average, `None` if /proc/loadavg can't be read.
+fn load_1min() -> Option<f32> {
+    std::fs::read_to_string("/proc/loadavg")
+        .ok()?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// Called by a build worker before it starts a job. Returns at once
+/// without `--load-average`. With it, a new build waits while the load
+/// is above the limit - but never when nothing else is running (as in
+/// Portage), so a busy machine can't stall the run for good. Applies to
+/// the `--jobsa` pool (AUR/ABS builds), not to repo installs.
+pub(crate) fn acquire_job_slot() -> JobSlot {
+    let Some(limit) = get().load_average else {
+        return JobSlot(false);
+    };
+    loop {
+        {
+            let mut n = ACTIVE_JOBS.lock().unwrap_or_else(|e| e.into_inner());
+            let load = load_1min().unwrap_or(0.0);
+            if *n == 0 || load <= limit {
+                *n += 1;
+                return JobSlot(true);
+            }
+            if !LOAD_NOTE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                println!(
+                    "{} load average {:.2} is above --load-average={}: holding new builds until it drops.",
+                    ">>>".t_yellow().bold(),
+                    load,
+                    limit
+                );
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+}
+
 /// True if `--exclude` named this package (bare match).
 pub(crate) fn is_excluded(name: &str) -> bool {
     let bare = name.split('/').last().unwrap_or(name);
@@ -84,7 +147,7 @@ pub(crate) fn report_excluded(dropped: &[String]) {
     }
     println!(
         "{} {} package(s) skipped by --exclude: {}",
-        ">>>".yellow().bold(),
+        ">>>".t_yellow().bold(),
         dropped.len(),
         dropped.join(", ")
     );
@@ -136,22 +199,22 @@ pub(crate) fn print_failure_summary() -> bool {
     eprintln!();
     eprintln!(
         "{} The following {} package(s) failed to build or install:",
-        " *".red().bold(),
+        " *".t_red().bold(),
         log.len()
     );
     eprintln!();
     for (atom, reason) in log.iter() {
         eprintln!(
             "  {} {}",
-            atom.red().bold(),
+            atom.t_red().bold(),
             format!("({})", reason).dimmed()
         );
     }
     eprintln!();
     eprintln!(
         "{} Everything else in this run completed. Retry just the failures with {}.",
-        " *".yellow().bold(),
-        "emerge --resume".cyan()
+        " *".t_yellow().bold(),
+        "emerge --resume".t_cyan()
     );
     true
 }

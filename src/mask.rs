@@ -31,6 +31,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use colored::Colorize;
+use crate::theme::Themed;
 
 pub(crate) const MASK_FILE: &str = "/etc/portage/package.mask";
 
@@ -140,7 +141,7 @@ fn load() -> MaskList {
             Err(e) if crate::is_symlink_open_error(&e) => {
                 eprintln!(
                     "{} {} is a symlink - refusing to read",
-                    ">>> Warning:".yellow().bold(),
+                    ">>> Warning:".t_yellow().bold(),
                     path_s
                 );
                 continue;
@@ -169,7 +170,7 @@ fn load() -> MaskList {
             if pattern.is_empty() || !valid_pattern(&pattern) {
                 eprintln!(
                     "{} {}:{}: invalid mask entry '{}' (skipped)",
-                    ">>> Warning:".yellow().bold(),
+                    ">>> Warning:".t_yellow().bold(),
                     path_s,
                     i + 1,
                     atom
@@ -249,11 +250,11 @@ pub(crate) fn report_blocked(blocked: &[(String, &MaskEntry)]) {
     eprintln!();
     eprintln!(
         "{} The following package(s) are masked and will not be installed:",
-        " *".red().bold()
+        " *".t_red().bold()
     );
     eprintln!();
     for (name, entry) in blocked {
-        eprintln!("  {}", name.red().bold());
+        eprintln!("  {}", name.t_red().bold());
         eprintln!("    masked by {}", entry.describe().dimmed());
         if let Some(reason) = &entry.reason {
             eprintln!("    reason: {}", reason);
@@ -262,7 +263,7 @@ pub(crate) fn report_blocked(blocked: &[(String, &MaskEntry)]) {
     eprintln!();
     eprintln!(
         "{} Edit {} (a file, or a directory of files) to change that.",
-        " *".yellow().bold(),
+        " *".t_yellow().bold(),
         MASK_FILE
     );
 }

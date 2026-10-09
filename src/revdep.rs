@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use colored::Colorize;
+use crate::theme::Themed;
 
 use crate::*;
 
@@ -319,7 +320,7 @@ fn scan_broken() -> Vec<BrokenFile> {
 
     println!(
         "{} Scanning {} installed file(s) against {} library director(ies)...",
-        ">>>".green().bold(),
+        ">>>".t_green().bold(),
         paths.len(),
         dirs.len()
     );
@@ -406,7 +407,7 @@ pub(crate) fn revdep_rebuild(
 ) -> bool {
     println!(
         "{} Checking installed binaries for broken library links...",
-        ">>>".green().bold()
+        ">>>".t_green().bold()
     );
 
     let broken = scan_broken();
@@ -452,7 +453,7 @@ pub(crate) fn revdep_rebuild(
         println!(
             "{}",
             "These AUR/local packages have binaries linking against missing libraries:"
-                .yellow()
+                .t_yellow()
                 .bold()
         );
         println!();
@@ -460,13 +461,13 @@ pub(crate) fn revdep_rebuild(
             let (files, missing) = by_pkg.get(pkg).unwrap();
             println!(
                 "[{} {:<4}] {} ({} file(s))",
-                "ebuild".green(),
-                "R".cyan().bold(),
-                pkg.yellow().bold(),
+                "ebuild".t_green(),
+                "R".t_cyan().bold(),
+                pkg.t_yellow().bold(),
                 files.len()
             );
             for so in missing {
-                println!("      missing: {}", so.red());
+                println!("      missing: {}", so.t_red());
             }
             for f in files.iter().take(3) {
                 println!("      {}", f.dimmed());
@@ -513,7 +514,7 @@ pub(crate) fn revdep_rebuild(
         println!(
             "{} {} official-repo package(s) also link against missing libraries \
             (cannot rebuild on a binary distro; will try provider packages instead):",
-            " *".yellow().bold(),
+            " *".t_yellow().bold(),
             repo_pkgs.len()
         );
         // Compact: list packages, not every broken file.
@@ -529,7 +530,7 @@ pub(crate) fn revdep_rebuild(
         println!();
         println!(
             "{} {} broken file(s) belong to no installed package (left alone):",
-            " *".yellow().bold(),
+            " *".t_yellow().bold(),
             orphan_files.len()
         );
         for b in orphan_files.iter().take(10) {
@@ -541,7 +542,7 @@ pub(crate) fn revdep_rebuild(
     if !to_rebuild.is_empty() {
         println!(
             "{} {} AUR/local package(s) to rebuild: {}",
-            ">>>".green().bold(),
+            ">>>".t_green().bold(),
             to_rebuild.len(),
             to_rebuild.join(", ")
         );
@@ -549,7 +550,7 @@ pub(crate) fn revdep_rebuild(
     if !to_install.is_empty() {
         println!(
             "{} {} package(s) provide the missing libraries and are not installed: {}",
-            ">>>".green().bold(),
+            ">>>".t_green().bold(),
             to_install.len(),
             to_install.join(", ")
         );
@@ -557,18 +558,18 @@ pub(crate) fn revdep_rebuild(
     if !unprovided.is_empty() {
         println!(
             "{} no package in the file database provides: {}",
-            " *".yellow().bold(),
+            " *".t_yellow().bold(),
             unprovided.join(", ")
         );
         println!(
             "     run `{}` if the file database is stale, or check whether these were removed upstream.",
-            "emerge --regen".cyan()
+            "emerge --regen".t_cyan()
         );
     }
     if !repo_pkgs.is_empty() && to_install.is_empty() && unprovided.is_empty() {
         println!(
             "{} {} official-repo package(s) are affected but the libraries they want are already installed - check for a mixed 32/64-bit case.",
-            " *".yellow().bold(),
+            " *".t_yellow().bold(),
             repo_pkgs.len()
         );
     }
@@ -586,7 +587,7 @@ pub(crate) fn revdep_rebuild(
     println!();
     print!(
         "{} Rebuild/install the package(s) above? [y/N] ",
-        ">>>".yellow().bold()
+        ">>>".t_yellow().bold()
     );
     std::io::stdout().flush().ok();
     let answer = read_line_raw();
@@ -599,10 +600,10 @@ pub(crate) fn revdep_rebuild(
 
     if !to_install.is_empty() {
         if let Err(e) = crate::alpm_install_quiet(&to_install, true, true) {
-            eprintln!("{} {}", ">>> Error:".red().bold(), e);
+            eprintln!("{} {}", ">>> Error:".t_red().bold(), e);
             eprintln!(
                 "{} failed to install the library package(s)",
-                ">>> Error:".red().bold()
+                ">>> Error:".t_red().bold()
             );
             for p in &to_install {
                 crate::runtime::record_failure(p, "library provider install failed");
@@ -617,7 +618,7 @@ pub(crate) fn revdep_rebuild(
     if !to_rebuild.is_empty() {
         println!(
             "{} Rebuilding {} AUR/local package(s)...",
-            ">>>".green().bold(),
+            ">>>".t_green().bold(),
             to_rebuild.len()
         );
         scan_aur_pkgbuilds_or_abort(&to_rebuild);

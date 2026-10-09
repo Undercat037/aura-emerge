@@ -17,13 +17,11 @@
 
 ## Установка
 
-**AUR**
-
 ```bash
-paru -S aura-emerge
+paru -S aura-emerge          # через AUR-хелпер
 ```
 
-или обычным **makepkg**:
+или обычным makepkg:
 
 ```bash
 git clone https://aur.archlinux.org/aura-emerge.git
@@ -34,14 +32,11 @@ makepkg -si
 <details>
 <summary><h3>Сборка из исходников (нестабильно)</h3></summary>
 
-**Git makepkg**
-
 ```bash
 git clone https://github.com/Undercat037/aura-emerge.git
 cd aura-emerge
-make install
+make install            # или вручную:
 ```
-**Вручную**
 
 ```bash
 cargo build --release
@@ -54,7 +49,7 @@ emerge --gen-manpage | sudo tee /usr/share/man/man1/emerge.1 >/dev/null
 ```
 </details>
 
-**Зависимости:** `git`, `bubblewrap` (песочница сборки для AUR/ABS)     
+**Зависимости:** `git`, `bubblewrap` (песочница сборки для AUR/ABS)
 **Опционально:** `devtools` (поддержка `--abs`), `gnupg` (`--autopgp`, автоимпорт PGP-ключей)
 
 ## Использование
@@ -132,7 +127,11 @@ emerge --revdep-rebuild             # починить бинарники с б�
 ```bash
 # Флаги по умолчанию, подставляются перед набранным вами (командная строка главнее).
 # Отключить для одного запуска: --ignore-default-opts.
-EMERGE_DEFAULT_OPTS="--pkgbuild-view --unshare-net-build"
+EMERGE_DEFAULT_OPTS="--jobsr=8 --tree --deep"
+
+# Цвета строк статуса (роли: ok, warn, error, info, special).
+# #RRGGBB или имена (red, bright-cyan, …). Последнее упоминание роли побеждает.
+COLORS="ok=#FFB3AE warn=#E7BDB9 error=#FDB1AC info=#E7BDB9 special=#cba6f7"
 
 # Флаги сборки (применяются через сгенерированный makepkg.conf)
 CFLAGS="-march=native -O2 -pipe"
@@ -147,8 +146,10 @@ BUILDENV=(!distcc color check !sign)
 FEATURES="ccache -test"
 ```
 
-**Ключи:** `EMERGE_DEFAULT_OPTS`, `FEATURES`, `CFLAGS`, `CXXFLAGS`, `CPPFLAGS`, `LDFLAGS`, `RUSTFLAGS`, `MAKEFLAGS`, `NINJAFLAGS`, `BUILDENV`, `OPTIONS`.
+**Ключи:** `EMERGE_DEFAULT_OPTS`, `COLORS`, `FEATURES`, `CFLAGS`, `CXXFLAGS`, `CPPFLAGS`, `LDFLAGS`, `RUSTFLAGS`, `MAKEFLAGS`, `NINJAFLAGS`, `BUILDENV`, `OPTIONS`.
 **Синтаксис:** как в bash - `KEY="..."` или `KEY=(a b c)`. Строки и списки взаимозаменяемы, значения раскрываются оболочкой (`$(nproc)` и `$CFLAGS` работают; одинарные кавычки оставят `$` как есть).
+
+`COLORS` задаёт палитру для статусного вывода: токены `role=colour`. Роли: `ok`, `warn`, `error`, `info`, `special`. Цвет — `#RRGGBB` или имя (`red`, `bright-cyan`, …). Неизвестные роли и цвета пропускаются с предупреждением.
 
 Токены `FEATURES` (`-name` выключает токен) переводятся в аналоги makepkg. То, что вы сами указали в `BUILDENV`/`OPTIONS`, главнее.
 
@@ -160,7 +161,7 @@ FEATURES="ccache -test"
 | `nostrip`    | `OPTIONS` `!strip`  |
 | `splitdebug` | `OPTIONS` `debug`   |
 
-`EMERGE_DEFAULT_OPTS` принимает только флаги-модификаторы (`--ask`, `--verbose`, `--devel`, `--tree`, `--searchdesc`, `--exclude=<atom>`, ...), так что превратить каждый запуск в `--unmerge` нельзя. Конфликтующие пары отклоняются, если заданы обе: `--aur`/`--abs`, `--aur`/`--repos`, `--no-sandbox`/`--unshare-net-build`, `--skippgp`/`--autopgp`, `--select`/`--deselect`. Если значение из конфига конфликтует с командной строкой, оно отбрасывается. `--abs` и `--repos` **не** конфликтуют.
+`EMERGE_DEFAULT_OPTS` принимает только флаги-модификаторы (`--ask`, `--verbose`, `--devel`, `--tree`, `--deep`, `--jobsr=N`, `--jobsa=N`, `--searchdesc`, `--exclude=<atom>`, ...), так что превратить каждый запуск в `--unmerge` нельзя. Конфликтующие пары отклоняются, если заданы обе: `--aur`/`--abs`, `--aur`/`--repos`, `--no-sandbox`/`--unshare-net-build`, `--skippgp`/`--autopgp`, `--select`/`--deselect`. Если значение из конфига конфликтует с командной строкой, оно отбрасывается. `--abs` и `--repos` **не** конфликтуют.
 
 `emerge --info` показывает, что было прочитано, и итоговое значение каждого переопределения. [**→ Пример make.conf**](misc/make.conf)
 

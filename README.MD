@@ -16,12 +16,12 @@ en | [ua](UA-README.MD) | [ru](RU-README.MD)
 Packages are tracked in a `world` file - install once, track forever.
 
 ## Installation
-**AUR helper**
+
 ```bash
-paru -S aura-emerge 
+paru -S aura-emerge          # AUR helper
 ```
 
-or with plain **makepkg**:
+or with plain makepkg:
 
 ```bash
 git clone https://aur.archlinux.org/aura-emerge.git
@@ -32,14 +32,11 @@ makepkg -si
 <details>
 <summary><h3>Build from source (unstable)</h3></summary>
 
-**Git makepkg**
-
 ```bash
 git clone https://github.com/Undercat037/aura-emerge.git
 cd aura-emerge
-make install           
+make install            # or build by hand:
 ```
-**Manual**
 
 ```bash
 cargo build --release
@@ -52,7 +49,7 @@ emerge --gen-manpage | sudo tee /usr/share/man/man1/emerge.1 >/dev/null
 ```
 </details>
 
-**Dependencies:** `git`, `bubblewrap` (build sandbox for AUR/ABS)     
+**Dependencies:** `git`, `bubblewrap` (build sandbox for AUR/ABS)
 **Optional:** `devtools` (`--abs` support), `gnupg` (`--autopgp`, automatic PGP key import)
 
 ## Usage
@@ -130,7 +127,11 @@ aura-emerge's own config. It overrides `/etc/makepkg.conf` for builds made by au
 ```bash
 # Default flags, added before whatever you type (the command line wins on conflict).
 # Skip them for one run with --ignore-default-opts.
-EMERGE_DEFAULT_OPTS="--pkgbuild-view --unshare-net-build"
+EMERGE_DEFAULT_OPTS="--jobsr=8 --tree --deep"
+
+# Theme colours for status lines (roles: ok, warn, error, info, special).
+# #RRGGBB or named colours (red, bright-cyan, …). Last mention of a role wins.
+COLORS="ok=#FFB3AE warn=#E7BDB9 error=#FDB1AC info=#E7BDB9 special=#cba6f7"
 
 # Build flags (applied through a generated makepkg.conf)
 CFLAGS="-march=native -O2 -pipe"
@@ -145,8 +146,10 @@ BUILDENV=(!distcc color check !sign)
 FEATURES="ccache -test"
 ```
 
-**Keys:** `EMERGE_DEFAULT_OPTS`, `FEATURES`, `CFLAGS`, `CXXFLAGS`, `CPPFLAGS`, `LDFLAGS`, `RUSTFLAGS`, `MAKEFLAGS`, `NINJAFLAGS`, `BUILDENV`, `OPTIONS`.
+**Keys:** `EMERGE_DEFAULT_OPTS`, `COLORS`, `FEATURES`, `CFLAGS`, `CXXFLAGS`, `CPPFLAGS`, `LDFLAGS`, `RUSTFLAGS`, `MAKEFLAGS`, `NINJAFLAGS`, `BUILDENV`, `OPTIONS`.
 **Syntax:** bash-style `KEY="..."` or `KEY=(a b c)`. Strings and lists are interchangeable, and values are shell-expanded (`$(nproc)` and `$CFLAGS` work; use single quotes to keep a literal `$`).
+
+`COLORS` sets the palette for status output: `role=colour` tokens. Roles are `ok`, `warn`, `error`, `info`, `special`. Colours are `#RRGGBB` or a name (`red`, `bright-cyan`, …). Unknown roles or colours are warned and skipped.
 
 `FEATURES` tokens (`-name` turns one off) are mapped to their makepkg twins. Anything you set yourself in `BUILDENV`/`OPTIONS` wins.
 
@@ -158,7 +161,7 @@ FEATURES="ccache -test"
 | `nostrip`    | `OPTIONS` `!strip`  |
 | `splitdebug` | `OPTIONS` `debug`   |
 
-`EMERGE_DEFAULT_OPTS` accepts modifier flags only (`--ask`, `--verbose`, `--devel`, `--tree`, `--searchdesc`, `--exclude=<atom>`, ...), so it can't turn every run into `--unmerge`. Conflicting pairs are rejected if both are set: `--aur`/`--abs`, `--aur`/`--repos`, `--no-sandbox`/`--unshare-net-build`, `--skippgp`/`--autopgp`, `--select`/`--deselect`. If a config default conflicts with the command line, the config default is dropped. `--abs` and `--repos` do **not** conflict.
+`EMERGE_DEFAULT_OPTS` accepts modifier flags only (`--ask`, `--verbose`, `--devel`, `--tree`, `--deep`, `--jobsr=N`, `--jobsa=N`, `--searchdesc`, `--exclude=<atom>`, ...), so it can't turn every run into `--unmerge`. Conflicting pairs are rejected if both are set: `--aur`/`--abs`, `--aur`/`--repos`, `--no-sandbox`/`--unshare-net-build`, `--skippgp`/`--autopgp`, `--select`/`--deselect`. If a config default conflicts with the command line, the config default is dropped. `--abs` and `--repos` do **not** conflict.
 
 `emerge --info` shows what was read and the final value of each override. [**→ Example make.conf**](misc/make.conf)
 

@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use colored::Colorize;
+use crate::theme::Themed;
 
 use crate::config::BuildValue;
 
@@ -154,7 +155,7 @@ fn load() -> Vec<Entry> {
 }
 
 fn warn(msg: &str) {
-    eprintln!("{} {}", ">>> Warning:".yellow().bold(), msg);
+    eprintln!("{} {}", ">>> Warning:".t_yellow().bold(), msg);
 }
 
 /// Resolves the overrides for a build of `names` (pkgbase plus every

@@ -12,6 +12,7 @@ use std::thread;
 use std::time::Duration;
 
 use colored::Colorize;
+use crate::theme::Themed;
 
 static TOTAL: AtomicUsize = AtomicUsize::new(0);
 static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -100,11 +101,11 @@ pub(crate) fn line(stage: Stage, n: usize, atom: &str) {
     let total = TOTAL.load(Ordering::Relaxed).max(n);
     println!(
         "{} {} ({} of {}) {}",
-        ">>>".green().bold(),
+        ">>>".t_green().bold(),
         stage.word(),
-        n.to_string().yellow().bold(),
-        total.to_string().yellow().bold(),
-        atom.green().bold()
+        n.to_string().t_yellow().bold(),
+        total.to_string().t_yellow().bold(),
+        atom.t_green().bold()
     );
     status_draw();
 }
@@ -150,7 +151,7 @@ pub(crate) fn on_hook_event(ev: &str) {
             };
             note(&format!(
                 "{} Running {} hooks...",
-                ">>>".green().bold(),
+                ">>>".t_green().bold(),
                 label
             ));
         }
@@ -168,9 +169,9 @@ pub(crate) fn on_hook_event(ev: &str) {
             let shown = if desc.is_empty() { name } else { desc.as_str() };
             note(&format!(
                 "{} ({} of {}) {}",
-                ">>>".green().bold(),
-                pos.to_string().yellow().bold(),
-                total.to_string().yellow().bold(),
+                ">>>".t_green().bold(),
+                pos.to_string().t_yellow().bold(),
+                total.to_string().t_yellow().bold(),
                 shown
             ));
         }
@@ -203,7 +204,10 @@ fn status_erase() {
 
 /// Draw Jobs on the current row without a newline so it stays the last line.
 fn status_draw() {
-    if !std::io::stdout().is_terminal() || crate::runtime::get().debug {
+    if !std::io::stdout().is_terminal()
+        || crate::runtime::get().debug
+        || crate::runtime::get().nospinner
+    {
         return;
     }
     let total = TOTAL.load(Ordering::Relaxed);
@@ -219,7 +223,10 @@ fn status_draw() {
 }
 
 fn start_ticker() {
-    if !std::io::stdout().is_terminal() || crate::runtime::get().debug {
+    if !std::io::stdout().is_terminal()
+        || crate::runtime::get().debug
+        || crate::runtime::get().nospinner
+    {
         return;
     }
     if TICKING.swap(true, Ordering::Relaxed) {
@@ -270,7 +277,7 @@ fn jobs_text(done: usize, total: usize, running: usize) -> String {
     let pad = term_cols().saturating_sub(4 + left.chars().count() + load.chars().count());
     format!(
         "{} {}{}{}",
-        ">>>".green().bold(),
+        ">>>".t_green().bold(),
         left,
         " ".repeat(pad.max(2)),
         load
@@ -316,13 +323,13 @@ pub(crate) fn once(key: &'static str) -> bool {
 pub(crate) fn countdown(what: &str, secs: u32) {
     use std::io::Write;
 
-    let star = ">>>".green().bold();
+    let star = ">>>".t_green().bold();
     println!("{} Waiting {} seconds before starting...", star, secs);
     println!("{} (Control-C to abort)...", star);
     print!("{} {} in:", star, what);
     let _ = std::io::stdout().flush();
     for i in (1..=secs).rev() {
-        print!(" {}", i.to_string().red().bold());
+        print!(" {}", i.to_string().t_red().bold());
         let _ = std::io::stdout().flush();
         std::thread::sleep(std::time::Duration::from_secs(1));
     }

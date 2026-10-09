@@ -6,6 +6,7 @@
 //! decoy_tool_binary_line, KNOWN_COMPROMISED_AUR_PACKAGES, KNOWN_MALICIOUS_SHA256.
 
 use colored::Colorize;
+use crate::theme::Themed;
 use std::io::{self, Write};
 
 use crate::*;
@@ -1360,7 +1361,7 @@ pub(crate) fn scan_aur_pkgbuilds_or_abort(
         std::collections::HashMap::new();
     println!(
         "{} Scanning AUR PKGBUILDs and .install hooks for suspicious patterns...",
-        ">>>".green().bold()
+        ">>>".t_green().bold()
     );
 
     for pkg in &to_scan {
@@ -1469,7 +1470,7 @@ pub(crate) fn scan_aur_pkgbuilds_or_abort(
     eprintln!(
         "{} One or more AUR packages have PKGBUILD/.install content matching \
         known-suspicious patterns. Review them yourself before proceeding:",
-        ">>>".red().bold()
+        ">>>".t_red().bold()
     );
     for pkg in &flagged_pkgs {
         eprintln!(
@@ -1477,14 +1478,14 @@ pub(crate) fn scan_aur_pkgbuilds_or_abort(
             pkg
         );
     }
-    eprint!("{} Continue anyway? [y/N] ", ">>>".yellow().bold());
+    eprint!("{} Continue anyway? [y/N] ", ">>>".t_yellow().bold());
     io::stderr().flush().ok();
 
     let answer = read_line_raw();
     let confirmed = answer.trim().eq_ignore_ascii_case("y");
 
     if !confirmed {
-        eprintln!("{} Aborted.", ">>>".red().bold());
+        eprintln!("{} Aborted.", ">>>".t_red().bold());
         std::process::exit(1);
     }
 
@@ -1533,13 +1534,13 @@ pub(crate) fn verify_local_clone_or_rescan(
         }
         println!(
             "{} '{}' clone differs from the copy already scanned via cgit -- verifying the clone directly...",
-            ">>>".yellow().bold(),
+            ">>>".t_yellow().bold(),
             pkgbase
         );
     } else {
         println!(
             "{} '{}' wasn't scanned before cloning (cgit fetch failed or this pkgbase was only resolved after cloning) -- scanning the clone directly...",
-            ">>>".yellow().bold(),
+            ">>>".t_yellow().bold(),
             pkgbase
         );
     }
@@ -1592,16 +1593,16 @@ pub(crate) fn verify_local_clone_or_rescan(
     eprintln!(
         "{} '{}''s cloned PKGBUILD/.install content (which differs from what was pre-scanned) \
         matches known-suspicious patterns. Review it yourself before proceeding:",
-        ">>>".red().bold(),
+        ">>>".t_red().bold(),
         pkgbase
     );
     eprintln!("    {}", dir.display());
-    eprint!("{} Continue anyway? [y/N] ", ">>>".yellow().bold());
+    eprint!("{} Continue anyway? [y/N] ", ">>>".t_yellow().bold());
     io::stderr().flush().ok();
 
     let answer = read_line_raw();
     if !answer.trim().eq_ignore_ascii_case("y") {
-        eprintln!("{} Aborted.", ">>>".red().bold());
+        eprintln!("{} Aborted.", ">>>".t_red().bold());
         std::process::exit(1);
     }
 }
@@ -1649,7 +1650,7 @@ fn scan_report(
     if pkg_findings.is_empty() {
         println!(
             "{} {}: no suspicious patterns found.",
-            ">>>".green().bold(),
+            ">>>".t_green().bold(),
             label.bold()
         );
         return true;
@@ -1696,11 +1697,11 @@ fn scan_report(
 /// --scan AUR name via cgit. false on fetch fail or any finding.
 pub(crate) fn scan_report_aur(pkg: &str) -> bool {
     crate::progress::status_break();
-    println!("{} Scanning {} (AUR)...", ">>>".green().bold(), pkg.bold());
+    println!("{} Scanning {} (AUR)...", ">>>".t_green().bold(), pkg.bold());
     let Some(pkgbuild_src) = fetch_aur_pkgbuild(pkg) else {
         eprintln!(
             "{} could not fetch PKGBUILD for '{}' from the AUR.",
-            ">>> Error:".red().bold(),
+            ">>> Error:".t_red().bold(),
             pkg
         );
         return false;
@@ -1715,14 +1716,14 @@ pub(crate) fn scan_report_local(label: &str, dir: &std::path::Path) -> bool {
     crate::progress::status_break();
     println!(
         "{} Scanning {} ({})...",
-        ">>>".green().bold(),
+        ">>>".t_green().bold(),
         label.bold(),
         dir.display()
     );
     let Ok(pkgbuild_src) = std::fs::read_to_string(dir.join("PKGBUILD")) else {
         eprintln!(
             "{} no PKGBUILD found in {}.",
-            ">>> Error:".red().bold(),
+            ">>> Error:".t_red().bold(),
             dir.display()
         );
         return false;
@@ -1757,7 +1758,7 @@ pub(crate) fn print_finding_block(
     eprintln!(
         "{} {}",
         arrow_str.truecolor(250, 16, 66).bold(),
-        format!("{} ({})", headline, pkg).yellow().bold()
+        format!("{} ({})", headline, pkg).t_yellow().bold()
     );
     eprintln!(
         "{} {}",
@@ -1945,18 +1946,18 @@ pub(crate) fn audit_built_packages(tarballs: &[String], force_prompt: bool) -> b
                 eprintln!();
                 eprintln!(
                     "{} package archive audit: {}",
-                    ">>>".yellow().bold(),
+                    ">>>".t_yellow().bold(),
                     path.display()
                 );
                 for f in &findings {
-                    eprintln!("    {}  {}", f.path.red().bold(), f.reason.dimmed());
+                    eprintln!("    {}  {}", f.path.t_red().bold(), f.reason.dimmed());
                 }
                 if let Some(script) = extract_install_script(path) {
                     let hits = scan_pkgbuild_source(&script);
                     if !hits.is_empty() {
                         eprintln!(
                             "    {} .INSTALL content matched {} scanner finding(s):",
-                            ">>>".red().bold(),
+                            ">>>".t_red().bold(),
                             hits.len()
                         );
                         for h in hits.iter().take(8) {
@@ -1971,7 +1972,7 @@ pub(crate) fn audit_built_packages(tarballs: &[String], force_prompt: bool) -> b
             Err(e) => {
                 eprintln!(
                     "{} could not audit {}: {} (continuing, but review manually)",
-                    ">>> Warning:".yellow().bold(),
+                    ">>> Warning:".t_yellow().bold(),
                     path.display(),
                     e
                 );
@@ -1984,20 +1985,20 @@ pub(crate) fn audit_built_packages(tarballs: &[String], force_prompt: bool) -> b
     if !force_prompt {
         eprintln!(
             "{} sensitive paths/scripts detected in the built package(s); install continues (--noconfirm). Review the list above.",
-            ">>> Warning:".yellow().bold()
+            ">>> Warning:".t_yellow().bold()
         );
         return true;
     }
     eprint!(
         "{} Built package contains privileged paths/scripts. Continue with pacman -U? [y/N] ",
-        ">>>".yellow().bold()
+        ">>>".t_yellow().bold()
     );
     let _ = io::stderr().flush();
     let answer = read_line_raw();
     if !answer.trim().eq_ignore_ascii_case("y") {
         eprintln!(
             "{} package audit declined - not installing.",
-            ">>>".red().bold()
+            ">>>".t_red().bold()
         );
         return false;
     }

@@ -32,7 +32,7 @@
 //! Trust note: a value here becomes shell code run as the build user,
 //! the same trust level `/etc/makepkg.conf` already has.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use colored::Colorize;
@@ -65,6 +65,12 @@ const DEFAULT_FLAG_KEY: &str = "EMERGE_DEFAULT_OPTS";
 
 /// Read into `vars` but not a build var: never reaches makepkg.
 const FEATURES_KEY: &str = "FEATURES";
+
+/// Message colour overrides, read by `theme`; never reaches makepkg.
+const COLORS_KEY: &str = "COLORS";
+
+/// Roles `COLORS` can name.
+const COLOR_ROLES: &[&str] = &["ok", "warn", "error", "info", "special"];
 
 /// A build value, kept as written so arrays stay arrays in the
 /// generated makepkg.conf.
@@ -105,6 +111,8 @@ pub(crate) struct Config {
     pub(crate) default_flags: Vec<String>,
     /// `FEATURES` tokens as written (`-foo` turns `foo` off).
     pub(crate) features: Vec<String>,
+    /// `COLORS` roles (`ok`, `warn`, `error`, `info`, `special`) with their colour.
+    pub(crate) colors: Vec<(String, colored::Color)>,
     /// Build vars actually set, in `BUILD_VARS` order.
     pub(crate) build_vars: Vec<(String, BuildValue)>,
     /// Config files that were read, in precedence order.
@@ -156,10 +164,12 @@ pub(crate) fn load() -> Config {
         .collect();
 
     let features = features_of(&vars);
+    let colors = colors_of(&vars, Path::new(SYSTEM_CONF));
 
     Config {
         default_flags,
         features,
+        colors,
         build_vars,
         files,
     }
@@ -169,6 +179,94 @@ fn features_of(vars: &HashMap<String, BuildValue>) -> Vec<String> {
     vars.get(FEATURES_KEY)
         .map(BuildValue::tokens)
         .unwrap_or_default()
+}
+
+/// `#RRGGBB`, `#RGB`, or one of the 16 ANSI names (`red`, `bright-cyan`,
+/// `gray`, ...). Case and `_` vs `-` don't matter.
+pub(crate) fn parse_color(s: &str) -> Option<colored::Color> {
+    use colored::Color::*;
+    let t = s.trim().to_ascii_lowercase().replace('_', "-");
+    if let Some(h) = t.strip_prefix('#') {
+        if !h.chars().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        let full: String = match h.len() {
+            3 => h.chars().flat_map(|c| [c, c]).collect(),
+            6 => h.to_string(),
+            _ => return None,
+        };
+        let v = |i: usize| u8::from_str_radix(&full[i..i + 2], 16).ok();
+        return Some(TrueColor {
+            r: v(0)?,
+            g: v(2)?,
+            b: v(4)?,
+        });
+    }
+    Some(match t.as_str() {
+        "black" => Black,
+        "red" => Red,
+        "green" => Green,
+        "yellow" => Yellow,
+        "blue" => Blue,
+        "magenta" => Magenta,
+        "cyan" => Cyan,
+        "white" => White,
+        "gray" | "grey" | "bright-black" => BrightBlack,
+        "bright-red" => BrightRed,
+        "bright-green" => BrightGreen,
+        "bright-yellow" => BrightYellow,
+        "bright-blue" => BrightBlue,
+        "bright-magenta" => BrightMagenta,
+        "bright-cyan" => BrightCyan,
+        "bright-white" => BrightWhite,
+        _ => return None,
+    })
+}
+
+/// `COLORS="role=colour ..."` -> (role, colour). Bad entries warn and
+/// are skipped; the last mention of a role wins.
+fn colors_of(vars: &HashMap<String, BuildValue>, path: &Path) -> Vec<(String, colored::Color)> {
+    let mut out: Vec<(String, colored::Color)> = Vec::new();
+    let Some(v) = vars.get(COLORS_KEY) else {
+        return out;
+    };
+    for tok in v.tokens() {
+        let Some((role, color)) = tok.split_once('=') else {
+            warn(
+                path,
+                COLORS_KEY,
+                &format!("'{}' should look like role=colour (ignored)", tok),
+            );
+            continue;
+        };
+        if !COLOR_ROLES.contains(&role) {
+            warn(
+                path,
+                COLORS_KEY,
+                &format!(
+                    "unknown role '{}' (use {}) - ignored",
+                    role,
+                    COLOR_ROLES.join(", ")
+                ),
+            );
+            continue;
+        }
+        let color = color.trim_matches(|c| c == '"' || c == '\'');
+        let Some(c) = parse_color(color) else {
+            warn(
+                path,
+                COLORS_KEY,
+                &format!(
+                    "'{}' is not a colour (use #RRGGBB or a name like red, bright-cyan) - ignored",
+                    color
+                ),
+            );
+            continue;
+        };
+        out.retain(|(r, _)| r != role);
+        out.push((role.to_string(), c));
+    }
+    out
 }
 
 /// Stores one parsed `key = value` into `vars`/`default_flags`, or
@@ -182,7 +280,7 @@ fn store(
 ) {
     if key == DEFAULT_FLAG_KEY {
         *default_flags = value.tokens();
-    } else if key == FEATURES_KEY || BUILD_VARS.contains(&key.as_str()) {
+    } else if key == FEATURES_KEY || key == COLORS_KEY || BUILD_VARS.contains(&key.as_str()) {
         vars.insert(key, value);
     } else {
         warn(path, &key, "unknown key (ignored)");
@@ -559,50 +657,211 @@ _a+=(\"$2\"); }\n",
 
 // ── EMERGE_DEFAULT_OPTS: argv splicing and conflict detection ─────────────────
 
-/// Flags accepted in `EMERGE_DEFAULT_OPTS`, with whether each takes a
-/// value. Allowlist, not denylist: a default silently turning every
-/// run into `--unmerge` isn't worth risking; anything missing here
-/// still works on the command line.
-const ALLOWED_DEFAULTS: &[(&str, bool)] = &[
-    ("--ask", false),
-    ("--verbose", false),
-    ("--quiet", false),
-    ("--noreplace", false),
-    ("--oneshot", false),
-    ("--aur", false),
-    ("--abs", false),
-    ("--repos", false),
-    ("--skippgp", false),
-    ("--autopgp", false),
-    ("--no-sandbox", false),
-    ("--unshare-net-build", false),
-    ("--edit", false),
-    ("--skip-srcinfo-regen", false),
-    ("--pkgbuild-view", false),
-    ("--devel", false),
-    ("--keep-going", true),
-    ("--sudoloop", false),
-    ("--err-install", false),
-    ("--refresh", false),
-    ("--deep", true),
-    ("--newuse", false),
-    ("--tree", true),
-    ("--columns", false),
-    ("--nospinner", false),
-    ("--debug", true),
-    ("--verbose-conflicts", false),
-    ("--searchdesc", false),
-    ("--skipfirst", false),
-    ("--exclude", true),
-    ("--color", true),
-    ("--jobs", true),
-    ("--jobsr", true),
-    ("--jobsa", true),
-    ("--load-average", true),
-    ("--backtrack", true),
-    ("--with-bdeps", true),
-    ("--quiet-build", true),
+/// Value kinds a default flag can carry. Each one is checked (and
+/// normalised) here, so a typo in make.conf is a warning, not a clap
+/// error on every run.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Val {
+    /// Whole number (`--jobs 4`).
+    Count,
+    /// Positive decimal (`--load-average 4.5`).
+    Load,
+    /// `y` / `n` (`--quiet-build n`). Stored as `y` or `n`.
+    YesNo,
+    /// `y` / `n` / `auto`.
+    Color,
+    /// Package names, comma-separated (`--exclude linux,nvidia`).
+    Atoms,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Arity {
+    /// Plain switch. `--ask=y` is on, `--ask=n` is off.
+    Switch,
+    /// Value required: `--jobs 4` or `--jobs=4`.
+    Value(Val),
+    /// Bare, `--deep=3`, or `--deep 3` (config only).
+    Optional(Val),
+}
+
+struct FlagSpec {
+    long: &'static str,
+    short: Option<char>,
+    /// Spellings of one option share a key (`--jobs` = `--jobsr`).
+    key: &'static str,
+    arity: Arity,
+    /// Values add up instead of replacing (`--exclude`).
+    repeat: bool,
+    /// Applied only if one of these keys was typed on the command line.
+    only_with: &'static [&'static str],
+}
+
+const fn sw(long: &'static str, short: Option<char>) -> FlagSpec {
+    FlagSpec {
+        long,
+        short,
+        key: long,
+        arity: Arity::Switch,
+        repeat: false,
+        only_with: &[],
+    }
+}
+
+const fn scoped(
+    long: &'static str,
+    short: Option<char>,
+    only_with: &'static [&'static str],
+) -> FlagSpec {
+    FlagSpec {
+        long,
+        short,
+        key: long,
+        arity: Arity::Switch,
+        repeat: false,
+        only_with,
+    }
+}
+
+const fn valued(long: &'static str, key: &'static str, kind: Val) -> FlagSpec {
+    FlagSpec {
+        long,
+        short: None,
+        key,
+        arity: Arity::Value(kind),
+        repeat: false,
+        only_with: &[],
+    }
+}
+
+/// Flags accepted in `EMERGE_DEFAULT_OPTS`. Only flags that change what
+/// a run does are listed; Portage options aura-emerge accepts as no-ops
+/// (`--newuse`, `--with-bdeps`, `--backtrack`, ...) are left out on
+/// purpose, so a default can't look active while doing nothing. They
+/// still parse on the command line. Allowlist, not denylist: a
+/// default silently turning every run into `--unmerge` isn't worth
+/// risking, so actions (`-u`, `-C`, `-c`, `-p`, `-e`, ...) stay out;
+/// anything missing here still works on the command line.
+///
+/// Flags that only make sense next to an action (`--searchdesc` with
+/// `-s`, `--skipfirst` with `--resume`) carry `only_with`: they apply
+/// when that action is typed and are ignored otherwise.
+static SPECS: &[FlagSpec] = &[
+    // output / interaction
+    sw("--ask", Some('a')),
+    sw("--verbose", Some('v')),
+    sw("--nospinner", None),
+    sw("--debug", None),
+    sw("--tree", Some('t')),
+    FlagSpec {
+        long: "--deep",
+        short: Some('D'),
+        key: "--deep",
+        arity: Arity::Optional(Val::Count),
+        repeat: false,
+        only_with: &[],
+    },
+    valued("--color", "--color", Val::Color),
+    // what gets installed, and how
+    sw("--noreplace", Some('n')),
+    sw("--oneshot", Some('1')),
+    sw("--with-optdeps", None),
+    sw("--err-install", None),
+    sw("--refresh", None),
+    sw("--devel", None),
+    sw("--keep-going", None),
+    sw("--sudoloop", None),
+    FlagSpec {
+        long: "--exclude",
+        short: None,
+        key: "--exclude",
+        arity: Arity::Value(Val::Atoms),
+        repeat: true,
+        only_with: &[],
+    },
+    // source selection
+    sw("--aur", None),
+    sw("--abs", None),
+    sw("--repos", None),
+    // build / security
+    sw("--skippgp", None),
+    sw("--autopgp", None),
+    sw("--no-sandbox", None),
+    sw("--unshare-net-build", None),
+    sw("--edit", None),
+    sw("--skip-srcinfo-regen", None),
+    sw("--pkgbuild-view", None),
+    valued("--quiet-build", "--quiet-build", Val::YesNo),
+    // parallelism
+    valued("--jobs", "--jobsr", Val::Count),
+    valued("--jobsr", "--jobsr", Val::Count),
+    valued("--jobsa", "--jobsa", Val::Count),
+    valued("--load-average", "--load-average", Val::Load),
+    // action modifiers
+    scoped("--searchdesc", Some('S'), &["--search"]),
+    scoped("--skipfirst", None, &["--resume"]),
 ];
+
+/// Actions the command line can type that a scoped default hangs on.
+/// (long, short) - only used to notice them, never accepted as defaults.
+const SCOPE_ONLY: &[(&str, Option<char>)] = &[("--search", Some('s')), ("--resume", None)];
+
+fn spec_long(name: &str) -> Option<&'static FlagSpec> {
+    SPECS.iter().find(|s| s.long == name)
+}
+
+fn spec_short(c: char) -> Option<&'static FlagSpec> {
+    SPECS.iter().find(|s| s.short == Some(c))
+}
+
+/// `y`/`n` in every spelling Portage users type.
+pub(crate) fn parse_yes_no(s: &str) -> Option<bool> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "y" | "yes" | "true" | "1" | "on" | "always" => Some(true),
+        "n" | "no" | "false" | "0" | "off" | "never" => Some(false),
+        _ => None,
+    }
+}
+
+/// Checks one value; returns it in the form clap will get.
+fn check_value(kind: Val, raw: &str) -> Result<String, &'static str> {
+    let raw = raw.trim();
+    match kind {
+        Val::Count => raw
+            .parse::<u32>()
+            .map(|n| n.to_string())
+            .map_err(|_| "expected a whole number"),
+        Val::Load => match raw.parse::<f32>() {
+            Ok(f) if f.is_finite() && f > 0.0 => Ok(raw.to_string()),
+            _ => Err("expected a number greater than 0"),
+        },
+        Val::YesNo => match parse_yes_no(raw) {
+            Some(true) => Ok("y".to_string()),
+            Some(false) => Ok("n".to_string()),
+            None => Err("expected y or n"),
+        },
+        Val::Color => {
+            if raw.eq_ignore_ascii_case("auto") {
+                return Ok("auto".to_string());
+            }
+            match parse_yes_no(raw) {
+                Some(true) => Ok("y".to_string()),
+                Some(false) => Ok("n".to_string()),
+                None => Err("expected y, n or auto"),
+            }
+        }
+        Val::Atoms => {
+            if !raw.is_empty()
+                && raw
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "@._+-/,".contains(c))
+            {
+                Ok(raw.to_string())
+            } else {
+                Err("expected package names")
+            }
+        }
+    }
+}
 
 /// Flag pairs that can't both be in effect, with the reason shown when
 /// they are.
@@ -651,16 +910,240 @@ fn conflicts_with(token: &str, tokens: &[String]) -> Option<(&'static str, &'sta
     None
 }
 
+/// One accepted default, already in the form clap will see.
+struct Entry {
+    spec: &'static FlagSpec,
+    token: String,
+}
+
+fn push_entry(out: &mut Vec<Entry>, spec: &'static FlagSpec, value: Option<String>) {
+    if !spec.repeat {
+        out.retain(|e| e.spec.key != spec.key);
+    }
+    let token = match value {
+        Some(v) => format!("{}={}", spec.long, v),
+        None => spec.long.to_string(),
+    };
+    out.push(Entry { spec, token });
+}
+
+fn warn_default(source: &str, msg: &str) {
+    eprintln!("{} {}: {}", ">>> Warning:".yellow().bold(), source, msg);
+}
+
+/// `EMERGE_DEFAULT_OPTS` tokens -> accepted entries. Within the list the
+/// last mention of a flag wins; `--flag=n` switches an earlier one off.
+/// Bad flags and bad values warn and are skipped; nothing here is fatal.
+fn parse_defaults(raw: &[String], source: &str) -> Vec<Entry> {
+    let mut out: Vec<Entry> = Vec::new();
+    let mut i = 0usize;
+    while i < raw.len() {
+        let tok = raw[i].as_str();
+        i += 1;
+
+        if tok.len() > 2 && tok.starts_with("--") {
+            let (name, inline) = match tok.split_once('=') {
+                Some((n, v)) => (n, Some(v)),
+                None => (tok, None),
+            };
+            let Some(spec) = spec_long(name) else {
+                warn_default(
+                    source,
+                    &format!(
+                        "'{}' is not accepted in EMERGE_DEFAULT_OPTS - ignoring it (pass it on the command line instead).",
+                        tok
+                    ),
+                );
+                // Skip a value that was clearly meant for it.
+                if inline.is_none() && raw.get(i).map(|t| !t.starts_with('-')).unwrap_or(false) {
+                    i += 1;
+                }
+                continue;
+            };
+
+            let value: Option<String> = match spec.arity {
+                Arity::Switch => match inline.map(parse_yes_no) {
+                    None | Some(Some(true)) => None,
+                    Some(Some(false)) => {
+                        out.retain(|e| e.spec.key != spec.key);
+                        continue;
+                    }
+                    Some(None) => {
+                        warn_default(
+                            source,
+                            &format!("'{}': expected y or n - ignoring it.", tok),
+                        );
+                        continue;
+                    }
+                },
+                Arity::Value(kind) => {
+                    let raw_v = match inline {
+                        Some(v) => v.to_string(),
+                        None => match raw.get(i) {
+                            Some(t) if !t.starts_with('-') => {
+                                i += 1;
+                                t.clone()
+                            }
+                            _ => {
+                                warn_default(
+                                    source,
+                                    &format!(
+                                        "'{}' in EMERGE_DEFAULT_OPTS needs a value - ignoring it.",
+                                        tok
+                                    ),
+                                );
+                                continue;
+                            }
+                        },
+                    };
+                    match check_value(kind, &raw_v) {
+                        Ok(v) => Some(v),
+                        Err(why) => {
+                            warn_default(
+                                source,
+                                &format!(
+                                    "'{}' has an invalid value '{}' ({}) - ignoring it.",
+                                    spec.long, raw_v, why
+                                ),
+                            );
+                            continue;
+                        }
+                    }
+                }
+                Arity::Optional(kind) => {
+                    let raw_v = match inline {
+                        Some(v) => Some(v.to_string()),
+                        None => match raw.get(i) {
+                            Some(t) if !t.is_empty() && t.chars().all(|c| c.is_ascii_digit()) => {
+                                i += 1;
+                                Some(t.clone())
+                            }
+                            _ => None,
+                        },
+                    };
+                    match raw_v {
+                        None => None,
+                        Some(r) => match check_value(kind, &r) {
+                            Ok(v) => Some(v),
+                            Err(why) => {
+                                warn_default(
+                                    source,
+                                    &format!(
+                                        "'{}' has an invalid value '{}' ({}) - ignoring it.",
+                                        spec.long, r, why
+                                    ),
+                                );
+                                continue;
+                            }
+                        },
+                    }
+                }
+            };
+            push_entry(&mut out, spec, value);
+        } else if tok.len() > 1 && tok.starts_with('-') && tok != "--" {
+            // Short cluster: `-avt` = --ask --verbose --tree.
+            for c in tok[1..].chars() {
+                match spec_short(c) {
+                    Some(spec) if !matches!(spec.arity, Arity::Value(_)) => {
+                        push_entry(&mut out, spec, None)
+                    }
+                    _ => warn_default(
+                        source,
+                        &format!(
+                            "'-{}' is not accepted in EMERGE_DEFAULT_OPTS - ignoring it (use the long form).",
+                            c
+                        ),
+                    ),
+                }
+            }
+        } else {
+            warn_default(
+                source,
+                &format!(
+                    "'{}' is not accepted in EMERGE_DEFAULT_OPTS - ignoring it.",
+                    tok
+                ),
+            );
+        }
+    }
+    out
+}
+
+/// Reads the typed command line once: returns it normalised and the
+/// set of option keys it names (longs, short clusters, aliases alike).
+///
+/// Normalising: `--ask=y` becomes `--ask`; `--ask=n` is dropped and
+/// counts as typed, which is how one run switches a default off (no
+/// `--ignore-default-opts` needed). Everything after `--` is left alone.
+fn scan_cli(raw: &[String]) -> (Vec<String>, HashSet<&'static str>) {
+    let mut out: Vec<String> = Vec::with_capacity(raw.len());
+    let mut typed: HashSet<&'static str> = HashSet::new();
+    let mut rest = false;
+
+    for tok in raw {
+        if rest {
+            out.push(tok.clone());
+            continue;
+        }
+        if tok == "--" {
+            rest = true;
+            out.push(tok.clone());
+            continue;
+        }
+        if tok.starts_with("--") {
+            let (name, inline) = match tok.split_once('=') {
+                Some((n, v)) => (n, Some(v)),
+                None => (tok.as_str(), None),
+            };
+            if let Some(spec) = spec_long(name) {
+                typed.insert(spec.key);
+                if spec.arity == Arity::Switch {
+                    match inline.map(parse_yes_no) {
+                        Some(Some(true)) => {
+                            out.push(spec.long.to_string());
+                            continue;
+                        }
+                        Some(Some(false)) => continue,
+                        _ => {}
+                    }
+                }
+            } else if let Some((k, _)) = SCOPE_ONLY.iter().find(|(l, _)| *l == name) {
+                typed.insert(*k);
+            }
+            out.push(tok.clone());
+        } else if tok.len() > 1 && tok.starts_with('-') {
+            let cluster = tok[1..].split('=').next().unwrap_or("");
+            for c in cluster.chars() {
+                if let Some(spec) = spec_short(c) {
+                    typed.insert(spec.key);
+                } else if let Some((k, _)) = SCOPE_ONLY.iter().find(|(_, s)| *s == Some(c)) {
+                    typed.insert(*k);
+                }
+            }
+            out.push(tok.clone());
+        } else {
+            out.push(tok.clone());
+        }
+    }
+    (out, typed)
+}
+
 /// Builds the argv clap will parse: `EMERGE_DEFAULT_OPTS` first, then the
 /// real command line, so an explicitly typed flag always wins.
 ///
+/// clap rejects a flag given twice, so a default is dropped whenever the
+/// same option was typed - in any spelling (`-a`/`--ask`, `--jobs`/
+/// `--jobsr`) - and a default valued flag never meets a typed value.
+///
 /// Dropped from the config side: everything, if `--ignore-default-opts`
-/// was typed; flags not in `ALLOWED_DEFAULTS`; and a flag that
-/// conflicts with one typed on the command line (the more specific
-/// intent). A conflict within the command line, or left inside the
-/// config itself, is a hard error.
+/// was typed; flags not in `SPECS`; invalid values; scoped flags whose
+/// action wasn't typed; and a flag that conflicts with one typed on the
+/// command line (the more specific intent). A conflict within the
+/// command line, or left inside the config itself, is a hard error.
 pub(crate) fn build_argv(argv: &[String], cfg: &Config) -> Vec<String> {
-    let cli: Vec<String> = argv.iter().skip(1).cloned().collect();
+    let argv0 = argv.first().cloned().unwrap_or_default();
+    let raw_cli: Vec<String> = argv.iter().skip(1).cloned().collect();
+    let (cli, typed) = scan_cli(&raw_cli);
 
     if let Some((a, b, why)) = find_conflict(&cli) {
         eprintln!(
@@ -673,9 +1156,12 @@ pub(crate) fn build_argv(argv: &[String], cfg: &Config) -> Vec<String> {
         std::process::exit(1);
     }
 
+    let mut out: Vec<String> = vec![argv0];
+
     let ignore_defaults = cli.iter().any(|t| base_of(t) == "--ignore-default-opts");
     if ignore_defaults || cfg.default_flags.is_empty() {
-        return argv.to_vec();
+        out.extend(cli);
+        return out;
     }
 
     let source = cfg
@@ -684,7 +1170,10 @@ pub(crate) fn build_argv(argv: &[String], cfg: &Config) -> Vec<String> {
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| SYSTEM_CONF.to_string());
 
-    if let Some((a, b, why)) = find_conflict(&cfg.default_flags) {
+    let entries = parse_defaults(&cfg.default_flags, &source);
+
+    let own: Vec<String> = entries.iter().map(|e| e.token.clone()).collect();
+    if let Some((a, b, why)) = find_conflict(&own) {
         eprintln!(
             "{} {}: EMERGE_DEFAULT_OPTS sets both {} and {} - {}.",
             ">>> Error:".red().bold(),
@@ -696,53 +1185,15 @@ pub(crate) fn build_argv(argv: &[String], cfg: &Config) -> Vec<String> {
         std::process::exit(1);
     }
 
-    let mut kept: Vec<String> = Vec::new();
-    let mut i = 0usize;
-    while i < cfg.default_flags.len() {
-        let token = cfg.default_flags[i].clone();
-        let base = base_of(&token).to_string();
-
-        let Some((_, takes_value)) = ALLOWED_DEFAULTS.iter().find(|(n, _)| *n == base) else {
-            eprintln!(
-                "{} {}: '{}' is not accepted in EMERGE_DEFAULT_OPTS - ignoring it (pass it on the command line instead).",
-                ">>> Warning:".yellow().bold(),
-                source,
-                token
-            );
-            i += 1;
-            // Skip a value that was clearly meant for it.
-            if cfg
-                .default_flags
-                .get(i)
-                .map(|t| !t.starts_with('-'))
-                .unwrap_or(false)
-            {
-                i += 1;
-            }
+    for e in entries {
+        let spec = e.spec;
+        if !spec.only_with.is_empty() && !spec.only_with.iter().any(|k| typed.contains(k)) {
             continue;
-        };
-
-        let inline_value = token.contains('=');
-        let value = if *takes_value && !inline_value {
-            let v = cfg.default_flags.get(i + 1).cloned();
-            match v {
-                Some(v) if !v.starts_with('-') => Some(v),
-                _ => {
-                    eprintln!(
-                        "{} {}: '{}' in EMERGE_DEFAULT_OPTS needs a value - ignoring it.",
-                        ">>> Warning:".yellow().bold(),
-                        source,
-                        token
-                    );
-                    i += 1;
-                    continue;
-                }
-            }
-        } else {
-            None
-        };
-
-        if let Some((from_cfg, from_cli)) = conflicts_with(&token, &cli) {
+        }
+        if !spec.repeat && typed.contains(&spec.key) {
+            continue;
+        }
+        if let Some((from_cfg, from_cli)) = conflicts_with(&e.token, &cli) {
             println!(
                 "{} {} is set on the command line, so {} from {} is ignored for this run.",
                 ">>>".yellow().bold(),
@@ -750,19 +1201,11 @@ pub(crate) fn build_argv(argv: &[String], cfg: &Config) -> Vec<String> {
                 from_cfg,
                 source
             );
-            i += 1 + value.is_some() as usize;
             continue;
         }
-
-        kept.push(token);
-        if let Some(v) = value {
-            kept.push(v);
-        }
-        i += 1 + if *takes_value && !inline_value { 1 } else { 0 };
+        out.push(e.token);
     }
 
-    let mut out: Vec<String> = vec![argv.first().cloned().unwrap_or_default()];
-    out.extend(kept);
     out.extend(cli);
     out
 }
@@ -785,9 +1228,11 @@ mod config_tests {
             .filter_map(|k| vars.get(*k).map(|v| (k.to_string(), v.clone())))
             .collect();
         let features = features_of(&vars);
+        let colors = colors_of(&vars, Path::new("test.conf"));
         Config {
             default_flags: flags,
             features,
+            colors,
             build_vars,
             files: vec![PathBuf::from("test.conf")],
         }
@@ -963,11 +1408,209 @@ mod config_tests {
     fn valued_default_flag_keeps_its_value() {
         let cfg = parse(r#"EMERGE_DEFAULT_OPTS=(--exclude linux)"#);
         let out = build_argv(&vec!["emerge".to_string(), "-u".to_string()], &cfg);
-        assert_eq!(out, vec!["emerge", "--exclude", "linux", "-u"]);
+        assert_eq!(out, vec!["emerge", "--exclude=linux", "-u"]);
     }
 
     #[test]
     fn abs_and_repos_are_not_a_conflict() {
         assert!(find_conflict(&["--abs".to_string(), "--repos".to_string()]).is_none());
+    }
+
+    fn run(defaults: &str, cli: &[&str]) -> Vec<String> {
+        let cfg = parse(&format!("EMERGE_DEFAULT_OPTS=\"{}\"\n", defaults));
+        let mut argv = vec!["emerge".to_string()];
+        argv.extend(cli.iter().map(|s| s.to_string()));
+        build_argv(&argv, &cfg)
+    }
+
+    #[test]
+    fn tree_and_deep_need_no_value() {
+        assert_eq!(
+            run("--tree --deep", &["nano"]),
+            vec!["emerge", "--tree", "--deep", "nano"]
+        );
+    }
+
+    #[test]
+    fn deep_takes_optional_number() {
+        assert_eq!(run("--deep=3", &[]), vec!["emerge", "--deep=3"]);
+        assert_eq!(
+            run("--deep 3 --ask", &[]),
+            vec!["emerge", "--deep=3", "--ask"]
+        );
+    }
+
+    #[test]
+    fn typed_short_flag_replaces_long_default() {
+        // Without this clap fails with "cannot be used multiple times".
+        assert_eq!(
+            run("--ask --verbose", &["-a", "nano"]),
+            vec!["emerge", "--verbose", "-a", "nano"]
+        );
+        assert_eq!(run("--ask", &["-uav"]), vec!["emerge", "-uav"]);
+    }
+
+    #[test]
+    fn typed_value_replaces_default_value() {
+        assert_eq!(
+            run("--jobs 4 --jobsa 3", &["--jobsr", "2"]),
+            vec!["emerge", "--jobsa=3", "--jobsr", "2"]
+        );
+        assert_eq!(
+            run("--color=y", &["--color=n"]),
+            vec!["emerge", "--color=n"]
+        );
+    }
+
+    #[test]
+    fn exclude_adds_up() {
+        assert_eq!(
+            run("--exclude linux", &["--exclude", "nvidia"]),
+            vec!["emerge", "--exclude=linux", "--exclude", "nvidia"]
+        );
+    }
+
+    #[test]
+    fn y_n_values_are_normalised() {
+        assert_eq!(
+            run("--quiet-build=no --color always", &[]),
+            vec!["emerge", "--quiet-build=n", "--color=y"]
+        );
+    }
+
+    #[test]
+    fn bad_values_are_dropped_not_fatal() {
+        assert_eq!(
+            run("--jobs abc --jobsa x --ask", &[]),
+            vec!["emerge", "--ask"]
+        );
+        assert_eq!(run("--jobs", &[]), vec!["emerge"]);
+    }
+
+    #[test]
+    fn switch_equals_n_turns_it_off() {
+        assert_eq!(
+            run("--ask --ask=n --verbose", &[]),
+            vec!["emerge", "--verbose"]
+        );
+    }
+
+    #[test]
+    fn typed_equals_n_switches_a_default_off_for_one_run() {
+        assert_eq!(
+            run("--ask --verbose", &["--ask=n", "nano"]),
+            vec!["emerge", "--verbose", "nano"]
+        );
+        assert_eq!(
+            run("", &["--ask=y", "nano"]),
+            vec!["emerge", "--ask", "nano"]
+        );
+    }
+
+    #[test]
+    fn last_default_wins_inside_the_config() {
+        assert_eq!(run("--jobs 2 --jobsr 8", &[]), vec!["emerge", "--jobsr=8"]);
+    }
+
+    #[test]
+    fn short_cluster_in_config() {
+        assert_eq!(
+            run("-avt", &[]),
+            vec!["emerge", "--ask", "--verbose", "--tree"]
+        );
+        assert_eq!(run("-s", &[]), vec!["emerge"]);
+    }
+
+    #[test]
+    fn scoped_defaults_need_their_action() {
+        assert_eq!(run("--searchdesc", &["nano"]), vec!["emerge", "nano"]);
+        assert_eq!(
+            run("--searchdesc", &["-s", "nano"]),
+            vec!["emerge", "--searchdesc", "-s", "nano"]
+        );
+        assert_eq!(
+            run("--skipfirst", &["--resume"]),
+            vec!["emerge", "--skipfirst", "--resume"]
+        );
+        assert_eq!(run("--skipfirst", &["-a"]), vec!["emerge", "-a"]);
+    }
+
+    #[test]
+    fn flags_that_do_nothing_are_not_accepted() {
+        let out = run(
+            "--newuse --with-bdeps=y --backtrack 30 --changed-use --ask",
+            &[],
+        );
+        assert_eq!(out, vec!["emerge", "--ask"]);
+    }
+
+    #[test]
+    fn load_average_takes_a_positive_number() {
+        assert_eq!(
+            run("--load-average 4.5", &[]),
+            vec!["emerge", "--load-average=4.5"]
+        );
+        assert_eq!(run("--load-average 0 --ask", &[]), vec!["emerge", "--ask"]);
+        assert_eq!(run("--load-average=abc", &[]), vec!["emerge"]);
+        assert_eq!(
+            run("--load-average 8", &["--load-average", "2"]),
+            vec!["emerge", "--load-average", "2"]
+        );
+    }
+
+    #[test]
+    fn colors_take_hex_and_ansi_names() {
+        let c = parse(
+            "COLORS=\"ok=#a6e3a1 warn=Bright-Yellow error=#f00 info=cyan special=#CBA6F7\"\n",
+        );
+        assert_eq!(c.colors.len(), 5);
+        assert_eq!(
+            c.colors[0].1,
+            colored::Color::TrueColor {
+                r: 0xa6,
+                g: 0xe3,
+                b: 0xa1
+            }
+        );
+        assert_eq!(c.colors[1].1, colored::Color::BrightYellow);
+        assert_eq!(
+            c.colors[2].1,
+            colored::Color::TrueColor { r: 255, g: 0, b: 0 }
+        );
+        assert_eq!(c.colors[3].1, colored::Color::Cyan);
+    }
+
+    #[test]
+    fn bad_colors_and_roles_are_skipped() {
+        let c = parse("COLORS=\"ok=orange nope=red warn error=#12345 info=blue info=#000\"\n");
+        assert_eq!(
+            c.colors,
+            vec![(
+                "info".to_string(),
+                colored::Color::TrueColor { r: 0, g: 0, b: 0 }
+            )]
+        );
+    }
+
+    #[test]
+    fn colors_array_form_needs_quoted_hex() {
+        // A bare `#` starts a comment, so hex goes in quotes.
+        let c = parse("COLORS=(ok=\"#a6e3a1\" warn=yellow)\n");
+        assert_eq!(c.colors.len(), 2);
+    }
+
+    #[test]
+    fn colors_are_not_build_vars() {
+        let c = parse("COLORS=\"ok=red\"\nCFLAGS=\"-O2\"\n");
+        assert_eq!(c.build_vars.len(), 1);
+        assert!(makepkg_override_conf(&c).unwrap().contains("CFLAGS"));
+    }
+
+    #[test]
+    fn args_after_double_dash_are_untouched() {
+        assert_eq!(
+            run("--ask", &["--", "-a"]),
+            vec!["emerge", "--ask", "--", "-a"]
+        );
     }
 }

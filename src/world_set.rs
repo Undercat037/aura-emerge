@@ -3,6 +3,7 @@
 
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
+use crate::theme::Themed;
 use std::collections::HashSet;
 use std::fs;
 use std::io::{self, BufRead, Write};
@@ -210,7 +211,7 @@ pub(crate) fn provision_from_world_set(
     skip_srcinfo_regen: bool,
     unshare_net_build: bool,
 ) -> Result<bool> {
-    println!("{} Provisioning system from world...", ">>>".green().bold());
+    println!("{} Provisioning system from world...", ">>>".t_green().bold());
 
     let entries: Vec<String> = match open_nofollow(std::path::Path::new(WORLD_SET_FILE)) {
         Err(e) if is_symlink_open_error(&e) => {
@@ -311,7 +312,7 @@ pub(crate) fn provision_from_world_set(
     if total == 0 {
         println!(
             "{} Nothing to do - every world package is already installed.",
-            ">>>".green().bold()
+            ">>>".t_green().bold()
         );
         return Ok(true);
     }
@@ -320,7 +321,7 @@ pub(crate) fn provision_from_world_set(
     println!(
         "{}",
         "These are the packages that would be merged, in order:"
-            .green()
+            .t_green()
             .bold()
     );
     println!();
@@ -329,38 +330,38 @@ pub(crate) fn provision_from_world_set(
     for p in official_missing.iter().chain(aur_missing.iter()) {
         println!(
             "[{} {:<4}] {}",
-            "ebuild".green(),
-            "N".green().bold(),
-            p.green().bold()
+            "ebuild".t_green(),
+            "N".t_green().bold(),
+            p.t_green().bold()
         );
     }
     for p in &resolved_official {
         println!(
             "[{} {:<4}] {} (source was unresolved - found in official repos)",
-            "ebuild".green(),
-            "N".green().bold(),
-            p.green().bold()
+            "ebuild".t_green(),
+            "N".t_green().bold(),
+            p.t_green().bold()
         );
     }
     for p in &resolved_aur {
         println!(
             "[{} {:<4}] {} (source was unresolved - will try the AUR)",
-            "ebuild".green(),
-            "N".cyan().bold(),
-            p.cyan().bold()
+            "ebuild".t_green(),
+            "N".t_cyan().bold(),
+            p.t_cyan().bold()
         );
     }
     for p in &abs_missing {
         println!(
             "[{} {:<4}] {} (built from ABS - needs `emerge {} --abs`)",
-            "ebuild".green(),
-            "N".yellow().bold(),
-            p.yellow().bold(),
+            "ebuild".t_green(),
+            "N".t_yellow().bold(),
+            p.t_yellow().bold(),
             p
         );
     }
     for p in &unresolved_listed {
-        println!("[{} {:<4}] {} (installed from an unknown source - retry with --err-install, or install manually)", "ebuild".green(), "N".red().bold(), p.red().bold());
+        println!("[{} {:<4}] {} (installed from an unknown source - retry with --err-install, or install manually)", "ebuild".t_green(), "N".t_red().bold(), p.t_red().bold());
     }
     println!();
     println!("{}: {} package(s)", "Total".bold(), total);
@@ -375,7 +376,7 @@ pub(crate) fn provision_from_world_set(
     if !official_missing.is_empty() {
         println!(
             "{} Installing {} package(s) from official repos...",
-            ">>>".green().bold(),
+            ">>>".t_green().bold(),
             official_missing.len()
         );
         let snapshot = world_installed_snapshot();
@@ -396,7 +397,7 @@ pub(crate) fn provision_from_world_set(
     if !aur_missing.is_empty() {
         println!(
             "{} Installing {} AUR package(s)...",
-            ">>>".green().bold(),
+            ">>>".t_green().bold(),
             aur_missing.len()
         );
         scan_aur_pkgbuilds_or_abort(&aur_missing);
@@ -427,7 +428,7 @@ pub(crate) fn provision_from_world_set(
     if !resolved_official.is_empty() {
         println!(
             "{} Installing {} previously-unresolved package(s) from official repos...",
-            ">>>".green().bold(),
+            ">>>".t_green().bold(),
             resolved_official.len()
         );
         let snapshot = world_installed_snapshot();
@@ -453,7 +454,7 @@ pub(crate) fn provision_from_world_set(
     if !resolved_aur.is_empty() {
         println!(
             "{} Installing {} previously-unresolved package(s) via the AUR...",
-            ">>>".green().bold(),
+            ">>>".t_green().bold(),
             resolved_aur.len()
         );
         scan_aur_pkgbuilds_or_abort(&resolved_aur);
@@ -488,7 +489,7 @@ pub(crate) fn provision_from_world_set(
         eprintln!(
             "{} {} package(s) were built from ABS and can't be reproduced unattended - \
             install them yourself: `emerge <pkg> --abs`",
-            " *".yellow().bold(),
+            " *".t_yellow().bold(),
             abs_missing.len()
         );
         for p in &abs_missing {
@@ -499,7 +500,7 @@ pub(crate) fn provision_from_world_set(
         eprintln!(
             "{} {} package(s) are installed from an unknown source - retry with \
             `--err-install` to attempt the normal official/AUR install path, or install manually.",
-            " *".yellow().bold(),
+            " *".t_yellow().bold(),
             unresolved_listed.len()
         );
         for p in &unresolved_listed {
@@ -516,7 +517,7 @@ pub(crate) fn provision_from_world_set(
 pub(crate) fn regen_world_set() -> Result<()> {
     println!(
         "{} Regenerating world repository prefixes...",
-        ">>>".green().bold()
+        ">>>".t_green().bold()
     );
 
     let file = match open_nofollow_rw(std::path::Path::new(WORLD_SET_FILE)) {
@@ -561,7 +562,7 @@ pub(crate) fn regen_world_set() -> Result<()> {
     }
 
     if changed == 0 {
-        println!("{} world is already up to date.", ">>>".green().bold());
+        println!("{} world is already up to date.", ">>>".t_green().bold());
         return Ok(());
     }
 
@@ -569,7 +570,7 @@ pub(crate) fn regen_world_set() -> Result<()> {
     write_world_set(&updated)?;
     println!(
         "{} world updated ({} entries changed).",
-        ">>>".green().bold(),
+        ">>>".t_green().bold(),
         changed
     );
     Ok(())
@@ -580,7 +581,7 @@ pub(crate) fn regen_world_set() -> Result<()> {
 pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
     println!(
         "{} Regenerating prefixes for @{}...",
-        ">>>".green().bold(),
+        ">>>".t_green().bold(),
         name
     );
 
@@ -667,7 +668,7 @@ pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
         if changed == 0 && !order_changed {
             println!(
                 "{} @{} is already up to date (sorted).",
-                ">>>".green().bold(),
+                ">>>".t_green().bold(),
                 name
             );
             return Ok(());
@@ -675,7 +676,7 @@ pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
         sorted
     } else {
         if changed == 0 {
-            println!("{} @{} is already up to date.", ">>>".green().bold(), name);
+            println!("{} @{} is already up to date.", ">>>".t_green().bold(), name);
             return Ok(());
         }
         rewritten
@@ -721,14 +722,14 @@ pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
     if sort {
         println!(
             "{} @{} updated ({} entries changed, re-sorted).",
-            ">>>".green().bold(),
+            ">>>".t_green().bold(),
             name,
             changed
         );
     } else {
         println!(
             "{} @{} updated ({} entries changed).",
-            ">>>".green().bold(),
+            ">>>".t_green().bold(),
             name,
             changed
         );
@@ -796,7 +797,7 @@ pub(crate) fn add_to_world_groups(groups: &[(&[String], Option<&str>)]) -> Resul
         return Ok(());
     }
 
-    println!("{} Adding to world...", ">>>".green().bold());
+    println!("{} Adding to world...", ">>>".t_green().bold());
 
     let mut sorted: Vec<String> = current_set.into_values().collect();
     sorted.sort();
@@ -846,7 +847,7 @@ pub(crate) fn reconcile_world_after_install(before: &HashSet<String>) {
     println!(
         "{} pacman removed {} while resolving a conflict during this install \
         - removing from world too (it can't be reinstalled the way it was): {}",
-        ">>>".yellow().bold(),
+        ">>>".t_yellow().bold(),
         vanished.len(),
         vanished.join(", ")
     );
