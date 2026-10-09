@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://undercat037.github.io/aura-emerge/sitemap.xml
+Sitemap: https://undercat037.github.io/aura-emerge/s1temap.xml
