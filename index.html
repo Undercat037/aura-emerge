@@ -27,6 +27,7 @@
       <div class="lang-switch" role="group" aria-label="Language">
         <button type="button" class="lang-btn active" data-lang="en" aria-pressed="true">EN</button>
         <button type="button" class="lang-btn" data-lang="ua" aria-pressed="false">UA</button>
+        <button type="button" class="lang-btn" data-lang="ru" aria-pressed="false">RU</button>
       </div>
       <a class="btn btn-ghost" href="https://github.com/Undercat037/aura-emerge" target="_blank" rel="noopener" data-i18n="btn_github">GitHub</a>
       <a class="btn btn-primary" href="docs.html#install" data-i18n="btn_install">Install</a>
@@ -101,6 +102,7 @@
               <span class="tag tag-purple">Core</span>
               <h3 class="lang-block" data-lang-block="en">Gentoo-style workflow</h3>
               <h3 class="lang-block" data-lang-block="ua" hidden>Робочий процес як у Gentoo</h3>
+<h3 class="lang-block" data-lang-block="ru" hidden>Рабочий процесс в стиле Gentoo</h3>
               <p class="lang-block" data-lang-block="en">
                 <code>@world</code>, custom sets, <code>--tree</code>,
                 <code>--exclude</code>, <code>--keep-going</code>, merge log —
@@ -111,11 +113,17 @@
                 <code>--exclude</code>, <code>--keep-going</code>, лог merge —
                 звички Portage, які працюють і на Arch.
               </p>
+<p class="lang-block" data-lang-block="ru" hidden>
+                <code>@world</code>, пользовательские наборы, <code>--tree</code>,
+                <code>--exclude</code>, <code>--keep-going</code>, журнал merge —
+                привычки Portage, которые работают и на Arch.
+              </p>
             </article>
             <article class="feature-card red">
               <span class="tag tag-red">Security</span>
               <h3 class="lang-block" data-lang-block="en">PKGBUILD scanner</h3>
               <h3 class="lang-block" data-lang-block="ua" hidden>Сканер PKGBUILD</h3>
+<h3 class="lang-block" data-lang-block="ru" hidden>Сканер PKGBUILD</h3>
               <p class="lang-block" data-lang-block="en">
                 Before every AUR build: AST + heuristics for <code>curl|sh</code>,
                 interpreter <code>-e</code>/<code>-c</code> (python/perl/ruby/node/lua),
@@ -126,11 +134,17 @@
                 interpreter <code>-e</code>/<code>-c</code> (python/perl/ruby/node/lua),
                 paste-сайти, відомі IOC тощо. Продовжувати чи ні — вирішуєте ви.
               </p>
+<p class="lang-block" data-lang-block="ru" hidden>
+                Перед каждой сборкой из AUR: AST и эвристики для <code>curl|sh</code>,
+                интерпретаторных <code>-e</code>/<code>-c</code> (python/perl/ruby/node/lua),
+                paste-сайтов, известных IOC и не только. Решение продолжать — за вами.
+              </p>
             </article>
             <article class="feature-card blue">
               <span class="tag tag-blue">Sandbox</span>
               <h3 class="lang-block" data-lang-block="en">bwrap sandbox</h3>
               <h3 class="lang-block" data-lang-block="ua" hidden>Пісочниця bwrap</h3>
+<h3 class="lang-block" data-lang-block="ru" hidden>Песочница bwrap</h3>
               <p class="lang-block" data-lang-block="en">
                 Untrusted phases under bubblewrap — no real <code>$HOME</code>/<code>/run</code>,
                 cleared env, public GPG only, then archive audit before <code>pacman -U</code>.
@@ -139,11 +153,16 @@
                 Недовірені фази в bubblewrap — без справжнього <code>$HOME</code>/<code>/run</code>,
                 очищене env, лише public GPG, потім аудит архіву перед <code>pacman -U</code>.
               </p>
+<p class="lang-block" data-lang-block="ru" hidden>
+                Ненадёжные фазы под bubblewrap — без настоящего <code>$HOME</code>/<code>/run</code>,
+                очищенное окружение, только публичные GPG-ключи, затем аудит архива перед <code>pacman -U</code>.
+              </p>
             </article>
             <article class="feature-card purple">
               <span class="tag tag-purple">Sources</span>
               <h3 class="lang-block" data-lang-block="en">Repos · AUR · ABS</h3>
               <h3 class="lang-block" data-lang-block="ua" hidden>Repos · AUR · ABS</h3>
+<h3 class="lang-block" data-lang-block="ru" hidden>Repos · AUR · ABS</h3>
               <p class="lang-block" data-lang-block="en">
                 Official packages through pacman, AUR via git + RPC,
                 ABS via <code>pkgctl</code> — same scanner and sandbox for all three.
@@ -151,6 +170,10 @@
               <p class="lang-block" data-lang-block="ua" hidden>
                 Офіційні пакунки через pacman, AUR через git + RPC,
                 ABS через <code>pkgctl</code> — той самий сканер і пісочниця.
+              </p>
+<p class="lang-block" data-lang-block="ru" hidden>
+                Официальные пакеты через pacman, AUR через git + RPC,
+                ABS через <code>pkgctl</code> — один сканер и одна песочница для всех трёх.
               </p>
             </article>
             <article class="feature-card red">
@@ -164,11 +187,16 @@
                 Постійний список «ніколи не ставити» — навіть як транзитна AUR-залежність.
                 Окремо від одноразового <code>--exclude</code>.
               </p>
+<p class="lang-block" data-lang-block="ru" hidden>
+                Постоянный список «никогда не ставить» — даже как транзитивную зависимость AUR.
+                Отдельно от разового <code>--exclude</code>.
+              </p>
             </article>
             <article class="feature-card blue">
               <span class="tag tag-blue">Maintenance</span>
               <h3 class="lang-block" data-lang-block="en">Revdep &amp; devel</h3>
               <h3 class="lang-block" data-lang-block="ua" hidden>Revdep і devel</h3>
+<h3 class="lang-block" data-lang-block="ru" hidden>Revdep и devel</h3>
               <p class="lang-block" data-lang-block="en">
                 <code>--revdep-rebuild</code> finds broken library links;
                 <code>--devel</code> rebuilds <code>-git</code> packages when upstream moves on.
@@ -176,6 +204,10 @@
               <p class="lang-block" data-lang-block="ua" hidden>
                 <code>--revdep-rebuild</code> знаходить биті лінки бібліотек;
                 <code>--devel</code> перезбирає <code>-git</code>, коли upstream рухається далі.
+              </p>
+<p class="lang-block" data-lang-block="ru" hidden>
+                <code>--revdep-rebuild</code> находит битые ссылки на библиотеки;
+                <code>--devel</code> пересобирает пакеты <code>-git</code>, когда upstream ушёл вперёд.
               </p>
             </article>
           </div>
@@ -191,21 +223,25 @@
             <li>
               <span class="lang-block" data-lang-block="en">Install a package — repos first, AUR if needed:</span>
               <span class="lang-block" data-lang-block="ua" hidden>Встановити пакунок — спочатку репо, інакше AUR:</span>
+<span class="lang-block" data-lang-block="ru" hidden>Установить пакет — сначала репозитории, при необходимости AUR:</span>
               <pre><code>emerge neovim</code></pre>
             </li>
             <li>
               <span class="lang-block" data-lang-block="en">Force AUR, review the PKGBUILD, confirm before the build:</span>
               <span class="lang-block" data-lang-block="ua" hidden>Лише AUR, переглянути PKGBUILD, підтвердити перед збіркою:</span>
+<span class="lang-block" data-lang-block="ru" hidden>Только AUR, просмотр PKGBUILD, подтверждение перед сборкой:</span>
               <pre><code>emerge neovim-git --aur --pkgbuild-view -a</code></pre>
             </li>
             <li>
               <span class="lang-block" data-lang-block="en">Full system upgrade (repos + AUR):</span>
               <span class="lang-block" data-lang-block="ua" hidden>Повне оновлення системи (репо + AUR):</span>
+<span class="lang-block" data-lang-block="ru" hidden>Полное обновление системы (репозитории + AUR):</span>
               <pre><code>emerge -u @world</code></pre>
             </li>
             <li>
               <span class="lang-block" data-lang-block="en">Bring the machine in line with your <code>world</code> file:</span>
               <span class="lang-block" data-lang-block="ua" hidden>Підтягнути систему під файл <code>world</code>:</span>
+<span class="lang-block" data-lang-block="ru" hidden>Привести машину в соответствие с файлом <code>world</code>:</span>
               <pre><code>emerge @world</code></pre>
             </li>
           </ol>
@@ -269,6 +305,33 @@ aur/protonup-qt
 emerge @game-kit @dev-tools neovim
 emerge --list-sets</code></pre>
           </div>
+<div class="lang-block" data-lang-block="ru" hidden>
+            <p>
+              Путь: <code>/etc/portage/world</code>. Каждый явно установленный пакет
+              записывается автоматически и убирается при unmerge. Можно править вручную —
+              один атом на строку, опциональный префикс репозитория:
+            </p>
+            <pre><code>extra/firefox
+aur/ayugram-desktop-bin
+core/nano
+abs/nano-custom</code></pre>
+            <h3>Два смысла <code>@world</code></h3>
+            <ul>
+              <li><strong><code>emerge @world</code></strong> (без <code>-u</code>) — <em>provision</em>: установить то, что есть в world, но ещё не на системе.</li>
+              <li><strong><code>emerge -u</code></strong> / <code>emerge -u @world</code> — <em>upgrade</em>: обновить всё уже установленное. World не читает.</li>
+              <li><strong><code>emerge --sync</code></strong> — только обновление баз.</li>
+            </ul>
+            <h3>Пользовательские наборы</h3>
+            <p>Файлы в <code>/etc/portage/sets/&lt;name&gt;.set</code> вызываются как <code>@&lt;name&gt;</code>:</p>
+            <pre class="blue"><code># /etc/portage/sets/game-kit.set
+steam
+lutris
+gamemode
+aur/protonup-qt
+
+emerge @game-kit @dev-tools neovim
+emerge --list-sets</code></pre>
+          </div>
         </section>
 
         <section id="config">
@@ -312,6 +375,27 @@ BUILDENV=(!distcc color check !sign)</code></pre>
               <code>emerge --info</code> показує, що прочитано, і фактичні розкриті значення.
             </p>
           </div>
+<div class="lang-block" data-lang-block="ru" hidden>
+            <p>
+              <code>/etc/portage/make.conf</code> (и
+              <code>~/.config/emerge/make.conf</code>) — собственный конфиг aura-emerge:
+              флаги по умолчанию и переопределения окружения сборки, применяемые через
+              сгенерированный makepkg.conf (без правки системного файла).
+            </p>
+            <pre><code># Флаги, подставляемые в каждый запуск
+EMERGE_DEFAULT_OPTS="--jobsr=8 --tree --deep"
+
+# Цвета строк статуса
+COLORS="ok=#FFB3AE warn=#E7BDB9 error=#FDB1AC info=#E7BDB9 special=#cba6f7"
+
+CFLAGS="-march=native -O2 -pipe"
+MAKEFLAGS="-j$(nproc)"
+OPTIONS=(strip docs !debug lto)</code></pre>
+            <p>
+              См. также <code>package.mask</code>, <code>package.env</code> и
+              <a href="docs.html">документацию</a>.
+            </p>
+          </div>
         </section>
 
         <section id="usage">
@@ -320,46 +404,57 @@ BUILDENV=(!distcc color check !sign)</code></pre>
             <table>
               <thead>
                 <tr>
-                  <th><span class="lang-block" data-lang-block="en">Command</span><span class="lang-block" data-lang-block="ua" hidden>Команда</span></th>
-                  <th><span class="lang-block" data-lang-block="en">What it does</span><span class="lang-block" data-lang-block="ua" hidden>Що робить</span></th>
+                  <th><span class="lang-block" data-lang-block="en">Command</span><span class="lang-block" data-lang-block="ua" hidden>Команда</span>
+<span class="lang-block" data-lang-block="ru" hidden>Команда</span></th>
+                  <th><span class="lang-block" data-lang-block="en">What it does</span><span class="lang-block" data-lang-block="ua" hidden>Що робить</span>
+<span class="lang-block" data-lang-block="ru" hidden>Что делает</span></th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
                   <td><code>emerge pkg</code></td>
-                  <td><span class="lang-block" data-lang-block="en">Repos first, AUR if the package is not there</span><span class="lang-block" data-lang-block="ua" hidden>Спочатку офіційні репо, якщо немає — AUR</span></td>
+                  <td><span class="lang-block" data-lang-block="en">Repos first, AUR if the package is not there</span><span class="lang-block" data-lang-block="ua" hidden>Спочатку офіційні репо, якщо немає — AUR</span>
+<span class="lang-block" data-lang-block="ru" hidden>Сначала репозитории, AUR если пакета нет</span></td>
                 </tr>
                 <tr>
                   <td><code>emerge pkg --aur</code></td>
-                  <td><span class="lang-block" data-lang-block="en">AUR only, with AUR deps resolved recursively</span><span class="lang-block" data-lang-block="ua" hidden>Лише AUR, залежності теж з AUR</span></td>
+                  <td><span class="lang-block" data-lang-block="en">AUR only, with AUR deps resolved recursively</span><span class="lang-block" data-lang-block="ua" hidden>Лише AUR, залежності теж з AUR</span>
+<span class="lang-block" data-lang-block="ru" hidden>Только AUR, зависимости из AUR рекурсивно</span></td>
                 </tr>
                 <tr>
                   <td><code>emerge pkg --abs</code></td>
-                  <td><span class="lang-block" data-lang-block="en">Build from ABS inside the sandbox</span><span class="lang-block" data-lang-block="ua" hidden>Збірка з ABS у пісочниці</span></td>
+                  <td><span class="lang-block" data-lang-block="en">Build from ABS inside the sandbox</span><span class="lang-block" data-lang-block="ua" hidden>Збірка з ABS у пісочниці</span>
+<span class="lang-block" data-lang-block="ru" hidden>Сборка из ABS в песочнице</span></td>
                 </tr>
                 <tr>
                   <td><code>emerge -apt pkg --aur</code></td>
-                  <td><span class="lang-block" data-lang-block="en">Ask, pretend, show the dependency tree</span><span class="lang-block" data-lang-block="ua" hidden>Запит, pretend і дерево залежностей</span></td>
+                  <td><span class="lang-block" data-lang-block="en">Ask, pretend, show the dependency tree</span><span class="lang-block" data-lang-block="ua" hidden>Запит, pretend і дерево залежностей</span>
+<span class="lang-block" data-lang-block="ru" hidden>Спросить, пробный прогон, дерево зависимостей</span></td>
                 </tr>
                 <tr>
                   <td><code>emerge -u --devel</code></td>
-                  <td><span class="lang-block" data-lang-block="en">Upgrade, and rebuild <code>-git</code> packages whose upstream moved</span><span class="lang-block" data-lang-block="ua" hidden>Оновлення + перезбірка <code>-git</code>, у яких зрушив upstream</span></td>
+                  <td><span class="lang-block" data-lang-block="en">Upgrade, and rebuild <code>-git</code> packages whose upstream moved</span><span class="lang-block" data-lang-block="ua" hidden>Оновлення + перезбірка <code>-git</code>, у яких зрушив upstream</span>
+<span class="lang-block" data-lang-block="ru" hidden>Обновление и пересборка <code>-git</code>, чей upstream ушёл вперёд</span></td>
                 </tr>
                 <tr>
                   <td><code>emerge --scan pkg --aur</code></td>
-                  <td><span class="lang-block" data-lang-block="en">Scan the PKGBUILD only — no build</span><span class="lang-block" data-lang-block="ua" hidden>Лише аудит PKGBUILD, без збірки</span></td>
+                  <td><span class="lang-block" data-lang-block="en">Scan the PKGBUILD only — no build</span><span class="lang-block" data-lang-block="ua" hidden>Лише аудит PKGBUILD, без збірки</span>
+<span class="lang-block" data-lang-block="ru" hidden>Только сканирование PKGBUILD — без сборки</span></td>
                 </tr>
                 <tr>
                   <td><code>emerge --revdep-rebuild</code></td>
-                  <td><span class="lang-block" data-lang-block="en">Find binaries with broken library links and fix them</span><span class="lang-block" data-lang-block="ua" hidden>Знайти бінарники з битими лінками бібліотек і полагодити</span></td>
+                  <td><span class="lang-block" data-lang-block="en">Find binaries with broken library links and fix them</span><span class="lang-block" data-lang-block="ua" hidden>Знайти бінарники з битими лінками бібліотек і полагодити</span>
+<span class="lang-block" data-lang-block="ru" hidden>Найти бинарники с битыми ссылками на библиотеки и починить</span></td>
                 </tr>
                 <tr>
                   <td><code>emerge --news</code></td>
-                  <td><span class="lang-block" data-lang-block="en">Arch Linux news</span><span class="lang-block" data-lang-block="ua" hidden>Новини Arch Linux</span></td>
+                  <td><span class="lang-block" data-lang-block="en">Arch Linux news</span><span class="lang-block" data-lang-block="ua" hidden>Новини Arch Linux</span>
+<span class="lang-block" data-lang-block="ru" hidden>Новости Arch Linux</span></td>
                 </tr>
                 <tr>
                   <td><code>emerge -c</code> / <code>-C pkg</code></td>
-                  <td><span class="lang-block" data-lang-block="en">Depclean / unmerge</span><span class="lang-block" data-lang-block="ua" hidden>Depclean / unmerge</span></td>
+                  <td><span class="lang-block" data-lang-block="en">Depclean / unmerge</span><span class="lang-block" data-lang-block="ua" hidden>Depclean / unmerge</span>
+<span class="lang-block" data-lang-block="ru" hidden>Depclean / unmerge</span></td>
                 </tr>
               </tbody>
             </table>
@@ -370,6 +465,7 @@ BUILDENV=(!distcc color check !sign)</code></pre>
           <p class="lang-block" data-lang-block="ua" hidden>
             Повний список прапорів: <a href="flags.html">сторінка Прапори</a>, <code>emerge --help</code> або man <code>emerge(1)</code>.
           </p>
+<p class="lang-block" data-lang-block="ru" hidden>Полный список флагов: <a href="flags.html">страница Flags</a>, <code>emerge --help</code> или сгенерированная man-страница <code>emerge(1)</code>.</p>
         </section>
 
         <div class="sep"></div>
@@ -422,6 +518,29 @@ BUILDENV=(!distcc color check !sign)</code></pre>
               (setuid, <code>.INSTALL</code>, alpm hooks, systemd, sudoers, …).
             </p>
           </div>
+<div class="lang-block" data-lang-block="ru" hidden>
+            <p>
+              Перед каждой установкой из AUR «сырой» PKGBUILD (и любой
+              хук <code>.install</code>) загружается с cgit и сканируется в два слоя:
+            </p>
+            <ol>
+              <li>
+                <strong>AST</strong> (<code>tree-sitter-bash</code>) —
+                <code>curl|sh</code>, base64/xxd-пайпы, process substitution,
+                <code>eval "$(curl …)"</code>, sudo/pkexec/doas,
+                inline-exec python/perl/ruby/node/lua, top-level command substitution и другое.
+              </li>
+              <li>
+                <strong>Строковые эвристики</strong> —
+                chmod 777, «сырые» IP, чужие менеджеры пакетов, paste-сайты,
+                <code>.onion</code>, anti-sandbox пробы, известные IOC кампаний.
+              </li>
+            </ol>
+            <p>
+              Собранные <code>*.pkg.tar.*</code> проверяются перед <code>pacman -U</code>
+              (setuid, <code>.INSTALL</code>, alpm-хуки, systemd, sudoers, …).
+            </p>
+          </div>
           <div class="callout callout-stripe red">
             <div class="callout-title" data-i18n="not_hard_block">Not a hard block</div>
             <span data-i18n="not_hard_block_body">Findings are reported with file/line and a cgit link. You get Continue anyway? [y/N] — the decision stays with you.</span>
@@ -465,6 +584,23 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
               Встановлення залежностей і фінальний <code>pacman -U</code> — <strong>поза</strong> пісочницею.
             </p>
           </div>
+<div class="lang-block" data-lang-block="ru" hidden>
+            <p>
+              Сборки AUR и ABS выполняют <code>pkgver</code> / <code>prepare</code> /
+              <code>build</code> / <code>check</code> / <code>package</code> внутри
+              namespace bubblewrap, если установлен <code>bubblewrap</code>:
+            </p>
+            <ul>
+              <li>tmpfs поверх <code>/home</code> и <code>/run</code> — без настоящего home, без session bus/агентов</li>
+              <li>Очищенное окружение; только публичные GPG; PKGBUILD/<code>*.install</code> только для чтения</li>
+              <li>Запись только в каталог сборки; сеть опционально через <code>--unshare-net-build</code></li>
+              <li>Fakeroot-shim под <code>/var/tmp</code>; аудит архива перед <code>pacman -U</code></li>
+            </ul>
+            <p>
+              Установка зависимостей и финальный <code>pacman -U</code> остаются <strong>вне</strong>
+              песочницы — они не выполняют код из PKGBUILD.
+            </p>
+          </div>
           <pre class="blue"><code>emerge pkg --aur --unshare-net-build   # no net during build()
 emerge pkg --aur --no-sandbox          # plain makepkg (with warning)</code></pre>
         </section>
@@ -497,6 +633,20 @@ extra/nano                     # конкретне репо/ім'я</code></pre
             <p>
               Замаскований пакунок — жорстка зупинка. Для одноразового пропуску —
               <code>--exclude</code>.
+            </p>
+          </div>
+<div class="lang-block" data-lang-block="ru" hidden>
+            <p>
+              <code>/etc/portage/package.mask</code> (файл или каталог файлов) —
+              пакеты, которые эта машина никогда не ставит, даже как транзитивную зависимость:
+            </p>
+            <pre><code>ayugram-desktop-bin            # любой источник
+aur/*-bin                      # никогда AUR -bin пакеты
+*-git                          # без devel-пакетов на этой машине
+extra/nano                     # конкретный репозиторий/имя</code></pre>
+            <p>
+              Замаскированный пакет жёстко останавливает запрос. Для пропуска на один запуск
+              используйте <code>--exclude</code>.
             </p>
           </div>
         </section>

@@ -1,4 +1,4 @@
-/* Aura-Emerge site — mobile nav, tabs, scroll active section, EN|UA i18n */
+/* Aura-Emerge site — mobile nav, tabs, scroll active section, EN|UA|RU i18n */
 
 (function () {
   "use strict";
@@ -8,7 +8,7 @@
   function getLang() {
     try {
       var v = localStorage.getItem(LANG_KEY);
-      if (v === "ua" || v === "en") return v;
+      if (v === "ua" || v === "en" || v === "ru") return v;
     } catch (_) {}
     return "en";
   }
@@ -21,7 +21,7 @@
   }
 
   function applyLang(lang) {
-    document.documentElement.lang = lang === "ua" ? "uk" : "en";
+    document.documentElement.lang = lang === "ua" ? "uk" : (lang === "ru" ? "ru" : "en");
     document.documentElement.setAttribute("data-lang", lang);
 
     document.querySelectorAll("[data-i18n]").forEach(function (el) {
@@ -72,81 +72,88 @@
 
   /* ── shared chrome strings ─────────────────────────────────────── */
   var I18N = {
-    nav_overview: { en: "Overview", ua: "Огляд" },
-    nav_features: { en: "Features", ua: "Можливості" },
-    nav_install: { en: "Installation", ua: "Встановлення" },
-    nav_quickstart: { en: "Quick start", ua: "Швидкий старт" },
-    nav_world: { en: "World & sets", ua: "World і набори" },
-    nav_config: { en: "make.conf", ua: "make.conf" },
-    nav_usage: { en: "Usage", ua: "Використання" },
-    nav_scanner: { en: "PKGBUILD scanner", ua: "Сканер PKGBUILD" },
-    nav_sandbox: { en: "bwrap sandbox", ua: "Пісочниця bwrap" },
-    nav_mask: { en: "package.mask", ua: "package.mask" },
-    nav_links: { en: "Links", ua: "Посилання" },
-    nav_docs: { en: "Docs", ua: "Документація" },
-    nav_flags: { en: "Flags", ua: "Прапори" },
-    nav_start: { en: "Start", ua: "Старт" },
-    nav_core: { en: "Core", ua: "Ядро" },
-    nav_security: { en: "Security", ua: "Безпека" },
-    nav_more: { en: "More", ua: "Більше" },
-    nav_pages: { en: "Pages", ua: "Сторінки" },
-    btn_github: { en: "GitHub", ua: "GitHub" },
-    btn_install: { en: "Install", ua: "Встановити" },
-    btn_get_started: { en: "Get started", ua: "Почати" },
-    btn_view_github: { en: "View on GitHub", ua: "На GitHub" },
-    btn_aur: { en: "AUR package", ua: "Пакунок AUR" },
-    menu_open: { en: "Open menu", ua: "Відкрити меню" },
-    hero_badge: { en: "Arch · Portage-style · Security-first", ua: "Arch · у стилі Portage · безпека перш за все" },
+    nav_overview: { en: "Overview", ua: "Огляд", ru: "Обзор" },
+    nav_features: { en: "Features", ua: "Можливості", ru: "Возможности" },
+    nav_install: { en: "Installation", ua: "Встановлення", ru: "Установка" },
+    nav_quickstart: { en: "Quick start", ua: "Швидкий старт", ru: "Быстрый старт" },
+    nav_world: { en: "World & sets", ua: "World і набори", ru: "World и наборы" },
+    nav_config: { en: "make.conf", ua: "make.conf", ru: "make.conf" },
+    nav_usage: { en: "Usage", ua: "Використання", ru: "Использование" },
+    nav_scanner: { en: "PKGBUILD scanner", ua: "Сканер PKGBUILD", ru: "Сканер PKGBUILD" },
+    nav_sandbox: { en: "bwrap sandbox", ua: "Пісочниця bwrap", ru: "Песочница bwrap" },
+    nav_mask: { en: "package.mask", ua: "package.mask", ru: "package.mask" },
+    nav_links: { en: "Links", ua: "Посилання", ru: "Ссылки" },
+    nav_docs: { en: "Docs", ua: "Документація", ru: "Документация" },
+    nav_flags: { en: "Flags", ua: "Прапори", ru: "Флаги" },
+    nav_start: { en: "Start", ua: "Старт", ru: "Старт" },
+    nav_core: { en: "Core", ua: "Ядро", ru: "Ядро" },
+    nav_security: { en: "Security", ua: "Безпека", ru: "Безопасность" },
+    nav_more: { en: "More", ua: "Більше", ru: "Ещё" },
+    nav_pages: { en: "Pages", ua: "Сторінки", ru: "Страницы" },
+    btn_github: { en: "GitHub", ua: "GitHub", ru: "GitHub" },
+    btn_install: { en: "Install", ua: "Встановити", ru: "Установить" },
+    btn_get_started: { en: "Get started", ua: "Почати", ru: "Начать" },
+    btn_view_github: { en: "View on GitHub", ua: "На GitHub", ru: "На GitHub" },
+    btn_aur: { en: "AUR package", ua: "Пакунок AUR", ru: "Пакет AUR" },
+    menu_open: { en: "Open menu", ua: "Відкрити меню", ru: "Открыть меню" },
+    hero_badge: { en: "Arch · Portage-style · Security-first", ua: "Arch · у стилі Portage · безпека перш за все", ru: "Arch · в стиле Portage · безопасность прежде всего" },
     hero_lead: {
       en: "Gentoo-style emerge for Arch — packages from official repos, the AUR, and ABS. PKGBUILDs get scanned for supply-chain tricks; untrusted build steps run inside a bwrap sandbox.",
-      ua: "Emerge у стилі Gentoo для Arch — пакунки з офіційних репо, AUR і ABS. PKGBUILD скануються на трюки ланцюга постачання; недовірені кроки збірки йдуть у пісочниці bwrap."
+      ua: "Emerge у стилі Gentoo для Arch — пакунки з офіційних репо, AUR і ABS. PKGBUILD скануються на трюки ланцюга постачання; недовірені кроки збірки йдуть у пісочниці bwrap.",
+      ru: "Emerge в стиле Gentoo для Arch — пакеты из официальных репозиториев, AUR и ABS. PKGBUILD сканируются на приёмы атак на цепочку поставок; ненадёжные шаги сборки выполняются в песочнице bwrap."
     },
-    features_title: { en: "Features", ua: "Можливості" },
+    features_title: { en: "Features", ua: "Можливості", ru: "Возможности" },
     features_intro: {
       en: "Everything you install lands in a world file — install once, keep track forever. Official packages go through pacman; AUR and ABS are built by emerge itself.",
-      ua: "Усе, що ставите, потрапляє у файл world — один раз встановив, далі відстежується. Офіційні пакунки через pacman; AUR і ABS збирає сам emerge."
+      ua: "Усе, що ставите, потрапляє у файл world — один раз встановив, далі відстежується. Офіційні пакунки через pacman; AUR і ABS збирає сам emerge.",
+      ru: "Всё, что вы ставите, попадает в файл world — установил один раз, дальше отслеживается. Официальные пакеты идут через pacman; AUR и ABS собирает сам emerge."
     },
-    footer_source: { en: "Source", ua: "Код" },
-    footer_pages: { en: "GitHub Pages", ua: "GitHub Pages" },
+    footer_source: { en: "Source", ua: "Код", ru: "Исходники" },
+    footer_pages: { en: "GitHub Pages", ua: "GitHub Pages", ru: "GitHub Pages" },
     not_aura: {
       en: "fosskers/aura? No — after v2.1, Aura is no longer part of this project. Aura-Emerge is a separate, security-first reimplementation.",
-      ua: "fosskers/aura? Ні — після v2.1 Aura більше не є частиною цього проєкту. Aura-Emerge — окрема реалізація з пріоритетом безпеки."
+      ua: "fosskers/aura? Ні — після v2.1 Aura більше не є частиною цього проєкту. Aura-Emerge — окрема реалізація з пріоритетом безпеки.",
+      ru: "fosskers/aura? Нет — после v2.1 Aura больше не часть этого проекта. Aura-Emerge — отдельная реализация с приоритетом безопасности."
     },
-    docs_title: { en: "Documentation", ua: "Документація" },
+    docs_title: { en: "Documentation", ua: "Документація", ru: "Документация" },
     docs_lead: {
       en: "Full reference for world, make.conf, mask, sandbox, scanner, and everyday usage.",
-      ua: "Повний довідник: world, make.conf, mask, пісочниця, сканер і повсякденне використання."
+      ua: "Повний довідник: world, make.conf, mask, пісочниця, сканер і повсякденне використання.",
+      ru: "Конфигурация, world, наборы, сканер, песочница и остальное."
     },
-    flags_title: { en: "CLI flags", ua: "Прапори CLI" },
+    flags_title: { en: "CLI flags", ua: "Прапори CLI", ru: "Флаги" },
     flags_lead: {
       en: "Every flag accepted by emerge — actions, modifiers, Gentoo-compat no-ops, and generated completions/man page.",
-      ua: "Усі прапори, які приймає emerge — дії, модифікатори, сумісність з Gentoo і згенеровані completions/man."
+      ua: "Усі прапори, які приймає emerge — дії, модифікатори, сумісність з Gentoo і згенеровані completions/man.",
+      ru: "Полный список флагов командной строки."
     },
-    tab_aur: { en: "AUR", ua: "AUR" },
-    tab_github: { en: "GitHub (Unstable)", ua: "GitHub (нестабільна)" },
-    section_install: { en: "Installation", ua: "Встановлення" },
-    section_quickstart: { en: "Quick start", ua: "Швидкий старт" },
-    section_world: { en: "World & sets", ua: "World і набори" },
-    section_config: { en: "make.conf", ua: "make.conf" },
-    section_usage: { en: "Usage highlights", ua: "Основне використання" },
-    section_scanner: { en: "Security: PKGBUILD scanner", ua: "Безпека: сканер PKGBUILD" },
-    section_sandbox: { en: "bwrap sandbox", ua: "Пісочниця bwrap" },
-    section_mask: { en: "package.mask", ua: "package.mask" },
-    section_links: { en: "Links", ua: "Посилання" },
-    binary_name: { en: "Binary name", ua: "Назва виконуваного файлу" },
+    tab_aur: { en: "AUR", ua: "AUR", ru: "AUR" },
+    tab_github: { en: "GitHub (Unstable)", ua: "GitHub (нестабільна)", ru: "GitHub" },
+    section_install: { en: "Installation", ua: "Встановлення", ru: "Установка" },
+    section_quickstart: { en: "Quick start", ua: "Швидкий старт", ru: "Быстрый старт" },
+    section_world: { en: "World & sets", ua: "World і набори", ru: "World и наборы" },
+    section_config: { en: "make.conf", ua: "make.conf", ru: "make.conf" },
+    section_usage: { en: "Usage highlights", ua: "Основне використання", ru: "Использование" },
+    section_scanner: { en: "Security: PKGBUILD scanner", ua: "Безпека: сканер PKGBUILD", ru: "Сканер PKGBUILD" },
+    section_sandbox: { en: "bwrap sandbox", ua: "Пісочниця bwrap", ru: "Песочница bwrap" },
+    section_mask: { en: "package.mask", ua: "package.mask", ru: "package.mask" },
+    section_links: { en: "Links", ua: "Посилання", ru: "Ссылки" },
+    binary_name: { en: "Binary name", ua: "Назва виконуваного файлу", ru: "Имя бинарника" },
     binary_name_body: {
       en: "The installed binary is <code>emerge</code> (with a <code>portageq</code> symlink). Completions and the man page are generated from the same CLI definition.",
-      ua: "Встановлюється виконуваний файл <code>emerge</code> (із символічним посиланням <code>portageq</code>). Автодоповнення та man-сторінка генеруються з того самого опису CLI."
+      ua: "Встановлюється виконуваний файл <code>emerge</code> (із символічним посиланням <code>portageq</code>). Автодоповнення та man-сторінка генеруються з того самого опису CLI.",
+      ru: "Пакет ставит <code>emerge</code> в <code>/usr/bin/emerge</code> (и <code>portageq</code>). Это намеренно: CLI совместим с привычками Gentoo."
     },
-    tab_manual: { en: "Manual", ua: "Вручну" },
-    qs_not_installed: { en: "Not installed yet?", ua: "Ще не встановили?" },
-    qs_see_install: { en: "See the installation guide.", ua: "Перегляньте інструкцію зі встановлення." },
-    deps_req: { en: "Required:", ua: "Обов'язково:" },
-    deps_opt: { en: "Optional:", ua: "Опційно:" },
-    not_hard_block: { en: "Not a hard block", ua: "Не жорстке блокування" },
+    tab_manual: { en: "Manual", ua: "Вручну", ru: "Вручную" },
+    qs_not_installed: { en: "Not installed yet?", ua: "Ще не встановили?", ru: "Ещё не установлено?" },
+    qs_see_install: { en: "See the installation guide.", ua: "Перегляньте інструкцію зі встановлення.", ru: "См. раздел «Установка»." },
+    deps_req: { en: "Required:", ua: "Обов'язково:", ru: "Зависимости" },
+    deps_opt: { en: "Optional:", ua: "Опційно:", ru: "Опционально" },
+    not_hard_block: { en: "Not a hard block", ua: "Не жорстке блокування", ru: "Не жёсткая блокировка" },
     not_hard_block_body: {
       en: "Findings are reported with file/line and a cgit link. You get Continue anyway? [y/N] — the decision stays with you.",
-      ua: "Знахідки повідомляються з файлом/рядком і посиланням на cgit. Запит Continue anyway? [y/N] — рішення залишається за вами."
+      ua: "Знахідки повідомляються з файлом/рядком і посиланням на cgit. Запит Continue anyway? [y/N] — рішення залишається за вами.",
+      ru: "Срабатывание сканера не останавливает установку жёстко: вы видите файл, строку, ссылку на cgit и вопрос «Continue anyway? [y/N]»."
     }
   };
 

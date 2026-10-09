@@ -26,6 +26,7 @@
       <div class="lang-switch" role="group" aria-label="Language">
         <button type="button" class="lang-btn active" data-lang="en" aria-pressed="true">EN</button>
         <button type="button" class="lang-btn" data-lang="ua" aria-pressed="false">UA</button>
+        <button type="button" class="lang-btn" data-lang="ru" aria-pressed="false">RU</button>
       </div>
       <a class="btn btn-ghost" href="https://github.com/Undercat037/aura-emerge" target="_blank" rel="noopener" data-i18n="btn_github">GitHub</a>
       <a class="btn btn-primary" href="#install" data-i18n="btn_install">Install</a>
@@ -92,6 +93,7 @@
             <div class="tab-panel active" data-panel="aur" role="tabpanel">
               <h3 class="lang-block" data-lang-block="en">AUR helper</h3>
               <h3 class="lang-block" data-lang-block="ua" hidden>AUR-хелпер</h3>
+<h3 class="lang-block" data-lang-block="ru" hidden>AUR-хелпер</h3>
               <pre class="blue"><code>paru -S aura-emerge
 # or
 yay -S aura-emerge</code></pre>
@@ -105,6 +107,7 @@ makepkg -si</code></pre>
             <div class="tab-panel" data-panel="github" role="tabpanel" hidden>
               <p class="lang-block" data-lang-block="en">Development builds from source. Clone, then pick a method:</p>
               <p class="lang-block" data-lang-block="ua" hidden>Розробницькі збірки з вихідного коду. Склонуйте репозиторій і оберіть спосіб встановлення:</p>
+<p class="lang-block" data-lang-block="ru" hidden>Сборка из исходников для разработки. Клонируйте репозиторий, затем выберите способ:</p>
               <pre><code>git clone https://github.com/Undercat037/aura-emerge.git
 cd aura-emerge</code></pre>
 
@@ -135,11 +138,13 @@ emerge --gen-manpage | sudo tee /usr/share/man/man1/emerge.1 &gt;/dev/null</code
 
           <h3 class="lang-block" data-lang-block="en">Dependencies</h3>
           <h3 class="lang-block" data-lang-block="ua" hidden>Залежності</h3>
+<h3 class="lang-block" data-lang-block="ru" hidden>Зависимости</h3>
           <ul>
             <li><strong data-i18n="deps_req">Required:</strong> <code>git</code></li>
             <li><strong data-i18n="deps_opt">Optional:</strong>
               <span class="lang-block" data-lang-block="en"><code>devtools</code> (<code>--abs</code>), <code>gnupg</code> (<code>--autopgp</code>), <code>bubblewrap</code> (sandbox; without it builds fall back to plain makepkg)</span>
               <span class="lang-block" data-lang-block="ua" hidden><code>devtools</code> (<code>--abs</code>), <code>gnupg</code> (<code>--autopgp</code>), <code>bubblewrap</code> (пісочниця; без нього збірка виконується звичайним makepkg)</span>
+<span class="lang-block" data-lang-block="ru" hidden><code>devtools</code> (<code>--abs</code>), <code>gnupg</code> (<code>--autopgp</code>), <code>bubblewrap</code> (песочница; без неё сборка откатывается к обычному makepkg)</span>
             </li>
           </ul>
 
@@ -199,6 +204,30 @@ Total: 8 package(s)</code></pre>
 ├── world
 ├── lastaction.state     <span class="t-dim"># emerge's own state files</span>
 └── resume.state</code></pre>
+
+            <h3>Upgrade + sync in one go</h3>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -uat @world --sync</span>
+<span class="t-ok">&gt;&gt;&gt;</span> Syncing package databases...
+<span class="t-ok">&gt;&gt;&gt;</span> core... done
+<span class="t-ok">&gt;&gt;&gt;</span> extra... done
+<span class="t-ok">&gt;&gt;&gt;</span> chaotic-aur... done
+ * IMPORTANT: 9 news item(s) need reading for repository 'arch'.
+ * Use emerge --news to view new items.
+
+Calculating dependencies ... done!
+
+<span class="t-ok">&gt;&gt;&gt;</span> Upgrading system (official repos)...
+<span class="t-ok">&gt;&gt;&gt;</span> holding back 1 package(s) (--exclude / /etc/portage/package.mask): artix-keyring
+
+<span class="t-tag">[ebuild U   ]</span> harfbuzz [14.5.1-1.1 -&gt; 14.6.0-1.1]
+<span class="t-tag">[ebuild U   ]</span> nano [9.2-1 -&gt; 9.2-1.1]
+<span class="t-tag">[ebuild U   ]</span> tailscale [1.102.4-1.1 -&gt; 1.102.5-1.1]
+
+Total: 4 official package(s) to upgrade
+<span class="t-ok">&gt;&gt;&gt;</span> No AUR packages out of date.
+Would you like to merge these packages? [Yes/No] <span class="t-in">y</span>
+<span class="t-ok">&gt;&gt;&gt;</span> Jobs: 4 of 4 complete</code></pre>
+
           </div>
           <div class="lang-block" data-lang-block="ua" hidden>
             <p>Шлях: <code>/etc/portage/world</code>. Кожен явно встановлений пакунок додається автоматично, а при видаленні (unmerge) прибирається. Файл можна редагувати вручну: один пакунок на рядок, префікс репозиторію необов'язковий.</p>
@@ -248,6 +277,103 @@ Total: 8 package(s)</code></pre>
 ├── world
 ├── lastaction.state     <span class="t-dim"># emerge's own state files</span>
 └── resume.state</code></pre>
+
+            <h3>Оновлення + sync одним запуском</h3>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -uat @world --sync</span>
+<span class="t-ok">&gt;&gt;&gt;</span> Syncing package databases...
+<span class="t-ok">&gt;&gt;&gt;</span> core... done
+<span class="t-ok">&gt;&gt;&gt;</span> extra... done
+<span class="t-ok">&gt;&gt;&gt;</span> chaotic-aur... done
+ * IMPORTANT: 9 news item(s) need reading for repository 'arch'.
+ * Use emerge --news to view new items.
+
+Calculating dependencies ... done!
+
+<span class="t-ok">&gt;&gt;&gt;</span> Upgrading system (official repos)...
+<span class="t-ok">&gt;&gt;&gt;</span> holding back 1 package(s) (--exclude / /etc/portage/package.mask): artix-keyring
+
+<span class="t-tag">[ebuild U   ]</span> harfbuzz [14.5.1-1.1 -&gt; 14.6.0-1.1]
+<span class="t-tag">[ebuild U   ]</span> nano [9.2-1 -&gt; 9.2-1.1]
+<span class="t-tag">[ebuild U   ]</span> tailscale [1.102.4-1.1 -&gt; 1.102.5-1.1]
+
+Total: 4 official package(s) to upgrade
+<span class="t-ok">&gt;&gt;&gt;</span> No AUR packages out of date.
+Would you like to merge these packages? [Yes/No] <span class="t-in">y</span>
+<span class="t-ok">&gt;&gt;&gt;</span> Jobs: 4 of 4 complete</code></pre>
+
+          </div>
+<div class="lang-block" data-lang-block="ru" hidden>
+            <p>Путь: <code>/etc/portage/world</code>. Каждый явно установленный пакет добавляется автоматически и убирается при unmerge. Можно править вручную: один пакет на строку, опциональный префикс репозитория.</p>
+            <pre><code>cachyos-extra-v3/rust-analyzer
+aur/ayugram-desktop-bin
+abs/nano-custom
+extra/firefox
+Err/local-thing</code></pre>
+            <p>Префиксы: имя любого sync-репозитория (включая сторонние), <code>aur/</code>, <code>abs/</code> или <code>Err/</code> (источник неизвестен).</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">rg keyring /etc/portage/world</span>
+cachyos/archlinux-keyring
+cachyos/cachyos-keyring
+chaotic-aur/chaotic-keyring</code></pre>
+            <h3>Два смысла <code>@world</code></h3>
+            <ul>
+              <li><strong><code>emerge @world</code></strong> (без <code>-u</code>) — <em>provision</em>: установить то, что есть в world, но ещё не на системе.</li>
+              <li><strong><code>emerge -u @world</code></strong> (или <code>emerge -u</code>) — <em>upgrade</em>: обновить всё уже установленное. World не читает.</li>
+              <li><strong><code>emerge --sync</code></strong> — только обновление баз.</li>
+            </ul>
+            <h3>Пользовательские наборы</h3>
+            <p><code>/etc/portage/sets/&lt;name&gt;.set</code> вызывается как <code>@&lt;name&gt;</code>. Один атом на строку, допускаются комментарии <code>#</code>. Наборы свободно сочетаются друг с другом и с обычными пакетами:</p>
+            <pre class="blue"><code>emerge @game-kit @dev-tools neovim
+emerge --list-sets</code></pre>
+            <p>Записи без префикса сначала ищутся в официальных репозиториях, и только при промахе — в AUR; здесь <code>ttf-comic-sans</code> приходит из AUR:</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -at @fonts</span>
+<span class="t-ok">&gt;&gt;&gt;</span> Not found in official repos: 'ttf-comic-sans'. Searching AUR...
+
+These are the packages that would be merged, in order:
+
+Calculating dependencies... done!
+
+<span class="t-tag">[ebuild  R ]</span> noto-fonts-1:2026.09.01-1
+<span class="t-tag">[ebuild  R ]</span> noto-fonts-emoji-1:2.051-1
+<span class="t-tag">[ebuild  R ]</span> ttf-material-icons-2.874-1
+<span class="t-tag">[ebuild  R ]</span> aur/ttf-comic-sans-5.14-1
+<span class="t-tag">[ebuild  R ]</span> `-- gnu-free-fonts-20120503-9
+
+Total: 8 package(s)</code></pre>
+            <p><code>--regen-world</code> / <code>--regen-sets @name</code> заново разрешают префиксы репозиториев. Добавьте <code>--regen-sort</code>, чтобы отсортировать набор по алфавиту (это убирает комментарии и группировку).</p>
+            <h3>Структура <code>/etc/portage</code></h3>
+            <pre><code>/etc/portage/
+├── make.conf
+├── env/                 <span class="t-dim"># env-файлы для package.env</span>
+├── package.env/         <span class="t-dim"># файл или каталог файлов</span>
+├── package.mask/        <span class="t-dim"># файл или каталог файлов</span>
+├── sets/                <span class="t-dim"># пользовательские наборы: &lt;name&gt;.set</span>
+├── world
+├── lastaction.state     <span class="t-dim"># служебные state-файлы emerge</span>
+└── resume.state</code></pre>
+
+            <h3>Обновление + sync одним запуском</h3>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -uat @world --sync</span>
+<span class="t-ok">&gt;&gt;&gt;</span> Syncing package databases...
+<span class="t-ok">&gt;&gt;&gt;</span> core... done
+<span class="t-ok">&gt;&gt;&gt;</span> extra... done
+<span class="t-ok">&gt;&gt;&gt;</span> chaotic-aur... done
+ * IMPORTANT: 9 news item(s) need reading for repository 'arch'.
+ * Use emerge --news to view new items.
+
+Calculating dependencies ... done!
+
+<span class="t-ok">&gt;&gt;&gt;</span> Upgrading system (official repos)...
+<span class="t-ok">&gt;&gt;&gt;</span> holding back 1 package(s) (--exclude / /etc/portage/package.mask): artix-keyring
+
+<span class="t-tag">[ebuild U   ]</span> harfbuzz [14.5.1-1.1 -&gt; 14.6.0-1.1]
+<span class="t-tag">[ebuild U   ]</span> nano [9.2-1 -&gt; 9.2-1.1]
+<span class="t-tag">[ebuild U   ]</span> tailscale [1.102.4-1.1 -&gt; 1.102.5-1.1]
+
+Total: 4 official package(s) to upgrade
+<span class="t-ok">&gt;&gt;&gt;</span> No AUR packages out of date.
+Would you like to merge these packages? [Yes/No] <span class="t-in">y</span>
+<span class="t-ok">&gt;&gt;&gt;</span> Jobs: 4 of 4 complete</code></pre>
+
           </div>
         </section>
 
@@ -256,8 +382,8 @@ Total: 8 package(s)</code></pre>
           <div class="lang-block" data-lang-block="en">
             <p><code>/etc/portage/make.conf</code> and <code>~/.config/emerge/make.conf</code> are aura-emerge's own config (not <code>makepkg.conf</code>). The system file is read first and the user file last; the last key wins.</p>
             <p>A real config from a working machine:</p>
-            <pre><code><span class="t-dim">#EMERGE_DEFAULT_OPTS=""
-#</span>
+            <pre><code>EMERGE_DEFAULT_OPTS="--jobsr=8 --tree --deep"
+COLORS="ok=#FFB3AE warn=#E7BDB9 error=#FDB1AC info=#E7BDB9 special=#cba6f7"
 CFLAGS="-march=znver3 -O2 -pipe -fno-plt -fexceptions -Wp,-D_FORTIFY_SOURCE=3 -Wformat -Werror=format-security -fstack-clash-protection -fcf-protection -fstack-protector-strong -falign-functions=32 -falign-loops=32 -ftree-vectorize -funroll-loops"
 CXXFLAGS="$CFLAGS -Wp,-D_GLIBCXX_ASSERTIONS"
 CPPFLAGS="$CFLAGS"
@@ -280,6 +406,7 @@ OPTIONS="strip docs !libtool !staticlibs emptydirs zipman purge !debug !lto"</co
             <ul>
               <li><strong>Source cache:</strong> sources are cached under <code>~/.cache/aura-emerge/sources</code>; VCS sources (<code>-git</code>/<code>-hg</code>/<code>-svn</code>) are fetched incrementally on rebuild instead of re-cloned. Set <code>SRCDEST</code> in <code>makepkg.conf</code> to change the location.</li>
               <li><strong><code>EMERGE_DEFAULT_OPTS</code></strong> is spliced into every run and accepts only an allowlist of modifier flags — not actions such as <code>--unmerge</code>.</li>
+              <li><strong><code>COLORS</code></strong> sets status-line palette: <code>role=colour</code> for <code>ok</code>, <code>warn</code>, <code>error</code>, <code>info</code>, <code>special</code> (<code>#RRGGBB</code> or named colours).</li>
               <li><strong>Conflicts:</strong> contradicting pairs (<code>--aur</code>/<code>--abs</code>, <code>--no-sandbox</code>/<code>--unshare-net-build</code>, …) are rejected, or the config side is dropped when the command line is more specific.</li>
               <li><code>--ignore-default-opts</code> skips the defaults for one run; <code>emerge --info</code> shows the loaded files and the expanded values.</li>
             </ul>
@@ -287,8 +414,8 @@ OPTIONS="strip docs !libtool !staticlibs emptydirs zipman purge !debug !lto"</co
           <div class="lang-block" data-lang-block="ua" hidden>
             <p><code>/etc/portage/make.conf</code> і <code>~/.config/emerge/make.conf</code> — власний конфіг aura-emerge (а не <code>makepkg.conf</code>). Системний файл читається першим, користувацький — останнім; переможе останній ключ.</p>
             <p>Справжній конфіг з робочої машини:</p>
-            <pre><code><span class="t-dim">#EMERGE_DEFAULT_OPTS=""
-#</span>
+            <pre><code>EMERGE_DEFAULT_OPTS="--jobsr=8 --tree --deep"
+COLORS="ok=#FFB3AE warn=#E7BDB9 error=#FDB1AC info=#E7BDB9 special=#cba6f7"
 CFLAGS="-march=znver3 -O2 -pipe -fno-plt -fexceptions -Wp,-D_FORTIFY_SOURCE=3 -Wformat -Werror=format-security -fstack-clash-protection -fcf-protection -fstack-protector-strong -falign-functions=32 -falign-loops=32 -ftree-vectorize -funroll-loops"
 CXXFLAGS="$CFLAGS -Wp,-D_GLIBCXX_ASSERTIONS"
 CPPFLAGS="$CFLAGS"
@@ -311,8 +438,41 @@ OPTIONS="strip docs !libtool !staticlibs emptydirs zipman purge !debug !lto"</co
             <ul>
               <li><strong>Кеш джерел:</strong> джерела кешуються в <code>~/.cache/aura-emerge/sources</code>; VCS-джерела (<code>-git</code>/<code>-hg</code>/<code>-svn</code>) під час перезбирання підтягуються інкрементально, а не клонуються заново. Змінити розташування можна через <code>SRCDEST</code> у <code>makepkg.conf</code>.</li>
               <li><strong><code>EMERGE_DEFAULT_OPTS</code></strong> підставляється в кожен запуск і приймає лише дозволений список модифікаторів — не дії на кшталт <code>--unmerge</code>.</li>
+              <li><strong><code>COLORS</code></strong> задає палітру рядків статусу: <code>role=colour</code> для <code>ok</code>, <code>warn</code>, <code>error</code>, <code>info</code>, <code>special</code> (<code>#RRGGBB</code> або іменовані кольори).</li>
               <li><strong>Конфлікти:</strong> суперечливі пари (<code>--aur</code>/<code>--abs</code>, <code>--no-sandbox</code>/<code>--unshare-net-build</code>, …) відхиляються, а якщо командний рядок конкретніший — частина з конфігу відкидається.</li>
               <li><code>--ignore-default-opts</code> пропускає типові значення для одного запуску; <code>emerge --info</code> показує прочитані файли та розкриті значення.</li>
+            </ul>
+          </div>
+<div class="lang-block" data-lang-block="ru" hidden>
+            <p><code>/etc/portage/make.conf</code> и <code>~/.config/emerge/make.conf</code> — собственный конфиг aura-emerge (не <code>makepkg.conf</code>). Системный файл читается первым, пользовательский — последним; побеждает последний ключ.</p>
+            <p>Реальный конфиг с рабочей машины:</p>
+            <pre><code>EMERGE_DEFAULT_OPTS="--jobsr=8 --tree --deep"
+COLORS="ok=#FFB3AE warn=#E7BDB9 error=#FDB1AC info=#E7BDB9 special=#cba6f7"
+CFLAGS="-march=znver3 -O2 -pipe -fno-plt -fexceptions -Wp,-D_FORTIFY_SOURCE=3 -Wformat -Werror=format-security -fstack-clash-protection -fcf-protection -fstack-protector-strong -falign-functions=32 -falign-loops=32 -ftree-vectorize -funroll-loops"
+CXXFLAGS="$CFLAGS -Wp,-D_GLIBCXX_ASSERTIONS"
+CPPFLAGS="$CFLAGS"
+
+RUSTFLAGS="-C target-cpu=znver3 -C opt-level=3 -C codegen-units=1 -C target-feature=+avx2,+fma,+bmi1,+bmi2,+aes,+sha,+sse4.2,+popcnt,+vaes,+vpclmulqdq,+movbe,+f16c"
+
+LDFLAGS="-Wl,-O1 -Wl,--sort-common -Wl,--no-as-needed -Wl,-z,relro -Wl,-z,now -Wl,-z,pack-relative-relocs"
+
+MAKEFLAGS="-j16"
+NINJAFLAGS="-j16"
+
+BUILDENV="!distcc color check !sign"
+OPTIONS="strip docs !libtool !staticlibs emptydirs zipman purge !debug !lto"</code></pre>
+            <ul>
+              <li><strong>Синтаксис:</strong> плоские shell-присваивания — <code>KEY="value"</code>, <code>KEY='literal'</code>, <code>KEY=(a b c)</code>. Строки с <code>#</code> — комментарии. Значения раскрываются оболочкой, поэтому работают <code>-j$(nproc)</code> и <code>CXXFLAGS="$CFLAGS"</code>.</li>
+              <li><strong>Флаги сборки</strong> применяются через сгенерированный makepkg.conf, передаваемый в <code>makepkg --config</code>. Каждая сборка пишет об этом:</li>
+            </ul>
+            <pre class="term term-blue"><code><span class="t-ok">&gt;&gt;&gt;</span> applying build flags from /etc/portage/make.conf
+<span class="t-ok">&gt;&gt;&gt;</span> caching sources under /home/user/.cache/aura-emerge/sources -- VCS sources (-git/-hg/-svn) fetch incrementally on rebuild instead of re-cloning; pass SRCDEST in makepkg.conf to change this.</code></pre>
+            <ul>
+              <li><strong>Кэш исходников:</strong> исходники кэшируются в <code>~/.cache/aura-emerge/sources</code>; VCS-источники (<code>-git</code>/<code>-hg</code>/<code>-svn</code>) подтягиваются инкрементально при пересборке, а не клонируются заново. Расположение меняется через <code>SRCDEST</code> в <code>makepkg.conf</code>.</li>
+              <li><strong><code>EMERGE_DEFAULT_OPTS</code></strong> подставляется в каждый запуск и принимает только разрешённый список модификаторов — не действия вроде <code>--unmerge</code>.</li>
+              <li><strong><code>COLORS</code></strong> задаёт палитру строк статуса: <code>role=colour</code> для <code>ok</code>, <code>warn</code>, <code>error</code>, <code>info</code>, <code>special</code> (<code>#RRGGBB</code> или именованные цвета).</li>
+              <li><strong>Конфликты:</strong> противоречащие пары (<code>--aur</code>/<code>--abs</code>, <code>--no-sandbox</code>/<code>--unshare-net-build</code>, …) отклоняются, либо сторона конфига сбрасывается, когда командная строка конкретнее.</li>
+              <li><code>--ignore-default-opts</code> пропускает дефолты на один запуск; <code>emerge --info</code> показывает загруженные файлы и раскрытые значения.</li>
             </ul>
           </div>
         </section>
@@ -389,6 +549,19 @@ $ emerge emacs
             <p>Якщо файл маски є символічним посиланням, його не читають, а видають попередження.</p>
             <p>Коли маска спрацьовує, aura-emerge виводить кожен пакунок разом із записом, що його заблокував (<code>файл:рядок</code>), і причиною. Якщо пакунок було запрошено явно, виконання переривається, а не мовчки фільтрується. Для одноразового пропуску використовуйте <a href="#exclude"><code>--exclude</code></a>.</p>
           </div>
+<div class="lang-block" data-lang-block="ru" hidden>
+            <p><code>/etc/portage/package.mask</code> перечисляет пакеты, которые эта машина никогда не ставит. Это постоянное решение, а не вопрос: замаскированный пакет отклоняется даже как транзитивная зависимость AUR и даже при запросе по имени. Подсказки и флага обхода нет.</p>
+            <p>Это файл или каталог файлов (обычные файлы читаются по порядку имён; файлы с точки пропускаются; символические ссылки отклоняются). Одна запись на строку; допускаются <code>*</code>-глобы и префикс репозитория; в конце строки можно <code># комментарий</code>.</p>
+            <pre><code>ayugram-desktop-bin            # конкретный пакет, любой источник
+aur/*-bin                      # никогда не ставить AUR -bin пакеты
+*-git                          # без devel-пакетов на этой машине
+extra/nano                     # конкретный пакет из конкретного репозитория
+system/*                       # целый репозиторий</code></pre>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -at system/openssh-openrc --deep</span>
+...
+<span class="t-err">&gt;&gt;&gt;</span> Error: system/openssh-openrc: helper refused: openssh-openrc: masked by system/* (/etc/portage/package.mask/artix:4)</code></pre>
+            <p>В поиске замаскированные пакеты помечаются <code>[masked]</code>. Это не то же самое, что <code>--exclude</code>: маска действует постоянно, <code>--exclude</code> — на один запуск.</p>
+          </div>
         </section>
 
         <section id="package-env">
@@ -455,6 +628,23 @@ OPTIONS="strip docs !libtool !staticlibs emptydirs zipman purge !debug lto"</cod
             <p>Якщо файл <code>package.env</code> або env-файл є символічним посиланням, його відхиляють із попередженням. Некоректний запис, а також відсутній чи нечитабельний env-файл пропускаються з попередженням, у якому вказано файл і рядок; решта застосовується далі.</p>
             <p>Зачіпає лише збірки з AUR і ABS — офіційні пакунки встановлює pacman, тут вони не збираються.</p>
           </div>
+<div class="lang-block" data-lang-block="ru" hidden>
+            <p><code>/etc/portage/package.env</code> задаёт отдельным пакетам свои флаги сборки. Каждая запись называет пакет и один или несколько <em>env-файлов</em> из <code>/etc/portage/env/</code>. Как и <code>package.mask</code>, путь может быть файлом или каталогом.</p>
+            <pre><code># /etc/portage/package.env/neovim
+abs/neovim  lto.conf
+aur/*-git   no-lto  fast</code></pre>
+            <pre><code># /etc/portage/env/lto.conf
+CFLAGS="-march=znver3 -O2 -pipe"
+MAKEFLAGS="-j16"
+OPTIONS="strip docs !debug lto"</code></pre>
+            <ul>
+              <li><strong>Наложение:</strong> <code>make.conf</code> → подходящие записи <code>package.env</code> → каждый env-файл в указанном порядке. Побеждает слой, задавший ключ последним; ключ заменяется целиком, а не сливается.</li>
+              <li><strong>Совпадение:</strong> по pkgbase или любому pkgname.</li>
+              <li><strong>Область:</strong> только сборки AUR/ABS. <code>EMERGE_DEFAULT_OPTS</code> в env-файле игнорируется с предупреждением.</li>
+              <li>Env-файлы имеют синтаксис <code>make.conf</code>. Учитываются только переменные сборки (<code>CFLAGS</code>, <code>CXXFLAGS</code>, <code>MAKEFLAGS</code>, <code>OPTIONS</code>, …).</li>
+              <li><strong>Ошибки:</strong> символическая ссылка, некорректная запись или отсутствующий env-файл пропускаются с предупреждением; остальное применяется.</li>
+            </ul>
+          </div>
         </section>
 
         <section id="exclude">
@@ -500,6 +690,15 @@ emerge --exclude firefox @world</code></pre>
 
  * Everything else in this run completed. Retry just the failures with emerge --resume.</code></pre>
             <p>Якщо щось не вдалося, код виходу ненульовий. Після цього <code>emerge --resume</code> повторює лише невдалі пакунки.</p>
+          </div>
+<div class="lang-block" data-lang-block="ru" hidden>
+            <h3>--exclude</h3>
+            <p><code>--exclude &lt;atom&gt;</code> (можно повторять или через запятую) исключает пакет из текущего запуска: установки, <code>-u</code>, <code>@world</code>, <code>--depclean</code>/<code>--prune</code> (защищает от удаления) и <code>--revdep-rebuild</code>.</p>
+            <h3>--keep-going</h3>
+            <p><code>--keep-going</code> не останавливает пакетную операцию (<code>@world</code>, <code>-u</code>, <code>--batchinstall</code>, мультипакетные установки) на первой ошибке. Собирает сбои, печатает сводку и завершается с ненулевым кодом. Позже <code>--resume</code> повторит только неудавшееся.</p>
+            <pre><code>emerge -u --exclude linux --exclude aur/ayugram-desktop-bin
+emerge -u --keep-going
+emerge --resume</code></pre>
           </div>
         </section>
 
@@ -577,6 +776,15 @@ Total: 6 package(s)
               <li>У командному рядку атом може мати префікс репозиторію, як-от <code>system/openssh-openrc</code>.</li>
             </ul>
           </div>
+<div class="lang-block" data-lang-block="ru" hidden>
+            <p><code>--tree</code> печатает план деревом зависимостей (стиль <code>emerge -pt</code>). По умолчанию один уровень вложенности; <code>--deep</code> раскрывает всё, <code>--deep=N</code> — до N уровней.</p>
+            <pre><code>emerge -apt noctalia --aur
+emerge -pt noctalia --aur --deep</code></pre>
+            <pre class="term term-blue"><code><span class="t-tag">[ebuild  N ]</span> noctalia-5.1.0-1.1
+<span class="t-tag">[ebuild  N ]</span> `-- libqalculate-5.12.0-1.1
+<span class="t-tag">[ebuild  N ]</span>   `-- sdbus-cpp-2.3.1-1.1</code></pre>
+            <p>Зависимость, которую никто не назвал в «Depends On» (через <code>provides</code> или за пределами <code>--deep</code>), всё равно показывается, просто без родителя. Для чистой установки <code>--aur</code> транзитивные зависимости только из AUR на этапе плана ещё не разрешаются, поэтому дерево там плоское.</p>
+          </div>
         </section>
 
         <section id="log">
@@ -606,6 +814,13 @@ Total: 6 package(s)
               <li><strong>Запис:</strong> файл належить root, тому рядки дописуються через <code>sudo tee -a</code>. Журналювання виконується за можливості: невдалий запис мовчки ігнорується й ніколи не ламає та не сповільнює merge, який уже відбувся. Якщо шлях до журналу — символічне посилання, запис не виконується.</li>
               <li><strong><code>emerge --info</code></strong> читає журнал і показує кількість merge та unmerge, а також сумарний час збірки. Якщо файлу немає або його не можна прочитати, цей рядок просто пропускається.</li>
             </ul>
+          </div>
+<div class="lang-block" data-lang-block="ru" hidden>
+            <p><code>/var/log/emerge.log</code> — append-only, человекочитаемая запись merge и unmerge — аналог Portage <code>emerge.log</code> для pacman/AUR/ABS. Сбой записи в лог никогда не роняет саму транзакцию.</p>
+            <pre class="term term-blue"><code>2026-10-06 16:10:51  MERGE    repo   noto-fonts  noto-fonts-emoji  ...  (6s)
+2026-10-06 16:10:54  MERGE    aur    ttf-comic-sans  (2s)
+2026-09-21 09:10:05  UNMERGE  -      old-package-2.0-1</code></pre>
+            <p>Пакеты AUR/ABS собираются по одному — у каждого своё время. Прогон <code>pacman -S</code>/<code>-Syu</code> — одна транзакция, поэтому в строке перечислены все атомы с суммарным временем. <code>emerge --info</code> показывает итоги (число merge/unmerge, суммарное время сборки).</p>
           </div>
         </section>
 
@@ -649,6 +864,12 @@ emerge --news all      # позначити все прочитаним</code></
               <li>Якщо стрічка недоступна, сама команда <code>--news</code> завершується з помилкою.</li>
             </ul>
           </div>
+<div class="lang-block" data-lang-block="ru" hidden>
+            <p><code>emerge --news</code> читает ленту <a href="https://archlinux.org/news/" target="_blank" rel="noopener">новостей Arch Linux</a>, в духе eselect-news. Состояние прочтения хранится в <code>~/.cache/aura-emerge/news.state</code> (root не нужен). Текст санитизируется (без ANSI/bidi-инъекций в терминал или state-файл).</p>
+            <pre><code>emerge --news        # список, непрочитанное помечено [N]
+emerge --news 3      # прочитать пункт 3
+emerge --news all    # отметить всё прочитанным</code></pre>
+          </div>
         </section>
 
         <section id="usage">
@@ -668,6 +889,40 @@ emerge --news                              # Arch news
 emerge --undo                              # undo last install/unmerge
 emerge --resume                            # resume interrupted run</code></pre>
             <p>See the <a href="flags.html">Flags</a> page for the full table.</p>
+
+            <h3>Mixed sources + parallel jobs</h3>
+            <p>Repo packages, ABS and AUR in one plan; <code>--jobsr</code> / <code>--jobsa</code> control parallelism for official installs and AUR/ABS builds:</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -at aur/setrixtui cachyos-extra-v3/neovim abs/nano --jobsr=7 --jobsa=2</span>
+
+These are the packages that would be merged, in order:
+
+<span class="t-tag">[ebuild  R ]</span> abs/nano-9.2-1
+<span class="t-tag">[ebuild  R ]</span> cachyos-extra-v3/neovim-0.12.5-1.1
+<span class="t-tag">[ebuild  R ]</span> aur/setrixtui-0.4.1-1
+
+Total: 3 package(s)
+Would you like to merge these packages? [Yes/No] <span class="t-in">y</span>
+<span class="t-ok">&gt;&gt;&gt;</span> Installing (1 of 3) cachyos-extra-v3/neovim-0.12.5-1.1
+<span class="t-ok">&gt;&gt;&gt;</span> Scanning AUR PKGBUILDs and .install hooks for suspicious patterns...
+<span class="t-ok">&gt;&gt;&gt;</span> Compiling (2 of 3) abs/nano-9.2-1
+<span class="t-ok">&gt;&gt;&gt;</span> Compiling (3 of 3) aur/setrixtui-0.4.1-1
+<span class="t-ok">&gt;&gt;&gt;</span> Jobs: 3 of 3 complete</code></pre>
+            <h3>Transaction hooks</h3>
+            <p>Pre/post-transaction hooks (DKMS, initramfs, …) show up live during repo installs:</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -at linux-zen linux-zen-headers --jobsr=10</span>
+...
+Would you like to merge these packages? [Yes/No] <span class="t-in">y</span>
+<span class="t-ok">&gt;&gt;&gt;</span> Running pre-transaction hooks...
+<span class="t-ok">&gt;&gt;&gt;</span> (1 of 1) Remove upgraded DKMS modules
+<span class="t-ok">&gt;&gt;&gt;</span> Emerging (1 of 2) extra/linux-zen-7.2.9.zen1-1
+<span class="t-ok">&gt;&gt;&gt;</span> Emerging (2 of 2) extra/linux-zen-headers-7.2.9.zen1-1
+<span class="t-ok">&gt;&gt;&gt;</span> Running post-transaction hooks...
+<span class="t-ok">&gt;&gt;&gt;</span> (1 of 4) Arming ConditionNeedsUpdate...
+<span class="t-ok">&gt;&gt;&gt;</span> (2 of 4) Updating module dependencies...
+<span class="t-ok">&gt;&gt;&gt;</span> (3 of 4) Install DKMS modules
+<span class="t-ok">&gt;&gt;&gt;</span> (4 of 4) Updating initramfs with dracut
+<span class="t-ok">&gt;&gt;&gt;</span> Jobs: 2 of 2 complete</code></pre>
+
           </div>
           <div class="lang-block" data-lang-block="ua" hidden>
             <pre><code>emerge neovim
@@ -684,6 +939,93 @@ emerge --news
 emerge --undo
 emerge --resume</code></pre>
             <p>Повна таблиця — на сторінці <a href="flags.html">Прапори</a>.</p>
+
+            <h3>Змішані джерела + паралельні jobs</h3>
+            <p>Пакунки з репо, ABS і AUR в одному плані; <code>--jobsr</code> / <code>--jobsa</code> задають паралелізм для офіційних встановлень і збірок AUR/ABS:</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -at aur/setrixtui cachyos-extra-v3/neovim abs/nano --jobsr=7 --jobsa=2</span>
+
+These are the packages that would be merged, in order:
+
+<span class="t-tag">[ebuild  R ]</span> abs/nano-9.2-1
+<span class="t-tag">[ebuild  R ]</span> cachyos-extra-v3/neovim-0.12.5-1.1
+<span class="t-tag">[ebuild  R ]</span> aur/setrixtui-0.4.1-1
+
+Total: 3 package(s)
+Would you like to merge these packages? [Yes/No] <span class="t-in">y</span>
+<span class="t-ok">&gt;&gt;&gt;</span> Installing (1 of 3) cachyos-extra-v3/neovim-0.12.5-1.1
+<span class="t-ok">&gt;&gt;&gt;</span> Scanning AUR PKGBUILDs and .install hooks for suspicious patterns...
+<span class="t-ok">&gt;&gt;&gt;</span> Compiling (2 of 3) abs/nano-9.2-1
+<span class="t-ok">&gt;&gt;&gt;</span> Compiling (3 of 3) aur/setrixtui-0.4.1-1
+<span class="t-ok">&gt;&gt;&gt;</span> Jobs: 3 of 3 complete</code></pre>
+            <h3>Хуки транзакції</h3>
+            <p>Pre/post-transaction хуки (DKMS, initramfs, …) з’являються наживо під час встановлень з репо:</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -at linux-zen linux-zen-headers --jobsr=10</span>
+...
+Would you like to merge these packages? [Yes/No] <span class="t-in">y</span>
+<span class="t-ok">&gt;&gt;&gt;</span> Running pre-transaction hooks...
+<span class="t-ok">&gt;&gt;&gt;</span> (1 of 1) Remove upgraded DKMS modules
+<span class="t-ok">&gt;&gt;&gt;</span> Emerging (1 of 2) extra/linux-zen-7.2.9.zen1-1
+<span class="t-ok">&gt;&gt;&gt;</span> Emerging (2 of 2) extra/linux-zen-headers-7.2.9.zen1-1
+<span class="t-ok">&gt;&gt;&gt;</span> Running post-transaction hooks...
+<span class="t-ok">&gt;&gt;&gt;</span> (1 of 4) Arming ConditionNeedsUpdate...
+<span class="t-ok">&gt;&gt;&gt;</span> (2 of 4) Updating module dependencies...
+<span class="t-ok">&gt;&gt;&gt;</span> (3 of 4) Install DKMS modules
+<span class="t-ok">&gt;&gt;&gt;</span> (4 of 4) Updating initramfs with dracut
+<span class="t-ok">&gt;&gt;&gt;</span> Jobs: 2 of 2 complete</code></pre>
+
+          </div>
+<div class="lang-block" data-lang-block="ru" hidden>
+            <pre><code>emerge neovim                              # репозитории → fallback на AUR
+emerge neovim-git --aur                    # только AUR, рекурсивные зависимости AUR
+emerge neovim --repos                      # только официальные репозитории
+emerge neovim --abs                        # сборка из ABS в песочнице
+emerge -p neovim                           # пробный прогон
+emerge -a neovim                           # спросить перед действием
+emerge -1 htop                             # как зависимость (не в world)
+emerge -C neovim                           # unmerge
+emerge -c                                  # depclean (сироты)
+emerge --prune                             # убрать то, чего нет в world
+emerge --sync                              # обновить базы
+emerge -u                                  # полное обновление
+emerge -u --devel                          # ...и -git/-hg/-svn/-bzr с ушедшим upstream
+emerge @world                              # provision из world
+emerge --revdep-rebuild                    # битые ссылки на библиотеки
+emerge --scan neovim-git --aur             # только аудит PKGBUILD
+emerge --install-pkgbuild ~/src/my-pkg     # локальный PKGBUILD через сканер + sandbox</code></pre>
+
+            <h3>Смешанные источники + параллельные jobs</h3>
+            <p>Пакеты из репо, ABS и AUR в одном плане; <code>--jobsr</code> / <code>--jobsa</code> задают параллелизм для официальных установок и сборок AUR/ABS:</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -at aur/setrixtui cachyos-extra-v3/neovim abs/nano --jobsr=7 --jobsa=2</span>
+
+These are the packages that would be merged, in order:
+
+<span class="t-tag">[ebuild  R ]</span> abs/nano-9.2-1
+<span class="t-tag">[ebuild  R ]</span> cachyos-extra-v3/neovim-0.12.5-1.1
+<span class="t-tag">[ebuild  R ]</span> aur/setrixtui-0.4.1-1
+
+Total: 3 package(s)
+Would you like to merge these packages? [Yes/No] <span class="t-in">y</span>
+<span class="t-ok">&gt;&gt;&gt;</span> Installing (1 of 3) cachyos-extra-v3/neovim-0.12.5-1.1
+<span class="t-ok">&gt;&gt;&gt;</span> Scanning AUR PKGBUILDs and .install hooks for suspicious patterns...
+<span class="t-ok">&gt;&gt;&gt;</span> Compiling (2 of 3) abs/nano-9.2-1
+<span class="t-ok">&gt;&gt;&gt;</span> Compiling (3 of 3) aur/setrixtui-0.4.1-1
+<span class="t-ok">&gt;&gt;&gt;</span> Jobs: 3 of 3 complete</code></pre>
+            <h3>Хуки транзакции</h3>
+            <p>Pre/post-transaction хуки (DKMS, initramfs, …) показываются наживую при установках из репо:</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -at linux-zen linux-zen-headers --jobsr=10</span>
+...
+Would you like to merge these packages? [Yes/No] <span class="t-in">y</span>
+<span class="t-ok">&gt;&gt;&gt;</span> Running pre-transaction hooks...
+<span class="t-ok">&gt;&gt;&gt;</span> (1 of 1) Remove upgraded DKMS modules
+<span class="t-ok">&gt;&gt;&gt;</span> Emerging (1 of 2) extra/linux-zen-7.2.9.zen1-1
+<span class="t-ok">&gt;&gt;&gt;</span> Emerging (2 of 2) extra/linux-zen-headers-7.2.9.zen1-1
+<span class="t-ok">&gt;&gt;&gt;</span> Running post-transaction hooks...
+<span class="t-ok">&gt;&gt;&gt;</span> (1 of 4) Arming ConditionNeedsUpdate...
+<span class="t-ok">&gt;&gt;&gt;</span> (2 of 4) Updating module dependencies...
+<span class="t-ok">&gt;&gt;&gt;</span> (3 of 4) Install DKMS modules
+<span class="t-ok">&gt;&gt;&gt;</span> (4 of 4) Updating initramfs with dracut
+<span class="t-ok">&gt;&gt;&gt;</span> Jobs: 2 of 2 complete</code></pre>
+
           </div>
         </section>
 
@@ -861,6 +1203,92 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
             <p><code>--scan</code> лише повідомляє про знахідки, нічого не збираючи й не встановлюючи. Потрібна принаймні одна назва пакунка (або <code>--install-pkgbuild &lt;PATH&gt;</code> для локального checkout); <code>--abs</code> поки не підтримується.</p>
             <p>Сканер працює за принципом чорного списку, тож чистий результат не є гарантією. Для цього й потрібна <a href="#sandbox">пісочниця</a>.</p>
           </div>
+<div class="lang-block" data-lang-block="ru" hidden>
+            <p>Перед каждой установкой из AUR «сырой» <code>PKGBUILD</code> и его хук <code>.install</code> (<code>install=</code>, выполняется от <strong>root</strong>) загружаются с cgit и сканируются. <code>$pkgname</code>/<code>$pkgbase</code> в имени хука сначала подставляются. Если cgit недоступен, это сообщается как «нечего проверять», а не как «чисто»; после клонирования сканируются сами клонированные файлы, если их содержимое отличается от предварительно просканированного.</p>
+            <h3>Два слоя</h3>
+            <ol>
+              <li><strong>AST</strong> (<code>tree-sitter-bash</code>) — структурные проверки, которые выдерживают кавычки, конкатенацию и обёртки из env, обходящие обычный текстовый поиск. Срабатывает только на статически известных именах команд; если разбор не удался, подключаются текстовые эвристики.</li>
+              <li><strong>Строковые эвристики</strong> — текстовые шаблоны и точные индикаторы компрометации (IOC).</li>
+            </ol>
+            <h3>Два уровня серьёзности</h3>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Уровень</th><th>Как выводится</th><th>Что означает</th></tr></thead>
+                <tbody>
+                  <tr><td><code>ConfirmedIoc</code></td><td><code>Alert, matched a known-malicious IOC</code></td><td>Точное совпадение с задокументированной кампанией: ложное срабатывание маловероятно.</td></tr>
+                  <tr><td><code>Suspicious</code></td><td><code>Warning, detected suspicious fragment</code></td><td>Эвристика: стоит прочитать, возможно ложное срабатывание.</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <h3>Подтверждённые IOC</h3>
+            <ul>
+              <li>Известные вредоносные имена пакетов (<code>atomic-lockfile</code>, <code>js-digest</code>, <code>lockfile-js</code>) — кампания Atomic Arch с npm/bun-инфостилером, июнь 2026.</li>
+              <li>Опубликованные SHA-256 полезной нагрузки (волна openconnect-sso, июл/авг 2026).</li>
+              <li>Маркер <code>compromised.txt</code> из захвата AUR-пакетов acroread/balz/minergate в 2018 году.</li>
+              <li>Запрошенный пакет сам входит в список AUR-пакетов, захваченных в волне начала августа 2026 (также относится к <code>openconnect-sso</code> и <code>storageexplorer-bin</code>). Отсутствие в списке не означает, что пакет чист.</li>
+            </ul>
+            <h3>Эвристические проверки</h3>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Шаблон</th><th>Почему важно</th></tr></thead>
+                <tbody>
+                  <tr><td><code>curl|sh</code>, <code>wget|sh</code></td><td>Запускает удалённый скрипт прямо в shell</td></tr>
+                  <tr><td><code>eval "$(curl …)"</code>, <code>source &lt;(curl …)</code></td><td>Выполняет загруженное содержимое без буквального пайпа</td></tr>
+                  <tr><td>декодирование base64 / hex, <code>| sh</code>, последовательности <code>\xHH</code>, расшифровка <code>openssl</code></td><td>Обфусцированные или встроенные payload</td></tr>
+                  <tr><td><code>python -c</code> exec/eval, payload в <code>sh -c</code></td><td>Встроенное обфусцированное выполнение</td></tr>
+                  <tr><td><code>sudo</code> / <code>pkexec</code> / <code>doas</code> в скрипте сборки</td><td>makepkg специально собирает без привилегий; это эскалация mid-build</td></tr>
+                  <tr><td><code>chmod 777</code></td><td>Права world-writable / executable</td></tr>
+                  <tr><td>«сырой» IPv4, <code>.onion</code>, paste-сайты</td><td>Жёстко прошитый C2 или доставка второго этапа</td></tr>
+                  <tr><td><code>npm</code>/<code>bun</code>/<code>yarn</code>/<code>pip</code>/<code>gem</code> ставит именованный пакет mid-build</td><td>Как протаскивали payload Atomic Arch</td></tr>
+                  <tr><td>command substitution вне любой функции</td><td>Выполняется при любом <em>source</em> PKGBUILD (<code>--printsrcinfo</code>, чтение метаданных AUR-хелпером)</td></tr>
+                  <tr><td>исполняемый файл под общим именем инструмента (linter, hasher, validator, …)</td><td>Маскировка payload волны начала августа 2026</td></tr>
+                  <tr><td>пробы <code>TracerPid</code>, <code>LD_PRELOAD</code></td><td>Anti-debugger / anti-sandbox fingerprinting</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <h3>Пример</h3>
+            <p>Намеренно враждебный тестовый пакет (вывод сокращён, <code>…</code> — пропущенные строки):</p>
+            <pre class="term" aria-label="Scanner output example"><code><span class="t-ps">$</span> <span class="t-cmd">emerge --install-pkgbuild ./scaner-test --ask</span>
+<span class="t-p">&gt;&gt;&gt;</span> Scanning <b>scaner-test</b> for suspicious patterns...
+<span class="t-p">&gt;&gt;&gt;</span> 'scaner-test' wasn't scanned before cloning (cgit fetch failed or this pkgbase was only resolved after cloning) -- scanning the clone directly...
+
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-rule-r">===================================</span>
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-h-r">Alert, matched a known-malicious IOC (scaner-test)</span>
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-rule-r">===================================</span>
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 29:</span> references '<span class="t-hl">atomic-lockfile</span>' - a known-malicious package name from a documented AUR supply-chain campaign (Atomic Arch, June 2026)
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 11:</span> sha256 'e73a35b3e75e94746428d1a207703d6335933deadee7d1d9c9d0328df7b9df77' matches a published payload hash from the openconnect-sso-anchored AUR wave (Jul/Aug 2026)
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file scaner-test-therandtxt.install line 3:</span> references '<span class="t-hl">compromised.txt</span>' - the exact marker file dropped by the 2018 acroread/balz/minergate AUR takeover
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file scaner-test-therandtxt.install line 2:</span> references '<span class="t-hl">js-digest</span>' - a known-malicious package name from a documented AUR supply-chain campaign (Atomic Arch, June 2026)
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/PKGBUILD</span>
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/scaner-test-therandtxt.install</span>
+
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-rule-a">===================================</span>
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-h-a">Warning, detected suspicious fragment (scaner-test)</span>
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-rule-a">===================================</span>
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 16:</span> downloads and pipes a remote script straight into a shell (curl/wget | sh)
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 18:</span> decodes a base64 blob (possible obfuscated payload)
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 25:</span> sets world-writable/executable permissions (chmod 777)
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 10:</span> fetches from or references a hardcoded raw IP address instead of a domain
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 26:</span> invokes sudo/pkexec/doas from inside the build script - makepkg builds unprivileged on purpose, so this escalates privilege mid-build; the exact mechanism reported in the openconnect-sso-anchored AUR wave (Jul/Aug 2026)
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 7:</span> references a .onion address - legitimate PKGBUILDs don't hardcode Tor hidden-service addresses; matches the Tor-backed second-stage delivery reused across the June 2026 and Jul/Aug 2026 AUR campaigns
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">… 13 more findings …</span>
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/PKGBUILD</span>
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/scaner-test-therandtxt.install</span>
+
+<span class="t-p">&gt;&gt;&gt;</span> 'scaner-test''s cloned PKGBUILD/.install content (which differs from what was pre-scanned) matches known-suspicious patterns. Review it yourself before proceeding:
+    ./scaner-test
+<span class="t-p">&gt;&gt;&gt;</span> Continue anyway? [y/N] <span class="t-in">n</span>
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-h-r">Aborted.</span></code></pre>
+            <div class="callout callout-stripe red">
+              <div class="callout-title" data-i18n="not_hard_block">Не жёсткая блокировка</div>
+              <span data-i18n="not_hard_block_body">Находки сообщаются с файлом/строкой и ссылкой на cgit. Вы получаете Continue anyway? [y/N] — решение остаётся за вами.</span>
+            </div>
+            <h3>Только аудит</h3>
+            <pre class="red"><code>emerge --scan neovim-git --aur
+emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
+            <p><code>--scan</code> сообщает о находках без сборки и установки. Нужно хотя бы одно имя пакета (или <code>--install-pkgbuild &lt;PATH&gt;</code> для локального checkout) и пока не поддерживает <code>--abs</code>.</p>
+            <p>Сканер — это blocklist, поэтому «чисто» не гарантия. Для этого есть <a href="#sandbox">песочница</a>.</p>
+          </div>
         </section>
 
         <section id="sandbox">
@@ -937,6 +1365,42 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
             </div>
             <p>Якщо <code>bubblewrap</code> не встановлено, збірка виконується звичайним makepkg.</p>
           </div>
+<div class="lang-block" data-lang-block="ru" hidden>
+            <p>Сканер — это blocklist: PKGBUILD, который он пропустил, всё равно выполнит произвольный shell от вашего пользователя. Песочница — второй слой. <code>pkgver</code>/<code>prepare</code>/<code>build</code>/<code>check</code>/<code>package</code> выполняются внутри <a href="https://github.com/containers/bubblewrap" target="_blank" rel="noopener">bubblewrap</a> (<code>/usr/bin/bwrap</code>), если он установлен.</p>
+            <h3>Как устроена клетка</h3>
+            <ul>
+              <li><strong>Файловая система:</strong> весь root смонтирован только для чтения; <code>/proc</code> и <code>/dev</code> свежие; <code>/tmp</code> — пустой tmpfs.</li>
+              <li><strong>Запись:</strong> только каталог сборки. Настроенные <code>PKGDEST</code>/<code>SRCDEST</code>/<code>SRCPKGDEST</code>/<code>BUILDDIR</code> вне него получают свой writable bind и соответствующую переменную окружения.</li>
+              <li><strong>Без настоящего home / сессии:</strong> пустой tmpfs поверх <code>/home</code> и <code>/run</code> — нет SSH-ключей, секретных GPG, профиля браузера, session D-Bus или агентов. Окружение очищено до allowlist.</li>
+              <li><strong>Изоляция:</strong> <code>--unshare-all</code>, <code>--new-session</code>, <code>--die-with-parent</code>, capabilities сброшены; PKGBUILD и <code>*.install</code> перемонтированы только для чтения.</li>
+              <li><strong>GnuPG:</strong> копия связки только с публичными ключами, read-only (подписи проверяются; приватных ключей нет, сборка не может подложить ключ).</li>
+            </ul>
+            <h3>Сеть</h3>
+            <p>По умолчанию общая. С <code>--unshare-net-build</code> фаза загрузки сохраняет сеть (объявленные <code>source=()</code>), а <code>build()</code>/<code>check()</code>/<code>package()</code> остаются без неё — случайный <code>cargo build</code> до crates.io падает явно. Loopback остаётся для инструментов, которым он нужен; маршрута наружу нет.</p>
+            <h3>Особенности toolchain, обработанные за вас</h3>
+            <ul>
+              <li><strong>rustup:</strong> <code>RUSTUP_HOME</code> указывает на реальный путь, чтобы <code>cargo</code> находил toolchain. <code>CARGO_HOME</code> <em>не</em> восстанавливается (там может быть <code>credentials.toml</code>) — вместо этого используется свежий writable каталог внутри build dir, зависимости скачиваются заново.</li>
+              <li><strong>fakeroot:</strong> <code>package()</code> идёт под <code>fakeroot</code>, который в user namespace без uid 0 падает с «cannot preserve ownership». Небольшой shim <code>fakeroot</code> перезапускает настоящий в вложенном uid-0-mapped слое bwrap. Shim лежит в <code>/var/tmp</code>, read-only внутри клетки, чтобы <code>build()</code> не мог его подменить, и удаляется после.</li>
+            </ul>
+            <div class="callout callout-stripe blue">
+              <div class="callout-title">Вне песочницы</div>
+              <span>Установка зависимостей и финальный <code>pacman -U</code> требуют настоящего root и никогда не выполняют код PKGBUILD, поэтому идут вне клетки. Готовый <code>*.pkg.tar.*</code> всё равно сначала аудируется (setuid, <code>.INSTALL</code>, alpm-хуки, systemd, sudoers, …).</span>
+            </div>
+            <div class="callout callout-stripe red">
+              <div class="callout-title">Известный пробел</div>
+              <span>Другой <code>PKGDEST</code>/<code>SRCDEST</code> из <code>/etc/makepkg.conf</code> (видимый внутри клетки) перебивает внедрённое значение. На практике редко.</span>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Флаг</th><th>Эффект</th></tr></thead>
+                <tbody>
+                  <tr><td><code>--no-sandbox</code></td><td>Обычный makepkg (с предупреждением)</td></tr>
+                  <tr><td><code>--unshare-net-build</code></td><td>Без сети во время build()/check()/package()</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p>Без установленного <code>bubblewrap</code> сборка откатывается к обычному makepkg.</p>
+          </div>
         </section>
 
         <section id="pkgbuild-view">
@@ -981,6 +1445,17 @@ emerge --install-pkgbuild ~/src/my-pkg --pkgbuild-view</code></pre>
             <p><code>--install-pkgbuild &lt;PATH&gt;</code> збирає локальний checkout через той самий конвеєр зі сканером і пісочницею. У world він записується як <code>Err/</code>, якщо не вказано <code>-1</code>.</p>
             <p>Зверніть увагу: <code>--scan</code> поки не підтримує <code>--abs</code>. Для ABS використовуйте <code>--pkgbuild-view</code> під час звичайного встановлення.</p>
           </div>
+<div class="lang-block" data-lang-block="ru" hidden>
+            <p><code>--pkgbuild-view</code> показывает PKGBUILD, который сейчас будет собираться, и спрашивает подтверждение перед стартом. Работает для AUR, ABS и <code>--install-pkgbuild</code>, но только для пакетов, запрошенных напрямую — никогда для транзитивных зависимостей или пакетных путей. Выполняется после <code>--edit</code>.</p>
+            <pre><code>emerge neovim-git --aur --pkgbuild-view
+emerge --install-pkgbuild ~/src/my-pkg --pkgbuild-view</code></pre>
+            <ul>
+              <li>Если копию уже видели — показывается diff относительно кэша; в первый раз — весь файл.</li>
+              <li>При отказе предлагается открыть <code>$EDITOR</code>, а не просто пропустить.</li>
+              <li>Последние показанные копии лежат в <code>~/.cache/aura-emerge/pkgbuild-view/&lt;pkgbase&gt;.PKGBUILD</code> (под <code>$XDG_CACHE_HOME</code>, если задан). Они нужны только для diff и не играют роли в безопасности — <a href="#scanner">сканер</a> сам сравнивает полученное с клонированным.</li>
+            </ul>
+            <p><code>--scan</code> аудитит PKGBUILD (+ <code>.install</code>) без сборки и установки: тянет с cgit для пакета AUR или читает локальный checkout с <code>--install-pkgbuild &lt;PATH&gt; --scan</code>. Тот же отчёт, что у pre-build скана, без вопроса «Continue anyway?». Ненулевой код при любой находке — удобно для скриптов. Для <code>--abs</code> пока недоступно; для ABS используйте <code>--pkgbuild-view</code> при обычной установке.</p>
+          </div>
         </section>
 
         <section id="devel">
@@ -1022,6 +1497,13 @@ emerge --check-devel</code></pre>
               <li>«Не вдалося визначити» ніколи не трактується як «застаріло»: відсутнє джерело <code>git+</code>, невдале завантаження чи не-git VCS потрапляють у примітку «could not determine».</li>
               <li><code>--exclude</code> і <a href="#mask">package.mask</a> утримують пакунок на встановленій версії.</li>
             </ul>
+          </div>
+<div class="lang-block" data-lang-block="ru" hidden>
+            <p>Версия на странице AUR для пакетов <code>-git</code>/<code>-hg</code>/<code>-svn</code>/<code>-bzr</code> часто отстаёт от реального upstream, поэтому обычный <code>-u</code> часто пропускает изменения в devel-пакетах.</p>
+            <p><code>-u --devel</code> (обновление) и <code>--check-devel</code> (только отчёт) это исправляют: для каждого установленного devel-пакета читается URL источника <code>git+</code> из PKGBUILD, выполняется <code>git ls-remote</code> (клон не нужен) и сравнивается с хешем, виденным в прошлый раз (<code>~/.cache/aura-emerge/devel.state</code>). Пока только git; <code>-hg</code>/<code>-svn</code>/<code>-bzr</code> попадают в «could not determine», а не молча пропускаются.</p>
+            <pre><code>emerge -u --devel        # обновление + пересборка devel, чей upstream ушёл
+emerge --check-devel     # только отчёт</code></pre>
+            <p>Первый прогон обычно только фиксирует базовую точку; следующие сравнивают с ней. <code>--exclude</code> и <a href="#mask">package.mask</a> удерживают пакет на установленной версии.</p>
           </div>
         </section>
 
@@ -1071,6 +1553,29 @@ emerge --revdep-rebuild -p</code></pre>
             <div class="callout callout-stripe red">
               <div class="callout-title">Відомі обмеження</div>
               <span>Бібліотека не тієї архітектури за правильним шляхом вважається наявною. Плагіни, що завантажуються через <code>dlopen()</code>, ELF-сканування не бачить. Файли, замінені поза pacman, оцінюються за тим, що лежить на диску зараз.</span>
+            </div>
+          </div>
+<div class="lang-block" data-lang-block="ru" hidden>
+            <p>Находит установленные бинарники, чьи зависимости от разделяемых библиотек больше не разрешаются, и чинит их. После смены soname в <code>icu</code>/<code>openssl</code>/<code>boost</code> пакет может удовлетворять все <em>объявленные</em> зависимости, тогда как его бинарники линкуются с <code>.so</code>, которого уже нет. Это не то же самое, что <code>@preserved-rebuild</code>, который проверяет только объявленные зависимости через <code>pacman -T</code>. В Gentoo проблему прячет preserved-libs; здесь это «пересобери, как заметил», но автоматизировано.</p>
+            <pre><code>emerge --revdep-rebuild
+emerge --revdep-rebuild -p</code></pre>
+            <h3>Что сканируется</h3>
+            <ul>
+              <li>ELF-файлы пакетов в <code>/usr/bin</code>, <code>/usr/lib</code>, <code>/usr/lib32</code>, <code>/usr/libexec</code>, <code>/usr/local/lib</code> и <code>/opt</code> (слишком большие пропускаются).</li>
+              <li>Их записи <code>DT_NEEDED</code> с учётом <code>RPATH</code>/<code>RUNPATH</code> (<code>$ORIGIN</code> раскрывается), проверка по каталогам поиска линкера — встроенным и из <code>/etc/ld.so.conf</code> с include.</li>
+              <li>Отчёт группирует находки по пакетам: отсутствующие soname и первые несколько затронутых файлов. Повреждённые файлы без владельца-пакета выводятся отдельно.</li>
+            </ul>
+            <h3>Что чинится</h3>
+            <ul>
+              <li><strong>Пакеты AUR/локальные</strong> пересобираются обычным путём через песочницу, сначала работает <a href="#scanner">сканер</a>.</li>
+              <li><strong>Официальные пакеты:</strong> пакет, поставляющий потерянный soname, ищется в базе файлов (<code>pacman -F</code>) и, если не установлен, ставится через <code>pacman -S --needed --asdeps</code>.</li>
+              <li>Если soname не поставляет ни один пакет из базы файлов, вам подскажут выполнить <code>emerge --regen</code> (вдруг база устарела) или проверить, не убрали ли библиотеку в upstream.</li>
+              <li>Если нужные библиотеки уже установлены, примечание указывает на возможную смесь 32- и 64-битных.</li>
+            </ul>
+            <p>С <code>-p</code> только отчёт. Иначе будет вопрос <code>Rebuild/install the package(s) above? [y/N]</code>. Действуют <code>--exclude</code> и <a href="#mask">package.mask</a>; <code>--keep-going</code> учитывается. При неудаче код выхода ненулевой.</p>
+            <div class="callout callout-stripe red">
+              <div class="callout-title">Известные ограничения</div>
+              <span>Библиотека не той архитектуры по правильному пути считается наличной. Плагины через <code>dlopen()</code> ELF-скан не видит. Файлы, заменённые вне pacman, оцениваются по тому, что сейчас на диске.</span>
             </div>
           </div>
         </section>
