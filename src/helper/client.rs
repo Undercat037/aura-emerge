@@ -1,10 +1,6 @@
 //! Client side: starts the root helper through sudo and talks to it.
 //! Std only, no `crate::` imports.
 //!
-//! One sudo prompt per run: the helper stays up and serves every
-//! request until `quit` / EOF (this replaces `--sudoloop`).
-//! The channel is the child's stdin/stdout; stderr stays on the
-//! terminal so sudo's prompt and helper diagnostics remain visible.
 
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Write};

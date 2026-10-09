@@ -1,23 +1,13 @@
 //! `--revdep-rebuild`: find installed binaries whose shared-library
 //! dependencies no longer resolve, and fix them.
 //!
-//! Different from `@preserved-rebuild`, which only checks *declared*
-//! deps via `pacman -T`. This reads the ELF files directly: after an
-//! `icu`/`openssl`/`boost` soname bump, a package can satisfy every
-//! declared dependency while its binaries link against a `.so` that no
-//! longer exists. Gentoo hides this behind preserved-libs; here it's
-//! "rebuild it once you notice", automated.
-//!
-//! Known limits: wrong-arch libraries at the right path count as
-//! present, `dlopen()`ed plugins are invisible, and files replaced
-//! outside pacman are judged on what's on disk now.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use colored::Colorize;
 use crate::theme::Themed;
+use colored::Colorize;
 
 use crate::*;
 

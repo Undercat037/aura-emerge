@@ -1,36 +1,6 @@
 //! `/etc/portage/make.conf` only (system path; no per-user override).
 //!
 //! Two jobs in one file, like real Portage's `make.conf`:
-//!   * `EMERGE_DEFAULT_OPTS` -- flags spliced into argv before clap
-//!     sees it. `--ignore-default-opts` skips them for one run.
-//!   * `CFLAGS`/`CXXFLAGS`/`LDFLAGS`/`RUSTFLAGS`/`MAKEFLAGS`/
-//!     `NINJAFLAGS`/`BUILDENV`/`OPTIONS`, applied via a generated
-//!     makepkg.conf passed to makepkg as `--config`.
-//!
-//! Flat, bash-assignment syntax -- no `[build]` table, same as real
-//! `make.conf`:
-//!
-//! ```text
-//! EMERGE_DEFAULT_OPTS="--pkgbuild-view --unshare-net-build"
-//!
-//! CFLAGS="-march=native -O2 -pipe"
-//! MAKEFLAGS="-j$(nproc)"
-//! OPTIONS=(strip !debug)
-//! ```
-//!
-//! `KEY="..."` and bare `KEY=...` both allow `$`/`` ` `` to survive
-//! into the generated makepkg.conf for shell expansion at build time
-//! (so `-j$(nproc)` works). `KEY='...'` is a literal single-quoted
-//! string -- no expansion, ever, even once re-embedded in the
-//! generated file. `KEY=(a b c)` is an array; array entries may be
-//! bare or quoted. `#` starts a comment outside quotes.
-//!
-//! Scalars and lists are interchangeable: a list is joined with
-//! spaces, a string is split on them.
-//!
-//! System file first, then the user one; last to set a key wins.
-//! Trust note: a value here becomes shell code run as the build user,
-//! the same trust level `/etc/makepkg.conf` already has.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -122,7 +92,7 @@ pub(crate) struct Config {
 /// Reads `/etc/portage/make.conf` only. Per-user
 /// `~/.config/emerge/make.conf` is intentionally not read (root-owned
 /// system config is the single source of truth).
-/// Missing file is fine; a symlink is refused, as elsewhere.
+
 pub(crate) fn load() -> Config {
     let mut vars: HashMap<String, BuildValue> = HashMap::new();
     let mut default_flags: Vec<String> = Vec::new();
@@ -659,7 +629,7 @@ _a+=(\"$2\"); }\n",
 
 /// Value kinds a default flag can carry. Each one is checked (and
 /// normalised) here, so a typo in make.conf is a warning, not a clap
-/// error on every run.
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Val {
     /// Whole number (`--jobs 4`).
@@ -736,15 +706,7 @@ const fn valued(long: &'static str, key: &'static str, kind: Val) -> FlagSpec {
 /// Flags accepted in `EMERGE_DEFAULT_OPTS`. Only flags that change what
 /// a run does are listed; Portage options aura-emerge accepts as no-ops
 /// (`--newuse`, `--with-bdeps`, `--backtrack`, ...) are left out on
-/// purpose, so a default can't look active while doing nothing. They
-/// still parse on the command line. Allowlist, not denylist: a
-/// default silently turning every run into `--unmerge` isn't worth
-/// risking, so actions (`-u`, `-C`, `-c`, `-p`, `-e`, ...) stay out;
-/// anything missing here still works on the command line.
-///
-/// Flags that only make sense next to an action (`--searchdesc` with
-/// `-s`, `--skipfirst` with `--resume`) carry `only_with`: they apply
-/// when that action is typed and are ignored otherwise.
+
 static SPECS: &[FlagSpec] = &[
     // output / interaction
     sw("--ask", Some('a')),
@@ -1072,9 +1034,7 @@ fn parse_defaults(raw: &[String], source: &str) -> Vec<Entry> {
 /// Reads the typed command line once: returns it normalised and the
 /// set of option keys it names (longs, short clusters, aliases alike).
 ///
-/// Normalising: `--ask=y` becomes `--ask`; `--ask=n` is dropped and
-/// counts as typed, which is how one run switches a default off (no
-/// `--ignore-default-opts` needed). Everything after `--` is left alone.
+
 fn scan_cli(raw: &[String]) -> (Vec<String>, HashSet<&'static str>) {
     let mut out: Vec<String> = Vec::with_capacity(raw.len());
     let mut typed: HashSet<&'static str> = HashSet::new();
@@ -1131,15 +1091,7 @@ fn scan_cli(raw: &[String]) -> (Vec<String>, HashSet<&'static str>) {
 /// Builds the argv clap will parse: `EMERGE_DEFAULT_OPTS` first, then the
 /// real command line, so an explicitly typed flag always wins.
 ///
-/// clap rejects a flag given twice, so a default is dropped whenever the
-/// same option was typed - in any spelling (`-a`/`--ask`, `--jobs`/
-/// `--jobsr`) - and a default valued flag never meets a typed value.
-///
-/// Dropped from the config side: everything, if `--ignore-default-opts`
-/// was typed; flags not in `SPECS`; invalid values; scoped flags whose
-/// action wasn't typed; and a flag that conflicts with one typed on the
-/// command line (the more specific intent). A conflict within the
-/// command line, or left inside the config itself, is a hard error.
+
 pub(crate) fn build_argv(argv: &[String], cfg: &Config) -> Vec<String> {
     let argv0 = argv.first().cloned().unwrap_or_default();
     let raw_cli: Vec<String> = argv.iter().skip(1).cloned().collect();

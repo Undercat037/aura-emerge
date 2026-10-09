@@ -1,13 +1,9 @@
 //! Arch Linux news (eselect-news style). RSS via http helper, hand-rolled
 //! tag parse. Read state in ~/.cache/aura-emerge/news.state (no root).
 //!
-//! External feed text is untrusted: a compromised mirror could put ANSI /
-//! OSC sequences or bidi overrides into `<title>` / `<description>` /
-//! `<guid>`. Those are stripped before anything is printed or written
-//! to the on-disk read-state file.
 
-use colored::Colorize;
 use crate::theme::Themed;
+use colored::Colorize;
 use std::fs;
 use std::io::Write;
 
@@ -95,7 +91,7 @@ fn strip_tags(s: &str) -> String {
 /// Drop C0/C1 controls (and TAB/LF so fields stay one line), DEL, and
 /// common bidi/isolate overrides that can reverse or hide terminal
 /// output. Newlines in a single field would also forge multi-line
-/// entries in `news.state`.
+
 fn sanitize_text(s: &str) -> String {
     // Turn line breaks into spaces *before* dropping other controls so a
     // forged "guid\nextra-guid" cannot glue into one opaque token.

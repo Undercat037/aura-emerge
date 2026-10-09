@@ -1,37 +1,12 @@
 //! `/etc/portage/package.mask`: packages this machine never installs,
 //! Portage's `package.mask` with Arch atoms.
 //!
-//! Same path can be either a plain file or a directory -- exactly like
-//! real Portage's `package.mask`. As a directory, every regular file
-//! inside is read (any name, no `.mask` extension required, dotfiles
-//! skipped); as a file, it's read directly. Order across files in a
-//! directory is by filename.
-//!
-//! Separate from the PKGBUILD scanner in `security.rs`: the scanner
-//! judges code, the mask is a standing decision needing no
-//! justification. Refused even when clean, pulled in as a transitive
-//! dependency, or requested by name -- not a warning you click through.
-//!
-//! Format, one entry per line:
-//!
-//! ```text
-//! ayugram-desktop-bin            # bare name: masked from any source
-//! aur/*-bin                      # only from the AUR, '*' allowed
-//! extra/nano                     # only from that official repo
-//! *-git                          # anything matching, any source
-//! ```
-//!
-//! A trailing `#` comment is kept and shown as the reason when the
-//! mask fires.
-//!
-//! `--exclude` is the one-run version of this (see `runtime.rs`); a
-//! mask is persistent and applies to dependencies too.
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use colored::Colorize;
 use crate::theme::Themed;
+use colored::Colorize;
 
 pub(crate) const MASK_FILE: &str = "/etc/portage/package.mask";
 
@@ -68,8 +43,7 @@ impl MaskList {
     /// First entry matching this package, or `None`.
     ///
     /// `repo` is the actual source ("aur", "abs", an official repo
-    /// name) when the caller knows it. A prefixed entry only fires for
-    /// that repo; `None` matches only unprefixed entries.
+
     pub(crate) fn find(&self, name: &str, repo: Option<&str>) -> Option<&MaskEntry> {
         let bare = name.split('/').last().unwrap_or(name);
         self.entries.iter().find(|e| {
@@ -108,8 +82,7 @@ fn load() -> MaskList {
     // `package.mask` is either a plain file, or a directory of files
     // (any name, dotfiles skipped) -- same as real Portage. Only one
     // of the two shapes exists on disk at a time, so no merge needed
-    // between them; `--regen` migration is what has to decide which
-    // shape to write.
+
     let files: Vec<PathBuf> = if root.is_dir() {
         let mut extra: Vec<PathBuf> = std::fs::read_dir(&root)
             .into_iter()
@@ -266,6 +239,26 @@ pub(crate) fn report_blocked(blocked: &[(String, &MaskEntry)]) {
         " *".t_yellow().bold(),
         MASK_FILE
     );
+}
+
+/// Plan-wide gate: every package in the resolved transaction (targets
+/// *and* deps) is checked. Masked deps must not slip through just
+/// because the top-level atom was clean.
+pub(crate) fn allow_plan<'a, I>(pkgs: I) -> bool
+where
+    I: IntoIterator<Item = (&'a str, Option<&'a str>)>,
+{
+    let mut blocked: Vec<(String, &MaskEntry)> = Vec::new();
+    for (name, repo) in pkgs {
+        if let Some(entry) = find(name, repo) {
+            blocked.push((name.to_string(), entry));
+        }
+    }
+    if blocked.is_empty() {
+        return true;
+    }
+    report_blocked(&blocked);
+    false
 }
 
 /// Explicit-request gate: reports and returns false if anything in

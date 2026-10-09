@@ -1,9 +1,9 @@
 //! /etc/portage/world: explicit-install tracking, custom sets, and
 //! `@world` provisioning (no -u).
 
+use crate::theme::Themed;
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
-use crate::theme::Themed;
 use std::collections::HashSet;
 use std::fs;
 use std::io::{self, BufRead, Write};
@@ -15,7 +15,6 @@ use crate::*;
 // Resolves a whole package list in at most two pacman spawns total
 // (was one, sometimes two, per package -- see pkg_world_entry_from).
 
-/// Batch repo lookup via libalpm. Some("None") = local build.
 pub(crate) fn get_pkg_repos_batch(
     names: &[String],
 ) -> std::collections::HashMap<String, Option<String>> {
@@ -60,9 +59,7 @@ pub(crate) fn valid_set_name(name: &str) -> bool {
 /// Where `@<name>` lives: `sets/<name>` (Portage style) or
 /// `sets/<name>.set`. Both existing at once is an error rather than a
 /// silent pick -- `@game-kit` would otherwise mean different things
-/// depending on which file happened to win. Neither existing returns
-/// the `.set` path, so the caller's "no such set" message has
-/// something to point at.
+
 pub(crate) fn resolve_set_path(name: &str) -> Result<String> {
     resolve_set_path_in(SETS_DIR, name)
 }
@@ -184,7 +181,7 @@ pub(crate) fn list_custom_sets() -> Vec<String> {
 
 /// Drops packages `--exclude`/the mask cover, recording each in `held`.
 /// Provisioning shouldn't abort over one masked entry -- it should
-/// skip it and provision the rest.
+
 fn hold_back(list: &mut Vec<String>, repo: Option<&str>, held: &mut Vec<String>) {
     list.retain(|name| {
         if crate::runtime::is_excluded(name) {
@@ -211,7 +208,10 @@ pub(crate) fn provision_from_world_set(
     skip_srcinfo_regen: bool,
     unshare_net_build: bool,
 ) -> Result<bool> {
-    println!("{} Provisioning system from world...", ">>>".t_green().bold());
+    println!(
+        "{} Provisioning system from world...",
+        ">>>".t_green().bold()
+    );
 
     let entries: Vec<String> = match open_nofollow(std::path::Path::new(WORLD_SET_FILE)) {
         Err(e) if is_symlink_open_error(&e) => {
@@ -676,7 +676,11 @@ pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
         sorted
     } else {
         if changed == 0 {
-            println!("{} @{} is already up to date.", ">>>".t_green().bold(), name);
+            println!(
+                "{} @{} is already up to date.",
+                ">>>".t_green().bold(),
+                name
+            );
             return Ok(());
         }
         rewritten

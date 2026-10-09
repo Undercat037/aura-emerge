@@ -1,35 +1,6 @@
 //! `/var/log/emerge.log`: append-only, human-readable record of
 //! merge/unmerge events -- Portage's `emerge.log`, for pacman/AUR/ABS
 //! atoms instead of ebuilds.
-//!
-//! Written like other root-owned `/etc/portage/*` state from this
-//! unprivileged process: `sudo tee`. Best-effort -- a failed write is
-//! silent, never a reason to fail (or slow down) a merge/unmerge that
-//! already happened.
-//!
-//! One line per event:
-//! ```text
-//! 2026-09-21 08:51:44  MERGE    aur    noctalia-5.1.0-1.1        (12s)
-//! 2026-09-21 08:52:10  MERGE    aur    libqalculate-5.12.0-1.1   (9s)
-//! 2026-09-21 09:03:02  MERGE    extra  nano-8.0-1  vim-9.1-1     (4s)
-//! 2026-09-21 09:10:05  UNMERGE  -      old-package-2.0-1
-//! ```
-//!
-//! Duration is only ever real: AUR/ABS build one at a time in this
-//! tool's own loop, so each gets its own timer. A `pacman -S`/`-R`
-//! batch is one exit code for the whole transaction -- no per-package
-//! split, so that line carries every atom and the batch's own total.
-//!
-//! `--log PATH` session file (chronological, for bug reports):
-//! ```text
-//! ===
-//! emerge -at abs/nano
-//! ===
-//! --- build: nano ---
-//! <makepkg output>
-//! ===
-//! 2026-10-06 12:11:03  MERGE    abs    abs/nano-9.2-1  (22s)
-//! ```
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -38,8 +9,8 @@ use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use colored::Colorize;
 use crate::theme::Themed;
+use colored::Colorize;
 
 pub(crate) const LOG_FILE: &str = "/var/log/emerge.log";
 const DATE_BIN: &str = "/usr/bin/date";
@@ -242,7 +213,7 @@ fn parse_duration(s: &str) -> Option<Duration> {
 /// Counts and sums a log's worth of lines, without caring where they
 /// came from -- testable on a literal string, and `--info` just hands
 /// it the file's contents. `--info` runs unprivileged, so a log with
-/// restrictive permissions is a silent zero here, not an error.
+
 pub(crate) fn parse_stats(text: &str) -> LogStats {
     let mut stats = LogStats::default();
     for line in text.lines() {

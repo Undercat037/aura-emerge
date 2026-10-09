@@ -1,9 +1,6 @@
 //! Shared `>>> Verb (n of m) atom` status lines + live Jobs footer.
 //!
 //! One run-wide counter so repo, AUR and ABS stages number consistently
-//! (`(15 of 16)` after 14 repo packages). The Jobs line is rewritten in
-//! place (no extra newline) so it stays at the bottom of the TTY until
-//! `finish()`. Load avg refreshes on a background tick while a job runs.
 
 use std::io::{IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -11,8 +8,8 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-use colored::Colorize;
 use crate::theme::Themed;
+use colored::Colorize;
 
 static TOTAL: AtomicUsize = AtomicUsize::new(0);
 static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -134,8 +131,7 @@ pub(crate) fn note(text: &str) {
 /// Handle a helper `hook …` event, keeping the Jobs footer pinned.
 ///
 ///   `hook start pre|post`           → `>>> Running pre/post-transaction hooks...`
-///   `hook run N/M name [desc…]`     → `>>> (N of M) desc`
-///   `hook done …`                   → no-op
+
 pub(crate) fn on_hook_event(ev: &str) {
     let mut it = ev.split_whitespace();
     let (Some("hook"), Some(kind)) = (it.next(), it.next()) else {

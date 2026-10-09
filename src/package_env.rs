@@ -1,32 +1,13 @@
 //! `/etc/portage/package.env`: per-package build-flag overrides,
 //! Portage's `package.env`.
 //!
-//! Same shape as `package.mask`: a plain file, or a directory of files
-//! (any name, dotfiles skipped, read in filename order).
-//!
-//! One entry per line: an atom, then one or more env file names.
-//!
-//! ```text
-//! aur/*-git        no-lto            # repo prefix and '*' allowed
-//! ttf-comic-sans   fast.conf  quiet  # several envs, applied in order
-//! ```
-//!
-//! Env files live in `/etc/portage/env/` and use `make.conf` syntax;
-//! only the build vars count (`CFLAGS`, `OPTIONS`, ...).
-//!
-//! Layering: make.conf, then every matching entry in file/line order,
-//! then each env in the order named. Last to set a var wins; the var
-//! is replaced whole, not merged. If two layers set the same var to
-//! different values the build prints which one won.
-//!
-//! Only affects AUR/ABS builds -- official packages aren't built here.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use colored::Colorize;
 use crate::theme::Themed;
+use colored::Colorize;
 
 use crate::config::BuildValue;
 

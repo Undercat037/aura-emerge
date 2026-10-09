@@ -1,10 +1,6 @@
 //! Root-side file writes. Std + libc only, no `crate::` imports.
 //!
 //! Everything goes through a directory fd: the dir is opened with
-//! `O_NOFOLLOW` and checked (owner, not group/world-writable), the
-//! file is opened relative to it with `O_NOFOLLOW` and `fstat`-checked
-//! (regular, owner, no hardlinks, not group/world-writable).
-//! Paths come only from `Target`, never from the client.
 
 use std::ffi::CString;
 use std::fs::File;

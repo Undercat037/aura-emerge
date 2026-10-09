@@ -1,11 +1,6 @@
 //! Process-wide run options resolved once in `main::run()`, plus the
 //! failure log behind `--keep-going`.
 //!
-//! Global instead of more parameters: `emerge.conf`, `--exclude`, and
-//! `--keep-going` are read deep in the build path (functions already
-//! taking 7-11 args each), and never differ between two calls in the
-//! same process. Set once via `OnceLock`; the failure log is the one
-//! mutable piece, behind a `Mutex`.
 
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
@@ -93,8 +88,7 @@ fn load_1min() -> Option<f32> {
 /// Called by a build worker before it starts a job. Returns at once
 /// without `--load-average`. With it, a new build waits while the load
 /// is above the limit - but never when nothing else is running (as in
-/// Portage), so a busy machine can't stall the run for good. Applies to
-/// the `--jobsa` pool (AUR/ABS builds), not to repo installs.
+
 pub(crate) fn acquire_job_slot() -> JobSlot {
     let Some(limit) = get().load_average else {
         return JobSlot(false);

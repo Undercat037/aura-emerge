@@ -1,8 +1,6 @@
 //! bwrap sandbox for untrusted PKGBUILD phases (`pkgver`/`prepare`/
 //! `build`/`check`/`package`). Second layer after the static scanner:
 //! no real $HOME, no /run (session bus / agents), cleared env, writes
-//! only in the build dir. Dependency install and final `pacman -U`
-//! stay outside (no PKGBUILD code); built archives are audited first.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -54,7 +52,7 @@ const NET_RO_BINDS: &[&str] = &["/run/systemd/resolve", "/run/NetworkManager"];
 /// The only environment variables the sandboxed makepkg inherits
 /// (plus `LC_*`, `HOME`, `PATH` and our own `--setenv`s). Everything
 /// else -- SSH_AUTH_SOCK, DBUS_SESSION_BUS_ADDRESS, *_TOKEN, ... -- is
-/// dropped by `--clearenv`.
+
 const ENV_PASSTHROUGH: &[&str] = &[
     "LANG",
     "LANGUAGE",
@@ -94,12 +92,7 @@ fn is_real_dir(p: &Path) -> bool {
 /// Config files whose *target* lives in a directory we hide.
 ///
 /// `/etc/makepkg.conf` (and `/etc/makepkg.conf.d/*`) are often
-/// symlinks into a dotfiles repo under `$HOME`. With `/home` replaced
-/// by an empty tmpfs the link dangles, and since the generated
-/// override conf does `source /etc/makepkg.conf 2>/dev/null` the
-/// failure is silent: makepkg then complains "$PKGEXT does not contain
-/// a valid package suffix (got '')". Returns the canonical targets to
-/// re-expose (read-only, just those files).
+
 fn exposed_targets(candidates: &[PathBuf], hidden: &[PathBuf]) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     for c in candidates {
@@ -138,8 +131,7 @@ pub(crate) fn bwrap_available() -> bool {
 /// Per-build scratch dir, for files makepkg should read but the
 /// untrusted `prepare()`/`build()` shouldn't be able to rewrite (the
 /// fakeroot shim, the generated makepkg.conf carrying emerge.conf's
-/// build flags, the public-only keyring). Cleaned up by
-/// `FakerootShimGuard`.
+
 pub(crate) fn scratch_dir(build_dir: &Path) -> PathBuf {
     fakeroot_shim_scratch_dir(build_dir)
 }
@@ -153,14 +145,7 @@ struct RustEnv {
 /// Fixes "rustup could not choose a version of cargo to run" in a
 /// sandboxed `build()`: rustup's `$RUSTUP_HOME` (default
 /// `$HOME/.rustup`) is empty under the fake `$HOME` (and, now that
-/// `/home` is hidden, absent), so it can't find its settings. Fix:
-/// `--setenv RUSTUP_HOME` back to its real path and re-bind that path
-/// (and `~/.cargo/bin`, where the rustup proxies live) read-only.
-///
-/// `$CARGO_HOME` is NOT restored the same way -- `~/.cargo` can hold a
-/// real secret (`credentials.toml`), so it gets a fresh writable dir
-/// inside `build_dir` instead; cargo just re-fetches deps into it.
-/// Only `~/.cargo/bin` is exposed, read-only.
+
 fn rustup_env(build_dir: &Path) -> RustEnv {
     let mut out = RustEnv {
         env: Vec::new(),
@@ -285,42 +270,7 @@ impl Drop for FakerootShimGuard {
 
 /// Fixes "cp: cannot preserve ownership: Invalid argument" in `package()`
 /// (confirmed with strace): `package()` runs under `fakeroot`, which looks
-/// like uid/gid 0 and, for every file, still issues a *real*
-/// `fchownat(..., 0, 0, ...)` alongside its faked bookkeeping. Outside
-/// bwrap that fails EPERM (0 is valid, we just lack CAP_CHOWN) and
-/// coreutils treats EPERM as an expected "can't preserve ownership" and
-/// only warns. Inside bwrap's user namespace, which maps only the real
-/// caller's uid/gid, 0 has *no* mapping at all, so it's EINVAL instead --
-/// coreutils doesn't tolerate that, so `package()` dies.
-///
-/// `bwrap --uid 0 --gid 0` on the whole sandbox would dodge this, but
-/// makepkg refuses outright to run at EUID 0 (`--asroot` is long gone).
-/// So only `fakeroot`'s own subprocess gets remapped: this writes a
-/// same-named `fakeroot` shim ahead of the real one on `$PATH` (makepkg
-/// resolves it via `type -p`) that re-execs the real `fakeroot` inside
-/// its own nested bwrap layer with `--uid 0 --gid 0`. makepkg itself
-/// keeps running as the ordinary uid; only fakeroot's world becomes
-/// uid-0-shaped, giving `fchownat(0, 0)` a real mapping to no-op against.
-/// No real privilege gained -- 0 there is still just a label for the same
-/// unprivileged caller.
-///
-/// The shim is deliberately NOT re-entrant. makepkg calls `fakeroot -v`
-/// from *inside* the first fakeroot (it stamps the version into
-/// `.PKGINFO`), which also resolves to the shim; a second nested bwrap
-/// then dies with "setting up uid map: Read-only file system" because
-/// the first layer's `--ro-bind / /` made `/proc` read-only (confirmed
-/// with strace -f). So the shim execs the real fakeroot directly for
-/// `-v`/`--version`/`-h`/`--help`, and whenever `FAKEROOTKEY` is already
-/// set (= we're already inside a fakeroot).
-///
-/// Returns the shim's directory (to prepend to `$PATH`), or `None` if it
-/// couldn't be written (falls back to plain fakeroot -- pre-existing
-/// EINVAL failure mode, not a new hole).
-///
-/// Written outside `build_dir` (see `shim_root()`) so `prepare()`/
-/// `build()` -- which run first, in the same outer sandbox -- have no
-/// writable path to this script and can't replace it before fakeroot
-/// execs it.
+
 fn fakeroot_shim_dir(build_dir: &Path, extra_dest_dirs: &[(&str, PathBuf)]) -> Option<PathBuf> {
     // Pinned: a `fakeroot` found via the caller's $PATH could be a
     // user-writable file. Only fall back to PATH if the system one is
@@ -341,7 +291,7 @@ fn fakeroot_shim_dir(build_dir: &Path, extra_dest_dirs: &[(&str, PathBuf)]) -> O
     // Fresh nested mount namespace, so build_dir/extra_dest_dirs need
     // re-binding writable or package() just hits read-only. /dev needs
     // its own --dev-bind (not folded into "/"): plain --bind is nodev,
-    // which turns /dev/null into an inert regular file.
+
     let mut inner_binds = format!(
         "--ro-bind / / --dev-bind /dev /dev --bind {0} {0}",
         shq(build_dir)
@@ -357,14 +307,12 @@ fn fakeroot_shim_dir(build_dir: &Path, extra_dest_dirs: &[(&str, PathBuf)]) -> O
 /// Writes `<shim_dir>/fakeroot`. `shim_dir` must be our own 0700 dir
 /// (see `fakeroot_shim_scratch_dir`); the file is still created with
 /// `O_EXCL` (never follows a symlink) and moved into place with
-/// `rename`, so no step can write through a planted link.
+
 fn write_shim(shim_dir: &Path, real_fakeroot: &Path, inner_binds: &str) -> Option<()> {
     // --die-with-parent: this nested bwrap doesn't outlive the outer
     // makepkg if it's killed. --new-session: matches the outer
     // sandbox's own flag, cutting off TIOCSTI and other terminal-based
-    // escapes from a compromised fakeroot child. --cap-drop ALL: the
-    // inner userns would otherwise start with a full cap set over
-    // itself; fakeroot fakes ownership in userspace and needs none.
+
     let real = shq(real_fakeroot);
     let script = format!(
         "#!/bin/sh\n\
@@ -401,10 +349,7 @@ fn shq(path: &Path) -> String {
 
 /// A copy of the PUBLIC half of the real GnuPG home, for signature
 /// verification inside the sandbox.
-///
-/// Fresh GNUPGHOME under the build scratch dir — never the real
-/// `~/.gnupg`. Host keyboxd / agent sockets are useless inside bwrap;
-/// keys must be imported into this directory with `--homedir`.
+
 fn sandbox_gnupg_home(build_dir: &Path) -> Option<PathBuf> {
     let dst = fakeroot_shim_scratch_dir(build_dir).join("gnupg");
     let _ = std::fs::remove_dir_all(&dst);
@@ -491,38 +436,7 @@ fn seed_from_host_export(real: &Path, dst: &Path) {
 
 /// Builds the `bwrap ... -- makepkg ...` command running the build-time
 /// PKGBUILD functions in an isolated namespace.
-///
-/// `build_dir` is the only writable path -- it's the AUR/ABS checkout,
-/// so makepkg's own $srcdir/$pkgdir are writable for free. Top-level
-/// `*.install` files in it are re-bound read-only on top (they end up
-/// in the package as `.INSTALL` and run as root at `pacman -U`; a
-/// `build()` must not be able to swap in different content than the
-/// scanner saw). `PKGBUILD` itself stays writable: makepkg's own
-/// `pkgver()` update does `sed -i` on it.
-///
-/// `extra_dest_dirs`: any `PKGDEST`/`SRCDEST`/`SRCPKGDEST`/`BUILDDIR`
-/// resolved outside `build_dir` (see `packages::resolve_dest_dirs`),
-/// each gets its own writable bind + matching `--setenv`, since the
-/// sandboxed makepkg can't see the user-level config that set it.
-/// Known gap: a differing `/etc/makepkg.conf` value (visible in the
-/// jail) still wins over our `--setenv` -- rare in practice.
-///
-/// `real_gnupg_home`: the user's real GnuPG dir. Never bound as is --
-/// see `sandbox_gnupg_home`.
-///
-/// `net`: whether this call gets `--share-net`. Callers using
-/// `--unshare-net-build` pass `true` for the `prepare()`/download phase
-/// (verified `source=()` entries -- the legitimate use of network
-/// here), `false` for `build()`/`check()`/`package()`, so anything
-/// reaching for the network outside the declared sources (e.g. `cargo
-/// build` hitting crates.io mid-compile) fails loudly instead of
-/// succeeding quietly. `false` still gets a working loopback (see the
-/// `lo`-up shim below): some `fakeroot` builds use TCP-loopback IPC
-/// between `fakeroot` and its `faked` daemon -- unrelated to the
-/// chown/EINVAL issue `fakeroot_shim_dir` fixes, but cheap to cover too.
-/// No route to the host or outside either way.
-///
-/// `caller_args` must NOT include `-s`/`-i` -- see module doc.
+
 pub(crate) fn sandboxed_makepkg(
     makepkg_bin: &str,
     build_dir: &Path,
@@ -558,8 +472,7 @@ pub(crate) fn sandboxed_makepkg(
     // Everything below MUST stay after this ro-bind (bwrap applies bind
     // rules in order; an earlier rule under "/" gets clobbered by it).
     // Bit us before: --proc/--dev too early -> host's real read-only
-    // /proc,/dev ("Permission denied"); --tmpfs /tmp too early -> /tmp
-    // read-only, breaking the fake-$HOME mkdir below.
+
     cmd.args(["--proc", "/proc"]);
     cmd.args(["--dev", "/dev"]);
     cmd.args(["--tmpfs", "/tmp"]);
@@ -567,10 +480,7 @@ pub(crate) fn sandboxed_makepkg(
     // Hide the real home, session runtime dir and other mounts. This
     // is what makes the "can't see the real $HOME" promise true --
     // `--ro-bind / /` alone leaves /home/<user>/.ssh readable and only
-    // *changing the HOME variable* hides nothing.
-    // Only dirs that exist: bwrap can't create a mountpoint on the
-    // read-only root ("Can't create file /media: Read-only file
-    // system" -- Arch has no /media by default).
+
     for dir in HIDDEN_DIRS {
         if is_real_dir(Path::new(dir)) {
             cmd.args(["--tmpfs", dir]);
@@ -689,7 +599,7 @@ pub(crate) fn sandboxed_makepkg(
         // With `net: false` the namespace's own `lo` starts DOWN. Some
         // fakeroot builds use TCP-loopback IPC, which needs it. Bring it
         // up first -- loopback only, still no outside route. "$0" "$@"
-        // (not string interpolation) keeps this injection-safe.
+
         cmd.arg("/bin/sh");
         cmd.args([
             "-c",

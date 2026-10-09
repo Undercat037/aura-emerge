@@ -1,10 +1,6 @@
 //! Direct AUR interaction: git-clones a package's AUR repo and reads its
 //! `.SRCINFO` for dependencies, replacing the `aura -A` build/install
 //! path (see `packages::aur_install` / `resolve_and_build_aur`).
-//!
-//! Talks to the *official* AUR (`aur.archlinux.org`), not the
-//! third-party `faur.fosskers.ca` mirror `aura` uses -- one fewer
-//! trusted party for a tool that cares about build security.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -35,10 +31,7 @@ pub(crate) struct AurPkgInfo {
 /// Shallow-clones `<AUR_BASE_URL>/<pkgbase>.git` into `dest_root/<pkgbase>`.
 /// Returns `None` on any git failure (network or nonexistent pkgbase --
 /// not distinguished, callers fall back to an RPC lookup either way).
-///
-/// `dest_root` should be owned exclusively by this run (see
-/// `packages::aur_build_base()`/`abs_build_base()`'s wipe-on-start), so a
-/// pre-existing `target` is a caller bug and gets its own stderr message.
+
 pub(crate) fn clone_repo(pkgbase: &str, dest_root: &Path) -> Option<PathBuf> {
     let url = format!("{}/{}.git", AUR_BASE_URL, pkgbase);
     let target = dest_root.join(pkgbase);
@@ -74,7 +67,7 @@ pub(crate) fn clone_repo(pkgbase: &str, dest_root: &Path) -> Option<PathBuf> {
     // AUR's git backend "clones" successfully (exit 0) even for a name
     // never pushed as a package -- an empty repo, no PKGBUILD. Treat that
     // as "doesn't exist" instead of a confusing failure downstream, and
-    // remove the empty dir so it doesn't linger in the reused dest_root.
+
     if !target.join("PKGBUILD").is_file() {
         let _ = std::fs::remove_dir_all(&target);
         return None;
@@ -148,10 +141,7 @@ pub(crate) fn clone_or_resolve(pkg: &str, dest_root: &Path) -> Option<(PathBuf, 
 /// Minimal `.SRCINFO` reader: sums `depends`/`makedepends`/`checkdepends`
 /// (bare + `_<current_arch>` variants) across all sections, strips version
 /// constraints (`foo>=1.2` -> `foo`), dedupes. Other arches' suffixes are
-/// excluded since they don't exist on this machine.
-///
-/// `.SRCINFO` is generated/static, so reading it never executes anything.
-/// `None` only on read failure; an empty file yields `Some(vec![])`.
+
 pub(crate) fn srcinfo_dependencies(path: &Path, current_arch: &str) -> Option<Vec<String>> {
     let text = std::fs::read_to_string(path).ok()?;
     let mut out = Vec::new();
@@ -223,7 +213,7 @@ pub(crate) fn srcinfo_version(path: &Path) -> Option<String> {
 /// Every `pkgname = ...` value in a `.SRCINFO` file - usually one, but
 /// several for a split package. Used by `--install-pkgbuild` to record
 /// world entries after a local build (no AUR/ABS resolution step
-/// to source that list from, unlike every other install path).
+
 pub(crate) fn srcinfo_pkgnames(path: &Path) -> Option<Vec<String>> {
     let text = std::fs::read_to_string(path).ok()?;
     let names: Vec<String> = text

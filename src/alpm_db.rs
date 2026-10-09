@@ -22,7 +22,7 @@ pub(crate) struct AlpmPkg {
 /// User-side handle: read-only queries. Signature verification is
 /// disabled here so libalpm never opens `/etc/pacman.d/gnupg` as a
 /// non-root process (gpg: "unsafe ownership on homedir"). Real
-/// package/db signature checks run only in the root helper.
+
 fn open() -> Option<Alpm> {
     let conf = PacmanConfig::new().ok()?;
     let mut alpm = alpm_with_conf(&conf).ok()?;
@@ -113,7 +113,7 @@ pub(crate) fn upgradeable_detail() -> Vec<(String, String, String, String)> {
                 // libalpm (sync_sysupgrade) looks only at the FIRST sync db
                 // that carries the name; a newer copy in a later repo is
                 // never used. Mirror that, or the plan shows upgrades the
-                // transaction will not contain.
+
                 let new_ver = sp.version().to_string();
                 if alpm::vercmp(local_ver.as_str(), new_ver.as_str()) == std::cmp::Ordering::Less {
                     out.push((name.to_string(), local_ver, new_ver, db.name().to_string()));
@@ -213,7 +213,7 @@ fn sync_pkg<'a>(alpm: &'a Alpm, repo: Option<&str>, name: &str) -> Option<&'a Pa
 /// Full install plan for `targets` (`[repo/]name`): the targets plus
 /// whatever libalpm pulls in, deps first -- what `pacman -Sp` printed.
 /// Prepare only, nothing is committed. NO_LOCK, so a normal user can
-/// run it (same as pacman does for -p).
+
 pub(crate) fn plan_sync(targets: &[String]) -> Result<Vec<AlpmPkg>, String> {
     let mut alpm = open().ok_or_else(|| "cannot open libalpm".to_string())?;
     alpm.trans_init(TransFlag::NO_LOCK)
@@ -397,7 +397,7 @@ pub(crate) fn missing_optdeps(names: &[String]) -> Vec<String> {
 
 /// Sync-db search (`pacman -Ss`).
 /// `all_repos`: false = one row per package name (first repo in conf order);
-/// true = every repo hit (full pacman -Ss style).
+
 pub(crate) fn search_sync(term: &str, _in_desc: bool, all_repos: bool) -> Vec<AlpmPkg> {
     if term.is_empty() {
         return Vec::new();

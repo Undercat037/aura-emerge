@@ -1,11 +1,6 @@
 //! Helper process guard: runs first, before anything is read or parsed.
 //! Std + libc only, no `crate::` imports.
 //!
-//! Fails closed: any doubt is an error and the helper must exit.
-//! The channel arrives on stdin (requests) and stdout (responses),
-//! because sudo closes every fd >= 3. `harden()` moves it to fd 3/4,
-//! points stdin at /dev/null and stdout at stderr, so a stray print or
-//! child process can never touch the protocol stream.
 
 use std::fmt;
 use std::fs::File;
@@ -21,7 +16,7 @@ pub(crate) const FD_OUT: i32 = 4;
 /// PATH for the helper and for hook/scriptlet children.
 /// Absolute Exec= paths in hooks do not need this, but many `.install`
 /// scriptlets and third-party hooks call bare `depmod`/`mkinitcpio`/…
-/// Arch merges sbin→bin; keep both for non-merged roots and containers.
+
 const SAFE_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 /// prctl() is variadic and wants full-width args.
 const ZERO: libc::c_ulong = 0;

@@ -1,9 +1,6 @@
 //! Root-private staging of user files for `-U`. Std + libc only,
 //! no `crate::` imports.
 //!
-//! Copy, hash while copying, compare with the sha256 the client sent
-//! (what passed the audit). libalpm only ever sees the root-owned copy,
-//! so nothing done to the original after the audit matters (TOCTOU).
 
 use std::ffi::OsString;
 use std::fs::{self, DirBuilder, OpenOptions};

@@ -1,7 +1,7 @@
 //! Package resolve/probe, ABS builds, portageq, --info, @preserved-rebuild.
 
-use colored::Colorize;
 use crate::theme::Themed;
+use colored::Colorize;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
@@ -47,10 +47,7 @@ pub(crate) fn status_colored(status: &str) -> String {
 /// Run a build command (makepkg / bwrap+makepkg).
 ///
 /// Quiet by default: stdout/stderr are captured so the Gentoo-style
-/// `>>> Emerging` / `>>> Installing` lines stay readable. On failure the
-/// captured log is dumped. Live output with `--debug`, `AE_DEBUG=1`, or
-/// `--quiet-build=n`. With `--log PATH`, output is always captured into
-/// the session file (and still printed live when debug is on).
+
 fn run_build_cmd(mut cmd: Command, label: &str) -> Result<(), String> {
     let logging = crate::logbook::session_active();
     let live = crate::runtime::show_build_output();
@@ -182,17 +179,7 @@ fn build_config(build_dir: &std::path::Path) -> crate::config::Config {
 /// Materializes make.conf's build flags as a makepkg.conf and returns
 /// its path, for `makepkg --config`.
 ///
-/// Why a generated file instead of environment variables: makepkg
-/// *sources* makepkg.conf, and a plain `CFLAGS=...` assignment in there
-/// overwrites whatever the environment had. So exporting CFLAGS at
-/// makepkg would be silently discarded a second later. The generated
-/// file sources the system config first and then overrides it, which
-/// puts our values last in the only order that counts.
-///
-/// Written to the sandbox scratch directory rather than the build
-/// directory -- see `sandbox::scratch_dir`. `None` when make.conf
-/// sets no build flags, which leaves makepkg's own config lookup
-/// untouched.
+
 fn makepkg_conf_override(
     build_dir: &std::path::Path,
     cfg: &crate::config::Config,
@@ -385,9 +372,7 @@ pub(crate) fn resolve_aur_split(pkgs: &[String]) -> (Vec<PkgInfo>, Vec<String>) 
 
 /// `pkgs` is the plan to show; `requested` is what was typed on the
 /// command line -- with `tree`, anything else in `pkgs` nests under
-/// whichever package's "Depends On" names it, `emerge -t`-style.
-/// `deep`: `None` = direct deps only, `Some(0)` = every level,
-/// `Some(n)` = capped at `n` levels.
+
 pub(crate) fn print_emerge_plan(
     pkgs: &[PkgInfo],
     tree: bool,
@@ -434,15 +419,7 @@ pub(crate) fn print_emerge_plan(
 /// Portage-style `--ask`: one prompt after the plan, before any work.
 /// Returns `true` to proceed. When `ask` is false, always proceeds.
 ///
-/// `action` is the verb in the question ("merge" / "unmerge" / ...).
-/// After a yes, callers must keep package managers non-interactive.
-///
-/// Accepted answers match Portage: empty / y / yes (case-insensitive).
-/// Anything else aborts.
 
-/// Source-built glibc is a footgun: a bad build can break every dynamic
-/// binary on the system (including pacman). Warn hard and require an
-/// explicit yes before abs/aur rebuilds of these packages.
 pub(crate) fn warn_critical_libc(names: &[String], source: &str) -> bool {
     const CRITICAL: &[&str] = &["glibc", "lib32-glibc"];
     let hits: Vec<&str> = names
@@ -532,12 +509,7 @@ pub(crate) fn depends_on_map(names: &[String]) -> HashMap<String, HashSet<String
 /// Orders `pkgs` for tree display: `requested` at depth 0, everything
 /// else nested under whichever package's "Depends On" names it --
 /// recursively when `deep`, one level otherwise. An unmatched
-/// dependency (a `provides` match, or beyond `--deep`'s reach) still
-/// shows at depth 1 -- no fabricated parent, just real information.
-///
-/// Skips `-Si` entirely when there's nothing to explain -- AUR-only
-/// installs, where the plan doesn't resolve transitive AUR deps yet,
-/// are just `pkgs == requested`.
+
 pub(crate) fn build_plan_tree<'a>(
     pkgs: &'a [PkgInfo],
     requested: &HashSet<&str>,
@@ -564,7 +536,7 @@ pub(crate) fn build_plan_tree<'a>(
 /// Split out from `build_plan_tree` so it's testable without shelling
 /// out to pacman for `deps_by_name`. DFS, not BFS: each parent is
 /// immediately followed by its own subtree, which is what makes the
-/// indentation read as a tree.
+
 fn group_by_parent<'a>(
     top: Vec<&'a PkgInfo>,
     mut remaining: Vec<&'a PkgInfo>,
@@ -601,7 +573,7 @@ fn group_by_parent<'a>(
 /// Places `parent_name`'s still-unplaced children right after it,
 /// recursing into their own children (bounded by `max_depth`). Each
 /// child is removed from `remaining` before recursing into it, so a
-/// dependency cycle in the data can't loop forever.
+
 fn place_children<'a>(
     parent_name: &str,
     parent_depth: usize,
@@ -675,7 +647,7 @@ pub(crate) fn print_emerge_completed(pkgs: &[PkgInfo]) {
 
 /// `[epoch:]pkgver-pkgrel` from ABS GitLab .SRCINFO (no clone).
 /// Full version, not bare pkgver: `vercmp` skips the release when one
-/// side lacks it, so `0.12.5-1.1` vs `0.12.5` read as a reinstall.
+
 pub(crate) fn abs_get_version(pkg: &str) -> String {
     let url = format!("{}/{}/raw/HEAD/.SRCINFO", ABS_GITLAB_BASE, pkg);
     if let Some(text) = crate::http::get(&url, 5) {
@@ -967,30 +939,6 @@ fn already_satisfied(name: &str) -> bool {
 /// `building` = cycle guard; `built` = shared-dep cache. None on hard fail.
 /// edit only when is_top_level; skip_srcinfo_regen only with edit.
 
-/// Regenerates `<dir>/.SRCINFO` from a just-edited PKGBUILD via
-/// `makepkg --printsrcinfo`, unless `skip_srcinfo_regen` is set.
-///
-/// The one place aura-emerge does re-execute PKGBUILD content after an
-/// edit -- `--printsrcinfo` sources the whole file, the risk
-/// `bash_ast.rs`'s and `srcinfo_dependencies`'s (aur.rs) doc comments
-/// describe for parsing an arbitrary PKGBUILD. The difference here is
-/// trust: this only runs against content the person just wrote in
-/// their own `$EDITOR`, after `verify_local_clone_or_rescan` already
-/// re-scanned and passed it. `skip_srcinfo_regen` exists for a manual
-/// review-then-regenerate workflow instead.
-///
-/// Best-effort, never fatal: a failure is a warning, and the build
-/// continues against the `.SRCINFO` already on disk -- a stale
-/// dependency list is recoverable, aborting the whole build over a
-/// `--printsrcinfo` hiccup would not be.
-/// Best-effort defensive reset after handing the terminal to `$EDITOR`.
-/// Some editors (nvim with a true-color theme, especially on
-/// kitty/wezterm/foot) set the terminal's default fg/bg/cursor via OSC
-/// 10/11/12 and don't always restore them, making our own correct
-/// `.t_yellow().bold()` codes look colorless afterward. `\x1b[0m` resets
-/// SGR state; the OSC resets drop any override back to default. All
-/// four are no-ops on an unaffected terminal, safe to call
-/// unconditionally.
 fn reset_terminal_colors_after_editor() {
     print!("\x1b[0m\x1b]110\x07\x1b]111\x07\x1b]112\x07");
     let _ = std::io::Write::flush(&mut std::io::stdout());
@@ -1011,10 +959,7 @@ pub(crate) struct PkgbuildViewOutcome {
 /// Where `--pkgbuild-view` keeps the last-shown copy of each pkgbase's
 /// PKGBUILD, purely so the *next* run can show a diff instead of the
 /// whole file again. Purely a UX cache, no security role (unlike the AUR
-/// scanner's own fetched-vs-clone comparison) - if `$HOME`/
-/// `$XDG_CACHE_HOME` can't be resolved, or `pkgbase` doesn't look like a
-/// safe filename, callers just fall back to showing the full file every
-/// time instead of failing.
+
 fn pkgbuild_view_cache_path(pkgbase: &str) -> Option<std::path::PathBuf> {
     if pkgbase.is_empty() || pkgbase.contains(['/', '\\']) {
         return None;
@@ -1037,11 +982,7 @@ fn pkgbuild_view_cache_path(pkgbase: &str) -> Option<std::path::PathBuf> {
 /// `--pkgbuild-view`: show the PKGBUILD about to be built for a
 /// directly-requested (top-level) package -- a diff against the last-
 /// shown copy when cached, the full file otherwise -- and ask for
-/// confirmation before the build starts. Declining offers to open it in
-/// `$EDITOR` instead of just failing the package outright.
-///
-/// Only called for a top-level target, same restriction `--edit`
-/// already applies -- nobody wants a prompt for every transitive dep.
+
 pub(crate) fn pkgbuild_view_step(pkgbase: &str, dir: &std::path::Path) -> PkgbuildViewOutcome {
     let pkgbuild_path = dir.join("PKGBUILD");
     let Ok(current) = fs::read_to_string(&pkgbuild_path) else {
@@ -1060,7 +1001,11 @@ pub(crate) fn pkgbuild_view_step(pkgbase: &str, dir: &std::path::Path) -> Pkgbui
     let previous = cache_path.as_ref().and_then(|p| fs::read_to_string(p).ok());
 
     println!();
-    println!("{} PKGBUILD for {}:", ">>>".t_green().bold(), pkgbase.bold());
+    println!(
+        "{} PKGBUILD for {}:",
+        ">>>".t_green().bold(),
+        pkgbase.bold()
+    );
     println!();
     match &previous {
         Some(prev) if *prev == current => {
@@ -1110,7 +1055,10 @@ pub(crate) fn pkgbuild_view_step(pkgbase: &str, dir: &std::path::Path) -> Pkgbui
         let _ = fs::write(path, &current);
     }
 
-    eprint!("{} Continue with this build? [Y/n] ", ">>>".t_yellow().bold());
+    eprint!(
+        "{} Continue with this build? [Y/n] ",
+        ">>>".t_yellow().bold()
+    );
     io::stderr().flush().ok();
     let answer = read_line_raw();
     if answer.trim().is_empty() || answer.trim().eq_ignore_ascii_case("y") {
@@ -1432,11 +1380,7 @@ fn resolve_and_build_aur(
 /// Root directory AUR builds happen under, mirroring `abs_build_base()`.
 ///
 /// Lives under the user's cache dir (`$XDG_CACHE_HOME` or
-/// `~/.cache/aura-emerge/build/aur`), not the old shared
-/// `/var/tmp/aura-emerge-aur` -- `/var/tmp` is sticky/multi-user, and
-/// every other bit of persistent state already lives under
-/// `~/.cache/aura-emerge`. Falls back to `/var/tmp` only if neither
-/// `$XDG_CACHE_HOME` nor `$HOME` is set.
+
 pub(crate) fn aur_build_base() -> std::path::PathBuf {
     build_base_dir("aur")
 }
@@ -1467,13 +1411,7 @@ fn build_base_dir(name: &str) -> std::path::PathBuf {
 /// Wipes an AUR_BUILD_BASE/ABS_BUILD_BASE-style tree. Falls back to
 /// `sudo rm -rf` if plain removal fails.
 ///
-/// Why a plain `remove_dir_all` can fail on a user-owned tree: `package()`
-/// runs for real even inside fakeroot -- fakeroot fakes ownership
-/// reporting, not `chmod`. A restrictive mode (`install -d -m 700 ...`)
-/// leaves a real non-writable entry behind, and removing it needs write
-/// permission on its parent -- so even the owning user can hit
-/// `Permission denied`. `sudo` (used elsewhere for this class of
-/// trusted operation) is simpler than poking at permission bits first.
+
 fn clear_build_base(dir: &std::path::Path) -> std::io::Result<()> {
     if let Err(e) = std::fs::remove_dir_all(dir) {
         let dir_s = dir.to_string_lossy().to_string();
@@ -1493,8 +1431,7 @@ fn clear_build_base(dir: &std::path::Path) -> std::io::Result<()> {
 /// Install packages from the AUR by cloning their git repos directly and
 /// building through the same isolation ladder as `--abs`
 /// (`bwrap` -> unsandboxed `makepkg -si`, see `choose_build_isolation`)
-/// instead of shelling out to `aura -A`. `pkgctl` is not involved here
-/// at all -- only `--abs` ever calls it, and only for `repo clone`.
+
 pub(crate) fn aur_install(
     pkgs: &[String],
     pretend: bool,
@@ -1583,7 +1520,7 @@ pub(crate) fn aur_install(
     // jobsa == 1 (or single package): sequential, shared dep cache.
     // jobsa > 1: parallel top-level builds; each worker has its own
     // building/built map (shared AUR deps may be built more than once,
-    // which is safe — the second install is a no-op / reinstall).
+
     if jobsa <= 1 || bare.len() <= 1 {
         let mut building = HashSet::new();
         let mut built = HashMap::new();
@@ -1648,7 +1585,7 @@ pub(crate) fn aur_install(
                         q.pop()
                     };
                     let Some(pkg) = pkg else { break };
-                let _slot = crate::runtime::acquire_job_slot();
+                    let _slot = crate::runtime::acquire_job_slot();
                     let mut building = HashSet::new();
                     let mut built = HashMap::new();
                     let timer = crate::logbook::Timer::start();
@@ -1690,19 +1627,7 @@ pub(crate) fn aur_install(
 /// Upgrades every foreign (AUR-or-local) installed package newer in the
 /// AUR than what's installed -- replaces `aura -Au`. "Foreign" means
 /// `pacman -Qm` (installed but not in a synced repo); an ABS-installed
-/// package shows up here too and is silently skipped once the AUR RPC
-/// doesn't know its name (no separate ABS-upgrade path yet).
-///
-/// `pretend` prints the would-upgrade list without touching anything
-/// (mirrors `aura -Au --dryrun`). Real runs delegate to `aur_install()`
-/// -- the same bwrap-sandboxed path as a fresh AUR install.
-// ── --devel / --check-devel: upstream drift check for -git/-hg/-svn/-bzr ───
 
-/// Whether `name` looks like an Arch "devel package" by naming
-/// convention. Only `-git` sources are actually parsed (see
-/// `extract_git_source_url`) -- `-hg`/`-svn`/`-bzr` are recognized so
-/// they show as "couldn't determine" rather than invisible, but aren't
-/// checked yet.
 fn is_devel_pkg(name: &str) -> bool {
     ["-git", "-hg", "-svn", "-bzr"]
         .iter()
@@ -1712,10 +1637,7 @@ fn is_devel_pkg(name: &str) -> bool {
 /// Small best-effort extraction of the first `git+` VCS source URL from
 /// a PKGBUILD's `source=()` array text. Not full bash parsing (only the
 /// AST pass in bash_ast.rs does that) -- a miss just skips the devel
-/// check for that package, so a wrong or partial parse costs nothing.
-///
-/// Returns `(url, branch)`; `branch` is `Some` only when `#branch=...`
-/// was present (otherwise `git ls-remote` checks the default branch).
+
 fn extract_git_source_url(pkgbuild_src: &str) -> Option<(String, Option<String>)> {
     let idx = pkgbuild_src.find("git+")?;
     let rest = &pkgbuild_src[idx + "git+".len()..];
@@ -1741,7 +1663,7 @@ fn extract_git_source_url(pkgbuild_src: &str) -> Option<(String, Option<String>)
 /// `git ls-remote <url> [branch|HEAD]`, no local clone involved at all -
 /// just asks the remote what its current commit is. Returns the commit
 /// hash from the first line of output, or `None` on any failure
-/// (network, bad URL, private repo, `git` missing, ...).
+
 fn git_ls_remote_head(url: &str, branch: Option<&str>) -> Option<String> {
     let refname = branch.unwrap_or("HEAD");
     let out = Command::new("git")
@@ -1763,7 +1685,7 @@ fn git_ls_remote_head(url: &str, branch: Option<&str>) -> Option<String> {
 /// Where `--devel`/`--check-devel` remember the last upstream commit
 /// hash seen for each devel package, so a *second* run can tell "moved"
 /// from "first time we've ever looked". `name<TAB>hash` per line, same
-/// spirit as `news.rs`'s read-state file.
+
 fn devel_state_path() -> Option<std::path::PathBuf> {
     let home = std::env::var("HOME").ok()?;
     Some(std::path::Path::new(&home).join(".cache/aura-emerge/devel.state"))
@@ -1817,7 +1739,6 @@ enum DevelStatus {
     /// First time this package has ever been checked (no prior
     /// baseline) - the current hash gets recorded either way, but
     /// there's nothing to have "moved" relative to yet, so this is
-    /// never treated as an upgrade candidate on its own.
     FirstSeen,
     /// Couldn't fetch the PKGBUILD, couldn't find a `git+` source in
     /// it, or `git ls-remote` itself failed. Never treated as "moved" -
@@ -1850,8 +1771,7 @@ fn check_devel_pkg(pkg: &str, state: &mut HashMap<String, String>) -> DevelStatu
 /// `--check-devel`: report which installed devel packages have upstream
 /// commits beyond what was last recorded, without building or installing
 /// anything. See `-u --devel` (the `devel` block inside
-/// `aur_upgrade_all`) for the version that folds this into a real
-/// upgrade run.
+
 pub(crate) fn check_devel_all() -> bool {
     let foreign = crate::alpm_db::foreign_packages();
 
@@ -2063,9 +1983,7 @@ pub(crate) fn aur_upgrade_names(
 /// Installs already-built `*.pkg.tar.*` files directly via `pacman -U`
 /// -- used for AUR-only dependencies that a recursive
 /// `resolve_and_build_aur()` call already produced and that therefore
-/// can never be reached by `pacman -S` (they're not in any sync repo).
-/// This is bwrap's equivalent of what `pkgctl build -I` used to inject
-/// into its chroot. No-op success on an empty slice.
+
 fn install_local_tarballs(tarballs: &[String], ask: bool, mark_asdeps: bool) -> bool {
     if tarballs.is_empty() {
         return true;
@@ -2125,22 +2043,7 @@ fn install_local_tarballs(tarballs: &[String], ask: bool, mark_asdeps: bool) -> 
 /// Runs the untrusted PKGBUILD-defined functions (`pkgver`/`prepare`/
 /// `build`/`check`/`package`) for the package at `build_dir` through
 /// the bwrap sandbox in `sandbox.rs`, then installs the result the
-/// normal, trusted way. See that module's doc for why the three steps
-/// below are split this way.
-///
-/// `aur_dep_tarballs` are already-built AUR-only dependencies, installed
-/// via `pacman -U` before anything else since `pacman -S` can't find
-/// them. Pass `&[]` for a plain ABS build with no local AUR deps.
-///
-/// `unshare_net_build`: when set, step 2 (the sandboxed build) splits
-/// into two bwrap invocations instead of one -- see the comment before
-/// step 2.
-///
-/// Returns `false` on failure. Dependency resolution prefers `.SRCINFO`
-/// when present; only when that's absent and the PKGBUILD's dependency
-/// arrays can't be statically resolved either does this fall back to
-/// plain unsandboxed `makepkg -si` for this one package rather than
-/// guessing at a partial dependency list.
+
 fn build_with_sandbox(
     build_dir: &std::path::Path,
     pkgbase: &str,
@@ -2483,17 +2386,7 @@ fn build_with_sandbox(
 /// Every `*.pkg.tar.*` file this build actually produced.
 ///
 /// Searches `PKGDEST` (resolved the same way it's bound into the
-/// sandbox) when the user has one configured outside `build_dir` --
-/// that's where makepkg actually writes it, so searching `build_dir`
-/// alone used to find nothing and report "produced no package file"
-/// even on a successful build. Falls back to `build_dir` itself,
-/// makepkg's default when `PKGDEST` isn't set.
-///
-/// Unlike `build_dir` (freshly cloned each run, so nothing stale sits
-/// there), a configured `PKGDEST` is reused across builds and likely
-/// already has unrelated files in it. `not_before` (the caller's
-/// timestamp for just before this build started, with slack for coarse
-/// mtime resolution) filters those out.
+
 fn find_built_packages(
     build_dir: &std::path::Path,
     not_before: std::time::SystemTime,
@@ -2560,9 +2453,7 @@ fn legacy_makepkg_si(build_dir: &std::path::Path, ask: bool, oneshot: bool, skip
         // Unsandboxed, makepkg sources the user's own makepkg.conf
         // *after* ours, so a var set there wins over make.conf --
         // warn about it. (Can't happen inside the sandbox: $HOME is an
-        // empty tmpfs.) Read the user's file directly, not through
-        // read_makepkg_vars() (which merges with the system config and
-        // would flag CFLAGS on every machine).
+
         let user_conf = user_makepkg_conf_path();
         let user_text = std::fs::read_to_string(&user_conf).unwrap_or_default();
         let assigns = |key: &str| {
@@ -2607,7 +2498,7 @@ fn legacy_makepkg_si(build_dir: &std::path::Path, ask: bool, oneshot: bool, skip
 /// Build and install packages from ABS via `pkgctl repo clone` + `makepkg -si`
 /// (or, by default, the bwrap-sandboxed equivalent -- see `build_with_sandbox`).
 /// `skip_plan`: when true, the caller already printed the emerge plan and
-/// confirmed — do not print another plan or prompt (mixed abs+aur+repo).
+
 pub(crate) fn abs_install(
     pkgs: &[String],
     pretend: bool,
@@ -3202,17 +3093,7 @@ pub(crate) fn source_builds_parallel(
 
 /// `--install-pkgbuild <PATH>`: build and install a local PKGBUILD
 /// checkout through the normal emerge pipeline (scanner + bwrap
-/// sandbox) instead of a bare, unaudited `makepkg -si` -- same trust
-/// model as an AUR clone, just pointed at a directory already on disk.
-///
-/// Unlike `aur_install`/`abs_install`, no AUR RPC lookup or `pkgctl repo
-/// clone`: `path` is trusted to be a real checkout already, and this
-/// just runs it through the same scan -> (optional view/edit) ->
-/// sandboxed build -> install sequence every other path uses.
-///
-/// Returns the `.SRCINFO`-declared `pkgname`(s) built on success (for
-/// the caller to record in world with the "Err/" prefix -- see
-/// `world_set::pkg_world_entry`), or `None` on failure.
+
 pub(crate) fn pkgbuild_local_install(
     path: &std::path::Path,
     ask: bool,
@@ -3434,7 +3315,7 @@ pub(crate) fn resolve_dest_dirs(
 /// make.conf's build vars, shell-expanded through the same
 /// generated makepkg.conf that `--config` hands to makepkg, so `--info`
 /// shows what a build actually gets (e.g. `CXXFLAGS="$CFLAGS ..."`
-/// resolved against make.conf's own `CFLAGS`, not the raw config text).
+
 fn effective_build_vars(cfg: &crate::config::Config) -> HashMap<String, String> {
     let mut map = HashMap::new();
     let Some(conf) = crate::config::makepkg_override_conf(cfg) else {

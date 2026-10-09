@@ -1,16 +1,6 @@
 //! Message colours from `COLORS` in make.conf.
 //!
 //! The code paints with five fixed colours (green, yellow, red, cyan,
-//! magenta). Each one is a role here, and `COLORS` can swap it for a
-//! HEX value or an ANSI colour name:
-//!
-//! ```text
-//! COLORS="ok=#a6e3a1 warn=#f9e2af error=#f38ba8 info=#89b4fa special=#cba6f7"
-//! ```
-//!
-//! `ok` = green, `warn` = yellow, `error` = red, `info` = cyan,
-//! `special` = magenta. Unset roles keep their usual colour, and
-//! `--color=n` / `NO_COLOR` still turn everything off.
 
 use std::sync::OnceLock;
 

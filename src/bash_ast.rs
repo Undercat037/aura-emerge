@@ -1,7 +1,6 @@
 //! AST structural checks for the PKGBUILD scanner (tree-sitter-bash).
 //! Catches evasions line heuristics miss (concatenation, quoting, env
 //! wrappers). `None` = not found or parse fail; callers fall back via
-//! `.or_else(...)`. Only matches statically known command names.
 
 use tree_sitter::Node;
 
@@ -319,7 +318,7 @@ pub(crate) fn python_inline_exec(source: &str) -> Option<usize> {
 /// AST: `perl -e` / `perl -E` with a suspicious payload (exec, system,
 /// open network, qx, backticks). Mirrors `python_inline_exec` for the
 /// interpreter the line heuristics previously only caught inside
-/// `sh -c '...'` strings.
+
 pub(crate) fn perl_inline_exec(source: &str) -> Option<usize> {
     let tree = parse(source)?;
     let src = source.as_bytes();

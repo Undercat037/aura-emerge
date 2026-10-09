@@ -1,13 +1,6 @@
 //! Helper-side libalpm: package db writes, runs as root.
 //! No `crate::` imports: std, alpm, alpm-utils and siblings only.
 //! Alpm is !Send and caches the db, so a fresh handle per request.
-//!
-//! Hooks: libalpm runs every `*.hook` under the configured HookDirs during
-//! `trans_commit` (system dirs from pacman.conf + `/etc/portage/hooks`).
-//! Event lines on the wire:
-//!   `pkg start|done <name>`
-//!   `hook start|done pre|post`
-//!   `hook run <pos>/<total> <name> [<desc…>]`
 
 use std::io::{self, ErrorKind};
 use std::path::PathBuf;
@@ -23,10 +16,7 @@ use super::validate::{self, FileOpts, RemoveMode};
 /// HookDirs that must always be registered. `pacman-conf` / the
 /// `pacmanconf` crate often expand a commented-out `HookDir` in
 /// `/etc/pacman.conf` to only `/etc/pacman.d/hooks/` (or nothing) and
-/// **omit** `/usr/share/libalpm/hooks/`, where package-provided hooks
-/// live (`60-depmod.hook`, `90-dracut-install.hook`, `70-dkms-*.hook`, …).
-/// Empty / wrong hookdirs ⇒ silent installs and a broken boot after a
-/// kernel upgrade. Missing directories are fine: libalpm skips them.
+
 const REQUIRED_HOOK_DIRS: &[&str] = &[
     "/usr/share/libalpm/hooks/",
     "/etc/pacman.d/hooks/",
@@ -40,7 +30,7 @@ fn fail(msg: impl Into<String>) -> io::Error {
 /// Root handle from /etc/pacman.conf.
 /// Keeps pacman.conf SigLevel so package/db signatures are verified
 /// (user-side `alpm_db::open` turns them off to avoid gpg "unsafe
-/// ownership" on `/etc/pacman.d/gnupg`).
+
 fn open() -> io::Result<Alpm> {
     let conf = Config::new().map_err(|e| fail(format!("pacman.conf: {}", e)))?;
     let mut alpm = alpm_with_conf(&conf).map_err(|e| fail(format!("libalpm: {}", e)))?;
@@ -76,9 +66,7 @@ fn op_name(op: alpm::PackageOperation) -> Option<String> {
 /// Wire libalpm package + hook events onto `tx` (non-blocking best-effort).
 /// Must be called **before** `trans_init` / `trans_commit`.
 ///
-/// The frontend owns the terminal (Jobs footer + `>>>` lines); the helper
-/// only ships events on the protocol channel so the Jobs line can stay
-/// pinned at the bottom via `progress::note`.
+
 fn wire_events(alpm: &mut Alpm, tx: mpsc::Sender<String>) {
     alpm.set_event_cb((), move |ev, _| match ev.event() {
         alpm::Event::PackageOperationStart(e) => {
@@ -285,10 +273,7 @@ fn run_remove(alpm: &mut Alpm, names: &[&str]) -> io::Result<()> {
 /// `pacman -Sy`; `force` = `-Syy` (download even if up to date).
 /// `emit` gets `sync <repo> <updated|uptodate|failed>` per db, live, in
 /// completion order (libalpm downloads in parallel).
-///
-/// libalpm blocks in `update()`, so it runs on a worker thread (the
-/// handle is created there: Alpm is !Send) and events cross a channel
-/// to the caller's thread, which owns `emit`.
+
 pub(crate) fn sync(force: bool, emit: &mut dyn FnMut(&str)) -> io::Result<()> {
     use std::sync::mpsc;
 
@@ -365,8 +350,7 @@ pub(crate) fn sync_in_with(
 /// `pacman -Su`: upgrade every installed package that has a newer
 /// version in a sync db. `ignore` is `--ignore` / package.mask holdback
 /// (bare names). Empty transaction is success (nothing to do).
-/// `emit` gets `pkg start <name>` / `pkg done <name>` per installed or
-/// upgraded package, live (worker thread + channel, as in `sync`).
+
 pub(crate) fn sysupgrade(ignore: &[String], emit: &mut dyn FnMut(&str)) -> io::Result<()> {
     use std::sync::mpsc;
 
@@ -432,7 +416,7 @@ pub(crate) fn install(
 /// Same, on a given handle. All-or-nothing: an unknown target aborts
 /// before anything is queued. Deps are resolved by libalpm; they get
 /// the `asdeps` reason, the named targets stay explicit.
-/// Events are drained after commit (for tests on a fixture handle).
+
 pub(crate) fn install_in(
     alpm: &mut Alpm,
     names: &[String],
@@ -511,8 +495,7 @@ fn run_install(alpm: &mut Alpm, targets: &[(Option<&str>, &str)]) -> io::Result<
 /// `pacman -U`. `specs` are `<sha256> <abs path>` lines. The files are
 /// copied into a root-private dir and hash-checked *before* libalpm
 /// sees them (closes the audit -> install TOCTOU); the stage dir is
-/// removed when this returns.
-/// `emit` gets `pkg`/`hook` event lines live.
+
 pub(crate) fn install_files(
     opts: FileOpts,
     specs: &[String],
@@ -590,6 +573,23 @@ fn prepare_and_commit(alpm: &mut Alpm) -> io::Result<()> {
         return Ok(());
     }
     alpm.trans_prepare().map_err(|e| fail(prepare_msg(&e)))?;
+    // After prepare libalpm has the full transaction (targets + deps).
+    // Refuse before commit if any of them is masked — hard lockdown.
+    {
+        let owned: Vec<(Option<String>, String)> = alpm
+            .trans_add()
+            .iter()
+            .map(|p| {
+                let repo = p.db().map(|d| d.name().to_string());
+                (repo, p.name().to_string())
+            })
+            .collect();
+        let refs: Vec<(Option<&str>, &str)> = owned
+            .iter()
+            .map(|(r, n)| (r.as_deref(), n.as_str()))
+            .collect();
+        super::pkgmask::refuse_masked(&refs).map_err(|e| fail(e.to_string()))?;
+    }
     alpm.trans_commit()
         .map_err(|e| fail(format!("commit: {}", e)))
 }

@@ -1,10 +1,6 @@
 //! Crate-side door to the root helper: one lazy connection per process
 //! (a single sudo prompt), plus "pinning" of files before they go to
 //! root.
-//!
-//! Pinning: hash a file *before* the audit, re-hash *after*; the helper
-//! hashes its own root-owned copy and refuses on mismatch. So the bytes
-//! that get installed are the bytes that were audited.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, ErrorKind};
