@@ -1,6 +1,10 @@
 //! Wire protocol, client <-> helper. Std only, no `crate::` imports.
 //!
 //! Text, line based, over inherited pipes.
+//!   Request:  CMD <verb>\n  (ARG <value>\n)*  END\n
+//!   Response: (EVT <text>\n)*  then  OK\n | ERR <text>\n
+//! Every line is length-capped *before* it is parsed, and every value
+//! goes through `validate` on both write and read.
 
 use std::fmt;
 use std::io::{self, BufRead, Write};
@@ -522,6 +526,7 @@ mod tests {
             opts: FileOpts {
                 needed: true,
                 asdeps: false,
+                replace: false,
             },
             files: vec![format!("{} /tmp/a b.pkg.tar.zst", h)],
         };

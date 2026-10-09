@@ -1,6 +1,8 @@
 //! Helper main loop: request in, response out, one at a time.
 //! Std only (plus `proto`/`fsio`/`validate`), no `crate::` imports.
 //!
+//! The loop knows nothing about pacman: all real work sits behind
+//! `Backend`, so it can be tested with a mock.
 
 use std::io::{self, BufRead, ErrorKind, Write};
 
@@ -319,6 +321,7 @@ mod tests {
         let opts = FileOpts {
             needed: true,
             asdeps: true,
+            replace: false,
         };
         assert_eq!(be.files, vec![(opts, vec![spec])]);
     }

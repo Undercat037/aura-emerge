@@ -168,28 +168,51 @@ pub(crate) struct FileOpts {
     pub(crate) needed: bool,
     /// `--asdeps`: mark the targets as dependencies.
     pub(crate) asdeps: bool,
+    /// Auto-remove installed packages that conflict with this `-U`
+    /// (only after the frontend asked / `--noconfirm`).
+    pub(crate) replace: bool,
 }
 
 impl FileOpts {
-    /// Wire form, inverse of `from_id`.
-    pub(crate) fn id(self) -> &'static str {
-        match (self.needed, self.asdeps) {
-            (false, false) => "-",
-            (true, false) => "needed",
-            (false, true) => "asdeps",
-            (true, true) => "needed,asdeps",
+    /// Wire form, inverse of `from_id` (comma-separated flags, or `-`).
+    pub(crate) fn id(self) -> String {
+        let mut parts = Vec::new();
+        if self.needed {
+            parts.push("needed");
+        }
+        if self.asdeps {
+            parts.push("asdeps");
+        }
+        if self.replace {
+            parts.push("replace");
+        }
+        if parts.is_empty() {
+            "-".to_string()
+        } else {
+            parts.join(",")
         }
     }
 
     pub(crate) fn from_id(id: &str) -> Option<Self> {
-        let (needed, asdeps) = match id {
-            "-" => (false, false),
-            "needed" => (true, false),
-            "asdeps" => (false, true),
-            "needed,asdeps" => (true, true),
-            _ => return None,
-        };
-        Some(FileOpts { needed, asdeps })
+        if id == "-" {
+            return Some(FileOpts::default());
+        }
+        let mut needed = false;
+        let mut asdeps = false;
+        let mut replace = false;
+        for part in id.split(',') {
+            match part {
+                "needed" if !needed => needed = true,
+                "asdeps" if !asdeps => asdeps = true,
+                "replace" if !replace => replace = true,
+                _ => return None,
+            }
+        }
+        Some(FileOpts {
+            needed,
+            asdeps,
+            replace,
+        })
     }
 }
 
@@ -272,20 +295,38 @@ mod tests {
 
     #[test]
     fn file_opts_ids_roundtrip_and_reject_junk() {
-        for (n, d) in [(false, false), (true, false), (false, true), (true, true)] {
+        for (n, d, r) in [
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (true, true, false),
+            (false, false, true),
+            (true, true, true),
+        ] {
             let o = FileOpts {
                 needed: n,
                 asdeps: d,
+                replace: r,
             };
-            assert_eq!(FileOpts::from_id(o.id()), Some(o));
+            assert_eq!(FileOpts::from_id(&o.id()), Some(o));
         }
+        // Order of flags does not matter.
+        assert_eq!(
+            FileOpts::from_id("asdeps,needed"),
+            Some(FileOpts {
+                needed: true,
+                asdeps: true,
+                replace: false,
+            })
+        );
         for bad in [
             "",
             "--needed",
             "needed,",
-            "asdeps,needed",
             "NEEDED",
             "needed asdeps",
+            "needed,needed",
+            "replace,bogus",
         ] {
             assert_eq!(FileOpts::from_id(bad), None, "{:?}", bad);
         }

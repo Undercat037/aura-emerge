@@ -1,6 +1,13 @@
 //! Helper-side libalpm: package db writes, runs as root.
 //! No `crate::` imports: std, alpm, alpm-utils and siblings only.
 //! Alpm is !Send and caches the db, so a fresh handle per request.
+//!
+//! Hooks: libalpm runs every `*.hook` under the configured HookDirs during
+//! `trans_commit` (system dirs from pacman.conf + `/etc/portage/hooks`).
+//! Event lines on the wire:
+//!   `pkg start|done <name>`
+//!   `hook start|done pre|post`
+//!   `hook run <pos>/<total> <name> [<desc…>]`
 
 use std::io::{self, ErrorKind};
 use std::path::PathBuf;
@@ -16,7 +23,10 @@ use super::validate::{self, FileOpts, RemoveMode};
 /// HookDirs that must always be registered. `pacman-conf` / the
 /// `pacmanconf` crate often expand a commented-out `HookDir` in
 /// `/etc/pacman.conf` to only `/etc/pacman.d/hooks/` (or nothing) and
-
+/// **omit** `/usr/share/libalpm/hooks/`, where package-provided hooks
+/// live (`60-depmod.hook`, `90-dracut-install.hook`, `70-dkms-*.hook`, …).
+/// Empty / wrong hookdirs ⇒ silent installs and a broken boot after a
+/// kernel upgrade. Missing directories are fine: libalpm skips them.
 const REQUIRED_HOOK_DIRS: &[&str] = &[
     "/usr/share/libalpm/hooks/",
     "/etc/pacman.d/hooks/",
@@ -30,7 +40,7 @@ fn fail(msg: impl Into<String>) -> io::Error {
 /// Root handle from /etc/pacman.conf.
 /// Keeps pacman.conf SigLevel so package/db signatures are verified
 /// (user-side `alpm_db::open` turns them off to avoid gpg "unsafe
-
+/// ownership" on `/etc/pacman.d/gnupg`).
 fn open() -> io::Result<Alpm> {
     let conf = Config::new().map_err(|e| fail(format!("pacman.conf: {}", e)))?;
     let mut alpm = alpm_with_conf(&conf).map_err(|e| fail(format!("libalpm: {}", e)))?;
@@ -66,7 +76,9 @@ fn op_name(op: alpm::PackageOperation) -> Option<String> {
 /// Wire libalpm package + hook events onto `tx` (non-blocking best-effort).
 /// Must be called **before** `trans_init` / `trans_commit`.
 ///
-
+/// The frontend owns the terminal (Jobs footer + `>>>` lines); the helper
+/// only ships events on the protocol channel so the Jobs line can stay
+/// pinned at the bottom via `progress::note`.
 fn wire_events(alpm: &mut Alpm, tx: mpsc::Sender<String>) {
     alpm.set_event_cb((), move |ev, _| match ev.event() {
         alpm::Event::PackageOperationStart(e) => {
@@ -265,7 +277,10 @@ fn run_remove(alpm: &mut Alpm, names: &[&str]) -> io::Result<()> {
         alpm.trans_remove_pkg(pkg)
             .map_err(|e| fail(format!("{}: {}", name, e)))?;
     }
-    alpm.trans_prepare().map_err(|e| fail(prepare_msg(&e)))?;
+    match alpm.trans_prepare() {
+        Ok(()) => {}
+        Err(e) => return Err(fail(prepare_msg_other(&e))),
+    };
     alpm.trans_commit()
         .map_err(|e| fail(format!("commit: {}", e)))
 }
@@ -273,7 +288,10 @@ fn run_remove(alpm: &mut Alpm, names: &[&str]) -> io::Result<()> {
 /// `pacman -Sy`; `force` = `-Syy` (download even if up to date).
 /// `emit` gets `sync <repo> <updated|uptodate|failed>` per db, live, in
 /// completion order (libalpm downloads in parallel).
-
+///
+/// libalpm blocks in `update()`, so it runs on a worker thread (the
+/// handle is created there: Alpm is !Send) and events cross a channel
+/// to the caller's thread, which owns `emit`.
 pub(crate) fn sync(force: bool, emit: &mut dyn FnMut(&str)) -> io::Result<()> {
     use std::sync::mpsc;
 
@@ -350,7 +368,8 @@ pub(crate) fn sync_in_with(
 /// `pacman -Su`: upgrade every installed package that has a newer
 /// version in a sync db. `ignore` is `--ignore` / package.mask holdback
 /// (bare names). Empty transaction is success (nothing to do).
-
+/// `emit` gets `pkg start <name>` / `pkg done <name>` per installed or
+/// upgraded package, live (worker thread + channel, as in `sync`).
 pub(crate) fn sysupgrade(ignore: &[String], emit: &mut dyn FnMut(&str)) -> io::Result<()> {
     use std::sync::mpsc;
 
@@ -393,7 +412,7 @@ fn sysupgrade_in_with(
         // Real transaction size, so the client can tell "nothing to do"
         // from "plan and libalpm disagree".
         let _ = tx.send(format!("plan {}", alpm.trans_add().iter().count()));
-        prepare_and_commit(alpm)
+        prepare_and_commit(alpm, false)
     })();
     let _ = alpm.trans_release();
     res
@@ -416,7 +435,7 @@ pub(crate) fn install(
 /// Same, on a given handle. All-or-nothing: an unknown target aborts
 /// before anything is queued. Deps are resolved by libalpm; they get
 /// the `asdeps` reason, the named targets stay explicit.
-
+/// Events are drained after commit (for tests on a fixture handle).
 pub(crate) fn install_in(
     alpm: &mut Alpm,
     names: &[String],
@@ -489,13 +508,14 @@ fn run_install(alpm: &mut Alpm, targets: &[(Option<&str>, &str)]) -> io::Result<
         alpm.trans_add_pkg(pkg)
             .map_err(|e| fail(format!("{}: {}", name, e)))?;
     }
-    prepare_and_commit(alpm)
+    prepare_and_commit(alpm, false)
 }
 
 /// `pacman -U`. `specs` are `<sha256> <abs path>` lines. The files are
 /// copied into a root-private dir and hash-checked *before* libalpm
 /// sees them (closes the audit -> install TOCTOU); the stage dir is
-
+/// removed when this returns.
+/// `emit` gets `pkg`/`hook` event lines live.
 pub(crate) fn install_files(
     opts: FileOpts,
     specs: &[String],
@@ -547,12 +567,17 @@ fn install_files_in_with(
     wire_events(alpm, tx);
     alpm.trans_init(flags)
         .map_err(|e| fail(format!("db lock: {}", e)))?;
-    let res = run_install_files(alpm, files, level);
+    let res = run_install_files(alpm, files, level, opts.replace);
     let _ = alpm.trans_release();
     res
 }
 
-fn run_install_files(alpm: &mut Alpm, files: &[PathBuf], level: SigLevel) -> io::Result<()> {
+fn run_install_files(
+    alpm: &mut Alpm,
+    files: &[PathBuf],
+    level: SigLevel,
+    resolve_conflicts: bool,
+) -> io::Result<()> {
     for f in files {
         // Staged names are "<n>-<original>"; show the original.
         let name = f.file_name().and_then(|n| n.to_str()).unwrap_or("?");
@@ -564,47 +589,156 @@ fn run_install_files(alpm: &mut Alpm, files: &[PathBuf], level: SigLevel) -> io:
         alpm.trans_add_pkg(pkg)
             .map_err(|e| fail(format!("{}: {}", shown, e)))?;
     }
-    prepare_and_commit(alpm)
+    prepare_and_commit(alpm, resolve_conflicts)
 }
 
-fn prepare_and_commit(alpm: &mut Alpm) -> io::Result<()> {
+fn prepare_and_commit(alpm: &mut Alpm, resolve_conflicts: bool) -> io::Result<()> {
     // `--needed` can leave nothing to do; that is success, as in pacman.
-    if alpm.trans_add().iter().next().is_none() {
+    if alpm.trans_add().iter().next().is_none() && alpm.trans_remove().iter().next().is_none() {
         return Ok(());
     }
-    alpm.trans_prepare().map_err(|e| fail(prepare_msg(&e)))?;
-    // After prepare libalpm has the full transaction (targets + deps).
-    // Refuse before commit if any of them is masked — hard lockdown.
-    {
-        let owned: Vec<(Option<String>, String)> = alpm
+
+    // When `resolve_conflicts` is set (frontend already asked / noconfirm),
+    // auto-remove the installed side of each conflict and re-prepare.
+    // Otherwise return a detailed error for the frontend to prompt on.
+    for _attempt in 0..6u8 {
+        use std::collections::HashSet;
+        let add_names: HashSet<String> = alpm
             .trans_add()
             .iter()
-            .map(|p| {
-                let repo = p.db().map(|d| d.name().to_string());
-                (repo, p.name().to_string())
-            })
+            .map(|p| p.name().to_string())
             .collect();
-        let refs: Vec<(Option<&str>, &str)> = owned
+
+        // Drain prepare result fully so PrepareError's borrow ends before we
+        // touch `alpm` again (mask check, remove, commit).
+        let prepared = alpm.trans_prepare();
+        if prepared.is_ok() {
+            drop(prepared);
+            let owned: Vec<(Option<String>, String)> = alpm
+                .trans_add()
+                .iter()
+                .map(|p| {
+                    let repo = p.db().map(|d| d.name().to_string());
+                    (repo, p.name().to_string())
+                })
+                .collect();
+            let refs: Vec<(Option<&str>, &str)> = owned
+                .iter()
+                .map(|(r, n)| (r.as_deref(), n.as_str()))
+                .collect();
+            super::pkgmask::refuse_masked(&refs).map_err(|e| fail(e.to_string()))?;
+            return alpm
+                .trans_commit()
+                .map_err(|e| fail(format!("commit: {}", e)));
+        }
+
+        let e = prepared.unwrap_err();
+        // Own all conflict data before dropping PrepareError.
+        let conflicts: Option<Vec<(String, String, String, String)>> =
+            if let Some(PrepareData::ConflictingDeps(list)) = e.data() {
+                Some(
+                    list.iter()
+                        .map(|c| {
+                            let a = c.package1();
+                            let b = c.package2();
+                            (
+                                a.name().to_string(),
+                                a.version().to_string(),
+                                b.name().to_string(),
+                                b.version().to_string(),
+                            )
+                        })
+                        .collect(),
+                )
+            } else {
+                None
+            };
+        let detail = match &conflicts {
+            Some(pairs) => format_conflict_msg(&add_names, pairs),
+            None => prepare_msg_other(&e),
+        };
+        drop(e);
+
+        let Some(pairs) = conflicts else {
+            return Err(fail(detail));
+        };
+        if !resolve_conflicts {
+            return Err(fail(detail));
+        }
+
+        let rm_names: HashSet<String> = alpm
+            .trans_remove()
             .iter()
-            .map(|(r, n)| (r.as_deref(), n.as_str()))
+            .map(|p| p.name().to_string())
             .collect();
-        super::pkgmask::refuse_masked(&refs).map_err(|e| fail(e.to_string()))?;
+        let mut queued = 0u32;
+        for (n1, _v1, n2, _v2) in &pairs {
+            for name in [n1.as_str(), n2.as_str()] {
+                if add_names.contains(name) || rm_names.contains(name) {
+                    continue;
+                }
+                let Ok(pkg) = alpm.localdb().pkg(name) else {
+                    continue;
+                };
+                alpm.trans_remove_pkg(pkg)
+                    .map_err(|err| fail(format!("conflict remove {}: {}", name, err)))?;
+                eprintln!(">>> resolving conflict: removing {}", name);
+                queued += 1;
+            }
+        }
+        if queued == 0 {
+            return Err(fail(detail));
+        }
     }
-    alpm.trans_commit()
-        .map_err(|e| fail(format!("commit: {}", e)))
+    Err(fail(
+        "conflicting dependencies: could not auto-resolve after several attempts",
+    ))
 }
 
-/// Short one-liner for a failed prepare; the wire caps it anyway.
-fn prepare_msg(e: &alpm::PrepareError) -> String {
-    if let Some(PrepareData::UnsatisfiedDeps(list)) = e.data() {
-        let top: Vec<String> = list
-            .iter()
-            .take(4)
-            .map(|d| format!("{} needs {}", d.target(), d.depend()))
-            .collect();
-        if !top.is_empty() {
-            return format!("unsatisfied: {}", top.join(", "));
+fn format_conflict_msg(
+    add_names: &std::collections::HashSet<String>,
+    pairs: &[(String, String, String, String)],
+) -> String {
+    let top: Vec<String> = pairs
+        .iter()
+        .take(6)
+        .map(|(n1, v1, n2, v2)| {
+            let (ins_n, ins_v, loc_n, loc_v) = if add_names.contains(n1) {
+                (n1, v1, n2, v2)
+            } else if add_names.contains(n2) {
+                (n2, v2, n1, v1)
+            } else {
+                (n1, v1, n2, v2)
+            };
+            format!("{} [{}] vs {} [{}]", ins_n, ins_v, loc_n, loc_v)
+        })
+        .collect();
+    format!("conflicting dependencies: {}", top.join("; "))
+}
+
+/// Short one-liner for non-conflict prepare failures; the wire caps it anyway.
+fn prepare_msg_other(e: &alpm::PrepareError) -> String {
+    match e.data() {
+        Some(PrepareData::UnsatisfiedDeps(list)) => {
+            let top: Vec<String> = list
+                .iter()
+                .take(4)
+                .map(|d| format!("{} needs {}", d.target(), d.depend()))
+                .collect();
+            if !top.is_empty() {
+                return format!("unsatisfied: {}", top.join(", "));
+            }
         }
+        Some(PrepareData::PkgInvalidArch(list)) => {
+            let top: Vec<String> = list.iter().take(4).map(|p| p.name().to_string()).collect();
+            if !top.is_empty() {
+                return format!("invalid arch: {}", top.join(", "));
+            }
+        }
+        Some(PrepareData::ConflictingDeps(_)) => {
+            return "conflicting dependencies".into();
+        }
+        None => {}
     }
     format!("prepare: {}", e)
 }
@@ -1101,6 +1235,7 @@ mod tests {
         let opts = FileOpts {
             needed: true,
             asdeps: true,
+            replace: false,
         };
         install_files_in(
             &mut fx.handle(),
