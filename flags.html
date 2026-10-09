@@ -485,6 +485,20 @@
                   <td class="lang-block" data-lang-block="ua" hidden>З <code>-t</code>: вкласти N рівнів, або всі — без числа</td>
 <td class="lang-block" data-lang-block="ru" hidden>С <code>-t</code>: вложенность N уровней, или все уровни без числа</td>
                 </tr>
+
+                <tr>
+                  <td><code>--jobsr[=N]</code></td>
+                  <td class="lang-block" data-lang-block="en">Parallel official-repo installs (default from <code>EMERGE_DEFAULT_OPTS</code> / make.conf). <code>N</code> concurrent <code>pacman</code> transactions.</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Паралельні встановлення з офіційних репо (дефолт з <code>EMERGE_DEFAULT_OPTS</code> / make.conf). <code>N</code> одночасних транзакцій <code>pacman</code>.</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Параллельные установки из официальных репо (дефолт из <code>EMERGE_DEFAULT_OPTS</code> / make.conf). <code>N</code> одновременных транзакций <code>pacman</code>.</td>
+                </tr>
+                <tr>
+                  <td><code>--jobsa[=N]</code></td>
+                  <td class="lang-block" data-lang-block="en">Parallel AUR/ABS builds. Each build still goes through scanner + sandbox; <code>N</code> concurrent compile jobs.</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Паралельні збірки AUR/ABS. Кожна збірка все одно через сканер + sandbox; <code>N</code> одночасних compile jobs.</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Параллельные сборки AUR/ABS. Каждая сборка всё равно через сканер + sandbox; <code>N</code> одновременных compile jobs.</td>
+                </tr>
+
                 <tr>
                   <td><code>-1</code> / <code>--oneshot</code></td>
                   <td class="lang-block" data-lang-block="en">Install as dependency (not added to world)</td>
@@ -615,16 +629,16 @@
             <span class="lang-block" data-lang-block="en">
               Many Portage flags (<code>-N/--newuse</code>, <code>-e/--emptytree</code>, <code>-O/--nodeps</code>,
               <code>-k/-K/-g/-G/-b/-B</code>, <code>--jobs</code>, <code>--load-average</code>, …) are accepted
-              silently as no-ops so scripts and muscle memory don’t break.
+              silently as no-ops so scripts and muscle memory don’t break. Parallelism here is <code>--jobsr</code> (repos) and <code>--jobsa</code> (AUR/ABS), not Portage <code>--jobs</code>.
             </span>
             <span class="lang-block" data-lang-block="ua" hidden>
               Багато прапорів Portage (<code>-N/--newuse</code>, <code>-e/--emptytree</code>, <code>-O/--nodeps</code>,
               <code>-k/-K/-g/-G/-b/-B</code>, <code>--jobs</code>, …) приймаються мовчки як no-op,
-              щоб скрипти і м'язова пам'ять не ламались.
+              щоб скрипти і м'язова пам'ять не ламались. Паралелізм тут — <code>--jobsr</code> (репо) і <code>--jobsa</code> (AUR/ABS), не Portage <code>--jobs</code>.
             </span>
 <span class="lang-block" data-lang-block="ru" hidden>Многие флаги Portage (<code>-N/--newuse</code>, <code>-e/--emptytree</code>, <code>-O/--nodeps</code>,
               <code>-k/-K/-g/-G/-b/-B</code>, <code>--jobs</code>, <code>--load-average</code>, …) принимаются
-              молча как no-op, чтобы не ломать скрипты и мышечную память.</span>
+              молча как no-op, чтобы не ломать скрипты и мышечную память. Параллелизм здесь — <code>--jobsr</code> (репо) и <code>--jobsa</code> (AUR/ABS), не Portage <code>--jobs</code>.</span>
           </div>
         </section>
 
