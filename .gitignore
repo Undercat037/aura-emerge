@@ -1,14 +1,15 @@
 target/
 .init
-aura-emerge-aur
+aura-emerge-aur/
 AE-ToDo.md
 aura-emerge-main
 src/aura-emerge-main
 .aura-emerge-*
-.aura-emerge-*
+aura-emerge-*
 .SRCINFO
 *.tar
 *.tar.*
 *.tar.gz
 *.tar.zst
 pkg/
+build-cleaner.sh

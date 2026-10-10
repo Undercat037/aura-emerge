@@ -682,7 +682,7 @@ fn prepare_and_commit(alpm: &mut Alpm, resolve_conflicts: bool) -> io::Result<()
                 };
                 alpm.trans_remove_pkg(pkg)
                     .map_err(|err| fail(format!("conflict remove {}: {}", name, err)))?;
-                eprintln!(">>> resolving conflict: removing {}", name);
+                eprintln!("\x1b[1;32m>>>\x1b[0m resolving conflict: removing {}", name);
                 queued += 1;
             }
         }

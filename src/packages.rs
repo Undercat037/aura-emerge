@@ -501,16 +501,26 @@ fn install_files_resolving_conflicts(
     {
         Ok(()) => return true,
         Err(e) => {
-            let msg = e.to_string();
+            let raw = e.to_string();
+            // ClientError::Refused prefixes "helper refused: " — drop for display.
+            let msg = raw.strip_prefix("helper refused: ").unwrap_or(raw.as_str());
             if !msg.contains("conflicting dependencies") {
                 eprintln!("{} {}", ">>> Error:".t_red().bold(), msg);
                 return false;
             }
-            // Helper: "name [ver] vs name [ver]" (one or more, `; `-joined)
-            eprintln!("{} {}", ">>>".t_yellow().bold(), msg);
+            crate::progress::status_break();
+            // "conflicting dependencies: name [ver] vs name [ver]" (; -joined)
+            let detail = msg
+                .strip_prefix("conflicting dependencies:")
+                .map(str::trim)
+                .unwrap_or(msg);
+            eprintln!(
+                "{} conflicting dependencies: {}",
+                ">>>".t_yellow().bold(),
+                detail
+            );
             let mut installed: Vec<String> = Vec::new();
-            for part in msg.split(';') {
-                // "aura-emerge-git [3.0.9] vs aura-emerge [2.14.0]"
+            for part in detail.split(';') {
                 if let Some(rhs) = part.split(" vs ").nth(1) {
                     let label = rhs.trim().to_string();
                     if !label.is_empty() && !installed.contains(&label) {
@@ -524,19 +534,19 @@ fn install_files_resolving_conflicts(
             }
             for p in &installed {
                 eprintln!(
-                    "{} conflict: remove installed {} ?",
+                    "{} conflict: remove installed {}?",
                     ">>>".t_yellow().bold(),
                     p.t_red().bold()
                 );
             }
-            print!(
+            eprint!(
                 "Remove conflicting package(s) and continue? [{}/{}] ",
                 "Yes".t_green().bold(),
                 "No".t_red().bold()
             );
-            let _ = io::stdout().flush();
+            let _ = io::stderr().flush();
             let ok = if !ask {
-                println!("Yes");
+                eprintln!("Yes");
                 true
             } else {
                 let answer = crate::read_line_raw();
@@ -546,16 +556,21 @@ fn install_files_resolving_conflicts(
                 )
             };
             if !ok {
-                println!("{} Quitting.", ">>>".t_yellow().bold());
+                eprintln!("{} Quitting.", ">>>".t_yellow().bold());
                 return false;
             }
             opts.replace = true;
             match crate::rootops::install_files(pinned, opts, &mut |ev| {
                 crate::progress::on_hook_event(ev)
             }) {
-                Ok(()) => true,
+                Ok(()) => {
+                    crate::progress::status_resume();
+                    true
+                }
                 Err(e2) => {
-                    eprintln!("{} {}", ">>> Error:".t_red().bold(), e2);
+                    let m2 = e2.to_string();
+                    let m2 = m2.strip_prefix("helper refused: ").unwrap_or(&m2);
+                    eprintln!("{} {}", ">>> Error:".t_red().bold(), m2);
                     false
                 }
             }

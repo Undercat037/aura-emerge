@@ -1,6 +1,14 @@
 /*
 Copyright (C) 2026 Undercat037
- */
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, version 3 of the License
+
+aura-emerge: A standalone Gentoo-style emerge package manager
+for Arch Linux - installs from official repos, the AUR, and ABS;
+scans PKGBUILDs for supply-chain attack patterns before building;
+and runs untrusted build steps inside a bwrap sandbox.
+*/
 
 mod alpm_db;
 mod aur;
@@ -649,6 +657,8 @@ fn print_help() {
 // ── Shell completion: dynamic @set support ──────────────────────────────
 //
 // Appends a shell snippet that shells out to `emerge --list-sets` when
+// completing a word starting with '@', so `emerge @<TAB>` offers real
+// set names (clap_complete alone doesn't know sets/'s contents).
 
 fn print_set_completion_glue(shell: Shell) {
     match shell {
@@ -750,7 +760,21 @@ fn collect_excludes(raw: &[String]) -> HashSet<String> {
 /// `pacman -S` for a whole batch, with the `--keep-going` retry.
 /// pacman installs a batch as one transaction, so one unresolvable
 /// package means nothing gets installed. Without --keep-going this is
+/// just `run_cmd`; with it, failed batches retry one package at a time.
+///
+/// Returns `(all_ok, landed)`. `landed` is what this call actually
+/// installed: everything on success, nothing if the single transaction
+/// failed or was declined at the prompt, and only the per-package
+/// successes after a `--keep-going` retry. Do NOT infer it from
+/// `is_installed()` afterwards -- on a reinstall (`[ebuild  R ]`) every
+/// package is already installed, so a declined/failed run would still
+/// look like it all landed.
+/// Official-repo install via the root helper (libalpm), with
+/// `--keep-going` retry of individual packages when the batch fails.
+/// `args` is kept for call-site compatibility and is otherwise ignored
+/// -- the helper does not speak the pacman CLI.
 
+/// Portage-style unread-news heads-up (non-fatal).
 fn maybe_news_banner() {
     if let Some(n) = news::unread_count_quiet() {
         if n > 0 {
@@ -923,7 +947,10 @@ pub(crate) fn alpm_install_quiet(
 /// Official-repo install through libalpm with live Installing / Completed
 /// lines driven by helper `pkg start|done` events (one package finishes
 /// before the next starts inside the transaction). Batches of up to
-
+/// `--jobsr` packages still share one alpm transaction (faster; hooks run
+/// once per batch). Hooks are printed via `progress::note` so the Jobs
+/// footer stays pinned.
+/// `asdeps` = `--oneshot`. Targets may be bare or `repo/name`.
 pub(crate) fn repo_install_landed(names: &[String], asdeps: bool) -> (bool, Vec<String>) {
     let needed = runtime::get().noreplace;
     let jobsr = runtime::get().jobsr.max(1) as usize;
@@ -1604,7 +1631,9 @@ fn build_resume_args(cli: &Cli, target_pkgs: &[String], has_world: bool) -> Vec<
 
 /// Primes sudo synchronously, then refreshes the timestamp every 60s in
 /// a background thread for the process's life. Fire-and-forget.
-
+///
+/// Returns false if the initial `sudo -v` fails, so the caller can warn
+/// instead of pretending the loop is active.
 fn start_sudoloop() -> bool {
     let primed = Command::new(SUDO_BIN)
         .arg("-v")
@@ -1645,7 +1674,8 @@ fn check_binaries() {
 
 /// Returns true if the path is safe (not a symlink, or does not exist yet).
 /// Prefer `read_to_string_nofollow` / `open_nofollow` for reads — those close
-
+/// the TOCTOU window between this check and the open. Keep this for write-side
+/// prechecks and non-file probes.
 pub(crate) fn is_safe_path(path: &str) -> bool {
     match fs::symlink_metadata(path) {
         Ok(meta) => !meta.file_type().is_symlink(),
@@ -1711,6 +1741,7 @@ pub(crate) fn is_symlink_open_error(err: &std::io::Error) -> bool {
 
 /// `pacman -Ss`-style two-line-per-result listing, for AUR RPC `search`
 /// results - replaces parsing/forwarding `aura -As`/`aura --searchdesc`
+/// (AUR half) output.
 
 fn print_sync_search_results(results: &[crate::alpm_db::AlpmPkg]) {
     if results.is_empty() {
@@ -1865,7 +1896,7 @@ fn run_cmd(prog: &str, args: &[&str], packages: &[String]) -> bool {
 /// Reads one line from stdin byte-by-byte via the raw fd, bypassing
 /// Rust's `Stdin` (which over-reads its own buffer) -- a spawned child
 /// (pacman) inheriting stdin needs its own interactive read right
-
+/// after, and any over-read bytes would be lost to it.
 #[cfg(unix)]
 pub(crate) fn read_line_raw() -> String {
     use std::os::unix::io::FromRawFd;
@@ -1973,7 +2004,7 @@ fn run() -> anyhow::Result<()> {
     // make.conf, before clap: EMERGE_DEFAULT_OPTS is spliced into argv
     // ahead of what was typed, so a typed flag always wins; conflicts
     // (--aur/--abs, --skippgp/--autopgp, ...) are rejected here - see
-
+    // config::CONFLICTS.
     crate::candy::mark_start();
     let cfg = config::load();
     theme::init(&cfg.colors);
@@ -2142,7 +2173,8 @@ fn run() -> anyhow::Result<()> {
     // --install-pkgbuild <PATH>: a standalone action, same spirit as --news/
     // --list-sets above but *after* check_binaries()/--sudoloop since it
     // ends in a real `pacman -U` and needs sudo. Doesn't mix with named
-
+    // packages/@sets or --aur/--abs (those name something to *resolve*
+    // elsewhere; this already points straight at a checkout on disk).
     if let Some(path_str) = &cli.install_pkgbuild {
         if !cli.packages.is_empty() {
             eprintln!(">>> Error: --install-pkgbuild does not take package names or @sets.");
@@ -2210,6 +2242,7 @@ fn run() -> anyhow::Result<()> {
                         );
                     }
                 }
+                crate::progress::status_break();
                 println!("{} Installed: {}", ">>>".t_green().bold(), names.join(", "));
                 Ok(())
             }
@@ -2220,7 +2253,14 @@ fn run() -> anyhow::Result<()> {
     // --aur/--abs/--repos and the other mutually exclusive pairs are
     // rejected up in config::build_argv, before clap ever runs, so the
     // same table covers flags typed here and flags coming from
-
+    // EMERGE_DEFAULT_OPTS. Note what is deliberately *not* in that table:
+    // --abs with --repos. ABS builds an official-repo package from
+    // its own source, so "never the AUR" and "build it from source" are
+    // two answers to two different questions and agree with each other.
+    //
+    // --abs with a search is likewise not an error. ABS has no index of
+    // its own, so the catalog is the Arch repos in the sync dbs
+    // (core/extra/multilib) - see alpm_db::search_abs.
     let repos_only_search = cli.repos || cli.abs;
 
     // Detect @world / world in package list
@@ -2233,7 +2273,7 @@ fn run() -> anyhow::Result<()> {
     // Any other "@name" token is a custom set - resolve it against
     // /etc/portage/sets/<name>[.set] (one package atom per line, '#'
     // comments allowed) and fold its contents into the package list, same
-
+    // as if the user had typed every package in the file by hand.
     let mut custom_set_pkgs: Vec<String> = Vec::new();
     for tok in &cli.packages {
         if let Some(name) = tok.strip_prefix('@') {
@@ -2276,7 +2316,7 @@ fn run() -> anyhow::Result<()> {
     // --batchinstall <FILE>: fold in a one-off package list from an
     // arbitrary path, same format/validation as a custom set (see
     // world_set::read_batch_file). Folded in here, before any action
-
+    // branches below, so it behaves exactly like packages typed by hand.
     if let Some(path) = &cli.batchinstall {
         match read_batch_file(path) {
             Ok(pkgs) => {
@@ -2313,7 +2353,7 @@ fn run() -> anyhow::Result<()> {
         // A mask says "never install this", not "never mention it":
         // searching, scanning, unmerging and deselecting only read or
         // remove what's already there, so they pass straight through.
-
+        // (A masked package is exactly the one you may need to -C.)
         let never_installs = cli.search
             || cli.searchdesc
             || cli.scan
@@ -2349,7 +2389,8 @@ fn run() -> anyhow::Result<()> {
     // --scan: report-only PKGBUILD/.install audit, no build, no install.
     // AUR-only for now (fetched via cgit, same source scan_aur_pkgbuilds_or_abort
     // uses before ever cloning anything) - --abs isn't wired up yet since
-
+    // that needs a throwaway `pkgctl repo clone` with no reusable helper
+    // to call standalone today (see aura-emerge-tasks.md).
     if cli.scan {
         if cli.abs {
             eprintln!(">>> Error: --scan doesn't support --abs yet; drop --abs or use --pkgbuild-view during a normal --abs install instead.");
@@ -2396,7 +2437,12 @@ fn run() -> anyhow::Result<()> {
         // Prefix routing for search terms:
         //   aur/nano              → AUR only, term "nano"
         //   abs/nano              → ABS catalog (core/extra/multilib)
-
+        //   cachyos-core-v3/nano  → repos, prefer that repo, term "nano"
+        //   nano                  → repos then AUR (unless --aur/--abs/--repos)
+        //
+        // For multi-atom / @set search, prefixes are per-package: a single
+        // `blackarch/foo` entry must not force --repos on the whole set
+        // (that used to make AUR-only set members print "not found").
         #[derive(Clone, Copy, PartialEq, Eq)]
         enum SearchSrc {
             Any,
@@ -2468,7 +2514,8 @@ fn run() -> anyhow::Result<()> {
         // @set / multi-atom: exact resolve each name (not one fuzzy join).
         // emerge -s @fonts →
         //   noto-fonts ... extra
-
+        //   ttf-comic-sans ... aur
+        //   missing-pkg ... not found
         let from_set = from_custom_set;
         let multi_exact = target_pkgs.len() > 1 || from_set;
         if multi_exact && !cli.searchdesc {
@@ -2837,7 +2884,9 @@ fn run() -> anyhow::Result<()> {
     // --regen-world-from-explicit: seed world from every currently
     // explicitly-installed package (pacman -Qeq). Meant as a one-time
     // migration step on a system that predates world tracking - run
-
+    // it once, and `-c`'s world protection (below) and `--prune`
+    // start seeing the whole system instead of just what was installed
+    // through `emerge` since world existed.
     if cli.regen_world_from_explicit {
         println!(
             "{} Seeding world from explicitly installed packages...",
@@ -2917,7 +2966,7 @@ fn run() -> anyhow::Result<()> {
     // --resume: re-run the last interrupted install/@world operation,
     // exactly as it was invoked (same flags, same packages). Falls back to
     // a plain full-system upgrade if nothing was saved (e.g. first run
-
+    // after upgrading aura-emerge, or the last operation already finished).
     if cli.resume {
         println!(">>> Attempting to resume last interrupted transaction...");
         match load_resume_state() {
@@ -2926,7 +2975,7 @@ fn run() -> anyhow::Result<()> {
                     // Package names can never start with '-' (validate_pkg
                     // rejects that), and "@world" is never a real package,
                     // so the first token matching neither is unambiguously
-
+                    // the first package in the resumed list.
                     if let Some(pos) = args
                         .iter()
                         .position(|a| !a.starts_with('-') && a != "@world")
@@ -2985,7 +3034,9 @@ fn run() -> anyhow::Result<()> {
                 // Full-system upgrades aren't reversible package-by-package
                 // (no record of prior versions), and this tool no longer
                 // takes its own snapshot before an upgrade (see the update
-
+                // branch below) - that used to be aura's own `-B`
+                // state-save, backing `-Br` here. Neither exists anymore,
+                // so there's genuinely nothing to restore to.
                 eprintln!(
                     "{} Full-system-upgrade undo isn't available - this build no longer takes a \
                     pre-upgrade snapshot. Check `pacman -Qi <pkg>` / the pacman log \
@@ -3176,7 +3227,7 @@ fn run() -> anyhow::Result<()> {
     // 3a. Mixed: specific pkgs + @world, no -u (e.g. `emerge nano @world`)
     //     Install the named packages first (falls through to the normal
     //     install block below); once that finishes, provision anything
-
+    //     else still missing from world. See `provision_after_install`.
     let provision_after_install = has_world && !target_pkgs.is_empty() && !cli.update;
     if provision_after_install {
         println!(
@@ -3188,7 +3239,10 @@ fn run() -> anyhow::Result<()> {
     // 3b. Bare `@world`, no other packages, no -u: declarative
     // provisioning - install whatever world lists that isn't already
     // on this system, and touch nothing that already is. This is the
-
+    // "move world to a new machine and get everything back"
+    // operation (or "make sure this machine matches what I asked for").
+    // For a full system upgrade use `-u @world` / `-u` (below); for just
+    // refreshing the databases, `--sync`.
     if has_world && target_pkgs.is_empty() && !cli.update {
         if !cli.pretend {
             save_resume_state(&build_resume_args(&cli, &[], true));
@@ -3223,7 +3277,10 @@ fn run() -> anyhow::Result<()> {
     // 3. Full system upgrade - triggered by -u, with or without @world.
     // Equivalent to Gentoo's `emerge -u @world`: upgrades everything
     // already installed (official repos + AUR), it does not consult
-
+    // world at all. For -Syy use `--sync --refresh`.
+    // 3. Upgrade: -u alone / -u @world = full system; -u pkg… = only those.
+    // Official half via libalpm sysupgrade (or install for selective);
+    // AUR/ABS rebuilt when named or during full -u.
     if cli.update {
         // Named packages with -u: selective upgrade, not full system.
         let selective = !target_pkgs.is_empty() && !has_world;
@@ -3240,7 +3297,9 @@ fn run() -> anyhow::Result<()> {
         // No pre-upgrade snapshot is taken here anymore (previously
         // `aura -B`, backing `emerge --undo` for a full-system upgrade -
         // dropped along with the rest of aura; see the --undo "update"
-
+        // branch above for what that means for `--undo` now). The
+        // resume-state save above is unrelated and unaffected - `--resume`
+        // still works the same way.
         if !cli.pretend {
             save_last_action(LastAction::Update, &["system".to_string()]);
         }
@@ -3269,7 +3328,10 @@ fn run() -> anyhow::Result<()> {
         // `-Sy` (refresh) writes to the local sync db and needs root
         // regardless of `--print`. `-Su --print` (upgrade-only, no
         // refresh) reads the already-synced db instead and needs no
-
+        // privilege escalation at all, matching how `--pretend` behaves
+        // everywhere else in this tool (never asks for sudo). Real runs
+        // still refresh via `-Syu` as before; if the synced db is stale,
+        // run `--sync` first for an accurate preview.
         let ignored: HashSet<&str> = ignores.iter().map(String::as_str).collect();
         let official_upgrades: Vec<(String, String, String, String)> =
             crate::alpm_db::upgradeable_detail()
@@ -3654,7 +3716,7 @@ fn run() -> anyhow::Result<()> {
         // --ask is answered once at the plan prompt (confirm_merge); the
         // install itself never prompts, matching Portage.
         // After the plan prompt (or when --ask was off), never re-prompt
-
+        // pacman/makepkg. Security scanner prompts are separate.
         let ask_pkgs = false;
 
         let mut success: bool;
@@ -3665,7 +3727,8 @@ fn run() -> anyhow::Result<()> {
         // Partition by source so a mixed batch
         // (`aur/foo abs/bar repo/baz`) routes each atom correctly.
         // Global --abs/--aur only claim bare names; an explicit
-
+        // `repo/name` always stays official, and `abs/`/`aur/` always
+        // win over the flag.
         let mut abs_pkgs: Vec<String> = Vec::new();
         let mut aur_pkgs: Vec<String> = Vec::new();
         let mut rest_pkgs: Vec<String> = Vec::new();
