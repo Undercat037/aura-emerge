@@ -83,6 +83,10 @@ pub(crate) enum Request {
         ignore: Vec<String>,
     },
     Quit,
+    /// Parallel package downloads for later requests (wire verb `jobs`).
+    Jobs {
+        n: u32,
+    },
     Install {
         needed: bool,
         names: Vec<String>,
@@ -116,6 +120,7 @@ impl Request {
             Request::Sync { force } => (if *force { "refresh" } else { "sync" }, vec![]),
             Request::Sysupgrade { ignore } => ("sysupgrade", ignore.clone()),
             Request::Quit => ("quit", vec![]),
+            Request::Jobs { n } => ("jobs", vec![n.to_string()]),
             Request::Install { needed, names } => {
                 let mut a = Vec::new();
                 if *needed {
@@ -160,6 +165,13 @@ impl Request {
                 Ok(Request::Sysupgrade { ignore: args })
             }
             "quit" => none(Request::Quit, &args),
+            "jobs" => match args.as_slice() {
+                [n] => match n.parse::<u32>() {
+                    Ok(n) if (1..=64).contains(&n) => Ok(Request::Jobs { n }),
+                    _ => Err(ProtoError::Syntax("bad jobs")),
+                },
+                _ => Err(ProtoError::Syntax("jobs wants one number")),
+            },
             "install" => {
                 let (needed, rest) = if args.first().map(String::as_str) == Some("--needed") {
                     (true, args[1..].to_vec())
@@ -341,6 +353,7 @@ mod tests {
         roundtrip(Request::Sync { force: false });
         roundtrip(Request::Sync { force: true });
         roundtrip(Request::Quit);
+        roundtrip(Request::Jobs { n: 7 });
         roundtrip(Request::Install {
             needed: false,
             names: vec!["extra/nano".into(), "vim".into()],

@@ -1,0 +1,10 @@
+# aura-emerge eselect shim — only the profile module
+_eselect() {
+  local cur=${COMP_WORDS[COMP_CWORD]}
+  if [[ $COMP_CWORD -eq 1 ]]; then
+    COMPREPLY=( $(compgen -W "profile" -- "$cur") )
+  elif [[ ${COMP_WORDS[1]} == profile && $COMP_CWORD -eq 2 ]]; then
+    COMPREPLY=( $(compgen -W "list set show" -- "$cur") )
+  fi
+}
+complete -F _eselect eselect

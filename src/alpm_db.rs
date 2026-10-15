@@ -577,6 +577,24 @@ pub(crate) fn unsatisfied(deps: &[String]) -> Vec<String> {
     missing
 }
 
+/// True when `dep` (may be versioned, e.g. `foo>=1.2`) is satisfied by
+/// the local db **or** any sync db via libalpm's provider/version logic.
+/// Replaces ad-hoc name-only lookups for "is this available without AUR?".
+pub(crate) fn satisfies_without_aur(dep: &str) -> bool {
+    let Some(alpm) = open() else {
+        return false;
+    };
+    if alpm.localdb().pkgs().find_satisfier(dep).is_some() {
+        return true;
+    }
+    // Sync dbs: exact name, then provides (version constraints included
+    // when the atom carries them — same path pacman uses).
+    if alpm.syncdbs().find_satisfier(dep).is_some() {
+        return true;
+    }
+    false
+}
+
 // ── replacements for `pacman -Qi/-Ql/-Qo/-Ssq` output parsing ────────────────
 
 /// Every dependency name of every installed package (what `pacman -Qi`

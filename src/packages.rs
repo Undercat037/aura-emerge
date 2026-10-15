@@ -5,6 +5,7 @@ use colored::Colorize;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
+use std::os::unix::process::ExitStatusExt;
 use std::process::{Command, Stdio};
 
 use crate::*;
@@ -52,53 +53,73 @@ pub(crate) fn status_colored(status: &str) -> String {
 /// `--quiet-build=n`. With `--log PATH`, output is always captured into
 /// the session file (and still printed live when debug is on).
 fn run_build_cmd(mut cmd: Command, label: &str) -> Result<(), String> {
+    use std::time::{Duration, Instant};
+
     let logging = crate::logbook::session_active();
     let live = crate::runtime::show_build_output();
 
-    // Live-only path: no session log, just inherit stdio.
-    if live && !logging {
-        return if cmd.status().map(|s| s.success()).unwrap_or(false) {
-            Ok(())
-        } else {
-            Err(String::new())
-        };
+    // Always spawn so we can heartbeat: quiet builds look "stuck" and
+    // users need proof OOM/SIGKILL did not take makepkg/cc.
+    if !live || logging {
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
     }
 
-    // Capture when quiet, or when a session log needs the full output.
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-    match cmd.output() {
-        Ok(out) => {
-            let combined = {
-                let mut s = String::new();
-                if !out.stdout.is_empty() {
-                    s.push_str(&String::from_utf8_lossy(&out.stdout));
-                    if !s.ends_with('\n') {
-                        s.push('\n');
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "{} failed to spawn build for '{}': {}",
+                ">>> Error:".t_red().bold(),
+                label,
+                e
+            );
+            return Err(String::new());
+        }
+    };
+    let pid = child.id();
+    let started = Instant::now();
+
+    // Quiet: poll; live: wait with occasional note if long-running.
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let combined = {
+                    let mut s = String::new();
+                    if let Some(mut out) = child.stdout.take() {
+                        let mut buf = Vec::new();
+                        let _ = std::io::Read::read_to_end(&mut out, &mut buf);
+                        if !buf.is_empty() {
+                            s.push_str(&String::from_utf8_lossy(&buf));
+                            if !s.ends_with('\n') {
+                                s.push('\n');
+                            }
+                        }
                     }
-                }
-                if !out.stderr.is_empty() {
-                    s.push_str(&String::from_utf8_lossy(&out.stderr));
-                }
-                s
-            };
-            if logging && !combined.is_empty() {
-                crate::logbook::session_write_output(&format!(
-                    "--- build: {} ---\n{}",
-                    label, combined
-                ));
-            }
-            if out.status.success() {
-                // --debug + --log: replay captured output so the terminal
-                // still sees the full build while the file gets a copy.
-                if live && !combined.is_empty() {
-                    print!("{}", combined);
-                    if !combined.ends_with('\n') {
-                        println!();
+                    if let Some(mut err) = child.stderr.take() {
+                        let mut buf = Vec::new();
+                        let _ = std::io::Read::read_to_end(&mut err, &mut buf);
+                        if !buf.is_empty() {
+                            s.push_str(&String::from_utf8_lossy(&buf));
+                        }
                     }
+                    s
+                };
+                if logging && !combined.is_empty() {
+                    crate::logbook::session_write_output(&format!(
+                        "--- build: {} ---\n{}",
+                        label, combined
+                    ));
                 }
-                Ok(())
-            } else {
+                if status.success() {
+                    if live && logging && !combined.is_empty() {
+                        print!("{}", combined);
+                        if !combined.ends_with('\n') {
+                            println!();
+                        }
+                    }
+                    return Ok(());
+                }
                 if !combined.trim().is_empty() {
                     eprintln!(
                         "{} build log for '{}' (re-run with {} or {} for live output):",
@@ -112,17 +133,32 @@ fn run_build_cmd(mut cmd: Command, label: &str) -> Result<(), String> {
                         eprintln!();
                     }
                 }
-                Err(combined)
+                // OOM-killer: SIGKILL, or 137 from a shell wrapper.
+                let code = status.code().or_else(|| status.signal().map(|g| 128 + g));
+                if status.signal() == Some(9) || code == Some(137) {
+                    eprintln!(
+                        "{} OOM: pid {}, exit {}, {}s",
+                        ">>>".t_red().bold(),
+                        pid,
+                        code.unwrap_or(137),
+                        started.elapsed().as_secs()
+                    );
+                }
+                return Err(combined);
             }
-        }
-        Err(e) => {
-            eprintln!(
-                "{} failed to spawn build for '{}': {}",
-                ">>> Error:".t_red().bold(),
-                label,
-                e
-            );
-            Err(String::new())
+            Ok(None) => {
+                // Still alive: keep polling (OOM check happens on exit).
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            Err(e) => {
+                eprintln!(
+                    "{} failed waiting on build for '{}': {}",
+                    ">>> Error:".t_red().bold(),
+                    label,
+                    e
+                );
+                return Err(String::new());
+            }
         }
     }
 }
@@ -141,7 +177,8 @@ pub(crate) fn mark_asexplicit(pkgs: &[String]) {
     let _ = crate::rootops::set_reason(true, &bare);
 }
 
-/// libalpm `--asdeps` (--deselect / transitive deps). Best-effort.
+/// libalpm `--asdeps` (--deselect / transitive deps). Reports failures so
+/// deselect→depclean doesn't silently leave packages as explicit.
 pub(crate) fn mark_asdeps(pkgs: &[String]) {
     let bare: Vec<String> = pkgs
         .iter()
@@ -150,7 +187,13 @@ pub(crate) fn mark_asdeps(pkgs: &[String]) {
     if bare.is_empty() {
         return;
     }
-    let _ = crate::rootops::set_reason(false, &bare);
+    if let Err(e) = crate::rootops::set_reason(false, &bare) {
+        eprintln!(
+            "{} could not mark as dependency (depclean may not see them): {}",
+            ">>> Warning:".t_yellow().bold(),
+            e
+        );
+    }
 }
 
 /// make.conf plus any `package.env` layers matching this build dir
@@ -584,11 +627,20 @@ fn install_files_resolving_conflicts(
 
 /// `-Rdd` of the packages that block an install, remembered for `--undo`.
 /// Dependency checks are off on purpose; the user saw who needs them.
+/// `package.protect` wins: protected blockers are not removed (incoming
+/// package must yield or the install fails).
 pub(crate) fn unmerge_blockers(names: &[String]) -> Result<(), String> {
+    let (names, held) = crate::hold::split_protected(names);
+    crate::hold::report_protected(&held);
+    if names.is_empty() {
+        return Err(
+            "all conflicting packages are protected (package.protect); cannot auto-resolve".into(),
+        );
+    }
     let in_world = crate::world_set::world_installed_snapshot();
     crate::rootops::remove(
         crate::helper::validate::RemoveMode::Unmerge,
-        names,
+        &names,
         &mut |ev| crate::progress::on_hook_event(ev),
     )?;
     let removed: Vec<(String, bool)> = names
@@ -1182,11 +1234,10 @@ fn choose_build_isolation(no_sandbox: bool) -> BuildIsolation {
     std::process::exit(1);
 }
 
-/// Satisfiable without AUR (synced repo or already installed).
-/// Not the same as already_satisfied (provides-aware).
+/// Satisfiable without AUR: local **or** sync, via libalpm find_satisfier
+/// (provides + version atoms, not bare-name string match).
 fn is_satisfiable_without_aur(name: &str) -> bool {
-    let bare = name.split(['<', '>', '=']).next().unwrap_or(name);
-    crate::alpm_db::find_sync(bare).is_some() || crate::alpm_db::is_installed(bare)
+    crate::alpm_db::satisfies_without_aur(name)
 }
 
 /// Dep already satisfied by the local db (exact name, provides, version).
@@ -1712,21 +1763,6 @@ fn build_base_dir(name: &str) -> std::path::PathBuf {
 /// permission on its parent -- so even the owning user can hit
 /// `Permission denied`. `sudo` (used elsewhere for this class of
 /// trusted operation) is simpler than poking at permission bits first.
-fn clear_build_base(dir: &std::path::Path) -> std::io::Result<()> {
-    if let Err(e) = std::fs::remove_dir_all(dir) {
-        let dir_s = dir.to_string_lossy().to_string();
-        let ok = Command::new(SUDO_BIN)
-            .args([RM_BIN, "-rf", "--"])
-            .arg(&dir_s)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !ok {
-            return Err(e);
-        }
-    }
-    Ok(())
-}
 
 /// Install packages from the AUR by cloning their git repos directly and
 /// building through the same isolation ladder as `--abs`
@@ -1787,25 +1823,10 @@ pub(crate) fn aur_install(
 
     let isolation = choose_build_isolation(no_sandbox);
 
-    // Wipe build root each run (VCS cache lives under SRCDEST).
+    // Persistent cache under ~/.cache/aura-emerge/build/aur: clones are
+    // refreshed in place (git fetch + reset). SRCDEST still holds source
+    // tarballs / VCS working trees for makepkg.
     let build_base = aur_build_base();
-    if build_base.exists() {
-        // Fail loud on wipe -- stale clones break the next run.
-        if let Err(e) = clear_build_base(&build_base) {
-            eprintln!(
-                "{} could not clear stale build directory {}: {}",
-                ">>> Fatal:".t_red().bold(),
-                build_base.display(),
-                e
-            );
-            eprintln!("    sudo rm -rf failed too -- check what's holding onto it, e.g.:");
-            eprintln!(
-                "      {}",
-                format!("sudo lsof +D {}", build_base.display()).t_cyan()
-            );
-            return false;
-        }
-    }
     if std::fs::create_dir_all(&build_base).is_err() {
         eprintln!(
             "{} could not create build directory {}",
@@ -2223,8 +2244,8 @@ pub(crate) fn aur_upgrade_plan(devel: bool) -> Vec<String> {
         }
     }
 
-    // --exclude and the mask hold a package at its installed version,
-    // same as `pacman --ignore` does for the official half.
+    // --exclude, mask, and package.freeze hold a package at its installed
+    // version (same role as `pacman --ignore` for the official half).
     let mut held: Vec<String> = Vec::new();
     to_upgrade.retain(|(name, _, _)| {
         if crate::runtime::is_excluded(name) {
@@ -2233,6 +2254,10 @@ pub(crate) fn aur_upgrade_plan(devel: bool) -> Vec<String> {
         }
         if let Some(entry) = crate::mask::find(name, Some("aur")) {
             held.push(format!("{} (masked by {})", name, entry.describe()));
+            return false;
+        }
+        if let Some(entry) = crate::hold::find_freeze(name, None) {
+            held.push(format!("{} (frozen by {})", name, entry.describe()));
             return false;
         }
         true
@@ -2703,8 +2728,10 @@ fn build_with_sandbox(
         return false;
     }
     // -U through the root helper (libalpm), not sudo pacman.
+    // Honour `-n` / `--noreplace` so a rebuild that produced the same
+    // version is a no-op instead of a forced reinstall.
     let opts = crate::helper::validate::FileOpts {
-        needed: false,
+        needed: crate::runtime::get().noreplace,
         asdeps: oneshot,
         replace: false,
         aeforce: false,
@@ -2947,23 +2974,16 @@ pub(crate) fn abs_install(
     }
 
     // Clean stale build dir from interrupted previous run.
+    // Persistent cache under ~/.cache/aura-emerge/build/abs — refreshed
+    // in place (git pull / pkgctl) instead of wiped every run.
     let build_base = abs_build_base();
-    if build_base.exists() {
-        // Same wipe pattern as aur_build_base() in aur_install.
-        if let Err(e) = clear_build_base(&build_base) {
-            eprintln!(
-                "{} could not clear stale build directory {}: {}",
-                ">>> Fatal:".t_red().bold(),
-                build_base.display(),
-                e
-            );
-            eprintln!("    sudo rm -rf failed too -- check what's holding onto it, e.g.:");
-            eprintln!(
-                "      {}",
-                format!("sudo lsof +D {}", build_base.display()).t_cyan()
-            );
-            return false;
-        }
+    if std::fs::create_dir_all(&build_base).is_err() {
+        eprintln!(
+            "{} could not create build directory {}",
+            ">>> Fatal:".t_red().bold(),
+            build_base.display()
+        );
+        return false;
     }
     crate::progress::reserve(pkg_infos.len());
     // Interactive edit/view must stay sequential on the main thread.
@@ -3014,21 +3034,46 @@ fn abs_build_one(
         return false;
     }
 
-    if pkg_dir.exists() {
-        let _ = std::fs::remove_dir_all(&pkg_dir);
-    }
     let _ = std::fs::create_dir_all(build_base);
 
-    let mut clone = Command::new(PKGCTL_BIN);
-    clone
-        .args(["repo", "clone", "--protocol=https", &info.name])
-        .current_dir(build_base);
-    if !crate::runtime::get().debug {
-        clone
+    // Reuse an existing ABS checkout when possible (git pull); otherwise
+    // wipe a broken tree and clone fresh via pkgctl.
+    let checkout_ok = if pkg_dir.join(".git").is_dir() && pkg_dir.join("PKGBUILD").is_file() {
+        let pull = Command::new("/usr/bin/git")
+            .args(["pull", "--ff-only", "--quiet"])
+            .current_dir(&pkg_dir)
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-    }
-    let checkout_ok = clone.status().map(|s| s.success()).unwrap_or(false);
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if pull {
+            true
+        } else {
+            // Diverged / corrupted — fall through to a full re-clone.
+            let _ = std::fs::remove_dir_all(&pkg_dir);
+            false
+        }
+    } else {
+        if pkg_dir.exists() {
+            let _ = std::fs::remove_dir_all(&pkg_dir);
+        }
+        false
+    };
+    let checkout_ok = if checkout_ok {
+        true
+    } else {
+        let mut clone = Command::new(PKGCTL_BIN);
+        clone
+            .args(["repo", "clone", "--protocol=https", &info.name])
+            .current_dir(build_base);
+        if !crate::runtime::get().debug {
+            clone
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+        }
+        clone.status().map(|s| s.success()).unwrap_or(false)
+    };
     if !checkout_ok {
         eprintln!(
             "{} pkgctl repo clone failed for '{}'",
@@ -3097,7 +3142,8 @@ fn abs_build_one(
         BuildIsolation::None => legacy_makepkg_si(&build_dir, ask, oneshot, skippgp),
     };
 
-    let _ = std::fs::remove_dir_all(&pkg_dir);
+    // Keep the ABS checkout for the next run (git pull refreshes it).
+    // Untracked build debris is cleaned by the next pull/update path.
 
     if build_ok {
         crate::logbook::log_merge_one("abs", &format_atom(info), timer.elapsed());
@@ -3298,35 +3344,14 @@ pub(crate) fn source_builds_parallel(
         crate::security::scan_aur_pkgbuilds_or_abort(aur_pkgs);
     }
 
+    // Persistent build caches — refresh in place, do not wipe each run.
     let abs_base = abs_build_base();
     if !abs_infos.is_empty() {
-        if abs_base.exists() {
-            if let Err(e) = clear_build_base(&abs_base) {
-                eprintln!(
-                    "{} could not clear stale ABS build directory {}: {}",
-                    ">>> Fatal:".t_red().bold(),
-                    abs_base.display(),
-                    e
-                );
-                return false;
-            }
-        }
         let _ = std::fs::create_dir_all(&abs_base);
     }
 
     let aur_base = aur_build_base();
     if !aur_pkgs.is_empty() {
-        if aur_base.exists() {
-            if let Err(e) = clear_build_base(&aur_base) {
-                eprintln!(
-                    "{} could not clear stale AUR build directory {}: {}",
-                    ">>> Fatal:".t_red().bold(),
-                    aur_base.display(),
-                    e
-                );
-                return false;
-            }
-        }
         if std::fs::create_dir_all(&aur_base).is_err() {
             eprintln!(
                 "{} could not create AUR build directory {}",
@@ -3879,6 +3904,7 @@ pub(crate) fn print_system_info() {
     );
     println!("{}", "=".repeat(70));
     println!("System uname: {}", uname_full);
+    crate::profile::print_info();
     println!("CPU: {}", cpu_model);
     if let Some((mem_total, mem_free, swap_total, swap_free)) = read_meminfo() {
         println!("KiB Mem:    {} total, {} free", mem_total, mem_free);

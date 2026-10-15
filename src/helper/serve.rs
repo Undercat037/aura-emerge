@@ -23,6 +23,9 @@ pub(crate) trait Backend {
     fn sync(&mut self, _force: bool, _emit: &mut dyn FnMut(&str)) -> io::Result<()> {
         unsupported()
     }
+    fn set_jobs(&mut self, _n: u32) -> io::Result<()> {
+        Ok(())
+    }
     fn sysupgrade(&mut self, _ignore: &[String], _emit: &mut dyn FnMut(&str)) -> io::Result<()> {
         unsupported()
     }
@@ -67,6 +70,11 @@ impl Backend for Real {
         pkgdb::sync(force, emit)
     }
 
+    fn set_jobs(&mut self, n: u32) -> io::Result<()> {
+        pkgdb::set_jobs(n);
+        Ok(())
+    }
+
     fn sysupgrade(&mut self, ignore: &[String], emit: &mut dyn FnMut(&str)) -> io::Result<()> {
         pkgdb::sysupgrade(ignore, emit)
     }
@@ -106,6 +114,7 @@ impl Backend for Real {
 fn dispatch<B: Backend, W: Write>(be: &mut B, req: &Request, out: &mut W) -> io::Result<()> {
     match req {
         Request::Ping | Request::Quit => Ok(()),
+        Request::Jobs { n } => be.set_jobs(*n),
         Request::Sync { force } => be.sync(*force, &mut |t| {
             // Best effort: a dead peer shows up on the final write.
             let _ = proto::write_response(out, &Response::Event(t.to_string()));

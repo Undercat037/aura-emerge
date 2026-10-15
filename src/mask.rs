@@ -318,3 +318,11 @@ mod tests {
         assert!(m.find("nano", None).is_none());
     }
 }
+
+/// User package.mask **or** active profile package.mask.
+pub(crate) fn is_blocked(name: &str, repo: Option<&str>) -> bool {
+    if find(name, repo).is_some() {
+        return true;
+    }
+    crate::profile::is_masked(name, repo)
+}

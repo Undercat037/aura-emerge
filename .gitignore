@@ -1,6 +1,6 @@
-target/
+target
 .init
-aura-emerge-aur/
+aura-emerge-aur
 AE-ToDo.md
 aura-emerge-main
 src/aura-emerge-main
@@ -11,5 +11,5 @@ aura-emerge-*
 *.tar.*
 *.tar.gz
 *.tar.zst
-pkg/
+pkg
 build-cleaner.sh

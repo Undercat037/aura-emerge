@@ -180,6 +180,25 @@ extra/nano                     # a specific package from a specific repo
 
 Not the same as `--exclude`: a mask is permanent, `--exclude` is for one run.
 
+### `package.protect`
+
+`/etc/portage/package.protect` (file or directory of files) lists packages that must not be removed. Syntax matches `package.mask` (optional `repo/` prefix, `*` globs, `#` comments). Covers `-C`/`--unmerge`, `-c`/`--depclean`, `--prune`, and conflict-driven removals. `--deselect` may still drop the name from world, but the package stays installed and depclean will not take it.
+
+### `package.freeze`
+
+`/etc/portage/package.freeze` (and optional `EMERGE_FREEZE` in `make.conf`) holds packages at their installed version during `-u` / sysupgrade, including AUR/ABS rebuilds. Stricter than pacman's `IgnorePkg`: applies to selective `emerge -u pkg` too.
+
+### Profiles
+
+`/etc/portage/make.profile` is a symlink to a profile directory (Portage layout). Profile trees are searched under `/var/db/repos/{portage,gentoo,arch}/profiles`, `/usr/portage/profiles`, and `/usr/share/portage/profiles`. A profile may define `parent`, `packages` (`*` = `@system` bootstrap set), `package.mask`, and `make.defaults`. Nested `parent` chains are expanded depth-first. `emerge @system` installs the profile system set; those packages are protected from depclean like world entries. List and switch:
+
+```
+emerge --list-profiles
+sudo emerge --set-profile 12
+# or: sudo ln -sf /usr/bin/emerge /usr/bin/eselect && eselect profile set 12
+```
+
+
 ### `package.env`
 
 Per-package build flags. Each entry is an atom followed by one or more env file names from `/etc/portage/env/`. Like `package.mask`, `/etc/portage/package.env` can be a file or a directory.
@@ -203,6 +222,12 @@ OPTIONS="strip docs !debug lto"
 - **Errors:** a symlink, an invalid entry or a missing env file is skipped with a warning naming the file and line; the rest still applies.
 
 ## Features
+
+### Progress and build liveness
+
+Stage lines show plan progress as a percent (`>>> Emerging (3 of 12, 16%) …`). The live Jobs footer reports `Jobs: N of M complete (P%)`. During quiet makepkg/compiler runs, a heartbeat every 30s prints pid and RSS (`still building … — process alive`); if the build dies by signal (OOM/SIGKILL), that is reported explicitly instead of looking like a compiler error.
+
+
 
 ### `--exclude` and `--keep-going`
 
@@ -280,7 +305,7 @@ emerge --check-devel     # just report
 
 ### Source cache
 
-For `-git`/`-hg`/`-svn` packages, `SRCDEST` defaults to `~/.cache/aura-emerge/sources` (or `$XDG_CACHE_HOME/aura-emerge/sources`), so makepkg does an incremental fetch instead of a full re-clone. If `makepkg.conf` already sets `SRCDEST`, that wins. Wipe the cache with `emerge --clean-source-cache`.
+`SRCDEST` defaults to `~/.cache/aura-emerge/sources` (or `$XDG_CACHE_HOME/aura-emerge/sources`) for **all** AUR/ABS builds — not only VCS packages — so makepkg reuses downloaded tarballs and does incremental VCS fetches. AUR/ABS PKGBUILD checkouts themselves persist under `~/.cache/aura-emerge/build/{aur,abs}/` and are refreshed in place (`git fetch` / `git pull`) instead of being wiped each run. If `makepkg.conf` already sets `SRCDEST`, that wins. Wipe source tarballs with `emerge --clean-source-cache`.
 
 ### `@preserved-rebuild` and `--revdep-rebuild`
 
@@ -321,7 +346,7 @@ If one name in a batch is missing, the rest still install; the missing ones are 
 
 ### Custom sets
 
-`/etc/portage/sets/<name>` (or `<name>.set`) is invoked as `@<name>`. One package per line, `#` comments allowed.
+`/etc/portage/sets/<name>` (or `<name>.set`) is invoked as `@<name>`. One package per line, `#` comments allowed. Lines may name nested sets as `@other` (expanded recursively, cycle-safe). Installing `@name` records `@name` in world so set members stay depclean-protected until removed from the set file.
 
 ```
 # /etc/portage/sets/game-kit
@@ -427,7 +452,7 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `-a`, `--ask` | Ask before acting |
 | `--sudoloop` | Keep the sudo timestamp warm (refreshed every 60 s) for the whole run |
 | `-1`, `--oneshot` | Install as dependency (skip world) |
-| `-n`, `--noreplace` | Don't reinstall if present (`pacman --needed`) |
+| `-n`, `--noreplace` | Do not reinstall if already present at the same or newer version |
 | `--with-optdeps` | Also install optional dependencies of official-repo packages |
 | `-N`, `--newuse` | Include installed packages with changed USE flags |
 | `-e`, `--emptytree` | Reinstall all world packages |

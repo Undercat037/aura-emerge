@@ -165,6 +165,10 @@ FEATURES="ccache -test"
 
 `emerge --info` показує, що було прочитано, і підсумкове значення кожного перевизначення. [**→ Приклад make.conf**](misc/make.conf)
 
+### Вкладені сети
+
+У файлах `/etc/portage/sets/` дозволені рядки `@other` — рекурсивне розгортання (з захистом від циклів). Встановлення `@name` записує `@name` у world, щоб члени сета лишались захищені від depclean, доки пакет не прибрано з файлу сета.
+
 ### `package.mask`
 
 Пакунки, які ця машина не повинна встановлювати ніколи: перевірка спрацьовує навіть для транзитивних залежностей з AUR і навіть коли пакунок запитано за іменем. Замаскований пакунок жорстко зупиняє запит - без питань і без прапора для обходу.
@@ -179,6 +183,25 @@ extra/nano                     # конкретний пакунок з конк
 ```
 
 Це не те саме, що `--exclude`: маска діє постійно, `--exclude` - на один запуск.
+
+### `package.protect`
+
+`/etc/portage/package.protect` (file or directory of files) lists packages that must not be removed. Syntax matches `package.mask` (optional `repo/` prefix, `*` globs, `#` comments). Covers `-C`/`--unmerge`, `-c`/`--depclean`, `--prune`, and conflict-driven removals. `--deselect` may still drop the name from world, but the package stays installed and depclean will not take it.
+
+### `package.freeze`
+
+`/etc/portage/package.freeze` (and optional `EMERGE_FREEZE` in `make.conf`) holds packages at their installed version during `-u` / sysupgrade, including AUR/ABS rebuilds. Stricter than pacman's `IgnorePkg`: applies to selective `emerge -u pkg` too.
+
+### Profiles
+
+`/etc/portage/make.profile` is a symlink to a profile directory (Portage layout). Profile trees are searched under `/var/db/repos/{portage,gentoo,arch}/profiles`, `/usr/portage/profiles`, and `/usr/share/portage/profiles`. A profile may define `parent`, `packages` (`*` = `@system` bootstrap set), `package.mask`, and `make.defaults`. Nested `parent` chains are expanded depth-first. `emerge @system` installs the profile system set; those packages are protected from depclean like world entries. List and switch:
+
+```
+emerge --list-profiles
+sudo emerge --set-profile 12
+# or: sudo ln -sf /usr/bin/emerge /usr/bin/eselect && eselect profile set 12
+```
+
 
 ### `package.env`
 
@@ -203,6 +226,11 @@ OPTIONS="strip docs !debug lto"
 - **Помилки:** символьне посилання, некоректний запис або відсутній env-файл пропускаються з попередженням (з файлом і рядком); решта застосовується.
 
 ## Можливості
+
+### Прогрес і «живість» збірки
+
+Рядки стадій показують відсоток плану (`>>> Emerging (3 of 12, 16%) …`). У футері Jobs: `Jobs: N of M complete (P%)`. Під час тихої збірки makepkg/компілятора кожні 30 с друкується heartbeat з pid і RSS (`still building … — process alive`); якщо процес убито сигналом (OOM/SIGKILL), це повідомляється явно, а не виглядає як помилка компілятора.
+
 
 ### `--exclude` і `--keep-going`
 
@@ -280,7 +308,7 @@ emerge --check-devel     # лише звіт
 
 ### Кеш джерел
 
-Для пакунків `-git`/`-hg`/`-svn` `SRCDEST` за замовчуванням - `~/.cache/aura-emerge/sources` (або `$XDG_CACHE_HOME/aura-emerge/sources`), тож makepkg робить інкрементальний fetch замість повного клонування. Якщо `SRCDEST` задано в `makepkg.conf`, використовується він. Очистити кеш: `emerge --clean-source-cache`.
+`SRCDEST` за замовчуванням - `~/.cache/aura-emerge/sources` (або `$XDG_CACHE_HOME/aura-emerge/sources`) для **усіх** збірок AUR/ABS, не лише VCS: makepkg повторно використовує завантажені tarball'и і робить інкрементальний fetch. Чекаути PKGBUILD AUR/ABS живуть у `~/.cache/aura-emerge/build/{aur,abs}/` і оновлюються на місці (`git fetch` / `git pull`), а не стираються кожен запуск. Якщо `SRCDEST` задано в `makepkg.conf`, використовується він. Очистити кеш джерел: `emerge --clean-source-cache`.
 
 ### `@preserved-rebuild` і `--revdep-rebuild`
 
@@ -427,7 +455,7 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `-a`, `--ask` | Запитати перед дією |
 | `--sudoloop` | Тримати мітку часу sudo «теплою» (оновлення кожні 60 с) весь запуск |
 | `-1`, `--oneshot` | Встановити як залежність (у world не потрапляє) |
-| `-n`, `--noreplace` | Не перевстановлювати, якщо вже є (`pacman --needed`) |
+| `-n`, `--noreplace` | Не перевстановлювати, якщо вже є (та сама або новіша версія) |
 | `--with-optdeps` | Заодно встановлювати опційні залежності пакунків з офіційних репозиторіїв |
 | `-N`, `--newuse` | Включити встановлені пакунки зі зміненими USE-прапорами |
 | `-e`, `--emptytree` | Перевстановити всі пакунки зі world |

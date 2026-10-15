@@ -80,7 +80,48 @@ fn op_name(op: alpm::PackageOperation) -> Option<String> {
 /// The frontend owns the terminal (Jobs footer + `>>>` lines); the helper
 /// only ships events on the protocol channel so the Jobs line can stay
 /// pinned at the bottom via `progress::note`.
+/// Parallel downloads asked by the client (`jobs <n>`); 0 = pacman.conf.
+static DL_JOBS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+pub(crate) fn set_jobs(n: u32) {
+    DL_JOBS.store(n, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn wire_events(alpm: &mut Alpm, tx: mpsc::Sender<String>) {
+    let jobs = DL_JOBS.load(std::sync::atomic::Ordering::Relaxed);
+    if jobs > 0 {
+        alpm.set_parallel_downloads(jobs);
+    }
+    // `dl <file> <pct>` per package file, only when the percent changes.
+    let dl_tx = tx.clone();
+    alpm.set_dl_cb(
+        std::collections::HashMap::<String, i64>::new(),
+        move |file, ev, last| {
+            if !file.contains(".pkg.tar") || file.ends_with(".sig") {
+                return;
+            }
+            // Only real downloads (cache hits never report progress).
+            let pct = match ev.event() {
+                alpm::DownloadEvent::Progress(p) if p.total > 0 => {
+                    (p.downloaded * 100 / p.total).clamp(0, 100)
+                }
+                alpm::DownloadEvent::Completed(c)
+                    if last.contains_key(file)
+                        && matches!(
+                            c.result,
+                            alpm::DownloadResult::Success | alpm::DownloadResult::UpToDate
+                        ) =>
+                {
+                    100
+                }
+                _ => return,
+            };
+            if last.get(file).copied() != Some(pct) {
+                last.insert(file.to_string(), pct);
+                let _ = dl_tx.send(format!("dl {} {}", file, pct));
+            }
+        },
+    );
     alpm.set_event_cb((), move |ev, _| match ev.event() {
         alpm::Event::PackageOperationStart(e) => {
             if let Some(n) = op_name(e.operation()) {

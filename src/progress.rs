@@ -2,6 +2,7 @@
 //!
 //! One run-wide counter so repo, AUR and ABS stages number consistently
 
+use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -17,10 +18,14 @@ static DONE: AtomicUsize = AtomicUsize::new(0);
 static RUNNING: AtomicUsize = AtomicUsize::new(0);
 /// A live `>>> Jobs:` line occupies the current TTY row (no trailing newline).
 static SHOWN: AtomicBool = AtomicBool::new(false);
+/// Rows the live area occupies (fetch rows + Jobs row).
+static ROWS: AtomicUsize = AtomicUsize::new(1);
 /// Background Load-avg ticker is running.
 static TICKING: AtomicBool = AtomicBool::new(false);
 /// Serializes all Jobs / stage line I/O across worker threads.
 static OUT: Mutex<()> = Mutex::new(());
+/// Packages being fetched right now: (n, atom, percent).
+static FETCH: Mutex<Vec<(usize, String, u8)>> = Mutex::new(Vec::new());
 
 #[derive(Clone, Copy)]
 pub(crate) enum Stage {
@@ -48,6 +53,7 @@ pub(crate) fn begin(total: usize) {
     DONE.store(0, Ordering::Relaxed);
     RUNNING.store(0, Ordering::Relaxed);
     SHOWN.store(false, Ordering::Relaxed);
+    fetch_clear();
     start_ticker();
 }
 
@@ -80,6 +86,15 @@ pub(crate) fn abort_one() {
 /// `atom` is `repo/name-version` (or bare `name-version`).
 /// Erase Jobs → print stage line → redraw Jobs on the next row (in place).
 pub(crate) fn line(stage: Stage, n: usize, atom: &str) {
+    stage_line(stage, n, atom, None);
+}
+
+/// Emerging line with the data-received percent.
+pub(crate) fn emerging(n: usize, atom: &str, pct: u8) {
+    stage_line(Stage::Emerging, n, atom, Some(pct));
+}
+
+fn stage_line(stage: Stage, n: usize, atom: &str, pct: Option<u8>) {
     match stage {
         // Emerging opens a slot; Installing keeps it; Completed closes it.
         Stage::Emerging => {
@@ -96,12 +111,25 @@ pub(crate) fn line(stage: Stage, n: usize, atom: &str) {
     let _g = OUT.lock().unwrap_or_else(|e| e.into_inner());
     status_erase();
     let total = TOTAL.load(Ordering::Relaxed).max(n);
+    // Percent only for Emerging (data received); other stages: unknown.
+    let count = format!(
+        "{} of {}",
+        n.to_string().t_yellow().bold(),
+        total.to_string().t_yellow().bold()
+    );
+    let head = match (stage, pct) {
+        (Stage::Emerging, p) => format!(
+            "({}, {}%)",
+            count,
+            p.unwrap_or(100).to_string().t_cyan().bold()
+        ),
+        _ => format!("({})", count),
+    };
     println!(
-        "{} {} ({} of {}) {}",
+        "{} {} {} {}",
         ">>>".t_green().bold(),
         stage.word(),
-        n.to_string().t_yellow().bold(),
-        total.to_string().t_yellow().bold(),
+        head,
         atom.t_green().bold()
     );
     status_draw();
@@ -179,6 +207,7 @@ pub(crate) fn on_hook_event(ev: &str) {
 /// Idempotent: a second call is a no-op.
 pub(crate) fn finish() {
     stop_ticker();
+    fetch_clear();
     let _g = OUT.lock().unwrap_or_else(|e| e.into_inner());
     status_erase();
     let total = TOTAL.swap(0, Ordering::Relaxed);
@@ -190,15 +219,20 @@ pub(crate) fn finish() {
     SHOWN.store(false, Ordering::Relaxed);
 }
 
-/// Clear the Jobs row in place (Jobs was drawn without a trailing newline).
+/// Clear the whole live area (fetch rows + Jobs row), cursor ends on its top row.
 fn status_erase() {
     if SHOWN.swap(false, Ordering::Relaxed) {
-        print!("\r\x1b[2K");
+        let mut out = String::from("\r\x1b[2K");
+        for _ in 1..ROWS.load(Ordering::Relaxed) {
+            out.push_str("\x1b[1A\r\x1b[2K");
+        }
+        print!("{}", out);
         let _ = std::io::stdout().flush();
     }
 }
 
-/// Draw Jobs on the current row without a newline so it stays the last line.
+/// Draw one row per active fetch, then Jobs; no trailing newline so Jobs
+/// stays the last line.
 fn status_draw() {
     if !std::io::stdout().is_terminal()
         || crate::runtime::get().debug
@@ -210,11 +244,24 @@ fn status_draw() {
     if total == 0 {
         return;
     }
-    let done = DONE.load(Ordering::Relaxed);
-    let running = RUNNING.load(Ordering::Relaxed);
-    // \r\x1b[2K: rewrite this row; no \n — cursor stays on the Jobs line.
-    print!("\r\x1b[2K{}", jobs_text(done, total, running));
+    let rows = fetch_rows(total);
+    let mut out = String::new();
+    for r in &rows {
+        out.push_str("\r\x1b[2K");
+        out.push_str(r);
+        out.push('\n');
+    }
+    out.push_str("\r\x1b[2K");
+    // Packages still downloading count as running.
+    let fetching = FETCH.lock().unwrap_or_else(|e| e.into_inner()).len();
+    out.push_str(&jobs_text(
+        DONE.load(Ordering::Relaxed),
+        total,
+        RUNNING.load(Ordering::Relaxed) + fetching,
+    ));
+    print!("{}", out);
     let _ = std::io::stdout().flush();
+    ROWS.store(rows.len() + 1, Ordering::Relaxed);
     SHOWN.store(true, Ordering::Relaxed);
 }
 
@@ -240,13 +287,11 @@ fn start_ticker() {
                 if total == 0 {
                     continue;
                 }
-                let done = DONE.load(Ordering::Relaxed);
-                let running = RUNNING.load(Ordering::Relaxed);
                 // Rewrite in place under OUT so we don't race with line().
                 if let Ok(_g) = OUT.try_lock() {
                     if SHOWN.load(Ordering::Relaxed) {
-                        print!("\r\x1b[2K{}", jobs_text(done, total, running));
-                        let _ = std::io::stdout().flush();
+                        status_erase();
+                        status_draw();
                     }
                 }
             }
@@ -256,6 +301,144 @@ fn start_ticker() {
 
 fn stop_ticker() {
     TICKING.store(false, Ordering::Relaxed);
+}
+
+/// One colored row per active fetch (by package number, at most 12).
+fn fetch_rows(total: usize) -> Vec<String> {
+    let mut f: Vec<(usize, String, u8)> = FETCH.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    f.sort_by_key(|e| e.0);
+    let cols = term_cols();
+    f.into_iter()
+        .take(12)
+        .map(|(n, atom, pct)| {
+            let t = total.max(n);
+            let plain = format!(">>> Emerging ({} of {}, {}%) ", n, t, pct);
+            let room = cols.saturating_sub(plain.chars().count() + 1);
+            let atom: String = if atom.chars().count() > room {
+                atom.chars()
+                    .take(room.saturating_sub(1))
+                    .collect::<String>()
+                    + "…"
+            } else {
+                atom
+            };
+            format!(
+                "{} {} ({} of {}, {}%) {}",
+                ">>>".t_green().bold(),
+                Stage::Emerging.word(),
+                n.to_string().t_yellow().bold(),
+                t.to_string().t_yellow().bold(),
+                pct.to_string().t_cyan().bold(),
+                atom.t_green().bold()
+            )
+        })
+        .collect()
+}
+
+/// Update the live fetch row of package `n` (TTY only).
+pub(crate) fn fetch(n: usize, atom: &str, pct: u8) {
+    {
+        let mut f = FETCH.lock().unwrap_or_else(|e| e.into_inner());
+        match f.iter_mut().find(|e| e.0 == n) {
+            Some(e) => e.2 = pct,
+            None => f.push((n, atom.to_string(), pct)),
+        }
+    }
+    let _g = OUT.lock().unwrap_or_else(|e| e.into_inner());
+    status_erase();
+    status_draw();
+}
+
+fn fetch_active(n: usize) -> bool {
+    let f = FETCH.lock().unwrap_or_else(|e| e.into_inner());
+    f.iter().any(|e| e.0 == n)
+}
+
+fn fetch_done(n: usize) {
+    let mut f = FETCH.lock().unwrap_or_else(|e| e.into_inner());
+    f.retain(|e| e.0 != n);
+}
+
+/// Drop stale fetch rows (failed / aborted transaction).
+pub(crate) fn fetch_clear() {
+    FETCH.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+/// `name` from `name-ver-rel-arch.pkg.tar.zst` ("" if not a package file).
+fn pkg_of_file(file: &str) -> String {
+    if !file.contains(".pkg.tar") {
+        return String::new();
+    }
+    let stem = file.split(".pkg.tar").next().unwrap_or(file);
+    let mut p = stem.rsplitn(4, '-');
+    let _ = (p.next(), p.next(), p.next());
+    p.next().unwrap_or("").to_string()
+}
+
+/// Helper `dl <file> <pct>`: live Emerging row; at 100% it becomes a
+/// normal line. `nums` maps name -> package number (shared with pkg events).
+pub(crate) fn on_dl_event(
+    ev: &str,
+    nums: &mut HashMap<String, usize>,
+    atoms: &HashMap<String, String>,
+) {
+    let mut it = ev.split_whitespace();
+    let (Some("dl"), Some(file), Some(p)) = (it.next(), it.next(), it.next()) else {
+        return;
+    };
+    let Ok(pct) = p.parse::<u8>() else {
+        return;
+    };
+    let name = pkg_of_file(file);
+    if name.is_empty() {
+        return;
+    }
+    let atom = atoms.get(&name).cloned().unwrap_or_else(|| name.clone());
+    let n = match nums.get(&name) {
+        Some(&n) => n,
+        None => {
+            if !atoms.contains_key(&name) {
+                grow(1); // dependency, not in the plan
+            }
+            let n = take();
+            nums.insert(name.clone(), n);
+            n
+        }
+    };
+    if pct >= 100 {
+        fetch_done(n);
+        emerging(n, &atom, 100);
+    } else {
+        fetch(n, &atom, pct);
+    }
+}
+
+/// Helper `pkg start <name>`: Emerging if the fetch did not already print it.
+/// Returns the package number.
+pub(crate) fn on_pkg_start(
+    name: &str,
+    nums: &mut HashMap<String, usize>,
+    atoms: &HashMap<String, String>,
+) -> usize {
+    let atom = atoms.get(name).cloned().unwrap_or_else(|| name.to_string());
+    match nums.get(name).copied() {
+        Some(n) => {
+            if fetch_active(n) {
+                fetch_done(n);
+                emerging(n, &atom, 100);
+            }
+            n
+        }
+        None => {
+            if !atoms.contains_key(name) {
+                grow(1); // dependency, not in the plan
+            }
+            let n = take();
+            nums.insert(name.to_string(), n);
+            emerging(n, &atom, 100); // cached: data already here
+            n
+        }
+    }
 }
 
 /// `>>> Jobs: 0 of 136 complete, 3 running, 3 merge wait      Load avg: ...`

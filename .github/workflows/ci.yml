@@ -17,7 +17,9 @@ jobs:
     container: archlinux:base-devel
     steps:
       - name: Install deps
-        run: pacman -Syu --noconfirm --needed git rust sudo
+        run: |
+          pacman -Syu --noconfirm --needed \
+            git rust sudo pacman base-devel
 
       - uses: actions/checkout@v4
 
@@ -31,13 +33,16 @@ jobs:
         env:
           NO_COLOR: "1"
         run: |
-          # фронтенд не запускается от root, а контейнер GHA - root
-          useradd -m ci
+          # frontend refuses real root; GHA container is root
+          useradd -m ci || true
           set +e
-          out=$(runuser -u ci -- ./target/release/aura-emerge --install-pkgbuild ./scaner-test --scan 2>&1)
+          out=$(runuser -u ci -- ./target/release/aura-emerge \
+            --install-pkgbuild ./scaner-test --scan 2>&1)
           code=$?
           echo "$out"
           [ "$code" -eq 1 ] || { echo "::error::expected exit 1, got $code"; exit 1; }
+
+          # Core PKGBUILD / .install IOC strings (exact fragments from report text).
           needles=(
             "Alert, matched a known-malicious IOC"
             "Warning, detected suspicious fragment"
@@ -52,8 +57,16 @@ jobs:
             "sh/bash -c with suspicious payload"
           )
           for needle in "${needles[@]}"; do
-            grep -qF -- "$needle" <<<"$out" || { echo "::error::missing detection: $needle"; exit 1; }
+            grep -qF -- "$needle" <<<"$out" \
+              || { echo "::error::missing detection: $needle"; exit 1; }
           done
+
+          # Optional but expected when Makefile is present next to PKGBUILD:
+          # support-file scan should surface the same curl|sh / decode class.
+          if ! grep -qF -- "pipes a remote script straight into a shell" <<<"$out"; then
+            echo "::error::curl|sh class missing (PKGBUILD or Makefile)"
+            exit 1
+          fi
 
   deny:
     runs-on: ubuntu-latest

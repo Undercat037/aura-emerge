@@ -165,6 +165,10 @@ FEATURES="ccache -test"
 
 `emerge --info` показывает, что было прочитано, и итоговое значение каждого переопределения. [**→ Пример make.conf**](misc/make.conf)
 
+### Вложенные сеты
+
+В файлах `/etc/portage/sets/` допускаются строки `@other` — рекурсивное раскрытие (с защитой от циклов). Установка `@name` записывает `@name` в world, чтобы члены сета оставались защищены от depclean, пока пакет не убран из файла сета.
+
 ### `package.mask`
 
 Пакеты, которые эта машина не должна ставить никогда: проверка срабатывает даже для транзитивных зависимостей из AUR и даже при запросе по имени. Замаскированный пакет жёстко останавливает запрос - без вопросов и без флага для обхода.
@@ -179,6 +183,25 @@ extra/nano                     # конкретный пакет из конкр
 ```
 
 Это не то же самое, что `--exclude`: маска действует постоянно, `--exclude` - на один запуск.
+
+### `package.protect`
+
+`/etc/portage/package.protect` (file or directory of files) lists packages that must not be removed. Syntax matches `package.mask` (optional `repo/` prefix, `*` globs, `#` comments). Covers `-C`/`--unmerge`, `-c`/`--depclean`, `--prune`, and conflict-driven removals. `--deselect` may still drop the name from world, but the package stays installed and depclean will not take it.
+
+### `package.freeze`
+
+`/etc/portage/package.freeze` (and optional `EMERGE_FREEZE` in `make.conf`) holds packages at their installed version during `-u` / sysupgrade, including AUR/ABS rebuilds. Stricter than pacman's `IgnorePkg`: applies to selective `emerge -u pkg` too.
+
+### Profiles
+
+`/etc/portage/make.profile` is a symlink to a profile directory (Portage layout). Profile trees are searched under `/var/db/repos/{portage,gentoo,arch}/profiles`, `/usr/portage/profiles`, and `/usr/share/portage/profiles`. A profile may define `parent`, `packages` (`*` = `@system` bootstrap set), `package.mask`, and `make.defaults`. Nested `parent` chains are expanded depth-first. `emerge @system` installs the profile system set; those packages are protected from depclean like world entries. List and switch:
+
+```
+emerge --list-profiles
+sudo emerge --set-profile 12
+# or: sudo ln -sf /usr/bin/emerge /usr/bin/eselect && eselect profile set 12
+```
+
 
 ### `package.env`
 
@@ -203,6 +226,11 @@ OPTIONS="strip docs !debug lto"
 - **Ошибки:** символьная ссылка, некорректная запись или отсутствующий env-файл пропускаются с предупреждением (с файлом и строкой); остальное применяется.
 
 ## Возможности
+
+### Прогресс и «живость» сборки
+
+Строки стадий показывают процент плана (`>>> Emerging (3 of 12, 16%) …`). В футере Jobs: `Jobs: N of M complete (P%)`. Во время тихой сборки makepkg/компилятора каждые 30 с печатается heartbeat с pid и RSS (`still building … — process alive`); если процесс убит сигналом (OOM/SIGKILL), это сообщается явно, а не выглядит как ошибка компилятора.
+
 
 ### `--exclude` и `--keep-going`
 
@@ -280,7 +308,7 @@ emerge --check-devel     # только отчёт
 
 ### Кэш исходников
 
-Для пакетов `-git`/`-hg`/`-svn` `SRCDEST` по умолчанию - `~/.cache/aura-emerge/sources` (или `$XDG_CACHE_HOME/aura-emerge/sources`), поэтому makepkg делает инкрементальный fetch вместо полного клонирования. Если `SRCDEST` задан в `makepkg.conf`, используется он. Очистить кэш: `emerge --clean-source-cache`.
+`SRCDEST` по умолчанию - `~/.cache/aura-emerge/sources` (или `$XDG_CACHE_HOME/aura-emerge/sources`) для **всех** сборок AUR/ABS, не только VCS: makepkg повторно использует скачанные tarball'ы и делает инкрементальный fetch. Чекауты PKGBUILD AUR/ABS живут в `~/.cache/aura-emerge/build/{aur,abs}/` и обновляются на месте (`git fetch` / `git pull`), а не стираются каждый запуск. Если `SRCDEST` задан в `makepkg.conf`, используется он. Очистить кэш исходников: `emerge --clean-source-cache`.
 
 ### `@preserved-rebuild` и `--revdep-rebuild`
 
@@ -427,7 +455,7 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `-a`, `--ask` | Спросить перед действием |
 | `--sudoloop` | Держать метку времени sudo «тёплой» (обновление каждые 60 с) весь запуск |
 | `-1`, `--oneshot` | Установить как зависимость (в world не попадает) |
-| `-n`, `--noreplace` | Не переустанавливать, если уже есть (`pacman --needed`) |
+| `-n`, `--noreplace` | Не переустанавливать, если уже есть (та же или более новая версия) |
 | `--with-optdeps` | Заодно ставить опциональные зависимости пакетов из официальных репозиториев |
 | `-N`, `--newuse` | Включить установленные пакеты с изменившимися USE-флагами |
 | `-e`, `--emptytree` | Переустановить все пакеты из world |

@@ -18,12 +18,14 @@ mod candy;
 mod config;
 mod conflict;
 mod helper;
+mod hold;
 mod logbook;
 mod mask;
 mod news;
 mod package_env;
 mod packages;
 mod privdrop;
+mod profile;
 mod progress;
 mod revdep;
 mod rootops;
@@ -221,6 +223,9 @@ FILES
                                             build-env overrides (CFLAGS, MAKEFLAGS, ...);
                                             system path only (no per-user file)
     /etc/portage/package.mask               Never-install list (file, or a directory of files)
+    /etc/portage/package.protect            Never-remove list (-C/-c/--prune/conflicts)
+    /etc/portage/package.freeze             Never-upgrade list (-u; EMERGE_FREEZE in make.conf)
+    /etc/portage/make.profile               Symlink to active profile (packages, package.mask)
     /etc/portage/package.env                Per-package build-env overrides: `atom env...`
                                             (file, or a directory of files)
     /etc/portage/env/<name>                 Env files for package.env, make.conf syntax
@@ -235,12 +240,12 @@ FILES
     ~/.cache/aura-emerge/pkgbuild-view/     Last-shown PKGBUILDs (for --pkgbuild-view diffs)
     ~/.cache/aura-emerge/devel.state        Last-checked upstream refs (--devel/--check-devel)
     ~/.cache/aura-emerge/news.state         Read/unread Arch news items
-    ~/.cache/aura-emerge/build/aur/         AUR build checkouts (git clone, scanned, then
-                                            built inside the bwrap sandbox)
-    ~/.cache/aura-emerge/build/abs/         ABS build checkouts, same pipeline as AUR
-    ~/.cache/aura-emerge/sources/           Default SRCDEST -- VCS/source cache that
-                                            survives build-dir wipes; overridden by a
-                                            SRCDEST set in makepkg.conf
+    ~/.cache/aura-emerge/build/aur/         Persistent AUR checkouts (git fetch+reset
+                                            between runs; scanned, then built in bwrap)
+    ~/.cache/aura-emerge/build/abs/         Persistent ABS checkouts (git pull / pkgctl)
+    ~/.cache/aura-emerge/sources/           Default SRCDEST for ALL AUR/ABS packages
+                                            (tarballs + VCS); overridden by SRCDEST in
+                                            makepkg.conf; wipe with --clean-source-cache
     All ~/.cache paths honor $XDG_CACHE_HOME when set.
 
 INSTALLATION
@@ -384,7 +389,7 @@ struct Cli {
     #[arg(short = 'v', long = "verbose")]
     verbose: bool,
 
-    /// Do not reinstall if present (pacman --needed)
+    /// Update, but skip packages already at the same or newer version
     #[arg(short = 'n', long = "noreplace")]
     noreplace: bool,
 
@@ -483,6 +488,14 @@ struct Cli {
     /// List available @sets (also for shell completion)
     #[arg(long = "list-sets")]
     list_sets: bool,
+
+    /// List Portage-style profiles (eselect profile list)
+    #[arg(long = "list-profiles")]
+    list_profiles: bool,
+
+    /// Set active profile: index from --list-profiles, or path
+    #[arg(long = "set-profile", value_name = "N|PATH")]
+    set_profile: Option<String>,
 
     /// Wipe persistent VCS source cache and exit
     #[arg(long = "clean-source-cache")]
@@ -634,7 +647,7 @@ fn print_help() {
     println!("Usage:");
     println!("   emerge [ options ] [ action ] [ package | @set ] [ ... ]");
     println!("   emerge [ options ] [ action ] < @world >");
-    println!("   emerge < --sync | --info | --list-sets >");
+    println!("   emerge < --sync | --info | --list-sets | --list-profiles >");
     println!("   emerge --resume [ --pretend | --ask | --skipfirst ]");
     println!("   emerge --help");
     println!("Options: -[1aCcDehnpstuVv]");
@@ -730,6 +743,85 @@ complete -c emerge -f -n 'string match -q "@*" -- (commandline -ct)' -a '(emerge
         }
         _ => {
             // Elvish/PowerShell: no glue, static flag completion only.
+        }
+    }
+}
+
+/// Minimal `eselect profile` when argv0 is `eselect` (symlink to emerge).
+fn eselect_shim() -> i32 {
+    // Gentoo eselect accepts global flags before the module name; bash/zsh
+    // completions often probe with `eselect --brief`. Strip those first.
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while i < raw.len() {
+        let a = raw[i].as_str();
+        match a {
+            "--brief" | "-b" | "--colour" | "--color" | "--no-colour" | "--no-color" => {
+                i += 1;
+            }
+            s if s.starts_with("--colour=") || s.starts_with("--color=") => {
+                i += 1;
+            }
+            _ => {
+                args.push(a);
+                i += 1;
+            }
+        }
+    }
+    let mut it = args.into_iter();
+    match it.next() {
+        None | Some("help") | Some("--help") => {
+            println!("Usage: eselect [--brief] profile <list|set|show>");
+            println!("  (aura-emerge shim — only the profile module)");
+            0
+        }
+        Some("profile") => match it.next() {
+            Some("list") | None => {
+                crate::profile::print_list();
+                0
+            }
+            Some("show") => {
+                crate::profile::print_info();
+                0
+            }
+            Some("set") => {
+                let Some(spec) = it.next() else {
+                    eprintln!("Usage: eselect profile set <number|path>");
+                    return 1;
+                };
+                match crate::profile::set_profile(spec) {
+                    Ok(()) => 0,
+                    Err(e) => {
+                        eprintln!("!!! {}", e);
+                        1
+                    }
+                }
+            }
+            Some(other) => {
+                eprintln!("!!! unknown profile action: {}", other);
+                1
+            }
+        },
+        Some("modules") => {
+            // Stock Gentoo bash-completion runs `eselect modules list`.
+            // Only advertise the module we implement.
+            if matches!(it.next(), None | Some("list")) {
+                println!("profile");
+            }
+            0
+        }
+        Some(mod_name) => {
+            // Completion probes / partial tokens stay quiet (exit 0, no !!!).
+            if mod_name.starts_with('-') || mod_name.len() < 3 {
+                return 0;
+            }
+            eprintln!(
+                "!!! eselect module '{}' is not provided by aura-emerge",
+                mod_name
+            );
+            eprintln!("!!! only: eselect profile list|set|show");
+            1
         }
     }
 }
@@ -1026,6 +1118,10 @@ pub(crate) fn repo_install_landed(names: &[String], asdeps: bool) -> (bool, Vec<
                 progress::on_hook_event(ev);
                 return;
             }
+            if ev.starts_with("dl ") {
+                progress::on_dl_event(ev, &mut nums, &atoms);
+                return;
+            }
             let mut it = ev.split_whitespace();
             let (Some("pkg"), Some(kind), Some(name)) = (it.next(), it.next(), it.next()) else {
                 return;
@@ -1033,12 +1129,7 @@ pub(crate) fn repo_install_landed(names: &[String], asdeps: bool) -> (bool, Vec<
             let atom = atoms.get(name).cloned().unwrap_or_else(|| name.to_string());
             match kind {
                 "start" => {
-                    if !atoms.contains_key(name) {
-                        progress::grow(1);
-                    }
-                    let n = progress::take();
-                    nums.insert(name.to_string(), n);
-                    progress::line(progress::Stage::Emerging, n, &atom);
+                    progress::on_pkg_start(name, &mut nums, &atoms);
                 }
                 "done" => {
                     if let Some(&n) = nums.get(name) {
@@ -1083,6 +1174,7 @@ pub(crate) fn repo_install_landed(names: &[String], asdeps: bool) -> (bool, Vec<
                 };
             }
         }
+        progress::fetch_clear();
         match res {
             Ok(()) => {
                 for b in chunk {
@@ -1256,6 +1348,19 @@ fn upgrade_selected(cli: &Cli, targets: &[String]) -> anyhow::Result<()> {
         }
     }
 
+    // package.freeze: drop from selective -u targets (report once).
+    {
+        let (ok, held) = crate::hold::split_frozen(&official);
+        crate::hold::report_frozen(&held);
+        official = ok;
+        let (ok, held) = crate::hold::split_frozen(&aur);
+        crate::hold::report_frozen(&held);
+        aur = ok;
+        let (ok, held) = crate::hold::split_frozen(&abs);
+        crate::hold::report_frozen(&held);
+        abs = ok;
+    }
+
     let upgradeable = crate::alpm_db::upgradeable_detail();
     let mut plan_count = 0usize;
     // Only packages with a real upgrade are installed; up-to-date ones are
@@ -1392,6 +1497,13 @@ fn upgrade_ignores() -> Vec<String> {
             }
         }
     }
+    // package.freeze + EMERGE_FREEZE — never upgrade these (stricter than IgnorePkg).
+    for name in alpm_db::installed_names() {
+        if hold::is_frozen(&name) {
+            names.push(name);
+        }
+    }
+    names.extend(hold::freeze_list().exact_ignore_names());
 
     names.sort();
     names.dedup();
@@ -1409,6 +1521,8 @@ enum ActionKind {
     Info,
     News,
     ListSets,
+    ListProfiles,
+    SetProfile,
     CleanSourceCache,
     CheckDevel,
     InstallPkgbuild,
@@ -1446,6 +1560,8 @@ impl ActionKind {
             ActionKind::Info => "--info",
             ActionKind::News => "--news",
             ActionKind::ListSets => "--list-sets",
+            ActionKind::ListProfiles => "--list-profiles",
+            ActionKind::SetProfile => "--set-profile",
             ActionKind::CleanSourceCache => "--clean-source-cache",
             ActionKind::CheckDevel => "--check-devel",
             ActionKind::InstallPkgbuild => "--install-pkgbuild",
@@ -1477,6 +1593,8 @@ fn action_from_long(token: &str) -> Option<ActionKind> {
         "--info" => Some(ActionKind::Info),
         "--news" | "--check-news" => Some(ActionKind::News),
         "--list-sets" => Some(ActionKind::ListSets),
+        "--list-profiles" => Some(ActionKind::ListProfiles),
+        "--set-profile" => Some(ActionKind::SetProfile),
         "--clean-source-cache" => Some(ActionKind::CleanSourceCache),
         "--check-devel" => Some(ActionKind::CheckDevel),
         "--install-pkgbuild" => Some(ActionKind::InstallPkgbuild),
@@ -1529,6 +1647,12 @@ fn active_actions(cli: &Cli) -> Vec<ActionKind> {
     }
     if cli.list_sets {
         out.push(ActionKind::ListSets);
+    }
+    if cli.list_profiles {
+        out.push(ActionKind::ListProfiles);
+    }
+    if cli.set_profile.is_some() {
+        out.push(ActionKind::SetProfile);
     }
     if cli.clean_source_cache {
         out.push(ActionKind::CleanSourceCache);
@@ -1661,6 +1785,53 @@ fn save_failed_resume(cli: &Cli) -> bool {
         "emerge --resume".t_cyan()
     );
     true
+}
+
+/// `--noreplace`: keep only targets that are new, older than the
+/// candidate, or whose candidate version is unknown (normal flow reports).
+fn drop_up_to_date(targets: Vec<String>, abs_flag: bool) -> Vec<String> {
+    let bare = |p: &str| p.split('/').last().unwrap_or(p).to_string();
+    // Only installed targets need a version lookup; abs/ is never skipped.
+    let installed: Vec<&String> = targets
+        .iter()
+        .filter(|p| !p.starts_with("abs/") && !abs_flag && alpm_db::is_installed(&bare(p.as_str())))
+        .collect();
+    if installed.is_empty() {
+        return targets;
+    }
+    // Candidate version: sync dbs first (unless aur/), then the AUR.
+    let mut cand: HashMap<String, String> = HashMap::new();
+    let repo_names: Vec<String> = installed
+        .iter()
+        .filter(|p| !p.starts_with("aur/"))
+        .map(|p| bare(p.as_str()))
+        .collect();
+    for (n, p) in alpm_db::find_sync_many(&repo_names) {
+        cand.insert(n, p.version);
+    }
+    let aur_names: Vec<String> = installed
+        .iter()
+        .map(|p| bare(p.as_str()))
+        .filter(|n| !cand.contains_key(n))
+        .collect();
+    if !aur_names.is_empty() {
+        for i in aur::rpc_info(&aur_names) {
+            cand.insert(i.name, i.version);
+        }
+    }
+    let skip: HashSet<String> = installed
+        .iter()
+        .map(|p| bare(p.as_str()))
+        .filter(|n| {
+            cand.get(n)
+                .map(|v| packages::pkg_status(n, v) != "U")
+                .unwrap_or(false)
+        })
+        .collect();
+    targets
+        .into_iter()
+        .filter(|p| !skip.contains(&bare(p.as_str())))
+        .collect()
 }
 
 /// Reconstructs the argv-equivalent of the current invocation for
@@ -1861,8 +2032,8 @@ fn print_sync_search_results(results: &[crate::alpm_db::AlpmPkg]) {
         if p.installed {
             tags.push_str(&format!(" {}", "[installed]".t_cyan()));
         }
-        if crate::mask::find(&p.name, Some(p.repo.as_str())).is_some()
-            || crate::mask::find(&p.name, None).is_some()
+        if crate::mask::is_blocked(&p.name, Some(p.repo.as_str()))
+            || crate::mask::is_blocked(&p.name, None)
         {
             tags.push_str(&format!(" {}", "[masked]".t_red().bold()));
         }
@@ -1889,9 +2060,7 @@ fn print_abs_search_results(results: &[crate::alpm_db::AlpmPkg]) {
         if p.installed {
             tags.push_str(&format!(" {}", "[installed]".t_cyan()));
         }
-        if crate::mask::find(&p.name, Some("abs")).is_some()
-            || crate::mask::find(&p.name, None).is_some()
-        {
+        if crate::mask::is_blocked(&p.name, Some("abs")) || crate::mask::is_blocked(&p.name, None) {
             tags.push_str(&format!(" {}", "[masked]".t_red().bold()));
         }
         println!(
@@ -1929,8 +2098,8 @@ fn print_aur_search_results(results: &[aur::AurPkgInfo]) {
         } else {
             String::new()
         };
-        let masked = if crate::mask::find(&r.name, Some("aur")).is_some()
-            || crate::mask::find(&r.name, None).is_some()
+        let masked = if crate::mask::is_blocked(&r.name, Some("aur"))
+            || crate::mask::is_blocked(&r.name, None)
         {
             format!(" {}", "[masked]".t_red().bold())
         } else {
@@ -2101,6 +2270,17 @@ fn main() {
             }
         }
         return;
+    }
+    // Optional: `ln -s emerge /usr/bin/eselect` → only `eselect profile …`.
+    {
+        let argv0 = std::env::args().next().unwrap_or_default();
+        let base = std::path::Path::new(&argv0)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        if base == "eselect" {
+            std::process::exit(eselect_shim());
+        }
     }
     // Started as real root (`sudo emerge ...`, doas, pkexec, `su -`)?
     // The frontend never works as root: the helper is started first
@@ -2315,11 +2495,27 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // --list-profiles / --set-profile: no pacman (symlink under /etc/portage).
+    if cli.list_profiles {
+        crate::profile::print_list();
+        return Ok(());
+    }
+    if let Some(spec) = &cli.set_profile {
+        match crate::profile::set_profile(spec) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                eprintln!("{} {}", ">>> Error:".t_red().bold(), e);
+                std::process::exit(1);
+            }
+        }
+    }
+
     // --list-sets: no pacman needed - just enumerates what's on disk.
     // Also what shell completion shells out to for '@' completion.
     if cli.list_sets {
         println!("@world");
         println!("@preserved-rebuild");
+        println!("@system");
         for name in list_custom_sets() {
             println!("@{}", name);
         }
@@ -2474,14 +2670,35 @@ fn run() -> anyhow::Result<()> {
     // dependency-completeness check - see preserved_rebuild()).
     let has_preserved_rebuild = cli.packages.iter().any(|p| p == "@preserved-rebuild");
 
+    // @system — profile packages with `*` (bootstrap set).
+    let has_system = cli.packages.iter().any(|p| p == "@system");
+    let mut system_pkgs: Vec<String> = Vec::new();
+    if has_system {
+        system_pkgs = crate::profile::system_names().into_iter().collect();
+        system_pkgs.sort();
+        if system_pkgs.is_empty() {
+            eprintln!(
+                "{} @system is empty (no profile or no `*pkg` lines in profile packages)",
+                ">>> Warning:".t_yellow().bold()
+            );
+        } else {
+            println!(
+                "{} @system: {} package(s) from profile",
+                ">>>".t_green().bold(),
+                system_pkgs.len()
+            );
+        }
+    }
+
     // Any other "@name" token is a custom set - resolve it against
     // /etc/portage/sets/<name>[.set] (one package atom per line, '#'
     // comments allowed) and fold its contents into the package list, same
     // as if the user had typed every package in the file by hand.
     let mut custom_set_pkgs: Vec<String> = Vec::new();
+    let mut custom_set_names: Vec<String> = Vec::new();
     for tok in &cli.packages {
         if let Some(name) = tok.strip_prefix('@') {
-            if name == "world" || name == "preserved-rebuild" {
+            if name == "world" || name == "preserved-rebuild" || name == "system" {
                 continue;
             }
             if !valid_set_name(name) {
@@ -2496,6 +2713,7 @@ fn run() -> anyhow::Result<()> {
                             name, SETS_DIR, name
                         );
                     }
+                    custom_set_names.push(name.to_string());
                     custom_set_pkgs.extend(pkgs);
                 }
                 Err(e) => {
@@ -2516,6 +2734,7 @@ fn run() -> anyhow::Result<()> {
     );
     let from_custom_set = !custom_set_pkgs.is_empty();
     target_pkgs.extend(custom_set_pkgs);
+    target_pkgs.extend(system_pkgs);
 
     // --batchinstall <FILE>: fold in a one-off package list from an
     // arbitrary path, same format/validation as a custom set (see
@@ -3122,11 +3341,12 @@ fn run() -> anyhow::Result<()> {
             );
             std::process::exit(1);
         }
-        let world_bare: HashSet<String> = match fs::File::open(WORLD_SET_FILE) {
+        let mut world_bare: HashSet<String> = match fs::File::open(WORLD_SET_FILE) {
             Ok(file) => io::BufReader::new(file)
                 .lines()
                 .map_while(Result::ok)
-                .filter(|l| !l.trim().is_empty())
+                .filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#'))
+                .filter(|l| !l.trim().starts_with('@'))
                 .map(|l| l.trim().split('/').last().unwrap_or("").to_string())
                 .collect(),
             Err(_) => {
@@ -3134,10 +3354,11 @@ fn run() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         };
+        world_bare.extend(world_set::world_set_member_bares());
         let installed = crate::alpm_db::explicit_names();
         let to_remove: Vec<String> = installed
             .into_iter()
-            .filter(|p| !world_bare.contains(p))
+            .filter(|p| !world_bare.contains(p) && !crate::hold::is_protected(p))
             .collect();
         let (to_remove, excluded) = runtime::split_excluded(&to_remove);
         runtime::report_excluded(&excluded);
@@ -3624,18 +3845,17 @@ fn run() -> anyhow::Result<()> {
                     progress::on_hook_event(ev);
                     return;
                 }
+                if head == "dl" {
+                    progress::on_dl_event(ev, &mut nums, &atoms);
+                    return;
+                }
                 let (true, Some(name)) = (head == "pkg", it.next()) else {
                     return;
                 };
                 let atom = atoms.get(name).cloned().unwrap_or_else(|| name.to_string());
                 match kind {
                     "start" => {
-                        if !atoms.contains_key(name) {
-                            progress::grow(1); // new dependency, not in the plan
-                        }
-                        let n = progress::take();
-                        nums.insert(name.to_string(), n);
-                        progress::line(progress::Stage::Emerging, n, &atom);
+                        progress::on_pkg_start(name, &mut nums, &atoms);
                     }
                     "done" => {
                         if let Some(&n) = nums.get(name) {
@@ -3648,6 +3868,7 @@ fn run() -> anyhow::Result<()> {
             };
             let timer = logbook::Timer::start();
             let res = rootops::sysupgrade(&ignores, &mut show);
+            progress::fetch_clear();
             let res = match res {
                 // The plan promised upgrades but nothing was installed:
                 // never report that as success.
@@ -3723,7 +3944,7 @@ fn run() -> anyhow::Result<()> {
         println!(">>> Checking for orphaned packages...");
 
         {
-            // Orphans kept only because world lists them are protected.
+            // World packages + members of @sets listed in world + package.protect.
             let mut world_bare: HashSet<String> = HashSet::new();
             if is_safe_path(WORLD_SET_FILE) {
                 if let Ok(file) = fs::File::open(WORLD_SET_FILE) {
@@ -3731,24 +3952,36 @@ fn run() -> anyhow::Result<()> {
                         .lines()
                         .map_while(Result::ok)
                         .filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#'))
+                        .filter(|l| !l.trim().starts_with('@'))
                         .map(|l| l.trim().split('/').last().unwrap_or("").to_string())
                         .collect();
                 }
             }
+            world_bare.extend(world_set::world_set_member_bares());
+            world_bare.extend(crate::profile::system_names());
             let protected: Vec<String> = crate::alpm_db::orphan_names()
                 .into_iter()
-                .filter(|p| world_bare.contains(p))
+                .filter(|p| world_bare.contains(p) || crate::hold::is_protected(p))
                 .collect();
 
-            // Closure = orphans + deps they free; --exclude'd ones (and what
-            // they need) are kept, so the list equals what is removed.
+            // Closure = orphans + deps they free; --exclude'd / protect keep them.
             let mut keep = world_bare.clone();
+            for n in crate::alpm_db::orphan_names() {
+                if crate::hold::is_protected(&n) {
+                    keep.insert(n);
+                }
+            }
             let mut all_dropped: Vec<String> = Vec::new();
             let mut orphans;
             loop {
                 orphans = crate::alpm_db::orphan_closure(&keep);
-                let (_, dropped) = runtime::split_excluded(&orphans);
-                if dropped.is_empty() {
+                let (removable, held_p) = crate::hold::split_protected(&orphans);
+                for (n, _) in &held_p {
+                    keep.insert(n.clone());
+                }
+                let (_, dropped) = runtime::split_excluded(&removable);
+                if dropped.is_empty() && held_p.is_empty() {
+                    orphans = removable;
                     break;
                 }
                 keep.extend(dropped.iter().cloned());
@@ -3833,7 +4066,15 @@ fn run() -> anyhow::Result<()> {
                 m
             );
         }
-        let target_pkgs = installed_targets;
+        let (target_pkgs, protected_held) = crate::hold::split_protected(&installed_targets);
+        crate::hold::report_protected(&protected_held);
+        if target_pkgs.is_empty() {
+            eprintln!(
+                "{} nothing left to unmerge (all protected or not installed).",
+                ">>>".t_yellow().bold()
+            );
+            return Ok(());
+        }
 
         let star = " *".t_yellow().bold();
         println!(
@@ -3865,7 +4106,10 @@ fn run() -> anyhow::Result<()> {
             unmerge_atoms.push(atom);
             println!(" {}", shown);
             println!("    selected: {}", ver);
-            println!("   protected: none");
+            let prot = crate::hold::find_protect(bare, None)
+                .map(|e| e.describe())
+                .unwrap_or_else(|| "none".to_string());
+            println!("   protected: {}", prot);
             println!("     omitted: none");
             all_selected.push(format!("={}-{}", shown, ver));
         }
@@ -3919,6 +4163,15 @@ fn run() -> anyhow::Result<()> {
     }
 
     // 6. Install
+    // --noreplace: before the plan, drop targets already at the same or a
+    // newer version (nothing to download/build). Older ones still update.
+    if cli.noreplace && !target_pkgs.is_empty() {
+        target_pkgs = drop_up_to_date(target_pkgs, cli.abs);
+        if target_pkgs.is_empty() && !has_world {
+            println!("{} Nothing to merge; quitting.", ">>>".t_green().bold());
+            return Ok(());
+        }
+    }
     if !target_pkgs.is_empty() {
         maybe_news_banner();
         if !cli.pretend {
@@ -4622,6 +4875,16 @@ fn run() -> anyhow::Result<()> {
                             ">>> Warning: package(s) installed but world was not updated: {:#}",
                             e
                         );
+                    }
+                    // Sets invoked as @name stay in world so their members
+                    // remain depclean-protected until dropped from the set.
+                    if !custom_set_names.is_empty() {
+                        if let Err(e) = world_set::register_sets_in_world(&custom_set_names) {
+                            eprintln!(
+                                ">>> Warning: set(s) installed but not recorded in world: {:#}",
+                                e
+                            );
+                        }
                     }
                     if !aur_names.is_empty() {
                         mark_asexplicit(&aur_names);

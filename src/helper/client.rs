@@ -130,6 +130,11 @@ impl Client {
         }
     }
 
+    /// Parallel package downloads for the next install / upgrade.
+    pub(crate) fn set_jobs(&mut self, n: u32) -> Result<(), ClientError> {
+        self.request(&Request::Jobs { n }, &mut |_| {})
+    }
+
     pub(crate) fn ping(&mut self) -> Result<(), ClientError> {
         self.request(&Request::Ping, &mut |_| {})
     }

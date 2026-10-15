@@ -118,6 +118,15 @@ pub(crate) fn install_files(
     with_helper(|c| c.install_files(opts, &lines, on_event)).map_err(|e| e.to_string())
 }
 
+/// `--jobsr` > 1 = that many parallel downloads; default keeps pacman.conf.
+fn set_dl_jobs(c: &mut Client) -> Result<(), ClientError> {
+    let j = crate::runtime::get().jobsr;
+    if j > 1 {
+        c.set_jobs(j.min(64))?;
+    }
+    Ok(())
+}
+
 /// `pacman -S` through the root helper (libalpm transaction).
 /// `on_event` gets live `pkg start|done` and `hook …` lines.
 pub(crate) fn install(
@@ -128,7 +137,11 @@ pub(crate) fn install(
     if names.is_empty() {
         return Ok(());
     }
-    with_helper(|c| c.install(names, needed, on_event)).map_err(|e| e.to_string())
+    with_helper(|c| {
+        set_dl_jobs(c)?;
+        c.install(names, needed, on_event)
+    })
+    .map_err(|e| e.to_string())
 }
 
 /// Refresh sync dbs (`-Sy` / `-Syy` when force).
@@ -138,7 +151,11 @@ pub(crate) fn sync(force: bool, on_event: &mut dyn FnMut(&str)) -> Result<(), St
 
 /// Official sysupgrade (`-Su`); `ignore` is holdback list.
 pub(crate) fn sysupgrade(ignore: &[String], on_event: &mut dyn FnMut(&str)) -> Result<(), String> {
-    with_helper(|c| c.sysupgrade(ignore, on_event)).map_err(|e| e.to_string())
+    with_helper(|c| {
+        set_dl_jobs(c)?;
+        c.sysupgrade(ignore, on_event)
+    })
+    .map_err(|e| e.to_string())
 }
 
 /// Remove installed packages through the helper.

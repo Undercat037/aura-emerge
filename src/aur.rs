@@ -28,20 +28,68 @@ pub(crate) struct AurPkgInfo {
     pub(crate) maintainer: Option<String>,
 }
 
-/// Shallow-clones `<AUR_BASE_URL>/<pkgbase>.git` into `dest_root/<pkgbase>`.
+/// Refresh an existing shallow clone in place: `git fetch` + hard reset
+/// to the remote tip. Returns `true` when the tree is usable.
+fn update_existing_clone(target: &Path) -> bool {
+    if !target.join(".git").exists() {
+        return false;
+    }
+    // Fetch the tip of the default remote branch (AUR is single-branch).
+    let fetch_ok = Command::new(GIT_BIN)
+        .args(["fetch", "--depth=1", "--quiet", "origin"])
+        .current_dir(target)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !fetch_ok {
+        return false;
+    }
+    // Prefer FETCH_HEAD (what we just fetched); fall back to origin/HEAD.
+    let reset = Command::new(GIT_BIN)
+        .args(["reset", "--hard", "--quiet", "FETCH_HEAD"])
+        .current_dir(target)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !reset {
+        let _ = Command::new(GIT_BIN)
+            .args(["reset", "--hard", "--quiet", "origin/HEAD"])
+            .current_dir(target)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    // Drop leftover untracked build artifacts from a previous run.
+    let _ = Command::new(GIT_BIN)
+        .args(["clean", "-fdx", "--quiet"])
+        .current_dir(target)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    target.join("PKGBUILD").is_file()
+}
+
+/// Shallow-clones `<AUR_BASE_URL>/<pkgbase>.git` into `dest_root/<pkgbase>`,
+/// or refreshes an existing checkout (persistent cache across runs).
 /// Returns `None` on any git failure (network or nonexistent pkgbase --
 /// not distinguished, callers fall back to an RPC lookup either way).
-
 pub(crate) fn clone_repo(pkgbase: &str, dest_root: &Path) -> Option<PathBuf> {
     let url = format!("{}/{}.git", AUR_BASE_URL, pkgbase);
     let target = dest_root.join(pkgbase);
+
+    // Persistent cache: reuse a previous checkout when possible.
     if target.exists() {
-        eprintln!(
-            ">>> Warning: build target {} already exists (stale from an earlier clone in this run?) -- skipping clone",
-            target.display()
-        );
-        return None;
+        if update_existing_clone(&target) {
+            return Some(target);
+        }
+        // Broken/partial tree from a crashed run -- wipe and re-clone.
+        let _ = std::fs::remove_dir_all(&target);
     }
+
     let output = Command::new(GIT_BIN)
         .args(["clone", "--depth=1", "--quiet", &url])
         .arg(&target)
@@ -66,7 +114,7 @@ pub(crate) fn clone_repo(pkgbase: &str, dest_root: &Path) -> Option<PathBuf> {
     }
     // AUR's git backend "clones" successfully (exit 0) even for a name
     // never pushed as a package -- an empty repo, no PKGBUILD. Treat that
-    // as "doesn't exist" instead of a confusing failure downstream, and
+    // as "doesn't exist" instead of a confusing failure downstream.
 
     if !target.join("PKGBUILD").is_file() {
         let _ = std::fs::remove_dir_all(&target);

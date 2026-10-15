@@ -51,6 +51,7 @@ pub(crate) fn valid_set_name(name: &str) -> bool {
     !name.is_empty()
         && name != "world"
         && name != "preserved-rebuild"
+        && name != "system"
         && name
             .chars()
             .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
@@ -87,8 +88,21 @@ fn resolve_set_path_in(dir: &str, name: &str) -> Result<String> {
 }
 
 /// Read sets/<name> or sets/<name>.set (one atom/line, # comments;
-/// validate_pkg each).
+/// validate_pkg each). Lines `@other` expand nested sets (cycle-safe).
 pub(crate) fn read_custom_set(name: &str) -> Result<Vec<String>> {
+    let mut seen = HashSet::new();
+    read_custom_set_rec(name, &mut seen)
+}
+
+fn read_custom_set_rec(name: &str, seen: &mut HashSet<String>) -> Result<Vec<String>> {
+    if !seen.insert(name.to_string()) {
+        eprintln!(
+            "{} nested set cycle involving @{} (skipped)",
+            ">>> Warning:".t_yellow().bold(),
+            name
+        );
+        return Ok(Vec::new());
+    }
     let path = resolve_set_path(name)?;
 
     let file = match open_nofollow(std::path::Path::new(&path)) {
@@ -106,22 +120,62 @@ pub(crate) fn read_custom_set(name: &str) -> Result<Vec<String>> {
         }
     };
 
-    let pkgs: Vec<String> = io::BufReader::new(file)
-        .lines()
-        .map_while(io::Result::ok)
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .filter(|l| {
-            if validate_pkg(l) {
-                true
-            } else {
-                eprintln!(">>> Warning: invalid entry in @{} (skipped): {}", name, l);
-                false
+    let mut pkgs = Vec::new();
+    for line in io::BufReader::new(file).lines().map_while(io::Result::ok) {
+        let l = line.trim().to_string();
+        if l.is_empty() || l.starts_with('#') {
+            continue;
+        }
+        if let Some(nested) = l.strip_prefix('@') {
+            let nested = nested.trim();
+            if nested.is_empty() || !valid_set_name(nested) {
+                eprintln!(
+                    ">>> Warning: invalid nested set in @{} (skipped): {}",
+                    name, l
+                );
+                continue;
             }
-        })
-        .collect();
-
+            match read_custom_set_rec(nested, seen) {
+                Ok(mut inner) => pkgs.append(&mut inner),
+                Err(e) => eprintln!(">>> Warning: nested @{} in @{}: {:#}", nested, name, e),
+            }
+            continue;
+        }
+        if validate_pkg(&l) {
+            pkgs.push(l);
+        } else {
+            eprintln!(">>> Warning: invalid entry in @{} (skipped): {}", name, l);
+        }
+    }
     Ok(pkgs)
+}
+
+/// Bare package names protected because they appear in a set listed in
+/// world as `@setname` (nested expansion applied).
+pub(crate) fn world_set_member_bares() -> HashSet<String> {
+    let mut out = HashSet::new();
+    let Ok(file) = open_nofollow(std::path::Path::new(WORLD_SET_FILE)) else {
+        return out;
+    };
+    for line in io::BufReader::new(file).lines().map_while(io::Result::ok) {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        let Some(set) = t.strip_prefix('@') else {
+            continue;
+        };
+        if !valid_set_name(set) {
+            continue;
+        }
+        if let Ok(pkgs) = read_custom_set(set) {
+            for p in pkgs {
+                let bare = p.split('/').last().unwrap_or(&p).to_string();
+                out.insert(bare);
+            }
+        }
+    }
+    out
 }
 
 /// Read a --batchinstall list (same format as a custom set, any path).
@@ -190,6 +244,10 @@ fn hold_back(list: &mut Vec<String>, repo: Option<&str>, held: &mut Vec<String>)
         }
         if let Some(entry) = crate::mask::find(name, repo) {
             held.push(format!("{} (masked by {})", name, entry.describe()));
+            return false;
+        }
+        if crate::profile::is_masked(name, repo) {
+            held.push(format!("{} (masked by profile)", name));
             return false;
         }
         true
@@ -748,6 +806,56 @@ pub(crate) fn add_to_world_set(packages: &[String], forced_prefix: Option<&str>)
     add_to_world_groups(&[(packages, forced_prefix)])
 }
 
+/// Record `@setname` lines in world so set members stay protected like
+/// explicit world packages (nested expansion on read).
+pub(crate) fn register_sets_in_world(set_names: &[String]) -> Result<()> {
+    if set_names.is_empty() {
+        return Ok(());
+    }
+    let mut current: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    match open_nofollow(std::path::Path::new(WORLD_SET_FILE)) {
+        Err(e) if is_symlink_open_error(&e) => {
+            bail!("{} is a symlink - refusing to read", WORLD_SET_FILE);
+        }
+        Ok(file) => {
+            for line in io::BufReader::new(file).lines().map_while(Result::ok) {
+                let trimmed = line.trim().to_string();
+                if trimmed.is_empty() || !validate_pkg(&trimmed) {
+                    continue;
+                }
+                let key = if trimmed.starts_with('@') {
+                    trimmed.clone()
+                } else {
+                    trimmed.split('/').last().unwrap_or(&trimmed).to_string()
+                };
+                current.insert(key, trimmed);
+            }
+        }
+        Err(_) => {}
+    }
+    let mut changed = false;
+    for name in set_names {
+        let entry = if name.starts_with('@') {
+            name.clone()
+        } else {
+            format!("@{}", name)
+        };
+        if !valid_set_name(entry.trim_start_matches('@')) {
+            continue;
+        }
+        if current.insert(entry.clone(), entry).is_none() {
+            changed = true;
+        }
+    }
+    if !changed {
+        return Ok(());
+    }
+    println!("{} Recording set(s) in world...", ">>>".t_green().bold());
+    let mut sorted: Vec<String> = current.into_values().collect();
+    sorted.sort();
+    write_world_set(&sorted)
+}
+
 /// One read → apply every (packages, prefix) group → one write.
 /// Single `>>> Adding to world...` line even when official + aur + abs
 /// all need updating (avoids the double-print from sequential calls).
@@ -756,7 +864,7 @@ pub(crate) fn add_to_world_groups(groups: &[(&[String], Option<&str>)]) -> Resul
         return Ok(());
     }
 
-    // bare name → full "repo/name" entry
+    // bare name → full "repo/name" entry; `@set` lines keyed by full token
     let mut current_set: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     match open_nofollow(std::path::Path::new(WORLD_SET_FILE)) {
@@ -766,10 +874,15 @@ pub(crate) fn add_to_world_groups(groups: &[(&[String], Option<&str>)]) -> Resul
         Ok(file) => {
             for line in io::BufReader::new(file).lines().map_while(Result::ok) {
                 let trimmed = line.trim().to_string();
-                if !trimmed.is_empty() && validate_pkg(&trimmed) {
-                    let bare = trimmed.split('/').last().unwrap_or(&trimmed).to_string();
-                    current_set.insert(bare, trimmed);
+                if trimmed.is_empty() || !validate_pkg(&trimmed) {
+                    continue;
                 }
+                let key = if trimmed.starts_with('@') {
+                    trimmed.clone()
+                } else {
+                    trimmed.split('/').last().unwrap_or(&trimmed).to_string()
+                };
+                current_set.insert(key, trimmed);
             }
         }
         Err(_) => {}
