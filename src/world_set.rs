@@ -849,8 +849,7 @@ pub(crate) fn reconcile_world_after_install(before: &HashSet<String>) {
         return;
     }
     println!(
-        "{} pacman removed {} while resolving a conflict during this install \
-        - removing from world too (it can't be reinstalled the way it was): {}",
+        "{} removed {} as conflicting - dropping from world too: {}",
         ">>>".t_yellow().bold(),
         vanished.len(),
         vanished.join(", ")
@@ -989,6 +988,18 @@ impl LastAction {
 
 /// Save undo state (best-effort).
 pub(crate) fn save_last_action(kind: LastAction, atoms: &[String]) {
+    save_last_action_with(kind, atoms, &[]);
+}
+
+const CONFLICT_TAG: &str = "conflict:";
+const CONFLICT_WORLD_TAG: &str = "conflict-world:";
+
+/// Same, plus packages removed by conflict resolution (name, in world).
+pub(crate) fn save_last_action_with(
+    kind: LastAction,
+    atoms: &[String],
+    conflicts: &[(String, bool)],
+) {
     if atoms.is_empty() {
         return;
     }
@@ -1015,6 +1026,10 @@ pub(crate) fn save_last_action(kind: LastAction, atoms: &[String]) {
                 for a in atoms {
                     let _ = writeln!(stdin, "{}", a);
                 }
+                for (n, w) in conflicts {
+                    let tag = if *w { CONFLICT_WORLD_TAG } else { CONFLICT_TAG };
+                    let _ = writeln!(stdin, "{}{}", tag, n);
+                }
             }
             child.wait().map(|s| s.success()).unwrap_or(false)
         }
@@ -1038,24 +1053,41 @@ pub(crate) fn clear_last_action() {
         .status();
 }
 
-/// Load undo state: (kind tag, atoms).
-pub(crate) fn load_last_action() -> Option<(String, Vec<String>)> {
-    let file = match open_nofollow(std::path::Path::new(LASTACTION_FILE)) {
-        Ok(f) => f,
-        Err(_) => return None,
-    };
+/// Load undo state: (kind tag, atoms, conflict-removed (name, in world)).
+fn load_state() -> Option<(String, Vec<String>, Vec<(String, bool)>)> {
+    let file = open_nofollow(std::path::Path::new(LASTACTION_FILE)).ok()?;
     let mut lines = io::BufReader::new(file)
         .lines()
         .map_while(io::Result::ok)
         .map(|l| l.trim().to_string())
         .filter(|l| !l.is_empty());
     let kind = lines.next()?;
-    let atoms: Vec<String> = lines.collect();
+    let mut atoms = Vec::new();
+    let mut conflicts = Vec::new();
+    for l in lines {
+        if let Some(n) = l.strip_prefix(CONFLICT_WORLD_TAG) {
+            conflicts.push((n.to_string(), true));
+        } else if let Some(n) = l.strip_prefix(CONFLICT_TAG) {
+            conflicts.push((n.to_string(), false));
+        } else {
+            atoms.push(l);
+        }
+    }
     if atoms.is_empty() {
         None
     } else {
-        Some((kind, atoms))
+        Some((kind, atoms, conflicts))
     }
+}
+
+/// Load undo state: (kind tag, atoms).
+pub(crate) fn load_last_action() -> Option<(String, Vec<String>)> {
+    load_state().map(|(k, a, _)| (k, a))
+}
+
+/// Packages removed by conflict resolution in the saved install.
+pub(crate) fn load_last_conflicts() -> Vec<(String, bool)> {
+    load_state().map(|(_, _, c)| c).unwrap_or_default()
 }
 
 pub(crate) fn write_world_set(packages: &[String]) -> Result<()> {
@@ -1119,7 +1151,7 @@ pub(crate) fn write_world_set(packages: &[String]) -> Result<()> {
         bail!("sudo mv failed when finalizing world");
     }
 
-    println!(">>> world updated.");
+    println!("{} world updated.", ">>>".t_cyan().bold());
     Ok(())
 }
 

@@ -9,6 +9,7 @@
 //!   `hook start|done pre|post`
 //!   `hook run <pos>/<total> <name> [<desc…>]`
 
+use std::fs;
 use std::io::{self, ErrorKind};
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -412,7 +413,7 @@ fn sysupgrade_in_with(
         // Real transaction size, so the client can tell "nothing to do"
         // from "plan and libalpm disagree".
         let _ = tx.send(format!("plan {}", alpm.trans_add().iter().count()));
-        prepare_and_commit(alpm, false)
+        prepare_and_commit(alpm, false, &mut Vec::new())
     })();
     let _ = alpm.trans_release();
     res
@@ -508,7 +509,7 @@ fn run_install(alpm: &mut Alpm, targets: &[(Option<&str>, &str)]) -> io::Result<
         alpm.trans_add_pkg(pkg)
             .map_err(|e| fail(format!("{}: {}", name, e)))?;
     }
-    prepare_and_commit(alpm, false)
+    prepare_and_commit(alpm, false, &mut Vec::new())
 }
 
 /// `pacman -U`. `specs` are `<sha256> <abs path>` lines. The files are
@@ -564,12 +565,199 @@ fn install_files_in_with(
     if opts.asdeps {
         flags |= TransFlag::ALL_DEPS;
     }
+    let ev = tx.clone();
     wire_events(alpm, tx);
-    alpm.trans_init(flags)
-        .map_err(|e| fail(format!("db lock: {}", e)))?;
-    let res = run_install_files(alpm, files, level, opts.replace);
-    let _ = alpm.trans_release();
+    let mut tried = false;
+    // (file, where its old copy went)
+    let mut moved: Vec<(String, String)> = Vec::new();
+    let res = loop {
+        if let Err(e) = alpm.trans_init(flags) {
+            break Err(fail(format!("db lock: {}", e)));
+        }
+        let mut movable = Vec::new();
+        let res = run_install_files(alpm, files, level, opts.replace, &mut movable);
+        let _ = alpm.trans_release();
+        if (opts.aeforce || opts.aenew || opts.aekeep)
+            && !tried
+            && res.is_err()
+            && !movable.is_empty()
+        {
+            tried = true;
+            // --aeforce: old file -> `.aeforce`, the new one lands in its
+            // place. Otherwise the old one is parked until the swap below.
+            let ext = if opts.aeforce {
+                validate::AE_FORCE_EXT
+            } else {
+                validate::AE_PARK_EXT
+            };
+            let mut r = Ok(());
+            for f in &movable {
+                match move_aside(f, ext) {
+                    Ok(dst) => moved.push((f.clone(), dst)),
+                    Err(e) => {
+                        r = Err(e);
+                        break;
+                    }
+                }
+            }
+            match r {
+                Ok(()) => continue,
+                Err(e) => break Err(e),
+            }
+        }
+        break res;
+    };
+    finish_moves(opts, res, &moved, &ev)
+}
+
+/// After the install: report `--aeforce`, swap for `--aenew` /
+/// `--aekeep`, or put every old file back if the install failed.
+/// Events: `ae force|new <file> -> <name>`, `ae keep|drop <file>`.
+fn finish_moves(
+    opts: FileOpts,
+    mut res: io::Result<()>,
+    moved: &[(String, String)],
+    ev: &mpsc::Sender<String>,
+) -> io::Result<()> {
+    let note = |r: io::Result<()>, res: &mut io::Result<()>| {
+        if let Err(e) = r {
+            *res = Err(e);
+        }
+    };
+    for (f, old) in moved {
+        if res.is_ok() && opts.aeforce {
+            if opts.aekeep {
+                // --aeforce --noaefile: the new file wins, no copy kept.
+                note(
+                    fs::remove_file(old).map_err(|e| fail(format!("{}: {}", old, e))),
+                    &mut res,
+                );
+                let _ = ev.send(format!("ae drop {}", f));
+            } else {
+                let _ = ev.send(format!("ae force {} -> {}", f, old));
+            }
+            continue;
+        }
+        if res.is_ok() {
+            // The file at `f` is the new one: rename it, or drop it.
+            if opts.aekeep {
+                note(
+                    fs::remove_file(f).map_err(|e| fail(format!("{}: {}", f, e))),
+                    &mut res,
+                );
+                let _ = ev.send(format!("ae keep {}", f));
+            } else {
+                match free_name(f, validate::AE_NEW_EXT) {
+                    Ok(dst) => {
+                        note(
+                            fs::rename(f, &dst).map_err(|e| fail(format!("{}: {}", f, e))),
+                            &mut res,
+                        );
+                        let _ = ev.send(format!("ae new {} -> {}", f, dst));
+                    }
+                    Err(e) => note(Err(e), &mut res),
+                }
+            }
+        }
+        // Old file back (also after a failed install).
+        note(
+            fs::rename(old, f).map_err(|e| fail(format!("restore {}: {}", f, e))),
+            &mut res,
+        );
+    }
     res
+}
+
+/// First free `<path><ext>`, then `<ext>.1`, `<ext>.2`, ...
+fn free_name(path: &str, ext: &str) -> io::Result<String> {
+    let first = format!("{}{}", path, ext);
+    if fs::symlink_metadata(&first).is_err() {
+        return Ok(first);
+    }
+    for n in 1..=validate::AE_MAX_N {
+        let name = format!("{}.{}", first, n);
+        if fs::symlink_metadata(&name).is_err() {
+            return Ok(name);
+        }
+    }
+    Err(fail(format!("too many {} files for {}", ext, path)))
+}
+
+/// `<file>` -> first free `<file><ext>`; returns the new name.
+fn move_aside(path: &str, ext: &str) -> io::Result<String> {
+    let dst = free_name(path, ext)?;
+    fs::rename(path, &dst).map_err(|e| fail(format!("{}: {}", path, e)))?;
+    Ok(dst)
+}
+
+/// Only a plain file or symlink that no installed package owns may be
+/// moved. The path also has to fit the helper's event lines.
+fn movable_file(alpm: &Alpm, path: &str) -> bool {
+    use std::path::{Component, Path};
+    let p = Path::new(path);
+    if !p.is_absolute()
+        || path.len() > 400
+        || p.components().any(|c| matches!(c, Component::ParentDir))
+        || path.contains(';')
+        || path.contains(" -> ")
+        || validate::line(path).is_err()
+    {
+        return false;
+    }
+    match fs::symlink_metadata(p) {
+        Ok(m) if !m.is_dir() => {}
+        _ => return false,
+    }
+    let rel = path
+        .strip_prefix(alpm.root())
+        .unwrap_or(path)
+        .trim_start_matches('/');
+    !alpm
+        .localdb()
+        .pkgs()
+        .iter()
+        .any(|pkg| pkg.files().contains(rel).is_some())
+}
+
+/// Commit failed: for file conflicts, sort them into movable and not.
+/// `movable` is filled only when every conflict can be moved.
+fn commit_error(alpm: &Alpm, e: &alpm::CommitError, movable: &mut Vec<String>) -> io::Error {
+    let Some(alpm::CommitData::FileConflict(list)) = e.data() else {
+        return fail(format!("commit: {}", e));
+    };
+    let mut ok: Vec<String> = Vec::new();
+    let mut stuck: Vec<String> = Vec::new();
+    for c in list.iter() {
+        // alpm 5.0 types this list as `Conflict`, but libalpm fills it
+        // with `alpm_fileconflict_t` (same layout as `FileConflict`).
+        let c: &alpm::FileConflict =
+            unsafe { &*(c as *const alpm::Conflict as *const alpm::FileConflict) };
+        let f = c.file().to_string();
+        let fixable = matches!(c.conflict_type(), alpm::FileConflictType::Filesystem)
+            && movable_file(alpm, &f);
+        let dst = if fixable { &mut ok } else { &mut stuck };
+        if !dst.contains(&f) {
+            dst.push(f);
+        }
+    }
+    let cap = |v: &[String]| {
+        let mut s = v.iter().take(8).cloned().collect::<Vec<_>>().join("; ");
+        if v.len() > 8 {
+            s.push_str("; ...");
+        }
+        s
+    };
+    if stuck.is_empty() && !ok.is_empty() {
+        let msg = format!("conflicting files: {}", cap(&ok));
+        *movable = ok;
+        fail(msg)
+    } else {
+        stuck.extend(ok);
+        fail(format!(
+            "file conflicts that cannot be moved: {}",
+            cap(&stuck)
+        ))
+    }
 }
 
 fn run_install_files(
@@ -577,6 +765,7 @@ fn run_install_files(
     files: &[PathBuf],
     level: SigLevel,
     resolve_conflicts: bool,
+    movable: &mut Vec<String>,
 ) -> io::Result<()> {
     for f in files {
         // Staged names are "<n>-<original>"; show the original.
@@ -589,10 +778,14 @@ fn run_install_files(
         alpm.trans_add_pkg(pkg)
             .map_err(|e| fail(format!("{}: {}", shown, e)))?;
     }
-    prepare_and_commit(alpm, resolve_conflicts)
+    prepare_and_commit(alpm, resolve_conflicts, movable)
 }
 
-fn prepare_and_commit(alpm: &mut Alpm, resolve_conflicts: bool) -> io::Result<()> {
+fn prepare_and_commit(
+    alpm: &mut Alpm,
+    resolve_conflicts: bool,
+    movable: &mut Vec<String>,
+) -> io::Result<()> {
     // `--needed` can leave nothing to do; that is success, as in pacman.
     if alpm.trans_add().iter().next().is_none() && alpm.trans_remove().iter().next().is_none() {
         return Ok(());
@@ -627,9 +820,10 @@ fn prepare_and_commit(alpm: &mut Alpm, resolve_conflicts: bool) -> io::Result<()
                 .map(|(r, n)| (r.as_deref(), n.as_str()))
                 .collect();
             super::pkgmask::refuse_masked(&refs).map_err(|e| fail(e.to_string()))?;
-            return alpm
-                .trans_commit()
-                .map_err(|e| fail(format!("commit: {}", e)));
+            return match alpm.trans_commit() {
+                Ok(()) => Ok(()),
+                Err(e) => Err(commit_error(alpm, &e, movable)),
+            };
         }
 
         let e = prepared.unwrap_err();
@@ -1236,6 +1430,9 @@ mod tests {
             needed: true,
             asdeps: true,
             replace: false,
+            aeforce: false,
+            aenew: false,
+            aekeep: false,
         };
         install_files_in(
             &mut fx.handle(),

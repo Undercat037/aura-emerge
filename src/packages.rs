@@ -274,18 +274,23 @@ fn expand_with_deps(targets: Vec<PkgInfo>) -> Vec<PkgInfo> {
         .map(|p| format!("{}/{}", p.repo, p.name))
         .collect();
     match crate::alpm_db::plan_sync(&atoms) {
-        Ok(planned) if !planned.is_empty() => planned
-            .into_iter()
-            .map(|p| {
-                let status = pkg_status(&p.name, &p.version);
-                PkgInfo {
-                    name: p.name,
-                    version: p.version,
-                    repo: p.repo,
-                    status,
-                }
-            })
-            .collect(),
+        Ok((planned, blockers)) if !planned.is_empty() => {
+            // Shown under the list by `print_emerge_plan`.
+            let incoming: Vec<String> = planned.iter().map(|p| p.name.clone()).collect();
+            crate::conflict::note_planned(blockers, incoming);
+            planned
+                .into_iter()
+                .map(|p| {
+                    let status = pkg_status(&p.name, &p.version);
+                    PkgInfo {
+                        name: p.name,
+                        version: p.version,
+                        repo: p.repo,
+                        status,
+                    }
+                })
+                .collect()
+        }
         Ok(_) => targets,
         Err(e) => {
             eprintln!(
@@ -404,6 +409,7 @@ pub(crate) fn print_emerge_plan(
     println!();
     crate::candy::calculating_deps_done();
     println!();
+    let blockers = crate::conflict::take_planned();
 
     let requested: HashSet<&str> = requested.iter().map(|p| bare_of(p)).collect();
     let entries: Vec<(&PkgInfo, usize)> = if tree {
@@ -425,6 +431,9 @@ pub(crate) fn print_emerge_plan(
             prefix,
             format_atom(p).t_green().bold()
         );
+    }
+    if let Some((pairs, incoming)) = &blockers {
+        crate::conflict::print_planned(pairs, incoming, &crate::alpm_db::required_by);
     }
     println!();
     println!("{}: {} package(s)", "Total".bold(), pkgs.len());
@@ -489,93 +498,226 @@ pub(crate) fn warn_critical_libc(names: &[String], source: &str) -> bool {
     ok
 }
 
-/// `-U` with conflict prompt: try install, on ConflictingDeps ask to
-/// remove the installed side (versions shown by the helper), retry
-/// with `replace: true` if the user agrees.
+/// `-U` with a conflict question: on blockers, list them as
+/// `[ebuild  N]` / `[conflict]`, ask once, retry with `replace: true`.
+/// Hard blockers (both incoming) are shown and the install stops.
 fn install_files_resolving_conflicts(
+    pinned: &[crate::rootops::Pinned],
+    opts: crate::helper::validate::FileOpts,
+    ask: bool,
+) -> bool {
+    let first =
+        crate::rootops::install_files(pinned, opts, &mut |ev| crate::progress::on_hook_event(ev));
+    let err = match first {
+        Ok(()) => return true,
+        Err(e) => e,
+    };
+    // ClientError::Refused prefixes "helper refused: " - drop for display.
+    let msg = err.strip_prefix("helper refused: ").unwrap_or(err.as_str());
+    if let Some(list) = msg.strip_prefix("conflicting files:") {
+        return retry_with_aeforce(pinned, opts, ask, list);
+    }
+    if !msg.contains("conflicting dependencies") {
+        eprintln!("{} {}", ">>> Error:".t_red().bold(), msg);
+        return false;
+    }
+
+    crate::progress::status_break();
+    let parsed = crate::conflict::parse(msg);
+    let plan = crate::conflict::plan(&parsed.pairs);
+    if plan.merge.is_empty() {
+        // Helper said "conflict" but gave nothing we can read.
+        eprintln!("{} {}", ">>> Error:".t_red().bold(), msg);
+        return false;
+    }
+    crate::conflict::print(&plan, parsed.dropped);
+    if !plan.hard.is_empty() || plan.unmerge.is_empty() {
+        return false;
+    }
+    crate::conflict::print_dependents(&plan, &crate::alpm_db::required_by);
+
+    // Always asked, with or without --ask: this removes installed packages.
+    let _ = ask;
+    if !confirm_conflict_unmerge(true) {
+        return false;
+    }
+    let gone: Vec<String> = plan.unmerge.iter().map(|u| u.name.clone()).collect();
+    let in_world = crate::world_set::world_installed_snapshot();
+    if let Err(e) = unmerge_blockers(&gone) {
+        let m = e.strip_prefix("helper refused: ").unwrap_or(e.as_str());
+        eprintln!("{} {}", ">>> Error:".t_red().bold(), m);
+        return false;
+    }
+    // Only the repo install is wrapped in snapshot + reconcile; here the
+    // removal is ours, so untrack what is gone right away.
+    let tracked: Vec<String> = gone
+        .iter()
+        .filter(|n| in_world.contains(*n))
+        .cloned()
+        .collect();
+    if !tracked.is_empty() {
+        if let Err(e) = crate::world_set::remove_from_world_set(&tracked) {
+            eprintln!(
+                ">>> Warning: package(s) unmerged but world was not updated: {:#}",
+                e
+            );
+        }
+    }
+    match crate::rootops::install_files(pinned, opts, &mut |ev| crate::progress::on_hook_event(ev))
+    {
+        Ok(()) => {
+            crate::progress::status_resume();
+            true
+        }
+        Err(e2) => {
+            let m2 = e2.strip_prefix("helper refused: ").unwrap_or(e2.as_str());
+            eprintln!("{} {}", ">>> Error:".t_red().bold(), m2);
+            eprintln!(
+                "{} already unmerged: {} (put back with emerge if needed)",
+                ">>> Warning:".t_yellow().bold(),
+                gone.join(", ")
+            );
+            false
+        }
+    }
+}
+
+/// `-Rdd` of the packages that block an install, remembered for `--undo`.
+/// Dependency checks are off on purpose; the user saw who needs them.
+pub(crate) fn unmerge_blockers(names: &[String]) -> Result<(), String> {
+    let in_world = crate::world_set::world_installed_snapshot();
+    crate::rootops::remove(
+        crate::helper::validate::RemoveMode::Unmerge,
+        names,
+        &mut |ev| crate::progress::on_hook_event(ev),
+    )?;
+    let removed: Vec<(String, bool)> = names
+        .iter()
+        .map(|n| (n.clone(), in_world.contains(n)))
+        .collect();
+    crate::conflict::record_removed(&removed);
+    Ok(())
+}
+
+/// AE Force: files owned by no package block the install.
+/// `--aeforce`: old files go to `<file>.aeforce`, new ones take their
+/// place. `--noaefile`: old files stay, new ones are dropped; together
+/// with `--aeforce` the old files are dropped instead of saved.
+/// Otherwise ask, then keep the old files and install the new ones as
+/// `.aenew`.
+/// `emerge --aelist` / `--aeclean` deal with what is left behind.
+fn retry_with_aeforce(
     pinned: &[crate::rootops::Pinned],
     mut opts: crate::helper::validate::FileOpts,
     ask: bool,
+    list: &str,
 ) -> bool {
-    match crate::rootops::install_files(pinned, opts, &mut |ev| crate::progress::on_hook_event(ev))
-    {
-        Ok(()) => return true,
-        Err(e) => {
-            let raw = e.to_string();
-            // ClientError::Refused prefixes "helper refused: " — drop for display.
-            let msg = raw.strip_prefix("helper refused: ").unwrap_or(raw.as_str());
-            if !msg.contains("conflicting dependencies") {
-                eprintln!("{} {}", ">>> Error:".t_red().bold(), msg);
-                return false;
-            }
-            crate::progress::status_break();
-            // "conflicting dependencies: name [ver] vs name [ver]" (; -joined)
-            let detail = msg
-                .strip_prefix("conflicting dependencies:")
-                .map(str::trim)
-                .unwrap_or(msg);
-            eprintln!(
-                "{} conflicting dependencies: {}",
-                ">>>".t_yellow().bold(),
-                detail
-            );
-            let mut installed: Vec<String> = Vec::new();
-            for part in detail.split(';') {
-                if let Some(rhs) = part.split(" vs ").nth(1) {
-                    let label = rhs.trim().to_string();
-                    if !label.is_empty() && !installed.contains(&label) {
-                        installed.push(label);
-                    }
-                }
-            }
-            if installed.is_empty() {
-                eprintln!("{} {}", ">>> Error:".t_red().bold(), msg);
-                return false;
-            }
-            for p in &installed {
-                eprintln!(
-                    "{} conflict: remove installed {}?",
-                    ">>>".t_yellow().bold(),
-                    p.t_red().bold()
-                );
-            }
-            eprint!(
-                "Remove conflicting package(s) and continue? [{}/{}] ",
-                "Yes".t_green().bold(),
-                "No".t_red().bold()
-            );
-            let _ = io::stderr().flush();
-            let ok = if !ask {
-                eprintln!("Yes");
-                true
-            } else {
-                let answer = crate::read_line_raw();
-                matches!(
-                    answer.trim().to_ascii_lowercase().as_str(),
-                    "" | "y" | "yes"
-                )
-            };
-            if !ok {
-                eprintln!("{} Quitting.", ">>>".t_yellow().bold());
-                return false;
-            }
-            opts.replace = true;
-            match crate::rootops::install_files(pinned, opts, &mut |ev| {
-                crate::progress::on_hook_event(ev)
-            }) {
-                Ok(()) => {
-                    crate::progress::status_resume();
-                    true
-                }
-                Err(e2) => {
-                    let m2 = e2.to_string();
-                    let m2 = m2.strip_prefix("helper refused: ").unwrap_or(&m2);
-                    eprintln!("{} {}", ">>> Error:".t_red().bold(), m2);
-                    false
-                }
-            }
+    let mut more = false;
+    let mut files: Vec<&str> = Vec::new();
+    for f in list.split(';').map(str::trim).filter(|f| !f.is_empty()) {
+        if f == "..." {
+            more = true;
+        } else {
+            files.push(f);
         }
     }
+    crate::progress::status_break();
+    let rt = crate::runtime::get();
+    if rt.aeforce || rt.noaefile {
+        opts.aeforce = rt.aeforce;
+        opts.aekeep = rt.noaefile;
+    } else {
+        for f in &files {
+            eprintln!("{} AE Force:  {}", ">>>".t_yellow().bold(), f);
+        }
+        if more {
+            eprintln!("{} AE Force:  ... and more", ">>>".t_yellow().bold());
+        }
+        eprint!(
+            "{} AE Force: Create .aenew for conflict files? Old files will stay in place [{}/{}] ",
+            ">>>".t_yellow().bold(),
+            "Yes".t_green().bold(),
+            "No".t_red().bold()
+        );
+        let _ = io::stderr().flush();
+        let ok = if !ask {
+            eprintln!("Yes");
+            true
+        } else {
+            matches!(
+                crate::read_line_raw().trim().to_ascii_lowercase().as_str(),
+                "" | "y" | "yes"
+            )
+        };
+        if !ok {
+            eprintln!("{} Quitting.", ">>>".t_yellow().bold());
+            return false;
+        }
+        opts.aenew = true;
+    }
+    // `ae <kind> <file> [-> <name>]` events from the helper.
+    let mut done: Vec<(String, String, String)> = Vec::new();
+    let res = crate::rootops::install_files(pinned, opts, &mut |ev| match ev
+        .strip_prefix("ae ")
+        .and_then(|r| r.split_once(' '))
+    {
+        Some((kind, rest)) => {
+            let (a, b) = rest.split_once(" -> ").unwrap_or((rest, ""));
+            done.push((kind.to_string(), a.to_string(), b.to_string()));
+        }
+        None => crate::progress::on_hook_event(ev),
+    });
+    match res {
+        Ok(()) => {
+            crate::progress::status_resume();
+            for (kind, a, b) in &done {
+                let arrow = ">>>".t_cyan().bold();
+                let msg = match kind.as_str() {
+                    "force" if *b == format!("{}.aeforce", a) => {
+                        format!("{} AE Force:  {} saved", arrow, a)
+                    }
+                    "force" => format!("{} AE Force:  {} saved as {}", arrow, a, b),
+                    "drop" => format!("{} AE Force:  {} replaced, old file dropped", arrow, a),
+                    "new" => format!("{} AE Force:  {} created", arrow, b),
+                    "keep" => format!("{} AE Force:  {} kept, new file dropped", arrow, a),
+                    _ => continue,
+                };
+                // Above the Jobs row, not glued to it.
+                crate::progress::note(&msg);
+            }
+            true
+        }
+        Err(e) => {
+            let m = e.strip_prefix("helper refused: ").unwrap_or(e.as_str());
+            eprintln!("{} {}", ">>> Error:".t_red().bold(), m);
+            false
+        }
+    }
+}
+
+/// Question under the conflict list (Enter = Yes). Without `--ask`
+/// the answer is Yes.
+pub(crate) fn confirm_conflict_unmerge(ask: bool) -> bool {
+    print!(
+        "{} Would you like to unmerge the conflicting packages and continue? [{}/{}] ",
+        ">>>".t_yellow().bold(),
+        "Yes".t_green().bold(),
+        "No".t_red().bold()
+    );
+    let _ = io::stdout().flush();
+    let ok = if !ask {
+        println!("Yes");
+        true
+    } else {
+        matches!(
+            crate::read_line_raw().trim().to_ascii_lowercase().as_str(),
+            "" | "y" | "yes"
+        )
+    };
+    if !ok {
+        println!("{} Quitting.", ">>>".t_yellow().bold());
+    }
+    ok
 }
 
 pub(crate) fn confirm_merge(ask: bool) -> bool {
@@ -2200,6 +2342,9 @@ fn install_local_tarballs(tarballs: &[String], ask: bool, mark_asdeps: bool) -> 
         needed: true,
         asdeps: mark_asdeps,
         replace: false,
+        aeforce: false,
+        aenew: false,
+        aekeep: false,
     };
     if install_files_resolving_conflicts(&pinned, opts, ask) {
         for t in tarballs {
@@ -2562,6 +2707,9 @@ fn build_with_sandbox(
         needed: false,
         asdeps: oneshot,
         replace: false,
+        aeforce: false,
+        aenew: false,
+        aekeep: false,
     };
     install_files_resolving_conflicts(&pinned, opts, ask)
 }

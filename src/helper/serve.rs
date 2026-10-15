@@ -127,12 +127,16 @@ fn dispatch<B: Backend, W: Write>(be: &mut B, req: &Request, out: &mut W) -> io:
     }
 }
 
+/// Longest error text sent to the client. Long enough for a handful of
+/// conflict pairs; well under `validate::MAX_LINE_LEN`.
+const MAX_ERR_CHARS: usize = 600;
+
 /// Error text for the wire: one short clean line.
 fn clean(s: &str) -> String {
     let t: String = s
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
-        .take(200)
+        .take(MAX_ERR_CHARS)
         .collect();
     validate::line(t.trim())
         .map(str::to_string)
@@ -322,6 +326,9 @@ mod tests {
             needed: true,
             asdeps: true,
             replace: false,
+            aeforce: false,
+            aenew: false,
+            aekeep: false,
         };
         assert_eq!(be.files, vec![(opts, vec![spec])]);
     }
@@ -427,6 +434,6 @@ mod tests {
     fn error_text_is_one_clean_line() {
         assert_eq!(clean("a\nb\x1b[2J"), "a b [2J");
         assert_eq!(clean("\n\n"), "error");
-        assert_eq!(clean(&"x".repeat(500)).len(), 200);
+        assert_eq!(clean(&"x".repeat(900)).len(), MAX_ERR_CHARS);
     }
 }

@@ -20,6 +20,10 @@ pub(crate) struct Runtime {
     pub(crate) debug: bool,
     /// `emerge -n` / pacman `--needed`.
     pub(crate) noreplace: bool,
+    /// `--aeforce`: move blocking files to `<file>.aeforce` without asking.
+    pub(crate) aeforce: bool,
+    /// `--noaefile`: leave no AE Force files (see `retry_with_aeforce`).
+    pub(crate) noaefile: bool,
     /// `--with-optdeps`: also install optdepends (as dependencies).
     pub(crate) with_optdeps: bool,
     /// `--nospinner`: no live Jobs row.

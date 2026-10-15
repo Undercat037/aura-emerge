@@ -214,7 +214,9 @@ fn sync_pkg<'a>(alpm: &'a Alpm, repo: Option<&str>, name: &str) -> Option<&'a Pa
 /// whatever libalpm pulls in, deps first -- what `pacman -Sp` printed.
 /// Prepare only, nothing is committed. NO_LOCK, so a normal user can
 
-pub(crate) fn plan_sync(targets: &[String]) -> Result<Vec<AlpmPkg>, String> {
+pub(crate) fn plan_sync(
+    targets: &[String],
+) -> Result<(Vec<AlpmPkg>, Vec<crate::conflict::Conflict>), String> {
     let mut alpm = open().ok_or_else(|| "cannot open libalpm".to_string())?;
     alpm.trans_init(TransFlag::NO_LOCK)
         .map_err(|e| format!("trans_init: {}", e))?;
@@ -223,7 +225,18 @@ pub(crate) fn plan_sync(targets: &[String]) -> Result<Vec<AlpmPkg>, String> {
     res
 }
 
-fn plan_in(alpm: &mut Alpm, targets: &[String]) -> Result<Vec<AlpmPkg>, String> {
+/// What `trans_prepare` said, with everything copied out of the error
+/// so the borrow on the handle ends before the handle is used again.
+enum Prepared {
+    Ready,
+    Blocked(Vec<(String, String, String, String)>),
+    Failed(String),
+}
+
+fn plan_in(
+    alpm: &mut Alpm,
+    targets: &[String],
+) -> Result<(Vec<AlpmPkg>, Vec<crate::conflict::Conflict>), String> {
     for t in targets {
         let (repo, name) = match t.split_once('/') {
             Some((r, n)) => (Some(r), n),
@@ -233,25 +246,88 @@ fn plan_in(alpm: &mut Alpm, targets: &[String]) -> Result<Vec<AlpmPkg>, String> 
         alpm.trans_add_pkg(pkg)
             .map_err(|e| format!("{}: {}", t, e))?;
     }
-    if let Err(e) = alpm.trans_prepare() {
-        if let Some(PrepareData::UnsatisfiedDeps(list)) = e.data() {
-            let top: Vec<String> = list
-                .iter()
-                .take(4)
-                .map(|d| format!("{} needs {}", d.target(), d.depend()))
-                .collect();
-            if !top.is_empty() {
-                return Err(format!("unsatisfied: {}", top.join(", ")));
+    let prepared = match alpm.trans_prepare() {
+        Ok(_) => Prepared::Ready,
+        Err(e) => match e.data() {
+            Some(PrepareData::ConflictingDeps(list)) => Prepared::Blocked(
+                list.iter()
+                    .map(|c| {
+                        let (a, b) = (c.package1(), c.package2());
+                        (
+                            a.name().to_string(),
+                            a.version().to_string(),
+                            b.name().to_string(),
+                            b.version().to_string(),
+                        )
+                    })
+                    .collect(),
+            ),
+            Some(PrepareData::UnsatisfiedDeps(list)) => {
+                let top: Vec<String> = list
+                    .iter()
+                    .take(4)
+                    .map(|d| format!("{} needs {}", d.target(), d.depend()))
+                    .collect();
+                if top.is_empty() {
+                    Prepared::Failed(format!("prepare: {}", e))
+                } else {
+                    Prepared::Failed(format!("unsatisfied: {}", top.join(", ")))
+                }
             }
+            _ => Prepared::Failed(format!("prepare: {}", e)),
+        },
+    };
+    let planned = |alpm: &Alpm| -> Vec<AlpmPkg> {
+        alpm.trans_add()
+            .iter()
+            .map(|p| pkg_to_info(p, p.db().map_or("", |d| d.name()), false))
+            .collect()
+    };
+    match prepared {
+        // trans_add() is already dependency-sorted by prepare.
+        Prepared::Ready => Ok((planned(alpm), Vec::new())),
+        // libalpm resolved the dependencies before it found the blocker,
+        // so the whole plan is still there -- just not sorted.
+        Prepared::Blocked(pairs) => {
+            let add: std::collections::HashSet<String> = alpm
+                .trans_add()
+                .iter()
+                .map(|p| p.name().to_string())
+                .collect();
+            let blockers = pairs
+                .into_iter()
+                .map(|(n1, v1, n2, v2)| {
+                    // `new` is the side that is part of the transaction.
+                    let (new_name, new_ver, old_name, old_ver) =
+                        if add.contains(&n1) || !add.contains(&n2) {
+                            (n1, v1, n2, v2)
+                        } else {
+                            (n2, v2, n1, v1)
+                        };
+                    crate::conflict::Conflict {
+                        new_name,
+                        new_ver,
+                        old_name,
+                        old_ver,
+                    }
+                })
+                .collect();
+            Ok((planned(alpm), blockers))
         }
-        return Err(format!("prepare: {}", e));
+        Prepared::Failed(msg) => Err(msg),
     }
-    // trans_add() is already dependency-sorted by prepare.
-    Ok(alpm
-        .trans_add()
-        .iter()
-        .map(|p| pkg_to_info(p, p.db().map_or("", |d| d.name()), false))
-        .collect())
+}
+
+/// Installed packages that depend on `name` (libalpm's "Required By").
+pub(crate) fn required_by(name: &str) -> Vec<String> {
+    let Some(alpm) = open() else {
+        return Vec::new();
+    };
+    let out: Vec<String> = match alpm.localdb().pkg(name) {
+        Ok(p) => p.required_by().iter().map(|s| s.to_string()).collect(),
+        Err(_) => Vec::new(),
+    };
+    out
 }
 
 pub(crate) fn pkg_status(name: &str, new_ver: &str) -> String {

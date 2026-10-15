@@ -56,6 +56,12 @@ impl Client {
         Self::spawn(SUDO_BIN, &[EXPECTED_EXE, "--ae-service"])
     }
 
+    /// Already root (frontend started via sudo/doas/su, about to drop
+    /// privileges): run the helper directly, no sudo, no second prompt.
+    pub(crate) fn start_direct() -> Result<Client, ClientError> {
+        Self::spawn(EXPECTED_EXE, &["--ae-service"])
+    }
+
     fn spawn(prog: &str, args: &[&str]) -> Result<Client, ClientError> {
         let mut child = Command::new(prog)
             .args(args)

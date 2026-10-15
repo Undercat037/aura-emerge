@@ -726,6 +726,8 @@ static SPECS: &[FlagSpec] = &[
     // what gets installed, and how
     sw("--noreplace", Some('n')),
     sw("--oneshot", Some('1')),
+    sw("--aeforce", None),
+    sw("--noaefile", None),
     sw("--with-optdeps", None),
     sw("--err-install", None),
     sw("--refresh", None),

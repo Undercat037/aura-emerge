@@ -527,6 +527,9 @@ mod tests {
                 needed: true,
                 asdeps: false,
                 replace: false,
+                aeforce: false,
+                aenew: false,
+                aekeep: false,
             },
             files: vec![format!("{} /tmp/a b.pkg.tar.zst", h)],
         };

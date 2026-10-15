@@ -40,6 +40,16 @@ pub(crate) fn with_helper<T>(
     r
 }
 
+/// Real-root start: spawn the helper directly (we are root, so there is
+/// no sudo prompt) and park it in the process-wide slot. Call right
+/// before `privdrop::become_user`; the helper keeps its root, the
+/// frontend does not.
+pub(crate) fn preopen_as_root() -> Result<(), ClientError> {
+    let c = Client::start_direct()?;
+    *HELPER.lock().unwrap_or_else(|e| e.into_inner()) = Some(c);
+    Ok(())
+}
+
 /// A file as it was when it got audited.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Pinned {

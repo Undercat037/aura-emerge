@@ -10,17 +10,20 @@ scans PKGBUILDs for supply-chain attack patterns before building;
 and runs untrusted build steps inside a bwrap sandbox.
 */
 
+mod aefiles;
 mod alpm_db;
 mod aur;
 mod bash_ast;
 mod candy;
 mod config;
+mod conflict;
 mod helper;
 mod logbook;
 mod mask;
 mod news;
 mod package_env;
 mod packages;
+mod privdrop;
 mod progress;
 mod revdep;
 mod rootops;
@@ -385,6 +388,22 @@ struct Cli {
     #[arg(short = 'n', long = "noreplace")]
     noreplace: bool,
 
+    /// AE Force: move files that block an install to <file>.aeforce
+    #[arg(long = "aeforce")]
+    aeforce: bool,
+
+    /// AE Force: leave no .ae* files (keep old, drop new; with --aeforce drop old)
+    #[arg(long = "noaefile")]
+    noaefile: bool,
+
+    /// List files left by AE Force (.aenew / .aeforce / .aepark)
+    #[arg(long = "aelist")]
+    aelist: bool,
+
+    /// Remove AE Force files: new | old | park | all
+    #[arg(long = "aeclean", value_name = "KIND", num_args = 0..=1, default_missing_value = "all")]
+    aeclean: Option<String>,
+
     /// Also install optional dependencies of official-repo packages
     #[arg(long = "with-optdeps")]
     with_optdeps: bool,
@@ -625,6 +644,8 @@ fn print_help() {
     println!("          [ --edit                  ] [ --skip-srcinfo-regen        ]");
     println!("          [ --pkgbuild-view         ] [ --emptytree                 ]");
     println!("          [ --noreplace             ] [ --with-optdeps              ]");
+    println!("          [ --aeforce               ] [ --noaefile                   ]");
+    println!("          [ --aelist                ] [ --aeclean [new|old|park|all]]");
     println!("          [ --oneshot               ] [ --pretend                   ]");
     println!("          [ --skipfirst             ] [ --refresh                   ]");
     println!("          [ --no-sandbox            ] [ --unshare-net-build         ]");
@@ -1029,7 +1050,40 @@ pub(crate) fn repo_install_landed(names: &[String], asdeps: bool) -> (bool, Vec<
             }
         };
 
-        match rootops::install(&targets, needed, &mut on_event) {
+        let mut res = rootops::install(&targets, needed, &mut on_event);
+        // An installed package blocks the new one (`quickshell` vs
+        // `noctalia-qs`): list it like Portage does, ask once, then run the
+        // same transaction again with the installed side unmerged. Retrying
+        // one package at a time cannot change a blocker, so after this
+        // the chunk either lands or is reported as failed.
+        let mut blocked = false;
+        let mut retried = false;
+        let conflict_msg = res
+            .as_ref()
+            .err()
+            .filter(|e| e.contains("conflicting dependencies"))
+            .cloned();
+        if let Some(msg) = conflict_msg {
+            blocked = true;
+            if let Some(gone) = repo_conflict_unmerge_list(&msg) {
+                retried = true;
+                res = match packages::unmerge_blockers(&gone) {
+                    Ok(()) => {
+                        let r = rootops::install(&targets, needed, &mut on_event);
+                        if r.is_err() {
+                            eprintln!(
+                                "{} already unmerged: {}",
+                                ">>> Warning:".t_yellow().bold(),
+                                gone.join(", ")
+                            );
+                        }
+                        r
+                    }
+                    Err(e) => Err(e),
+                };
+            }
+        }
+        match res {
             Ok(()) => {
                 for b in chunk {
                     if *wave_ok.get(b).unwrap_or(&false) || alpm_db::is_installed(b) {
@@ -1045,6 +1099,27 @@ pub(crate) fn repo_install_landed(names: &[String], asdeps: bool) -> (bool, Vec<
                     if !fresh.is_empty() {
                         let _ = rootops::set_reason(false, &fresh);
                     }
+                }
+            }
+            Err(batch_err) if blocked => {
+                // Declined, a hard blocker, or the retry failed too.
+                if retried {
+                    let m = batch_err
+                        .strip_prefix("helper refused: ")
+                        .unwrap_or(batch_err.as_str());
+                    eprintln!("{} {}", ">>> Error:".t_red().bold(), m);
+                }
+                for (name, _) in &nums {
+                    if !wave_ok.get(name).copied().unwrap_or(false) {
+                        progress::abort_one();
+                    }
+                }
+                for b in chunk {
+                    runtime::record_failure(b, "conflicting dependencies");
+                }
+                progress::status_resume();
+                if !runtime::keep_going() {
+                    return (landed.len() == total, landed);
                 }
             }
             Err(batch_err) => {
@@ -1094,6 +1169,34 @@ pub(crate) fn repo_install_landed(names: &[String], asdeps: bool) -> (bool, Vec<
         install_optdeps(&landed);
     }
     (ok, landed)
+}
+
+/// `msg` is the helper's `conflicting dependencies: new [ver] vs old [ver]`
+/// line. Prints the `[ebuild]` / `[conflict]` list and asks whether the
+/// installed side may be unmerged (always asked; they go with `-Rdd`, and
+/// the packages that need them are listed first). Returns the packages that will be unmerged, or `None`
+/// when the install has to stop: hard blocker, nothing readable, or "No".
+fn repo_conflict_unmerge_list(msg: &str) -> Option<Vec<String>> {
+    progress::status_break();
+    let msg = msg.strip_prefix("helper refused: ").unwrap_or(msg);
+    let parsed = conflict::parse(msg);
+    let plan = conflict::plan(&parsed.pairs);
+    if plan.merge.is_empty() {
+        // Helper said "conflict" but gave nothing we can read.
+        eprintln!("{} {}", ">>> Error:".t_red().bold(), msg);
+        return None;
+    }
+    conflict::print(&plan, parsed.dropped);
+    if !plan.hard.is_empty() || plan.unmerge.is_empty() {
+        return None;
+    }
+    conflict::print_dependents(&plan, &alpm_db::required_by);
+    // Always asked, with or without --ask: this removes installed packages.
+    if !packages::confirm_conflict_unmerge(true) {
+        return None;
+    }
+    progress::status_resume();
+    Some(plan.unmerge.into_iter().map(|u| u.name).collect())
 }
 
 /// `--with-optdeps`: install missing optdepends of `landed` as deps.
@@ -1595,6 +1698,12 @@ fn build_resume_args(cli: &Cli, target_pkgs: &[String], has_world: bool) -> Vec<
     if cli.noreplace {
         args.push("--noreplace".to_string());
     }
+    if cli.aeforce {
+        args.push("--aeforce".to_string());
+    }
+    if cli.noaefile {
+        args.push("--noaefile".to_string());
+    }
     if cli.with_optdeps {
         args.push("--with-optdeps".to_string());
     }
@@ -1944,6 +2053,40 @@ fn reset_sigpipe() {
 #[cfg(not(unix))]
 fn reset_sigpipe() {}
 
+/// Real-root start: pick the invoking user, start the root helper while
+/// we still can, then drop. Any failure here is fatal: never continue
+/// as root.
+fn become_invoking_user() {
+    let acc = match privdrop::resolve() {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("{} {}", "emerge:".t_red().bold(), e);
+            std::process::exit(1);
+        }
+    };
+    // Best effort. If it fails, the first privileged call falls back to
+    // the normal `sudo` start, as in a plain user run.
+    if let Err(e) = rootops::preopen_as_root() {
+        eprintln!(
+            "{} could not start the root helper directly ({}); will ask sudo later",
+            ">>> Warning:".t_yellow().bold(),
+            e
+        );
+    }
+    if let Err(e) = privdrop::become_user(&acc) {
+        eprintln!("{} {}", "emerge:".t_red().bold(), e);
+        std::process::exit(1);
+    }
+    if std::env::var_os("AE_DEBUG").is_some() {
+        eprintln!(
+            "{} started as root, continuing as {} (uid {}); privileged work stays in the helper",
+            ">>>".t_cyan().bold(),
+            acc.name,
+            acc.uid
+        );
+    }
+}
+
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("--ae-service") {
         // Root helper only. Real/effective uid checked inside guard::harden().
@@ -1959,17 +2102,15 @@ fn main() {
         }
         return;
     }
-    // Frontend must not run as real root (even after `sudo emerge ...`).
-    // Privilege stays inside `--ae-service` via the helper protocol.
-    // SAFETY: geteuid is a pure getter.
-    if unsafe { libc::geteuid() } == 0 {
-        eprintln!(
-            "{} refusing to run as root. Only `{}` may be root.",
-            "emerge:".t_red().bold(),
-            "--ae-service".t_cyan()
-        );
-        eprintln!("  Run as your normal user; sudo is prompted when the root helper is needed.");
-        std::process::exit(1);
+    // Started as real root (`sudo emerge ...`, doas, pkexec, `su -`)?
+    // The frontend never works as root: the helper is started first
+    // (we are root, so no second prompt), then this process becomes the
+    // invoking user for good. Resolver, AUR/ABS builds, bwrap and every
+    // cache then behave exactly as in a normal user run; privileged work
+    // keeps going through the helper protocol.
+    // SAFETY: geteuid/getuid are pure getters.
+    if unsafe { libc::geteuid() == 0 || libc::getuid() == 0 } {
+        become_invoking_user();
     }
     let result = run();
 
@@ -1985,6 +2126,55 @@ fn main() {
     if had_failures {
         std::process::exit(1);
     }
+}
+
+/// `--undo` of an install: reinstall packages it removed as conflicts
+/// (repo or AUR) and put the ones that were in world back there.
+fn restore_conflicted(cli: &Cli, items: &[(String, bool)]) -> bool {
+    let names: Vec<String> = items.iter().map(|(n, _)| n.clone()).collect();
+    println!(
+        "{} Restoring conflicting package(s): {}",
+        ">>>".t_green().bold(),
+        names.join(", ")
+    );
+    let synced = alpm_db::find_sync_many(&names);
+    let (repo, aur): (Vec<String>, Vec<String>) =
+        names.iter().cloned().partition(|n| synced.contains_key(n));
+    let mut ok = true;
+    if !repo.is_empty() {
+        ok &= repo_install_landed(&repo, false).0;
+    }
+    if !aur.is_empty() {
+        scan_aur_pkgbuilds_or_abort(&aur);
+        ok &= aur_install(
+            &aur,
+            false,
+            cli.ask,
+            false,
+            cli.skippgp,
+            cli.edit,
+            cli.no_sandbox,
+            cli.skip_srcinfo_regen,
+            cli.unshare_net_build,
+            false,
+        );
+    }
+    if !ok {
+        return false;
+    }
+    let pick = |want_aur: bool| -> Vec<String> {
+        items
+            .iter()
+            .filter(|(n, w)| *w && aur.contains(n) == want_aur)
+            .map(|(n, _)| n.clone())
+            .collect()
+    };
+    let (w_repo, w_aur) = (pick(false), pick(true));
+    mark_asexplicit(&w_repo);
+    if let Err(e) = add_to_world_groups(&[(&w_repo[..], None), (&w_aur[..], Some("aur"))]) {
+        eprintln!(">>> Warning: restored but world was not updated: {:#}", e);
+    }
+    true
 }
 
 fn run() -> anyhow::Result<()> {
@@ -2055,6 +2245,8 @@ fn run() -> anyhow::Result<()> {
         keep_going: cli.keep_going,
         debug: debug_on,
         noreplace: cli.noreplace,
+        aeforce: cli.aeforce,
+        noaefile: cli.noaefile,
         with_optdeps: cli.with_optdeps,
         nospinner: cli.nospinner,
         load_average: cli.load_average.filter(|v| v.is_finite() && *v > 0.0),
@@ -2108,6 +2300,18 @@ fn run() -> anyhow::Result<()> {
     // /etc/emerge), so this runs before check_binaries().
     if let Some(arg) = cli.news.as_deref().or(cli.check_news.as_deref()) {
         news::run_news(arg);
+        return Ok(());
+    }
+
+    // --aelist / --aeclean: files AE Force left next to package files.
+    if cli.aelist {
+        aefiles::list();
+        return Ok(());
+    }
+    if let Some(kind) = cli.aeclean.as_deref() {
+        if !aefiles::clean(kind) {
+            std::process::exit(1);
+        }
         return Ok(());
     }
 
@@ -2172,7 +2376,7 @@ fn run() -> anyhow::Result<()> {
 
     // --install-pkgbuild <PATH>: a standalone action, same spirit as --news/
     // --list-sets above but *after* check_binaries()/--sudoloop since it
-    // ends in a real `pacman -U` and needs sudo. Doesn't mix with named
+    // ends in `-U` through the root helper (libalpm). Doesn't mix with named
     // packages/@sets or --aur/--abs (those name something to *resolve*
     // elsewhere; this already points straight at a checkout on disk).
     if let Some(path_str) = &cli.install_pkgbuild {
@@ -3075,6 +3279,14 @@ fn run() -> anyhow::Result<()> {
                             ">>> Warning: package(s) removed but world was not updated: {:#}",
                             e
                         );
+                    }
+                    // Bring back what the install removed as a conflict.
+                    let conflicts = load_last_conflicts();
+                    if !conflicts.is_empty() && !restore_conflicted(&cli, &conflicts) {
+                        eprintln!(
+                            ">>> Warning: conflict restore incomplete - saved state left in place."
+                        );
+                        std::process::exit(1);
                     }
                     clear_last_action();
                 } else {
@@ -4449,7 +4661,11 @@ fn run() -> anyhow::Result<()> {
                     .map(|p| p.name.clone())
                     .collect();
                 if !new_names.is_empty() && !cli.oneshot {
-                    save_last_action(LastAction::Install, &new_names);
+                    save_last_action_with(
+                        LastAction::Install,
+                        &new_names,
+                        &conflict::take_removed(),
+                    );
                 }
             }
         }

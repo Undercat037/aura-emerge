@@ -161,6 +161,14 @@ pub(crate) fn line(s: &str) -> Result<&str, Reject> {
     Ok(s)
 }
 
+/// Suffixes AE Force leaves next to a file (also as `<ext>.<n>`).
+pub(crate) const AE_FORCE_EXT: &str = ".aeforce";
+pub(crate) const AE_NEW_EXT: &str = ".aenew";
+pub(crate) const AE_PARK_EXT: &str = ".aepark";
+pub(crate) const AE_EXTS: [&str; 3] = [AE_FORCE_EXT, AE_NEW_EXT, AE_PARK_EXT];
+/// Highest `<ext>.<n>` tried when `<ext>` is already taken.
+pub(crate) const AE_MAX_N: u32 = 99;
+
 /// `-U` switches the client may pick (never raw pacman flags).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct FileOpts {
@@ -171,6 +179,13 @@ pub(crate) struct FileOpts {
     /// Auto-remove installed packages that conflict with this `-U`
     /// (only after the frontend asked / `--noconfirm`).
     pub(crate) replace: bool,
+    /// Move unowned files that block the install to `<file>.aeforce`.
+    pub(crate) aeforce: bool,
+    /// Keep old unowned files, install the new ones as `<file>.aenew`.
+    pub(crate) aenew: bool,
+    /// `--noaefile`: nothing is kept aside. Alone: old files stay, new
+    /// ones are dropped. With `aeforce`: new files win, old ones are dropped.
+    pub(crate) aekeep: bool,
 }
 
 impl FileOpts {
@@ -186,6 +201,15 @@ impl FileOpts {
         if self.replace {
             parts.push("replace");
         }
+        if self.aeforce {
+            parts.push("aeforce");
+        }
+        if self.aenew {
+            parts.push("aenew");
+        }
+        if self.aekeep {
+            parts.push("aekeep");
+        }
         if parts.is_empty() {
             "-".to_string()
         } else {
@@ -200,11 +224,17 @@ impl FileOpts {
         let mut needed = false;
         let mut asdeps = false;
         let mut replace = false;
+        let mut aeforce = false;
+        let mut aenew = false;
+        let mut aekeep = false;
         for part in id.split(',') {
             match part {
                 "needed" if !needed => needed = true,
                 "asdeps" if !asdeps => asdeps = true,
                 "replace" if !replace => replace = true,
+                "aeforce" if !aeforce => aeforce = true,
+                "aenew" if !aenew => aenew = true,
+                "aekeep" if !aekeep => aekeep = true,
                 _ => return None,
             }
         }
@@ -212,6 +242,9 @@ impl FileOpts {
             needed,
             asdeps,
             replace,
+            aeforce,
+            aenew,
+            aekeep,
         })
     }
 }
@@ -307,6 +340,9 @@ mod tests {
                 needed: n,
                 asdeps: d,
                 replace: r,
+                aeforce: n && r,
+                aenew: d && r,
+                aekeep: n && !d,
             };
             assert_eq!(FileOpts::from_id(&o.id()), Some(o));
         }
@@ -317,6 +353,30 @@ mod tests {
                 needed: true,
                 asdeps: true,
                 replace: false,
+                aeforce: false,
+                aenew: false,
+                aekeep: false,
+            })
+        );
+        assert_eq!(
+            FileOpts::from_id("aekeep"),
+            Some(FileOpts {
+                aekeep: true,
+                ..FileOpts::default()
+            })
+        );
+        assert_eq!(
+            FileOpts::from_id("aenew"),
+            Some(FileOpts {
+                aenew: true,
+                ..FileOpts::default()
+            })
+        );
+        assert_eq!(
+            FileOpts::from_id("aeforce"),
+            Some(FileOpts {
+                aeforce: true,
+                ..FileOpts::default()
             })
         );
         for bad in [
