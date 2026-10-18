@@ -52,15 +52,20 @@ pub(crate) fn status_colored(status: &str) -> String {
 /// captured log is dumped. Live output with `--debug`, `AE_DEBUG=1`, or
 /// `--quiet-build=n`. With `--log PATH`, output is always captured into
 /// the session file (and still printed live when debug is on).
+///
+/// Pipes are drained on background threads while we poll: otherwise a
+/// chatty makepkg fills the ~64 KiB pipe and blocks forever, and the
+/// parent never sees exit/OOM (Jobs stays "N running" until Ctrl+C).
 fn run_build_cmd(mut cmd: Command, label: &str) -> Result<(), String> {
+    use std::io::Read;
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     let logging = crate::logbook::session_active();
     let live = crate::runtime::show_build_output();
+    let capture = !live || logging;
 
-    // Always spawn so we can heartbeat: quiet builds look "stuck" and
-    // users need proof OOM/SIGKILL did not take makepkg/cc.
-    if !live || logging {
+    if capture {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
     }
@@ -80,76 +85,39 @@ fn run_build_cmd(mut cmd: Command, label: &str) -> Result<(), String> {
     let pid = child.id();
     let started = Instant::now();
 
-    // Quiet: poll; live: wait with occasional note if long-running.
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let combined = {
-                    let mut s = String::new();
-                    if let Some(mut out) = child.stdout.take() {
-                        let mut buf = Vec::new();
-                        let _ = std::io::Read::read_to_end(&mut out, &mut buf);
-                        if !buf.is_empty() {
-                            s.push_str(&String::from_utf8_lossy(&buf));
-                            if !s.ends_with('\n') {
-                                s.push('\n');
+    // Drain pipes concurrently so the child cannot block on a full pipe.
+    let captured = Arc::new(Mutex::new(String::new()));
+    let mut drainers = Vec::new();
+    if capture {
+        let spawn_drain = |mut pipe: Box<dyn Read + Send>, buf: Arc<Mutex<String>>| {
+            std::thread::spawn(move || {
+                let mut chunk = [0u8; 8192];
+                loop {
+                    match pipe.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            if let Ok(mut s) = buf.lock() {
+                                s.push_str(&String::from_utf8_lossy(&chunk[..n]));
                             }
                         }
-                    }
-                    if let Some(mut err) = child.stderr.take() {
-                        let mut buf = Vec::new();
-                        let _ = std::io::Read::read_to_end(&mut err, &mut buf);
-                        if !buf.is_empty() {
-                            s.push_str(&String::from_utf8_lossy(&buf));
-                        }
-                    }
-                    s
-                };
-                if logging && !combined.is_empty() {
-                    crate::logbook::session_write_output(&format!(
-                        "--- build: {} ---\n{}",
-                        label, combined
-                    ));
-                }
-                if status.success() {
-                    if live && logging && !combined.is_empty() {
-                        print!("{}", combined);
-                        if !combined.ends_with('\n') {
-                            println!();
-                        }
-                    }
-                    return Ok(());
-                }
-                if !combined.trim().is_empty() {
-                    eprintln!(
-                        "{} build log for '{}' (re-run with {} or {} for live output):",
-                        ">>>".t_yellow().bold(),
-                        label,
-                        "--debug".t_cyan(),
-                        "AE_DEBUG=1".t_cyan()
-                    );
-                    eprint!("{}", combined);
-                    if !combined.ends_with('\n') {
-                        eprintln!();
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(_) => break,
                     }
                 }
-                // OOM-killer: SIGKILL, or 137 from a shell wrapper.
-                let code = status.code().or_else(|| status.signal().map(|g| 128 + g));
-                if status.signal() == Some(9) || code == Some(137) {
-                    eprintln!(
-                        "{} OOM: pid {}, exit {}, {}s",
-                        ">>>".t_red().bold(),
-                        pid,
-                        code.unwrap_or(137),
-                        started.elapsed().as_secs()
-                    );
-                }
-                return Err(combined);
-            }
-            Ok(None) => {
-                // Still alive: keep polling (OOM check happens on exit).
-                std::thread::sleep(Duration::from_millis(500));
-            }
+            })
+        };
+        if let Some(out) = child.stdout.take() {
+            drainers.push(spawn_drain(Box::new(out), Arc::clone(&captured)));
+        }
+        if let Some(err) = child.stderr.take() {
+            drainers.push(spawn_drain(Box::new(err), Arc::clone(&captured)));
+        }
+    }
+
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break st,
+            Ok(None) => std::thread::sleep(Duration::from_millis(200)),
             Err(e) => {
                 eprintln!(
                     "{} failed waiting on build for '{}': {}",
@@ -160,7 +128,58 @@ fn run_build_cmd(mut cmd: Command, label: &str) -> Result<(), String> {
                 return Err(String::new());
             }
         }
+    };
+
+    for t in drainers {
+        let _ = t.join();
     }
+    let combined = captured.lock().map(|s| s.clone()).unwrap_or_default();
+
+    if logging && !combined.is_empty() {
+        crate::logbook::session_write_output(&format!("--- build: {} ---\n{}", label, combined));
+    }
+    if status.success() {
+        if live && logging && !combined.is_empty() {
+            print!("{}", combined);
+            if !combined.ends_with('\n') {
+                println!();
+            }
+        }
+        return Ok(());
+    }
+    if !combined.trim().is_empty() {
+        eprintln!(
+            "{} build log for '{}' (re-run with {} or {} for live output):",
+            ">>>".t_yellow().bold(),
+            label,
+            "--debug".t_cyan(),
+            "AE_DEBUG=1".t_cyan()
+        );
+        eprint!("{}", combined);
+        if !combined.ends_with('\n') {
+            eprintln!();
+        }
+    }
+    // OOM-killer: SIGKILL, or 137 from a shell wrapper.
+    let code = status.code().or_else(|| status.signal().map(|g| 128 + g));
+    if status.signal() == Some(9) || code == Some(137) {
+        eprintln!(
+            "{} OOM/SIGKILL: pid {}, exit {}, {}s",
+            ">>>".t_red().bold(),
+            pid,
+            code.unwrap_or(137),
+            started.elapsed().as_secs()
+        );
+    } else if let Some(c) = code {
+        eprintln!(
+            "{} build failed: pid {}, exit {}, {}s",
+            ">>>".t_red().bold(),
+            pid,
+            c,
+            started.elapsed().as_secs()
+        );
+    }
+    Err(combined)
 }
 
 // ── Explicit / dependency flag helpers ──────────────────────────────────────
