@@ -352,12 +352,13 @@ pub(crate) fn list_profiles() -> Vec<(String, String)> {
             let kids = subdirs(&dir);
             if kids.is_empty() {
                 if has_profile_files(&dir)
-                    && let Ok(rel) = dir.strip_prefix(root_p) {
-                        let s = rel.display().to_string();
-                        if !s.is_empty() {
-                            out.push((root.to_string(), s));
-                        }
+                    && let Ok(rel) = dir.strip_prefix(root_p)
+                {
+                    let s = rel.display().to_string();
+                    if !s.is_empty() {
+                        out.push((root.to_string(), s));
                     }
+                }
             } else {
                 q.extend(kids);
             }
@@ -520,7 +521,7 @@ pub(crate) fn print_info() {
     match current() {
         None => {
             println!(
-                "profile: none ({} not set — bootstrap with a cynosure/gentoo profile tree)",
+                "profile: none ({} not set — bootstrap with a aura-emerge profile tree)",
                 MAKE_PROFILE
             );
         }
@@ -635,12 +636,16 @@ mod tests {
         let mut masks = Vec::new();
         load_mask(&dir, &mut masks);
         assert!(masks.iter().any(|(p, r)| p == "systemd" && r.is_none()));
-        assert!(masks
-            .iter()
-            .any(|(p, r)| p == "*-bin" && r.as_deref() == Some("aur")));
-        assert!(masks
-            .iter()
-            .any(|(p, r)| p == "linux" && r.as_deref() == Some("extra")));
+        assert!(
+            masks
+                .iter()
+                .any(|(p, r)| p == "*-bin" && r.as_deref() == Some("aur"))
+        );
+        assert!(
+            masks
+                .iter()
+                .any(|(p, r)| p == "linux" && r.as_deref() == Some("extra"))
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
