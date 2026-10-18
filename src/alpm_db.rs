@@ -15,8 +15,20 @@ pub(crate) struct AlpmPkg {
     pub(crate) repo: String,
     pub(crate) description: String,
     pub(crate) installed: bool,
+    /// Installed version from local db (empty if not installed).
+    pub(crate) installed_version: String,
+    /// Download size in bytes (sync package file size).
+    pub(crate) size: i64,
+    pub(crate) url: String,
+    pub(crate) licenses: String,
     /// pkgbase (ABS clone name); equals `name` when not split.
     pub(crate) base: String,
+    pub(crate) depends: String,
+    pub(crate) makedepends: String,
+    pub(crate) provides: String,
+    pub(crate) conflicts: String,
+    /// Unix build date (0 if unknown).
+    pub(crate) build_date: i64,
 }
 
 /// User-side handle: read-only queries. Signature verification is
@@ -44,14 +56,47 @@ fn bare(name: &str) -> &str {
     name.split('/').next_back().unwrap_or(name)
 }
 
-fn pkg_to_info(pkg: &Package, repo: &str, installed: bool) -> AlpmPkg {
+fn join_deps<'a, I>(iter: I) -> String
+where
+    I: IntoIterator,
+    I::Item: std::fmt::Display,
+{
+    iter.into_iter()
+        .map(|d| d.to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn pkg_to_info(pkg: &Package, repo: &str, installed: bool, installed_version: &str) -> AlpmPkg {
+    let licenses = pkg
+        .licenses()
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
     AlpmPkg {
         name: pkg.name().to_string(),
         version: pkg.version().to_string(),
         repo: repo.to_string(),
         description: pkg.desc().unwrap_or("").to_string(),
         installed,
+        installed_version: installed_version.to_string(),
+        size: pkg.size(),
+        url: pkg.url().unwrap_or("").to_string(),
+        licenses,
         base: pkg.base().unwrap_or_else(|| pkg.name()).to_string(),
+        depends: join_deps(pkg.depends()),
+        makedepends: join_deps(pkg.makedepends()),
+        provides: join_deps(pkg.provides()),
+        conflicts: join_deps(pkg.conflicts()),
+        build_date: pkg.build_date(),
+    }
+}
+
+fn local_ver(alpm: &Alpm, name: &str) -> (bool, String) {
+    match alpm.localdb().pkg(name) {
+        Ok(p) => (true, p.version().to_string()),
+        Err(_) => (false, String::new()),
     }
 }
 
@@ -74,6 +119,18 @@ pub(crate) fn installed_names() -> std::collections::HashSet<String> {
         .pkgs()
         .iter()
         .map(|p| p.name().to_string())
+        .collect()
+}
+
+/// name → version for every installed package (one alpm open).
+pub(crate) fn installed_versions() -> HashMap<String, String> {
+    let Some(alpm) = open() else {
+        return HashMap::new();
+    };
+    alpm.localdb()
+        .pkgs()
+        .iter()
+        .map(|p| (p.name().to_string(), p.version().to_string()))
         .collect()
 }
 
@@ -160,13 +217,15 @@ pub(crate) fn find_sync_many(names: &[String]) -> HashMap<String, AlpmPkg> {
             if let Some(pkg) = sync_pkg(&alpm, Some(repo), bare_name) {
                 // Key by bare so callers that strip prefixes still match;
                 // the AlpmPkg carries the real repo name.
-                out.insert(bare_name.to_string(), pkg_to_info(pkg, repo, false));
+                let (inst, iver) = local_ver(&alpm, bare_name);
+                out.insert(bare_name.to_string(), pkg_to_info(pkg, repo, inst, &iver));
             }
             continue;
         }
         if let Some(pkg) = sync_pkg(&alpm, None, bare_name) {
             let repo = pkg.db().map(|d| d.name()).unwrap_or("");
-            out.insert(bare_name.to_string(), pkg_to_info(pkg, repo, false));
+            let (inst, iver) = local_ver(&alpm, bare_name);
+            out.insert(bare_name.to_string(), pkg_to_info(pkg, repo, inst, &iver));
         }
     }
     out
@@ -185,14 +244,14 @@ pub(crate) fn probe_sync_split(names: &[String]) -> (Vec<AlpmPkg>, Vec<String>) 
                 // but re-check so a bare-name collision can't sneak in).
                 if let Some((repo, _)) = name.split_once('/')
                     && repo != "aur"
-                        && repo != "abs"
-                        && repo != "Err"
-                        && !repo.is_empty()
-                        && p.repo != repo
-                    {
-                        missing.push(name.clone());
-                        continue;
-                    }
+                    && repo != "abs"
+                    && repo != "Err"
+                    && !repo.is_empty()
+                    && p.repo != repo
+                {
+                    missing.push(name.clone());
+                    continue;
+                }
                 found.push(p.clone());
             }
             None => missing.push(name.clone()),
@@ -279,7 +338,10 @@ fn plan_in(
     let planned = |alpm: &Alpm| -> Vec<AlpmPkg> {
         alpm.trans_add()
             .iter()
-            .map(|p| pkg_to_info(p, p.db().map_or("", |d| d.name()), false))
+            .map(|p| {
+                let repo = p.db().map_or("", |d| d.name());
+                pkg_to_info(p, repo, false, "")
+            })
             .collect()
     };
     match prepared {
@@ -355,9 +417,10 @@ pub(crate) fn repos_batch(names: &[String]) -> HashMap<String, Option<String>> {
             let mut hits = Vec::new();
             for db in alpm.syncdbs() {
                 if let Ok(sp) = db.pkg(bare.as_str())
-                    && sp.version().as_str() == ver {
-                        hits.push(db.name().to_string());
-                    }
+                    && sp.version().as_str() == ver
+                {
+                    hits.push(db.name().to_string());
+                }
             }
             let repo = match hits.len() {
                 1 => Some(hits.remove(0)),
@@ -497,8 +560,11 @@ pub(crate) fn search_sync(term: &str, _in_desc: bool, all_repos: bool) -> Vec<Al
             } else if !seen_names.insert(name.clone()) {
                 continue;
             }
-            let installed = local.pkg(name.as_str()).is_ok();
-            out.push(pkg_to_info(pkg, repo, installed));
+            let (installed, iver) = match local.pkg(name.as_str()) {
+                Ok(lp) => (true, lp.version().to_string()),
+                Err(_) => (false, String::new()),
+            };
+            out.push(pkg_to_info(pkg, repo, installed, &iver));
         }
     }
     out
@@ -522,7 +588,8 @@ pub(crate) fn find_sync(name: &str) -> Option<AlpmPkg> {
     let bare = bare(name);
     for db in alpm.syncdbs() {
         if let Ok(pkg) = db.pkg(bare) {
-            return Some(pkg_to_info(pkg, db.name(), false));
+            let (inst, iver) = local_ver(&alpm, bare);
+            return Some(pkg_to_info(pkg, db.name(), inst, &iver));
         }
     }
     None

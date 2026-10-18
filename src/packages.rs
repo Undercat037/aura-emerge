@@ -599,12 +599,13 @@ fn install_files_resolving_conflicts(
         .cloned()
         .collect();
     if !tracked.is_empty()
-        && let Err(e) = crate::world_set::remove_from_world_set(&tracked) {
-            eprintln!(
-                ">>> Warning: package(s) unmerged but world was not updated: {:#}",
-                e
-            );
-        }
+        && let Err(e) = crate::world_set::remove_from_world_set(&tracked)
+    {
+        eprintln!(
+            ">>> Warning: package(s) unmerged but world was not updated: {:#}",
+            e
+        );
+    }
     match crate::rootops::install_files(pinned, opts, &mut |ev| crate::progress::on_hook_event(ev))
     {
         Ok(()) => {
@@ -936,9 +937,10 @@ pub(crate) fn print_emerge_emerging(pkgs: &[PkgInfo]) {
 pub(crate) fn refresh_installed_versions(pkgs: &mut [PkgInfo]) {
     for p in pkgs.iter_mut() {
         if let Some(ver) = crate::alpm_db::installed_version(&p.name)
-            && !ver.is_empty() {
-                p.version = ver;
-            }
+            && !ver.is_empty()
+        {
+            p.version = ver;
+        }
     }
 }
 
@@ -1067,9 +1069,10 @@ pub(crate) fn pgp_keys_from_log(text: &str) -> Vec<String> {
             }
         }
         if let Some(k) = best
-            && !out.contains(&k) {
-                out.push(k);
-            }
+            && !out.contains(&k)
+        {
+            out.push(k);
+        }
     }
     out
 }
@@ -1371,10 +1374,11 @@ pub(crate) fn pkgbuild_view_step(pkgbase: &str, dir: &std::path::Path) -> Pkgbui
                     .output();
                 let _ = fs::remove_file(&tmp_prev);
                 if let Ok(out) = diff_out
-                    && !out.stdout.is_empty() {
-                        print!("{}", String::from_utf8_lossy(&out.stdout));
-                        shown_diff = true;
-                    }
+                    && !out.stdout.is_empty()
+                {
+                    print!("{}", String::from_utf8_lossy(&out.stdout));
+                    shown_diff = true;
+                }
             }
             if !shown_diff {
                 println!("{}", current);
@@ -1623,14 +1627,15 @@ fn resolve_and_build_aur(
 
     // .SRCINFO pkgbase should match the cloned name.
     if let Some(declared) = crate::aur::srcinfo_pkgbase(&srcinfo_path)
-        && declared != pkgbase {
-            eprintln!(
-                "{} '{}' clone's .SRCINFO declares pkgbase '{}', which doesn't match -- the repo may be stale or the AUR git branch mismatched.",
-                ">>> Warning:".t_yellow().bold(),
-                pkgbase,
-                declared
-            );
-        }
+        && declared != pkgbase
+    {
+        eprintln!(
+            "{} '{}' clone's .SRCINFO declares pkgbase '{}', which doesn't match -- the repo may be stale or the AUR git branch mismatched.",
+            ">>> Warning:".t_yellow().bold(),
+            pkgbase,
+            declared
+        );
+    }
 
     let deps = crate::aur::srcinfo_dependencies(&srcinfo_path, &current_arch()).unwrap_or_else(|| {
         eprintln!(
@@ -1732,17 +1737,19 @@ pub(crate) fn abs_build_base() -> std::path::PathBuf {
 
 fn build_base_dir(name: &str) -> std::path::PathBuf {
     if let Ok(xdg) = std::env::var("XDG_CACHE_HOME")
-        && !xdg.is_empty() {
-            return std::path::PathBuf::from(xdg)
-                .join("aura-emerge/build")
-                .join(name);
-        }
+        && !xdg.is_empty()
+    {
+        return std::path::PathBuf::from(xdg)
+            .join("aura-emerge/build")
+            .join(name);
+    }
     if let Ok(home) = std::env::var("HOME")
-        && !home.is_empty() {
-            return std::path::PathBuf::from(home)
-                .join(".cache/aura-emerge/build")
-                .join(name);
-        }
+        && !home.is_empty()
+    {
+        return std::path::PathBuf::from(home)
+            .join(".cache/aura-emerge/build")
+            .join(name);
+    }
     std::path::PathBuf::from(format!("/var/tmp/aura-emerge-{}", name))
 }
 
@@ -1840,8 +1847,9 @@ pub(crate) fn aur_install(
         let mut building = HashSet::new();
         let mut built = HashMap::new();
         let mut all_ok = true;
+        let mut ok_names: Vec<String> = Vec::new();
+        let phase = crate::logbook::Timer::start();
         for (i, pkg) in bare.iter().enumerate() {
-            let timer = crate::logbook::Timer::start();
             let result = resolve_and_build_aur(
                 pkg,
                 &build_base,
@@ -1858,9 +1866,8 @@ pub(crate) fn aur_install(
                 pkgbuild_view,
             );
             if result.is_some() {
-                crate::logbook::log_merge_one("aur", pkg, timer.elapsed());
-            }
-            if result.is_none() {
+                ok_names.push(pkg.clone());
+            } else {
                 all_ok = false;
                 crate::runtime::record_failure(pkg, "AUR build failed");
                 let left = bare.len() - (i + 1);
@@ -1875,6 +1882,10 @@ pub(crate) fn aur_install(
                 }
             }
         }
+        // One batch line for everything that actually merged (partial OK still logged).
+        if !ok_names.is_empty() {
+            crate::logbook::log_merge_batch("aur", &ok_names, phase.elapsed());
+        }
         return all_ok;
     }
 
@@ -1883,12 +1894,15 @@ pub(crate) fn aur_install(
 
     let all_ok = Arc::new(AtomicBool::new(true));
     let queue: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(bare.clone()));
+    let ok_names: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let workers = jobsa.min(bare.len());
+    let phase = crate::logbook::Timer::start();
 
     std::thread::scope(|scope| {
         for _ in 0..workers {
             let queue = queue.clone();
             let all_ok = all_ok.clone();
+            let ok_names = ok_names.clone();
             let build_base = &build_base;
             scope.spawn(move || {
                 loop {
@@ -1903,7 +1917,6 @@ pub(crate) fn aur_install(
                     let _slot = crate::runtime::acquire_job_slot();
                     let mut building = HashSet::new();
                     let mut built = HashMap::new();
-                    let timer = crate::logbook::Timer::start();
                     let result = resolve_and_build_aur(
                         &pkg,
                         build_base,
@@ -1920,7 +1933,9 @@ pub(crate) fn aur_install(
                         pkgbuild_view,
                     );
                     if result.is_some() {
-                        crate::logbook::log_merge_one("aur", &pkg, timer.elapsed());
+                        if let Ok(mut v) = ok_names.lock() {
+                            v.push(pkg);
+                        }
                     } else {
                         all_ok.store(false, AtomicOrdering::Relaxed);
                         crate::runtime::record_failure(&pkg, "AUR build failed");
@@ -1935,6 +1950,12 @@ pub(crate) fn aur_install(
             });
         }
     });
+
+    // One batch line for everything that actually merged (partial OK still logged).
+    let names = ok_names.lock().map(|v| v.clone()).unwrap_or_default();
+    if !names.is_empty() {
+        crate::logbook::log_merge_batch("aur", &names, phase.elapsed());
+    }
 
     all_ok.load(AtomicOrdering::Relaxed)
 }
@@ -2040,13 +2061,14 @@ fn save_devel_state(state: &HashMap<String, String>) {
         return;
     };
     if let Some(parent) = path.parent()
-        && fs::create_dir_all(parent).is_err() {
-            eprintln!(
-                ">>> Warning: could not create {}, devel state not saved",
-                parent.display()
-            );
-            return;
-        }
+        && fs::create_dir_all(parent).is_err()
+    {
+        eprintln!(
+            ">>> Warning: could not create {}, devel state not saved",
+            parent.display()
+        );
+        return;
+    }
     let tmp = path.with_extension("tmp");
     let write_result = (|| -> std::io::Result<()> {
         let mut f = fs::File::create(&tmp)?;
@@ -2549,7 +2571,11 @@ fn build_with_sandbox(
             "{} makepkg.conf sets {} outside the build directory -- binding {} into the sandbox so this build can still write there.",
             ">>>".t_green().bold(),
             user_configured.join(", "),
-            if user_configured.len() == 1 { "it" } else { "them" }
+            if user_configured.len() == 1 {
+                "it"
+            } else {
+                "them"
+            }
         );
     }
 
@@ -3119,7 +3145,6 @@ fn abs_build_one(
         ensure_pgp_keys(&build_dir.join("PKGBUILD"), autopgp);
     }
 
-    let timer = crate::logbook::Timer::start();
     crate::progress::line(crate::progress::Stage::Installing, stage_n, &stage_atom);
     let build_ok = match isolation {
         BuildIsolation::Bwrap => build_with_sandbox(
@@ -3136,9 +3161,9 @@ fn abs_build_one(
 
     // Keep the ABS checkout for the next run (git pull refreshes it).
     // Untracked build debris is cleaned by the next pull/update path.
+    // Logging is done by the caller (batched with the rest of the phase).
 
     if build_ok {
-        crate::logbook::log_merge_one("abs", &format_atom(info), timer.elapsed());
         crate::progress::line(crate::progress::Stage::Completed, stage_n, &stage_atom);
         true
     } else {
@@ -3185,8 +3210,10 @@ fn abs_build_many(
     }
     if jobsa <= 1 || pkg_infos.len() <= 1 {
         let mut all_ok = true;
+        let mut ok_atoms: Vec<String> = Vec::new();
+        let phase = crate::logbook::Timer::start();
         for info in pkg_infos {
-            if !abs_build_one(
+            if abs_build_one(
                 info,
                 build_base,
                 ask,
@@ -3199,11 +3226,16 @@ fn abs_build_many(
                 unshare_net_build,
                 pkgbuild_view,
             ) {
+                ok_atoms.push(format_atom(info));
+            } else {
                 all_ok = false;
                 if !crate::runtime::keep_going() {
                     break;
                 }
             }
+        }
+        if !ok_atoms.is_empty() {
+            crate::logbook::log_merge_batch("abs", &ok_atoms, phase.elapsed());
         }
         return all_ok;
     }
@@ -3213,45 +3245,59 @@ fn abs_build_many(
 
     let all_ok = Arc::new(AtomicBool::new(true));
     let queue: Arc<Mutex<Vec<PkgInfo>>> = Arc::new(Mutex::new(pkg_infos.to_vec()));
+    let ok_atoms: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let workers = jobsa.min(pkg_infos.len());
+    let phase = crate::logbook::Timer::start();
 
     std::thread::scope(|scope| {
         for _ in 0..workers {
             let queue = queue.clone();
             let all_ok = all_ok.clone();
-            scope.spawn(move || loop {
-                if !all_ok.load(AtomicOrdering::Relaxed) && !crate::runtime::keep_going() {
-                    break;
-                }
-                let info = {
-                    let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
-                    q.pop()
-                };
-                let Some(info) = info else { break };
-                let _slot = crate::runtime::acquire_job_slot();
-                if !abs_build_one(
-                    &info,
-                    build_base,
-                    ask,
-                    oneshot,
-                    skippgp,
-                    edit,
-                    autopgp,
-                    skip_srcinfo_regen,
-                    isolation,
-                    unshare_net_build,
-                    pkgbuild_view,
-                ) {
-                    all_ok.store(false, AtomicOrdering::Relaxed);
-                    if !crate::runtime::keep_going() {
-                        let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
-                        q.clear();
+            let ok_atoms = ok_atoms.clone();
+            scope.spawn(move || {
+                loop {
+                    if !all_ok.load(AtomicOrdering::Relaxed) && !crate::runtime::keep_going() {
                         break;
+                    }
+                    let info = {
+                        let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
+                        q.pop()
+                    };
+                    let Some(info) = info else { break };
+                    let _slot = crate::runtime::acquire_job_slot();
+                    if abs_build_one(
+                        &info,
+                        build_base,
+                        ask,
+                        oneshot,
+                        skippgp,
+                        edit,
+                        autopgp,
+                        skip_srcinfo_regen,
+                        isolation,
+                        unshare_net_build,
+                        pkgbuild_view,
+                    ) {
+                        if let Ok(mut v) = ok_atoms.lock() {
+                            v.push(format_atom(&info));
+                        }
+                    } else {
+                        all_ok.store(false, AtomicOrdering::Relaxed);
+                        if !crate::runtime::keep_going() {
+                            let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
+                            q.clear();
+                            break;
+                        }
                     }
                 }
             });
         }
     });
+
+    let atoms = ok_atoms.lock().map(|v| v.clone()).unwrap_or_default();
+    if !atoms.is_empty() {
+        crate::logbook::log_merge_batch("abs", &atoms, phase.elapsed());
+    }
 
     all_ok.load(AtomicOrdering::Relaxed)
 }
@@ -3343,15 +3389,14 @@ pub(crate) fn source_builds_parallel(
     }
 
     let aur_base = aur_build_base();
-    if !aur_pkgs.is_empty()
-        && std::fs::create_dir_all(&aur_base).is_err() {
-            eprintln!(
-                "{} could not create AUR build directory {}",
-                ">>> Fatal:".t_red().bold(),
-                aur_base.display()
-            );
-            return false;
-        }
+    if !aur_pkgs.is_empty() && std::fs::create_dir_all(&aur_base).is_err() {
+        eprintln!(
+            "{} could not create AUR build directory {}",
+            ">>> Fatal:".t_red().bold(),
+            aur_base.display()
+        );
+        return false;
+    }
 
     let mut jobs: Vec<Job> = abs_infos.iter().cloned().map(Job::Abs).collect();
     jobs.extend(aur_pkgs.iter().cloned().map(Job::Aur));
@@ -3373,77 +3418,104 @@ pub(crate) fn source_builds_parallel(
 
     let all_ok = Arc::new(AtomicBool::new(true));
     let queue: Arc<Mutex<Vec<Job>>> = Arc::new(Mutex::new(jobs));
+    let ok_abs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let ok_aur: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let workers = jobsa.min(queue.lock().map(|q| q.len()).unwrap_or(1).max(1));
+    let phase = crate::logbook::Timer::start();
 
     std::thread::scope(|scope| {
         for _ in 0..workers {
             let queue = queue.clone();
             let all_ok = all_ok.clone();
+            let ok_abs = ok_abs.clone();
+            let ok_aur = ok_aur.clone();
             let abs_base = &abs_base;
             let aur_base = &aur_base;
-            scope.spawn(move || loop {
-                if !all_ok.load(AtomicOrdering::Relaxed) && !crate::runtime::keep_going() {
-                    break;
-                }
-                let job = {
-                    let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
-                    q.pop()
-                };
-                let Some(job) = job else { break };
-                let _slot = crate::runtime::acquire_job_slot();
-                let ok = match job {
-                    Job::Abs(info) => abs_build_one(
-                        &info,
-                        abs_base,
-                        false,
-                        oneshot,
-                        skippgp,
-                        edit,
-                        autopgp,
-                        skip_srcinfo_regen,
-                        isolation,
-                        unshare_net_build,
-                        pkgbuild_view,
-                    ),
-                    Job::Aur(pkg) => {
-                        let mut building = HashSet::new();
-                        let mut built = HashMap::new();
-                        let timer = crate::logbook::Timer::start();
-                        let result = resolve_and_build_aur(
-                            &pkg,
-                            aur_base,
-                            ask_aur,
-                            skippgp,
-                            oneshot,
-                            edit,
-                            true,
-                            skip_srcinfo_regen,
-                            isolation,
-                            unshare_net_build,
-                            &mut building,
-                            &mut built,
-                            pkgbuild_view,
-                        );
-                        if result.is_some() {
-                            crate::logbook::log_merge_one("aur", &pkg, timer.elapsed());
-                            true
-                        } else {
-                            crate::runtime::record_failure(&pkg, "AUR build failed");
-                            false
-                        }
-                    }
-                };
-                if !ok {
-                    all_ok.store(false, AtomicOrdering::Relaxed);
-                    if !crate::runtime::keep_going() {
-                        let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
-                        q.clear();
+            scope.spawn(move || {
+                loop {
+                    if !all_ok.load(AtomicOrdering::Relaxed) && !crate::runtime::keep_going() {
                         break;
+                    }
+                    let job = {
+                        let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
+                        q.pop()
+                    };
+                    let Some(job) = job else { break };
+                    let _slot = crate::runtime::acquire_job_slot();
+                    let ok = match job {
+                        Job::Abs(info) => {
+                            let ok = abs_build_one(
+                                &info,
+                                abs_base,
+                                false,
+                                oneshot,
+                                skippgp,
+                                edit,
+                                autopgp,
+                                skip_srcinfo_regen,
+                                isolation,
+                                unshare_net_build,
+                                pkgbuild_view,
+                            );
+                            if ok {
+                                if let Ok(mut v) = ok_abs.lock() {
+                                    v.push(format_atom(&info));
+                                }
+                            }
+                            ok
+                        }
+                        Job::Aur(pkg) => {
+                            let mut building = HashSet::new();
+                            let mut built = HashMap::new();
+                            let result = resolve_and_build_aur(
+                                &pkg,
+                                aur_base,
+                                ask_aur,
+                                skippgp,
+                                oneshot,
+                                edit,
+                                true,
+                                skip_srcinfo_regen,
+                                isolation,
+                                unshare_net_build,
+                                &mut building,
+                                &mut built,
+                                pkgbuild_view,
+                            );
+                            if result.is_some() {
+                                if let Ok(mut v) = ok_aur.lock() {
+                                    v.push(pkg);
+                                }
+                                true
+                            } else {
+                                crate::runtime::record_failure(&pkg, "AUR build failed");
+                                false
+                            }
+                        }
+                    };
+                    if !ok {
+                        all_ok.store(false, AtomicOrdering::Relaxed);
+                        if !crate::runtime::keep_going() {
+                            let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
+                            q.clear();
+                            break;
+                        }
                     }
                 }
             });
         }
     });
+
+    // Group successful merges by source (partial success still logged).
+    let elapsed = phase.elapsed();
+    let abs_names = ok_abs.lock().map(|v| v.clone()).unwrap_or_default();
+    if !abs_names.is_empty() {
+        crate::logbook::log_merge_batch("abs", &abs_names, elapsed);
+    }
+    let aur_names = ok_aur.lock().map(|v| v.clone()).unwrap_or_default();
+    if !aur_names.is_empty() {
+        crate::logbook::log_merge_batch("aur", &aur_names, elapsed);
+    }
 
     all_ok.load(AtomicOrdering::Relaxed)
 }
@@ -3655,9 +3727,10 @@ pub(crate) fn extra_makepkg_dest_dirs(
 /// Default SRCDEST under ~/.cache/aura-emerge/sources (survives build-dir wipes).
 pub(crate) fn source_cache_dir() -> Option<std::path::PathBuf> {
     if let Ok(xdg) = std::env::var("XDG_CACHE_HOME")
-        && !xdg.is_empty() {
-            return Some(std::path::PathBuf::from(xdg).join("aura-emerge/sources"));
-        }
+        && !xdg.is_empty()
+    {
+        return Some(std::path::PathBuf::from(xdg).join("aura-emerge/sources"));
+    }
     let home = std::env::var("HOME").ok()?;
     Some(std::path::PathBuf::from(home).join(".cache/aura-emerge/sources"))
 }
@@ -3672,10 +3745,11 @@ pub(crate) fn resolve_dest_dirs(
     let mut dirs = extra_makepkg_dest_dirs(build_dir);
     let mut default_cache = None;
     if !dirs.iter().any(|(name, _)| *name == "SRCDEST")
-        && let Some(cache) = source_cache_dir() {
-            dirs.push(("SRCDEST", cache.clone()));
-            default_cache = Some(cache);
-        }
+        && let Some(cache) = source_cache_dir()
+    {
+        dirs.push(("SRCDEST", cache.clone()));
+        default_cache = Some(cache);
+    }
     (dirs, default_cache)
 }
 
@@ -3701,13 +3775,14 @@ fn effective_build_vars(cfg: &crate::config::Config) -> HashMap<String, String> 
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()
-        && output.status.success() {
-            for line in String::from_utf8_lossy(&output.stdout).lines() {
-                if let Some((k, v)) = line.split_once('=') {
-                    map.insert(k.to_string(), v.to_string());
-                }
+        && output.status.success()
+    {
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if let Some((k, v)) = line.split_once('=') {
+                map.insert(k.to_string(), v.to_string());
             }
         }
+    }
     map
 }
 
@@ -3755,13 +3830,14 @@ fi
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()
-        && output.status.success() {
-            for line in String::from_utf8_lossy(&output.stdout).lines() {
-                if let Some((k, v)) = line.split_once('=') {
-                    map.insert(k.to_string(), v.to_string());
-                }
+        && output.status.success()
+    {
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if let Some((k, v)) = line.split_once('=') {
+                map.insert(k.to_string(), v.to_string());
             }
         }
+    }
     map
 }
 

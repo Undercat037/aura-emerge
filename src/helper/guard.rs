@@ -156,17 +156,15 @@ fn ensure_std_fds() -> Result<(), GuardError> {
 fn clean_env() {
     let keys: Vec<_> = std::env::vars_os().map(|(k, _)| k).collect();
     for k in keys {
-        // FIXME: Audit that the environment access only happens in single-threaded code.
+        // SAFETY: called only from helper main before any threads; 2024 edition
+        // marks set_var/remove_var unsafe (data-race if concurrent readers).
         unsafe { std::env::remove_var(k) };
     }
-    // FIXME: Audit that the environment access only happens in single-threaded code.
+    // SAFETY: single-threaded helper startup (see above).
     unsafe { std::env::set_var("PATH", SAFE_PATH) };
-    // FIXME: Audit that the environment access only happens in single-threaded code.
     unsafe { std::env::set_var("LANG", "C") };
-    // FIXME: Audit that the environment access only happens in single-threaded code.
     unsafe { std::env::set_var("LC_ALL", "C") };
     // Hooks/scriptlets that touch $HOME (gpg, user unit paths, …).
-    // FIXME: Audit that the environment access only happens in single-threaded code.
     unsafe { std::env::set_var("HOME", "/root") };
 }
 

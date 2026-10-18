@@ -23,8 +23,8 @@ struct Session {
 
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 
-/// Starts a build/merge timer:
-/// `let t = Timer::start(); ... log_merge_one("aur", &atom, t.elapsed());`
+/// Phase / transaction timer:
+/// `let t = Timer::start(); ... log_merge_batch("aur", &ok, t.elapsed());`
 pub(crate) struct Timer(Instant);
 
 impl Timer {
@@ -114,15 +114,16 @@ pub(crate) fn session_open(path: &Path, command_line: &str) {
 
 fn session_append_line(line: &str) {
     if let Ok(mut slot) = SESSION.lock()
-        && let Some(s) = slot.as_mut() {
-            // After build output, open a final section for emerge.log lines.
-            if s.had_output {
-                let _ = writeln!(s.file, "===");
-                s.had_output = false;
-            }
-            let _ = writeln!(s.file, "{}", line);
-            let _ = s.file.flush();
+        && let Some(s) = slot.as_mut()
+    {
+        // After build output, open a final section for emerge.log lines.
+        if s.had_output {
+            let _ = writeln!(s.file, "===");
+            s.had_output = false;
         }
+        let _ = writeln!(s.file, "{}", line);
+        let _ = s.file.flush();
+    }
 }
 
 /// Append build/command output to the session log.
@@ -131,22 +132,24 @@ pub(crate) fn session_write_output(text: &str) {
         return;
     }
     if let Ok(mut slot) = SESSION.lock()
-        && let Some(s) = slot.as_mut() {
-            s.had_output = true;
-            let _ = write!(s.file, "{}", text);
-            if !text.ends_with('\n') {
-                let _ = writeln!(s.file);
-            }
-            let _ = s.file.flush();
+        && let Some(s) = slot.as_mut()
+    {
+        s.had_output = true;
+        let _ = write!(s.file, "{}", text);
+        if !text.ends_with('\n') {
+            let _ = writeln!(s.file);
         }
+        let _ = s.file.flush();
+    }
 }
 
 pub(crate) fn session_active() -> bool {
     SESSION.lock().map(|s| s.is_some()).unwrap_or(false)
 }
 
-/// One line for a batch that installed together as a single pacman
-/// transaction -- no per-package duration is meaningful there.
+/// One line for a batch that merged together (repo transaction, or a
+/// whole AUR/ABS phase). Wall time is the phase duration; partial
+/// success still writes the packages that actually installed.
 pub(crate) fn log_merge_batch(repo: &str, atoms: &[String], elapsed: Duration) {
     if atoms.is_empty() {
         return;
@@ -156,18 +159,6 @@ pub(crate) fn log_merge_batch(repo: &str, atoms: &[String], elapsed: Duration) {
         timestamp(),
         repo,
         atoms.join("  "),
-        fmt_duration(elapsed)
-    ));
-}
-
-/// One line per package with its own real build time -- AUR/ABS,
-/// which already builds one package at a time.
-pub(crate) fn log_merge_one(repo: &str, atom: &str, elapsed: Duration) {
-    append(&format!(
-        "{}  MERGE    {:<6} {}  ({})",
-        timestamp(),
-        repo,
-        atom,
         fmt_duration(elapsed)
     ));
 }
@@ -223,9 +214,10 @@ pub(crate) fn parse_stats(text: &str) -> LogStats {
             "MERGE" => {
                 stats.merges += 1;
                 if let Some(dur) = line.rsplit('(').next().and_then(|s| s.strip_suffix(')'))
-                    && let Some(d) = parse_duration(dur) {
-                        stats.total_build_time += d;
-                    }
+                    && let Some(d) = parse_duration(dur)
+                {
+                    stats.total_build_time += d;
+                }
             }
             "UNMERGE" => stats.unmerges += 1,
             _ => {}

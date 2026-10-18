@@ -26,6 +26,14 @@ pub(crate) struct AurPkgInfo {
     /// collapsed to a bool here, callers don't need the flag date.
     pub(crate) out_of_date: bool,
     pub(crate) maintainer: Option<String>,
+    pub(crate) url: String,
+    pub(crate) license: String,
+    pub(crate) depends: String,
+    pub(crate) makedepends: String,
+    pub(crate) provides: String,
+    pub(crate) conflicts: String,
+    /// Unix LastModified from RPC (0 if unknown).
+    pub(crate) last_modified: i64,
 }
 
 /// Refresh an existing shallow clone in place: `git fetch` + hard reset
@@ -272,11 +280,7 @@ pub(crate) fn srcinfo_pkgnames(path: &Path) -> Option<Vec<String>> {
         })
         .filter(|n| !n.is_empty())
         .collect();
-    if names.is_empty() {
-        None
-    } else {
-        Some(names)
-    }
+    if names.is_empty() { None } else { Some(names) }
 }
 
 fn urlencode(s: &str) -> String {
@@ -314,6 +318,17 @@ fn parse_pkg_results(json: &str) -> Vec<AurPkgInfo> {
                 .map(|v| v.trim() != "null")
                 .unwrap_or(false);
             let maintainer = extract_json_string_field(obj, "Maintainer");
+            let url = extract_json_string_field(obj, "URL").unwrap_or_default();
+            // License is often a JSON array; fall back to empty.
+            let license = extract_json_string_field(obj, "License")
+                .or_else(|| extract_json_array_join(obj, "License"))
+                .unwrap_or_default();
+            let depends = extract_json_array_join(obj, "Depends").unwrap_or_default();
+            let makedepends = extract_json_array_join(obj, "MakeDepends").unwrap_or_default();
+            let provides = extract_json_array_join(obj, "Provides").unwrap_or_default();
+            let conflicts = extract_json_array_join(obj, "Conflicts").unwrap_or_default();
+            let last_modified =
+                extract_json_number_field(obj, "LastModified").unwrap_or(0.0) as i64;
             Some(AurPkgInfo {
                 name,
                 version,
@@ -323,6 +338,13 @@ fn parse_pkg_results(json: &str) -> Vec<AurPkgInfo> {
                 popularity,
                 out_of_date,
                 maintainer,
+                url,
+                license,
+                depends,
+                makedepends,
+                provides,
+                conflicts,
+                last_modified,
             })
         })
         .collect()
@@ -459,6 +481,34 @@ fn extract_json_string_field(json: &str, field: &str) -> Option<String> {
     Some(decode_entities_json(raw))
 }
 
+/// Join a JSON string array field: `"License":["MIT","GPL"]` → `MIT GPL`.
+fn extract_json_array_join(json: &str, field: &str) -> Option<String> {
+    let needle = format!("\"{}\":", field);
+    let start = json.find(&needle)? + needle.len();
+    let tail = json[start..].trim_start();
+    if !tail.starts_with('[') {
+        return None;
+    }
+    let end = tail.find(']')?;
+    let body = &tail[1..end];
+    let parts: Vec<String> = body
+        .split(',')
+        .filter_map(|s| {
+            let s = s.trim().trim_matches('"');
+            if s.is_empty() {
+                None
+            } else {
+                Some(s.to_string())
+            }
+        })
+        .collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" "))
+    }
+}
+
 /// Decodes the JSON escapes the AUR RPC actually emits (`\" \\ \/ \n \t
 /// \uXXXX`) -- not a general decoder, just enough for this data.
 fn decode_entities_json(s: &str) -> String {
@@ -478,9 +528,10 @@ fn decode_entities_json(s: &str) -> String {
             Some('u') => {
                 let hex: String = chars.by_ref().take(4).collect();
                 if let Ok(cp) = u32::from_str_radix(&hex, 16)
-                    && let Some(ch) = char::from_u32(cp) {
-                        out.push(ch);
-                    }
+                    && let Some(ch) = char::from_u32(cp)
+                {
+                    out.push(ch);
+                }
             }
             Some(other) => out.push(other),
             None => {}

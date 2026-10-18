@@ -1,13 +1,13 @@
-//! Shared `>>> Verb (n of m) atom` status lines + live Jobs footer.
+//! Shared `>>> Verb (n of m, p%) atom` status lines + live Jobs footer.
 //!
-//! One run-wide counter so repo, AUR and ABS stages number consistently
+//! One run-wide counter so repo, AUR and ABS stages number consistently.
 
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::theme::Themed;
 use colored::Colorize;
@@ -16,16 +16,20 @@ static TOTAL: AtomicUsize = AtomicUsize::new(0);
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 static DONE: AtomicUsize = AtomicUsize::new(0);
 static RUNNING: AtomicUsize = AtomicUsize::new(0);
-/// A live `>>> Jobs:` line occupies the current TTY row (no trailing newline).
+/// Live `>>> Jobs:` line occupies the current TTY row (no trailing newline).
 static SHOWN: AtomicBool = AtomicBool::new(false);
 /// Rows the live area occupies (fetch rows + Jobs row).
 static ROWS: AtomicUsize = AtomicUsize::new(1);
 /// Background Load-avg ticker is running.
 static TICKING: AtomicBool = AtomicBool::new(false);
-/// Serializes all Jobs / stage line I/O across worker threads.
+/// Serializes Jobs / stage line I/O across worker threads.
 static OUT: Mutex<()> = Mutex::new(());
-/// Packages being fetched right now: (n, atom, percent).
+/// Packages being fetched: (n, atom, percent).
 static FETCH: Mutex<Vec<(usize, String, u8)>> = Mutex::new(Vec::new());
+/// Wall-clock start of the current run (for elapsed in Jobs line).
+static START: Mutex<Option<Instant>> = Mutex::new(None);
+/// Last drawn Jobs text (ticker skips redraw if nothing visible changed).
+static LAST_JOBS: Mutex<String> = Mutex::new(String::new());
 
 #[derive(Clone, Copy)]
 pub(crate) enum Stage {
@@ -53,6 +57,12 @@ pub(crate) fn begin(total: usize) {
     DONE.store(0, Ordering::Relaxed);
     RUNNING.store(0, Ordering::Relaxed);
     SHOWN.store(false, Ordering::Relaxed);
+    if let Ok(mut s) = START.lock() {
+        *s = Some(Instant::now());
+    }
+    if let Ok(mut last) = LAST_JOBS.lock() {
+        last.clear();
+    }
     fetch_clear();
     start_ticker();
 }
@@ -89,12 +99,12 @@ pub(crate) fn line(stage: Stage, n: usize, atom: &str) {
     stage_line(stage, n, atom, None);
 }
 
-/// Emerging line with the data-received percent.
+/// Emerging line with the data-received percent (download progress).
 pub(crate) fn emerging(n: usize, atom: &str, pct: u8) {
     stage_line(Stage::Emerging, n, atom, Some(pct));
 }
 
-fn stage_line(stage: Stage, n: usize, atom: &str, pct: Option<u8>) {
+fn stage_line(stage: Stage, n: usize, atom: &str, dl_pct: Option<u8>) {
     match stage {
         // Emerging opens a slot; Installing keeps it; Completed closes it.
         Stage::Emerging => {
@@ -111,19 +121,20 @@ fn stage_line(stage: Stage, n: usize, atom: &str, pct: Option<u8>) {
     let _g = OUT.lock().unwrap_or_else(|e| e.into_inner());
     status_erase();
     let total = TOTAL.load(Ordering::Relaxed).max(n);
-    // Percent only for Emerging (data received); other stages: unknown.
     let count = format!(
         "{} of {}",
         n.to_string().t_yellow().bold(),
         total.to_string().t_yellow().bold()
     );
-    let head = match (stage, pct) {
-        (Stage::Emerging, p) => format!(
-            "({}, {}%)",
-            count,
-            p.unwrap_or(100).to_string().t_cyan().bold()
-        ),
-        _ => format!("({})", count),
+    // Per-package progress (download / clone / install of *this* atom).
+    // Live fetch rows already show the running %; permanent lines usually
+    // appear at 100% or when the stage advances.
+    let head = match stage {
+        Stage::Emerging => {
+            let p = dl_pct.unwrap_or(100);
+            format!("({}, {}%)", count, p.to_string().t_cyan().bold())
+        }
+        Stage::Installing | Stage::Completed => format!("({})", count),
     };
     println!(
         "{} {} {} {}",
@@ -158,8 +169,7 @@ pub(crate) fn note(text: &str) {
 
 /// Handle a helper `hook …` event, keeping the Jobs footer pinned.
 ///
-///   `hook start pre|post`           → `>>> Running pre/post-transaction hooks...`
-
+///   `hook start pre|post` → `>>> Running pre/post-transaction hooks...`
 pub(crate) fn on_hook_event(ev: &str) {
     let mut it = ev.split_whitespace();
     let (Some("hook"), Some(kind)) = (it.next(), it.next()) else {
@@ -217,6 +227,12 @@ pub(crate) fn finish() {
     let done = DONE.load(Ordering::Relaxed);
     println!("{}", jobs_text(done, total, 0));
     SHOWN.store(false, Ordering::Relaxed);
+    if let Ok(mut s) = START.lock() {
+        *s = None;
+    }
+    if let Ok(mut last) = LAST_JOBS.lock() {
+        last.clear();
+    }
 }
 
 /// Clear the whole live area (fetch rows + Jobs row), cursor ends on its top row.
@@ -245,6 +261,12 @@ fn status_draw() {
         return;
     }
     let rows = fetch_rows(total);
+    let fetching = FETCH.lock().unwrap_or_else(|e| e.into_inner()).len();
+    let jobs = jobs_text(
+        DONE.load(Ordering::Relaxed),
+        total,
+        RUNNING.load(Ordering::Relaxed) + fetching,
+    );
     let mut out = String::new();
     for r in &rows {
         out.push_str("\r\x1b[2K");
@@ -252,17 +274,14 @@ fn status_draw() {
         out.push('\n');
     }
     out.push_str("\r\x1b[2K");
-    // Packages still downloading count as running.
-    let fetching = FETCH.lock().unwrap_or_else(|e| e.into_inner()).len();
-    out.push_str(&jobs_text(
-        DONE.load(Ordering::Relaxed),
-        total,
-        RUNNING.load(Ordering::Relaxed) + fetching,
-    ));
+    out.push_str(&jobs);
     print!("{}", out);
     let _ = std::io::stdout().flush();
     ROWS.store(rows.len() + 1, Ordering::Relaxed);
     SHOWN.store(true, Ordering::Relaxed);
+    if let Ok(mut last) = LAST_JOBS.lock() {
+        *last = jobs;
+    }
 }
 
 fn start_ticker() {
@@ -277,22 +296,38 @@ fn start_ticker() {
     }
     thread::spawn(|| {
         while TICKING.load(Ordering::Relaxed) {
-            thread::sleep(Duration::from_millis(750));
+            // 2s is enough for elapsed / load; avoids TTY thrash.
+            thread::sleep(Duration::from_millis(2000));
             if !TICKING.load(Ordering::Relaxed) {
                 break;
             }
-            // Only refresh while a Jobs line is live.
-            if SHOWN.load(Ordering::Relaxed) {
-                let total = TOTAL.load(Ordering::Relaxed);
-                if total == 0 {
-                    continue;
-                }
-                // Rewrite in place under OUT so we don't race with line().
-                if let Ok(_g) = OUT.try_lock()
-                    && SHOWN.load(Ordering::Relaxed) {
-                        status_erase();
-                        status_draw();
-                    }
+            if !SHOWN.load(Ordering::Relaxed) {
+                continue;
+            }
+            let total = TOTAL.load(Ordering::Relaxed);
+            if total == 0 {
+                continue;
+            }
+            // Only redraw when the Jobs line text actually changed
+            // (elapsed second, load, or counts). Like pacman: no spam.
+            let fetching = FETCH.lock().unwrap_or_else(|e| e.into_inner()).len();
+            let candidate = jobs_text(
+                DONE.load(Ordering::Relaxed),
+                total,
+                RUNNING.load(Ordering::Relaxed) + fetching,
+            );
+            let changed = LAST_JOBS
+                .lock()
+                .map(|last| *last != candidate)
+                .unwrap_or(true);
+            if !changed {
+                continue;
+            }
+            if let Ok(_g) = OUT.try_lock()
+                && SHOWN.load(Ordering::Relaxed)
+            {
+                status_erase();
+                status_draw();
             }
         }
     });
@@ -335,13 +370,27 @@ fn fetch_rows(total: usize) -> Vec<String> {
 }
 
 /// Update the live fetch row of package `n` (TTY only).
+/// Skips the redraw when the percent did not change (avoids TTY thrash).
 pub(crate) fn fetch(n: usize, atom: &str, pct: u8) {
-    {
+    let changed = {
         let mut f = FETCH.lock().unwrap_or_else(|e| e.into_inner());
         match f.iter_mut().find(|e| e.0 == n) {
-            Some(e) => e.2 = pct,
-            None => f.push((n, atom.to_string(), pct)),
+            Some(e) => {
+                if e.2 == pct {
+                    false
+                } else {
+                    e.2 = pct;
+                    true
+                }
+            }
+            None => {
+                f.push((n, atom.to_string(), pct));
+                true
+            }
         }
+    };
+    if !changed {
+        return;
     }
     let _g = OUT.lock().unwrap_or_else(|e| e.into_inner());
     status_erase();
@@ -440,7 +489,7 @@ pub(crate) fn on_pkg_start(
     }
 }
 
-/// `>>> Jobs: 0 of 136 complete, 3 running, 3 merge wait      Load avg: ...`
+/// `>>> Jobs: 0 of 136 complete, 3 running, 3 merge wait   1m23s   Load avg: ...`
 fn jobs_text(done: usize, total: usize, running: usize) -> String {
     let wait = total.saturating_sub(done + running);
     let mut left = format!("Jobs: {} of {} complete", done, total);
@@ -450,16 +499,41 @@ fn jobs_text(done: usize, total: usize, running: usize) -> String {
     if wait > 0 {
         left.push_str(&format!(", {} merge wait", wait));
     }
+    let elapsed = elapsed_str();
     let load = load_avg();
-    // ">>> " prefix is 4 columns; load avg is right-aligned.
-    let pad = term_cols().saturating_sub(4 + left.chars().count() + load.chars().count());
+    // ">>> " prefix is 4 columns; elapsed + load right-aligned.
+    let mid = if elapsed.is_empty() {
+        String::new()
+    } else {
+        format!("  {}", elapsed)
+    };
+    let pad = term_cols()
+        .saturating_sub(4 + left.chars().count() + mid.chars().count() + load.chars().count());
     format!(
-        "{} {}{}{}",
+        "{} {}{}{}{}",
         ">>>".t_green().bold(),
         left,
+        mid,
         " ".repeat(pad.max(2)),
         load
     )
+}
+
+fn elapsed_str() -> String {
+    let Ok(guard) = START.lock() else {
+        return String::new();
+    };
+    let Some(start) = *guard else {
+        return String::new();
+    };
+    let secs = start.elapsed().as_secs();
+    if secs < 60 {
+        format!("{}s", secs)
+    } else if secs < 3600 {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
+    }
 }
 
 fn load_avg() -> String {

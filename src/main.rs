@@ -887,21 +887,22 @@ fn collect_excludes(raw: &[String]) -> HashSet<String> {
 /// Portage-style unread-news heads-up (non-fatal).
 fn maybe_news_banner() {
     if let Some(n) = news::unread_count_quiet()
-        && n > 0 {
-            println!(
-                " {} {}: {} news item(s) need reading for repository '{}'.",
-                "*".t_yellow().bold(),
-                "IMPORTANT".t_yellow().bold(),
-                n,
-                "arch".bold()
-            );
-            println!(
-                " {} Use {} to view new items.",
-                "*".t_yellow().bold(),
-                "emerge --news".t_cyan()
-            );
-            println!();
-        }
+        && n > 0
+    {
+        println!(
+            " {} {}: {} news item(s) need reading for repository '{}'.",
+            "*".t_yellow().bold(),
+            "IMPORTANT".t_yellow().bold(),
+            n,
+            "arch".bold()
+        );
+        println!(
+            " {} Use {} to view new items.",
+            "*".t_yellow().bold(),
+            "emerge --news".t_cyan()
+        );
+        println!();
+    }
 }
 
 /// One repo line: `>>> name...` while pending, `done` once downloaded.
@@ -1919,14 +1920,16 @@ fn start_sudoloop() -> bool {
     if !primed {
         return false;
     }
-    std::thread::spawn(|| loop {
-        std::thread::sleep(std::time::Duration::from_secs(60));
-        let _ = Command::new(SUDO_BIN)
-            .arg("-v")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+    std::thread::spawn(|| {
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+            let _ = Command::new(SUDO_BIN)
+                .arg("-v")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
     });
     true
 }
@@ -2013,141 +2016,207 @@ pub(crate) fn is_symlink_open_error(err: &std::io::Error) -> bool {
     err.raw_os_error() == Some(libc::ELOOP)
 }
 
-// ── AUR search/info output ──────────────────────────────────────────────────
+// ── Search output (Portage-style) ───────────────────────────────────────────
 
-/// `pacman -Ss`-style two-line-per-result listing, for AUR RPC `search`
-/// results - replaces parsing/forwarding `aura -As`/`aura --searchdesc`
-/// (AUR half) output.
-
-fn print_sync_search_results(results: &[crate::alpm_db::AlpmPkg]) {
-    if results.is_empty() {
-        return;
+fn fmt_kib(bytes: i64) -> String {
+    if bytes <= 0 {
+        return "0 KiB".to_string();
     }
+    let kib = (bytes as f64 / 1024.0).round() as i64;
+    // Thin space like Gentoo's "12 714 KiB" is optional; plain is fine.
+    let s = kib.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            out.push(' ');
+        }
+        out.push(c);
+    }
+    format!("{} KiB", out.chars().rev().collect::<String>())
+}
+
+/// Unix timestamp → `YYYY-MM-DD` (UTC, no chrono dep).
+fn fmt_unix_date(ts: i64) -> String {
+    if ts <= 0 {
+        return String::new();
+    }
+    // civil_from_days (Howard Hinnant), days since 1970-01-01.
+    let z = ts.div_euclid(86_400) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = (z - era * 146_097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{:04}-{:02}-{:02}", y, m, d)
+}
+
+fn push_field(out: &mut String, label: &str, value: &str) {
+    if !value.is_empty() {
+        out.push_str(&format!("      {:<15} {}\n", format!("{}:", label), value));
+    }
+}
+
+fn masked_tag(name: &str, repo: Option<&str>) -> String {
+    if crate::mask::is_blocked(name, repo) || crate::mask::is_blocked(name, None) {
+        format!(" {}", "[ Masked ]".t_red().bold())
+    } else {
+        String::new()
+    }
+}
+
+/// One package block at a time (buffered), not line-by-line flushes.
+fn print_sync_search_results(results: &[crate::alpm_db::AlpmPkg], verbose: bool) {
+    use std::io::Write;
+    let mut out = String::with_capacity(results.len().saturating_mul(160));
     for p in results {
-        let mut tags = String::new();
-        if p.installed {
-            tags.push_str(&format!(" {}", "[installed]".t_cyan()));
-        }
-        if crate::mask::is_blocked(&p.name, Some(p.repo.as_str()))
-            || crate::mask::is_blocked(&p.name, None)
-        {
-            tags.push_str(&format!(" {}", "[masked]".t_red().bold()));
-        }
-        println!(
-            "{}/{} {}{}",
+        let tag = masked_tag(&p.name, Some(p.repo.as_str()));
+        out.push_str(&format!(
+            "*  {}/{}{}\n",
             p.repo.t_magenta().bold(),
             p.name.bold(),
-            p.version.t_green(),
-            tags
-        );
-        if !p.description.is_empty() {
-            println!("    {}", p.description);
+            tag
+        ));
+        out.push_str(&format!(
+            "      Latest version available: {}\n",
+            p.version.t_green()
+        ));
+        if verbose {
+            let inst = if p.installed && !p.installed_version.is_empty() {
+                p.installed_version.as_str()
+            } else {
+                "[ Not Installed ]"
+            };
+            out.push_str(&format!("      Latest version installed: {}\n", inst));
+            out.push_str(&format!("      Size of files: {}\n", fmt_kib(p.size)));
+            push_field(&mut out, "Homepage", &p.url);
+            push_field(&mut out, "Last Updated", &fmt_unix_date(p.build_date));
         }
+        if !p.description.is_empty() {
+            out.push_str(&format!("      Description:   {}\n", p.description));
+        }
+        if verbose {
+            push_field(&mut out, "License", &p.licenses);
+            push_field(&mut out, "Provides", &p.provides);
+            push_field(&mut out, "Dependencies", &p.depends);
+            push_field(&mut out, "Make Dependencies", &p.makedepends);
+            push_field(&mut out, "Conflicts", &p.conflicts);
+        }
+        out.push('\n');
     }
+    let mut stdout = std::io::stdout().lock();
+    let _ = stdout.write_all(out.as_bytes());
+    let _ = stdout.flush();
 }
 
-fn print_abs_search_results(results: &[crate::alpm_db::AlpmPkg]) {
-    if results.is_empty() {
-        println!(">>> No ABS results found.");
-        return;
-    }
+fn print_abs_search_results(results: &[crate::alpm_db::AlpmPkg], verbose: bool) {
+    use std::io::Write;
+    let mut out = String::with_capacity(results.len().saturating_mul(160));
     for p in results {
-        let mut tags = String::new();
-        if p.installed {
-            tags.push_str(&format!(" {}", "[installed]".t_cyan()));
-        }
-        if crate::mask::is_blocked(&p.name, Some("abs")) || crate::mask::is_blocked(&p.name, None) {
-            tags.push_str(&format!(" {}", "[masked]".t_red().bold()));
-        }
-        println!(
-            "{}/{} {}{}",
+        let tag = masked_tag(&p.name, Some("abs"));
+        out.push_str(&format!(
+            "*  {}/{}{}\n",
             "abs".t_yellow().bold(),
             p.name.bold(),
-            p.version.t_green(),
-            tags
-        );
+            tag
+        ));
+        out.push_str(&format!(
+            "      Latest version available: {}\n",
+            p.version.t_green()
+        ));
+        if verbose {
+            let inst = if p.installed && !p.installed_version.is_empty() {
+                p.installed_version.as_str()
+            } else {
+                "[ Not Installed ]"
+            };
+            out.push_str(&format!("      Latest version installed: {}\n", inst));
+            out.push_str(&format!("      Size of files: {}\n", fmt_kib(p.size)));
+            push_field(&mut out, "Homepage", &p.url);
+            push_field(&mut out, "Last Updated", &fmt_unix_date(p.build_date));
+        }
         if !p.description.is_empty() {
-            println!("    {}", p.description);
+            out.push_str(&format!("      Description:   {}\n", p.description));
         }
-        if p.base != p.name {
-            println!("    pkgbase: {}", p.base);
+        if verbose {
+            push_field(&mut out, "License", &p.licenses);
+            push_field(&mut out, "Provides", &p.provides);
+            push_field(&mut out, "Dependencies", &p.depends);
+            push_field(&mut out, "Make Dependencies", &p.makedepends);
+            push_field(&mut out, "Conflicts", &p.conflicts);
         }
+        out.push('\n');
     }
+    let mut stdout = std::io::stdout().lock();
+    let _ = stdout.write_all(out.as_bytes());
+    let _ = stdout.flush();
 }
 
-fn print_sync_info(pkg: &crate::alpm_db::AlpmPkg) {
-    println!("{:<15}: {}", "Repository", pkg.repo.t_magenta().bold());
-    println!("{:<15}: {}", "Name", pkg.name.bold());
-    println!("{:<15}: {}", "Version", pkg.version.t_green());
-    println!("{:<15}: {}", "Description", pkg.description);
-    println!();
-}
-
-fn print_aur_search_results(results: &[aur::AurPkgInfo]) {
-    if results.is_empty() {
-        println!(">>> No AUR results found.");
-        return;
-    }
+fn print_aur_search_results(results: &[aur::AurPkgInfo], verbose: bool) {
+    use std::io::Write;
+    // One localdb pass for installed versions (-sv).
+    let installed = if verbose {
+        crate::alpm_db::installed_versions()
+    } else {
+        HashMap::new()
+    };
+    let mut out = String::with_capacity(results.len().saturating_mul(200));
     for r in results {
-        let ood = if r.out_of_date {
-            " [out of date]".t_red().bold().to_string()
-        } else {
-            String::new()
-        };
-        let masked = if crate::mask::is_blocked(&r.name, Some("aur"))
-            || crate::mask::is_blocked(&r.name, None)
-        {
-            format!(" {}", "[masked]".t_red().bold())
-        } else {
-            String::new()
-        };
-        println!(
-            "{}/{} {}{}{} ({} votes, {:.2} popularity)",
+        let mut tag = masked_tag(&r.name, Some("aur"));
+        if r.out_of_date {
+            tag.push_str(&format!(" {}", "[out of date]".t_red().bold()));
+        }
+        out.push_str(&format!(
+            "*  {}/{}{}\n",
             "aur".t_magenta().bold(),
             r.name.bold(),
-            r.version.t_green(),
-            ood,
-            masked,
-            r.num_votes,
-            r.popularity
-        );
-        if !r.description.is_empty() {
-            println!("    {}", r.description);
+            tag
+        ));
+        out.push_str(&format!(
+            "      Latest version available: {}\n",
+            r.version.t_green()
+        ));
+        if verbose {
+            let inst = installed
+                .get(&r.name)
+                .map(|s| s.as_str())
+                .unwrap_or("[ Not Installed ]");
+            out.push_str(&format!("      Latest version installed: {}\n", inst));
+            if r.pkgbase != r.name {
+                out.push_str(&format!("      Package Base:  {}\n", r.pkgbase));
+            }
+            out.push_str(&format!(
+                "      Maintainer:    {}\n",
+                r.maintainer.as_deref().unwrap_or("(orphan)")
+            ));
+            out.push_str(&format!("      Votes:         {}\n", r.num_votes));
+            out.push_str(&format!("      Popularity:    {:.2}\n", r.popularity));
+            push_field(&mut out, "Homepage", &r.url);
+            push_field(&mut out, "Last Updated", &fmt_unix_date(r.last_modified));
         }
+        if !r.description.is_empty() {
+            out.push_str(&format!("      Description:   {}\n", r.description));
+        }
+        if verbose {
+            push_field(&mut out, "License", &r.license);
+            push_field(&mut out, "Provides", &r.provides);
+            push_field(&mut out, "Dependencies", &r.depends);
+            push_field(&mut out, "Make Dependencies", &r.makedepends);
+            push_field(&mut out, "Conflicts", &r.conflicts);
+        }
+        out.push('\n');
     }
+    let mut stdout = std::io::stdout().lock();
+    let _ = stdout.write_all(out.as_bytes());
+    let _ = stdout.flush();
 }
 
-/// `pacman -Si`-style field listing, for AUR RPC `info` results -
-/// replaces `aura -Ai` output.
+/// Verbose AUR info (`-sv` / exact match via RPC info).
 fn print_aur_info_results(results: &[aur::AurPkgInfo]) {
-    if results.is_empty() {
-        println!(">>> No AUR results found.");
-        return;
-    }
-    for r in results {
-        println!("{:<15}: {}", "Repository", "aur".t_magenta().bold());
-        println!("{:<15}: {}", "Name", r.name.bold());
-        println!("{:<15}: {}", "Package Base", r.pkgbase);
-        println!("{:<15}: {}", "Version", r.version.t_green());
-        println!(
-            "{:<15}: {}",
-            "Maintainer",
-            r.maintainer.as_deref().unwrap_or("(orphan)")
-        );
-        println!("{:<15}: {}", "Votes", r.num_votes);
-        println!("{:<15}: {:.2}", "Popularity", r.popularity);
-        println!(
-            "{:<15}: {}",
-            "Out of Date",
-            if r.out_of_date {
-                "Yes".t_red().bold().to_string()
-            } else {
-                "No".to_string()
-            }
-        );
-        println!("{:<15}: {}", "Description", r.description);
-        println!();
-    }
+    print_aur_search_results(results, true);
 }
 
 // ── Command helper ────────────────────────────────────────────────────────────
@@ -2174,6 +2243,7 @@ fn run_cmd(prog: &str, args: &[&str], packages: &[String]) -> bool {
 #[cfg(unix)]
 pub(crate) fn read_line_raw() -> String {
     use std::os::unix::io::FromRawFd;
+    // SAFETY: fd 0 is always open; we forget the File so Drop does not close it.
     let mut file = unsafe { std::fs::File::from_raw_fd(0) };
     let mut line = Vec::new();
     let mut byte = [0u8; 1];
@@ -2210,6 +2280,7 @@ fn reset_sigpipe() {
     }
     const SIGPIPE: i32 = 13;
     const SIG_DFL: usize = 0;
+    // SAFETY: signal() with SIG_DFL is well-defined; no other signal state touched.
     unsafe {
         signal(SIGPIPE, SIG_DFL);
     }
@@ -2560,10 +2631,9 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    if cli.sudoloop
-        && !start_sudoloop() {
-            eprintln!(">>> Warning: sudo -v failed; continuing without --sudoloop.");
-        }
+    if cli.sudoloop && !start_sudoloop() {
+        eprintln!(">>> Warning: sudo -v failed; continuing without --sudoloop.");
+    }
 
     // --install-pkgbuild <PATH>: a standalone action, same spirit as --news/
     // --list-sets above but *after* check_binaries()/--sudoloop since it
@@ -2811,11 +2881,15 @@ fn run() -> anyhow::Result<()> {
     // to call standalone today (see aura-emerge-tasks.md).
     if cli.scan {
         if cli.abs {
-            eprintln!(">>> Error: --scan doesn't support --abs yet; drop --abs or use --pkgbuild-view during a normal --abs install instead.");
+            eprintln!(
+                ">>> Error: --scan doesn't support --abs yet; drop --abs or use --pkgbuild-view during a normal --abs install instead."
+            );
             std::process::exit(1);
         }
         if target_pkgs.is_empty() {
-            eprintln!(">>> Error: --scan needs at least one package name (or use --install-pkgbuild <PATH> --scan for a local checkout).");
+            eprintln!(
+                ">>> Error: --scan needs at least one package name (or use --install-pkgbuild <PATH> --scan for a local checkout)."
+            );
             std::process::exit(1);
         }
         let mut all_clean = true;
@@ -2900,22 +2974,22 @@ fn run() -> anyhow::Result<()> {
             }
             if let Some((repo, name)) = p.split_once('/')
                 && !repo.is_empty()
-                    && !name.is_empty()
-                    && repo
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-                {
-                    // Keep preferred_repo for single-term ranking; do NOT
-                    // flip global force_repos for multi_exact (see above).
-                    preferred_repo = Some(repo.to_string());
-                    force_repos = true;
-                    atoms.push(SearchAtom {
-                        bare: name.to_string(),
-                        src: SearchSrc::ReposOnly,
-                        preferred_repo: Some(repo.to_string()),
-                    });
-                    continue;
-                }
+                && !name.is_empty()
+                && repo
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            {
+                // Keep preferred_repo for single-term ranking; do NOT
+                // flip global force_repos for multi_exact (see above).
+                preferred_repo = Some(repo.to_string());
+                force_repos = true;
+                atoms.push(SearchAtom {
+                    bare: name.to_string(),
+                    src: SearchSrc::ReposOnly,
+                    preferred_repo: Some(repo.to_string()),
+                });
+                continue;
+            }
             atoms.push(SearchAtom {
                 bare: p.clone(),
                 src: SearchSrc::Any,
@@ -3069,132 +3143,142 @@ fn run() -> anyhow::Result<()> {
             });
         };
 
+        let verbose = cli.verbose;
+        let mut found_n = 0usize;
+
+        println!("[ Results for search key : {} ]", term);
+        println!("Searching...");
+        println!();
+
         // Separate ABS source in a general search (shown wherever AUR is).
-        let abs_section = |term: &str| {
-            println!();
-            println!(
-                "{} Searching in {} for '{}'...",
-                ">>>".t_green().bold(),
-                "ABS".t_yellow().bold(),
-                term
-            );
+        let abs_section = |term: &str, found_n: &mut usize| {
             let mut abs = crate::alpm_db::search_abs(term);
             rank_sync(&mut abs);
-            print_abs_search_results(&abs);
+            *found_n += abs.len();
+            print_abs_search_results(&abs, verbose);
+        };
+
+        // Search RPC omits URL/License; merge with info for -sv.
+        let enrich_aur = |list: Vec<aur::AurPkgInfo>| -> Vec<aur::AurPkgInfo> {
+            if !verbose || list.is_empty() {
+                return list;
+            }
+            let names: Vec<String> = list.iter().map(|p| p.name.clone()).collect();
+            let info = aur::rpc_info(&names);
+            if info.is_empty() {
+                return list;
+            }
+            let map: HashMap<String, aur::AurPkgInfo> =
+                info.into_iter().map(|p| (p.name.clone(), p)).collect();
+            list.into_iter()
+                .map(|mut p| {
+                    if let Some(i) = map.get(&p.name) {
+                        if p.url.is_empty() {
+                            p.url = i.url.clone();
+                        }
+                        if p.license.is_empty() {
+                            p.license = i.license.clone();
+                        }
+                        if p.maintainer.is_none() {
+                            p.maintainer = i.maintainer.clone();
+                        }
+                        if p.depends.is_empty() {
+                            p.depends = i.depends.clone();
+                        }
+                        if p.makedepends.is_empty() {
+                            p.makedepends = i.makedepends.clone();
+                        }
+                        if p.provides.is_empty() {
+                            p.provides = i.provides.clone();
+                        }
+                        if p.conflicts.is_empty() {
+                            p.conflicts = i.conflicts.clone();
+                        }
+                        if p.last_modified == 0 {
+                            p.last_modified = i.last_modified;
+                        }
+                    }
+                    p
+                })
+                .collect()
         };
 
         if force_abs {
-            println!(
-                "{} Searching in {} for '{}'...",
-                ">>>".t_green().bold(),
-                "ABS".t_yellow().bold(),
-                term
-            );
             let mut abs = crate::alpm_db::search_abs(&term);
             rank_sync(&mut abs);
-            print_abs_search_results(&abs);
+            found_n += abs.len();
+            print_abs_search_results(&abs, verbose);
+            println!("[ Applications found : {} ]", found_n);
             return Ok(());
         }
 
         if cli.searchdesc {
             if !only_aur {
-                println!(
-                    "{} Searching descriptions for '{}'...",
-                    ">>>".t_green().bold(),
-                    term
-                );
                 let mut sync = crate::alpm_db::search_sync(&term, true, cli.search_all);
                 rank_sync(&mut sync);
-                print_sync_search_results(&sync);
+                found_n += sync.len();
+                print_sync_search_results(&sync, verbose);
             }
             if !skip_aur {
-                abs_section(&term);
+                abs_section(&term, &mut found_n);
+                let aur = enrich_aur(aur::rpc_search(&term, true));
+                found_n += aur.len();
+                print_aur_search_results(&aur, verbose);
             }
-            if !skip_aur {
-                println!();
-                println!(
-                    "{} Searching {} descriptions for '{}'...",
-                    ">>>".t_green().bold(),
-                    "AUR".t_cyan().bold(),
-                    term
-                );
-                print_aur_search_results(&aur::rpc_search(&term, true));
-            }
+            println!("[ Applications found : {} ]", found_n);
             return Ok(());
         }
 
-        if cli.verbose {
-            if only_aur {
-                println!(
-                    "{} Searching in {} for '{}'...",
-                    ">>>".t_green().bold(),
-                    "AUR".t_cyan().bold(),
-                    term
-                );
+        if only_aur {
+            if verbose {
                 let info = aur::rpc_info(&target_pkgs);
                 if !info.is_empty() {
+                    found_n += info.len();
                     print_aur_info_results(&info);
                 } else {
-                    print_aur_search_results(&aur::rpc_search(&term, false));
+                    let aur = enrich_aur(aur::rpc_search(&term, false));
+                    found_n += aur.len();
+                    print_aur_search_results(&aur, true);
                 }
             } else {
-                let found = probe_official(&target_pkgs).is_some();
-                if found {
-                    println!("{} Searching for '{}'...", ">>>".t_green().bold(), term);
-                    for name in &target_pkgs {
-                        if let Some(p) = crate::alpm_db::find_sync(name) {
-                            print_sync_info(&p);
-                        }
-                    }
-                } else {
-                    println!("{} Searching for '{}'...", ">>>".t_green().bold(), term);
-                    let mut sync = crate::alpm_db::search_sync(&term, false, cli.search_all);
-                    rank_sync(&mut sync);
-                    print_sync_search_results(&sync);
-                    if !skip_aur {
-                        abs_section(&term);
-                    }
-                    if !skip_aur {
-                        println!();
-                        println!(
-                            "{} Searching in {} for '{}'...",
-                            ">>>".t_green().bold(),
-                            "AUR".t_cyan().bold(),
-                            term
-                        );
-                        print_aur_search_results(&aur::rpc_search(&term, false));
-                    } else if preferred_repo.is_some() || force_repos {
-                        // repo/name or --abs/--repos: stay quiet if empty
+                let aur = aur::rpc_search(&term, false);
+                found_n += aur.len();
+                print_aur_search_results(&aur, false);
+            }
+        } else {
+            // Sync (alpm) + AUR (HTTP) in parallel; ABS derived from a full sync scan.
+            let term_c = term.clone();
+            let do_aur = !skip_aur;
+            let by_desc = false;
+            let search_all = cli.search_all;
+            let aur_handle =
+                do_aur.then(|| std::thread::spawn(move || aur::rpc_search(&term_c, by_desc)));
+
+            let mut sync = crate::alpm_db::search_sync(&term, false, search_all);
+            rank_sync(&mut sync);
+            if verbose && sync.is_empty() {
+                for name in &target_pkgs {
+                    if let Some(p) = crate::alpm_db::find_sync(name) {
+                        sync.push(p);
                     }
                 }
             }
-        } else if only_aur {
-            println!(
-                "{} Searching in {} for '{}'...",
-                ">>>".t_green().bold(),
-                "AUR".t_cyan().bold(),
-                term
-            );
-            print_aur_search_results(&aur::rpc_search(&term, false));
-        } else {
-            println!("{} Searching for '{}'...", ">>>".t_green().bold(), term);
-            let mut sync = crate::alpm_db::search_sync(&term, false, cli.search_all);
-            rank_sync(&mut sync);
-            print_sync_search_results(&sync);
-            if !skip_aur {
-                abs_section(&term);
-            }
-            if !skip_aur {
-                println!();
-                println!(
-                    "{} Searching in {} for '{}'...",
-                    ">>>".t_green().bold(),
-                    "AUR".t_cyan().bold(),
-                    term
-                );
-                print_aur_search_results(&aur::rpc_search(&term, false));
+            found_n += sync.len();
+            print_sync_search_results(&sync, verbose);
+
+            if do_aur {
+                abs_section(&term, &mut found_n);
+                let aur_raw = aur_handle.and_then(|h| h.join().ok()).unwrap_or_default();
+                let aur = if verbose {
+                    enrich_aur(aur_raw)
+                } else {
+                    aur_raw
+                };
+                found_n += aur.len();
+                print_aur_search_results(&aur, verbose);
             }
         }
+        println!("[ Applications found : {} ]", found_n);
         return Ok(());
     }
 
@@ -3548,7 +3632,10 @@ fn run() -> anyhow::Result<()> {
                     if repo_install_landed(&names, false).0 {
                         mark_asexplicit(&names);
                         if let Err(e) = add_to_world_set(&names, None) {
-                            eprintln!(">>> Warning: package(s) reinstalled but world was not updated: {:#}", e);
+                            eprintln!(
+                                ">>> Warning: package(s) reinstalled but world was not updated: {:#}",
+                                e
+                            );
                         }
                     } else {
                         all_ok = false;
@@ -3576,7 +3663,10 @@ fn run() -> anyhow::Result<()> {
                         false,
                     ) {
                         if let Err(e) = add_to_world_set(&names, Some("aur")) {
-                            eprintln!(">>> Warning: package(s) reinstalled but world was not updated: {:#}", e);
+                            eprintln!(
+                                ">>> Warning: package(s) reinstalled but world was not updated: {:#}",
+                                e
+                            );
                         }
                     } else {
                         all_ok = false;
@@ -3926,7 +4016,9 @@ fn run() -> anyhow::Result<()> {
             if ok1 && ok2 && !runtime::any_failures() {
                 clear_resume_state();
             } else if !save_failed_resume(&cli) {
-                eprintln!(">>> Warning: not everything upgraded cleanly - state kept for `emerge --resume`.");
+                eprintln!(
+                    ">>> Warning: not everything upgraded cleanly - state kept for `emerge --resume`."
+                );
             }
         }
         return Ok(());
@@ -3941,15 +4033,16 @@ fn run() -> anyhow::Result<()> {
             // World packages + members of @sets listed in world + package.protect.
             let mut world_bare: HashSet<String> = HashSet::new();
             if is_safe_path(WORLD_SET_FILE)
-                && let Ok(file) = fs::File::open(WORLD_SET_FILE) {
-                    world_bare = io::BufReader::new(file)
-                        .lines()
-                        .map_while(Result::ok)
-                        .filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#'))
-                        .filter(|l| !l.trim().starts_with('@'))
-                        .map(|l| l.trim().split('/').next_back().unwrap_or("").to_string())
-                        .collect();
-                }
+                && let Ok(file) = fs::File::open(WORLD_SET_FILE)
+            {
+                world_bare = io::BufReader::new(file)
+                    .lines()
+                    .map_while(Result::ok)
+                    .filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#'))
+                    .filter(|l| !l.trim().starts_with('@'))
+                    .map(|l| l.trim().split('/').next_back().unwrap_or("").to_string())
+                    .collect();
+            }
             world_bare.extend(world_set::world_set_member_bares());
             world_bare.extend(crate::profile::system_names());
             let protected: Vec<String> = crate::alpm_db::orphan_names()
@@ -4666,7 +4759,9 @@ fn run() -> anyhow::Result<()> {
                 let (pkg_infos, missing_aur) = resolve_aur_split(&missing);
                 not_found = missing_aur;
                 if pkg_infos.is_empty() {
-                    eprintln!(">>> Error: none of the requested package(s) were found in official repos or the AUR:");
+                    eprintln!(
+                        ">>> Error: none of the requested package(s) were found in official repos or the AUR:"
+                    );
                     for m in &not_found {
                         eprintln!("    {}", m);
                         packages::print_similar_names(m);
@@ -4709,7 +4804,9 @@ fn run() -> anyhow::Result<()> {
                 let mut all_infos = official_infos.clone();
                 all_infos.extend(aur_infos.clone());
                 if all_infos.is_empty() {
-                    eprintln!(">>> Error: none of the requested package(s) were found in official repos or the AUR:");
+                    eprintln!(
+                        ">>> Error: none of the requested package(s) were found in official repos or the AUR:"
+                    );
                     for m in &not_found {
                         eprintln!("    {}", m);
                         packages::print_similar_names(m);
@@ -4805,7 +4902,9 @@ fn run() -> anyhow::Result<()> {
 
         if !not_found.is_empty() {
             eprintln!();
-            eprintln!(">>> Warning: the following package(s) were not found anywhere (official repos or AUR) and were skipped:");
+            eprintln!(
+                ">>> Warning: the following package(s) were not found anywhere (official repos or AUR) and were skipped:"
+            );
             for m in &not_found {
                 eprintln!("    {}", m);
                 packages::print_similar_names(m);
@@ -4872,12 +4971,13 @@ fn run() -> anyhow::Result<()> {
                     // Sets invoked as @name stay in world so their members
                     // remain depclean-protected until dropped from the set.
                     if !custom_set_names.is_empty()
-                        && let Err(e) = world_set::register_sets_in_world(&custom_set_names) {
-                            eprintln!(
-                                ">>> Warning: set(s) installed but not recorded in world: {:#}",
-                                e
-                            );
-                        }
+                        && let Err(e) = world_set::register_sets_in_world(&custom_set_names)
+                    {
+                        eprintln!(
+                            ">>> Warning: set(s) installed but not recorded in world: {:#}",
+                            e
+                        );
+                    }
                     if !aur_names.is_empty() {
                         mark_asexplicit(&aur_names);
                     }

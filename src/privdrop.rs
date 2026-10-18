@@ -272,11 +272,12 @@ fn apply_env(acc: &Account) {
     let old: Vec<(OsString, OsString)> = std::env::vars_os().collect();
     let new = user_env(acc, old.clone());
     for (k, _) in &old {
-        // FIXME: Audit that the environment access only happens in single-threaded code.
+        // SAFETY: privilege-drop path is single-threaded; 2024 edition marks
+        // set_var/remove_var unsafe (data-race if concurrent readers exist).
         unsafe { std::env::remove_var(k) };
     }
     for (k, v) in new {
-        // FIXME: Audit that the environment access only happens in single-threaded code.
+        // SAFETY: same as above — no other threads yet.
         unsafe { std::env::set_var(k, v) };
     }
 }
@@ -291,9 +292,10 @@ fn fix_cwd(home: &Path) {
         })
     };
     if let Ok(cwd) = std::env::current_dir()
-        && usable(&cwd) {
-            return;
-        }
+        && usable(&cwd)
+    {
+        return;
+    }
     if usable(home) && std::env::set_current_dir(home).is_ok() {
         return;
     }
@@ -495,26 +497,34 @@ mod tests {
             shell: String::new(),
         };
         assert!(accept(ok.clone()).is_ok());
-        assert!(accept(Account {
-            uid: 0,
-            ..ok.clone()
-        })
-        .is_err());
-        assert!(accept(Account {
-            name: String::new(),
-            ..ok.clone()
-        })
-        .is_err());
-        assert!(accept(Account {
-            home: "relative".into(),
-            ..ok.clone()
-        })
-        .is_err());
-        assert!(accept(Account {
-            home: "".into(),
-            ..ok
-        })
-        .is_err());
+        assert!(
+            accept(Account {
+                uid: 0,
+                ..ok.clone()
+            })
+            .is_err()
+        );
+        assert!(
+            accept(Account {
+                name: String::new(),
+                ..ok.clone()
+            })
+            .is_err()
+        );
+        assert!(
+            accept(Account {
+                home: "relative".into(),
+                ..ok.clone()
+            })
+            .is_err()
+        );
+        assert!(
+            accept(Account {
+                home: "".into(),
+                ..ok
+            })
+            .is_err()
+        );
     }
 
     #[test]
@@ -528,8 +538,10 @@ mod tests {
                 .uid,
             0
         );
-        assert!(passwd_lookup(&Who::Name("no-such-user-ae-test".into()))
-            .unwrap()
-            .is_none());
+        assert!(
+            passwd_lookup(&Who::Name("no-such-user-ae-test".into()))
+                .unwrap()
+                .is_none()
+        );
     }
 }
