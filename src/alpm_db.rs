@@ -41,7 +41,7 @@ fn disable_user_sig_verify(alpm: &mut Alpm) {
 }
 
 fn bare(name: &str) -> &str {
-    name.split('/').last().unwrap_or(name)
+    name.split('/').next_back().unwrap_or(name)
 }
 
 fn pkg_to_info(pkg: &Package, repo: &str, installed: bool) -> AlpmPkg {
@@ -183,8 +183,8 @@ pub(crate) fn probe_sync_split(names: &[String]) -> (Vec<AlpmPkg>, Vec<String>) 
                 // If the caller pinned a repo, require the found pkg is
                 // from that repo (find_sync_many already enforces this,
                 // but re-check so a bare-name collision can't sneak in).
-                if let Some((repo, _)) = name.split_once('/') {
-                    if repo != "aur"
+                if let Some((repo, _)) = name.split_once('/')
+                    && repo != "aur"
                         && repo != "abs"
                         && repo != "Err"
                         && !repo.is_empty()
@@ -193,7 +193,6 @@ pub(crate) fn probe_sync_split(names: &[String]) -> (Vec<AlpmPkg>, Vec<String>) 
                         missing.push(name.clone());
                         continue;
                     }
-                }
                 found.push(p.clone());
             }
             None => missing.push(name.clone()),
@@ -206,7 +205,7 @@ pub(crate) fn probe_sync_split(names: &[String]) -> (Vec<AlpmPkg>, Vec<String>) 
 fn sync_pkg<'a>(alpm: &'a Alpm, repo: Option<&str>, name: &str) -> Option<&'a Package> {
     alpm.syncdbs()
         .iter()
-        .filter(|d| repo.map_or(true, |r| d.name() == r))
+        .filter(|d| repo.is_none_or(|r| d.name() == r))
         .find_map(|d| d.pkg(name).ok())
 }
 
@@ -355,11 +354,10 @@ pub(crate) fn repos_batch(names: &[String]) -> HashMap<String, Option<String>> {
             let ver = pkg.version().to_string();
             let mut hits = Vec::new();
             for db in alpm.syncdbs() {
-                if let Ok(sp) = db.pkg(bare.as_str()) {
-                    if sp.version().as_str() == ver {
+                if let Ok(sp) = db.pkg(bare.as_str())
+                    && sp.version().as_str() == ver {
                         hits.push(db.name().to_string());
                     }
-                }
             }
             let repo = match hits.len() {
                 1 => Some(hits.remove(0)),

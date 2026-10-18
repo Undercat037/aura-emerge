@@ -169,7 +169,7 @@ fn run_build_cmd(mut cmd: Command, label: &str) -> Result<(), String> {
 pub(crate) fn mark_asexplicit(pkgs: &[String]) {
     let bare: Vec<String> = pkgs
         .iter()
-        .map(|p| p.split('/').last().unwrap_or(p).to_string())
+        .map(|p| p.split('/').next_back().unwrap_or(p).to_string())
         .collect();
     if bare.is_empty() {
         return;
@@ -182,7 +182,7 @@ pub(crate) fn mark_asexplicit(pkgs: &[String]) {
 pub(crate) fn mark_asdeps(pkgs: &[String]) {
     let bare: Vec<String> = pkgs
         .iter()
-        .map(|p| p.split('/').last().unwrap_or(p).to_string())
+        .map(|p| p.split('/').next_back().unwrap_or(p).to_string())
         .collect();
     if bare.is_empty() {
         return;
@@ -272,7 +272,7 @@ pub(crate) fn probe_official(pkgs: &[String]) -> Option<Vec<PkgInfo>> {
 
 /// Split into found/missing. Batch -Sp first, then per-name for misses.
 pub(crate) fn probe_official_split(pkgs: &[String]) -> (Vec<PkgInfo>, Vec<String>) {
-    let bare_of = |p: &str| p.split('/').last().unwrap_or(p).to_string();
+    let bare_of = |p: &str| p.split('/').next_back().unwrap_or(p).to_string();
 
     let mut found: Vec<PkgInfo> = Vec::new();
     let mut found_names: HashSet<String> = HashSet::new();
@@ -350,7 +350,7 @@ fn expand_with_deps(targets: Vec<PkgInfo>) -> Vec<PkgInfo> {
 
 /// Suggest close package names when an exact atom is missing (Portage-style).
 pub(crate) fn print_similar_names(term: &str) {
-    let bare = term.split('/').last().unwrap_or(term);
+    let bare = term.split('/').next_back().unwrap_or(term);
     if bare.is_empty() {
         return;
     }
@@ -385,8 +385,8 @@ pub(crate) fn print_similar_names(term: &str) {
         }
     }
     hits.sort_by(|a, b| {
-        let an = a.split('/').last().unwrap_or(a);
-        let bn = b.split('/').last().unwrap_or(b);
+        let an = a.split('/').next_back().unwrap_or(a);
+        let bn = b.split('/').next_back().unwrap_or(b);
         let ap = an.starts_with(bare) as i8;
         let bp = bn.starts_with(bare) as i8;
         bp.cmp(&ap).then_with(|| an.len().cmp(&bn.len()))
@@ -412,7 +412,7 @@ pub(crate) fn resolve_aur_split(pkgs: &[String]) -> (Vec<PkgInfo>, Vec<String>) 
     let mut result = Vec::new();
     let mut missing = Vec::new();
     for pkg in pkgs {
-        let bare = pkg.split('/').last().unwrap_or(pkg);
+        let bare = pkg.split('/').next_back().unwrap_or(pkg);
         match by_name.get(bare) {
             Some(info) => {
                 let status = pkg_status(&info.name, &info.version);
@@ -499,7 +499,7 @@ pub(crate) fn warn_critical_libc(names: &[String], source: &str) -> bool {
     const CRITICAL: &[&str] = &["glibc", "lib32-glibc"];
     let hits: Vec<&str> = names
         .iter()
-        .map(|n| n.split('/').last().unwrap_or(n.as_str()))
+        .map(|n| n.split('/').next_back().unwrap_or(n.as_str()))
         .filter(|n| CRITICAL.iter().any(|c| c == n))
         .collect();
     if hits.is_empty() {
@@ -598,14 +598,13 @@ fn install_files_resolving_conflicts(
         .filter(|n| in_world.contains(*n))
         .cloned()
         .collect();
-    if !tracked.is_empty() {
-        if let Err(e) = crate::world_set::remove_from_world_set(&tracked) {
+    if !tracked.is_empty()
+        && let Err(e) = crate::world_set::remove_from_world_set(&tracked) {
             eprintln!(
                 ">>> Warning: package(s) unmerged but world was not updated: {:#}",
                 e
             );
         }
-    }
     match crate::rootops::install_files(pinned, opts, &mut |ev| crate::progress::on_hook_event(ev))
     {
         Ok(()) => {
@@ -802,7 +801,7 @@ pub(crate) fn confirm_action(ask: bool, action: &str) -> bool {
 }
 
 fn bare_of(p: &str) -> &str {
-    p.split('/').last().unwrap_or(p)
+    p.split('/').next_back().unwrap_or(p)
 }
 
 /// Per-package "Depends On", via `pacman -Si` (sync db, so this also
@@ -936,11 +935,10 @@ pub(crate) fn print_emerge_emerging(pkgs: &[PkgInfo]) {
 /// Refresh versions from the local db after install (plan may be stale).
 pub(crate) fn refresh_installed_versions(pkgs: &mut [PkgInfo]) {
     for p in pkgs.iter_mut() {
-        if let Some(ver) = crate::alpm_db::installed_version(&p.name) {
-            if !ver.is_empty() {
+        if let Some(ver) = crate::alpm_db::installed_version(&p.name)
+            && !ver.is_empty() {
                 p.version = ver;
             }
-        }
     }
 }
 
@@ -1068,11 +1066,10 @@ pub(crate) fn pgp_keys_from_log(text: &str) -> Vec<String> {
                 best = Some(word.to_ascii_uppercase());
             }
         }
-        if let Some(k) = best {
-            if !out.contains(&k) {
+        if let Some(k) = best
+            && !out.contains(&k) {
                 out.push(k);
             }
-        }
     }
     out
 }
@@ -1373,12 +1370,11 @@ pub(crate) fn pkgbuild_view_step(pkgbase: &str, dir: &std::path::Path) -> Pkgbui
                     .arg(&pkgbuild_path)
                     .output();
                 let _ = fs::remove_file(&tmp_prev);
-                if let Ok(out) = diff_out {
-                    if !out.stdout.is_empty() {
+                if let Ok(out) = diff_out
+                    && !out.stdout.is_empty() {
                         print!("{}", String::from_utf8_lossy(&out.stdout));
                         shown_diff = true;
                     }
-                }
             }
             if !shown_diff {
                 println!("{}", current);
@@ -1585,7 +1581,7 @@ fn resolve_and_build_aur(
     );
     crate::progress::line(crate::progress::Stage::Emerging, stage_n, &stage_atom);
 
-    let fetched = crate::security::scan_aur_pkgbuilds_or_abort(&[pkgbase.clone()]);
+    let fetched = crate::security::scan_aur_pkgbuilds_or_abort(std::slice::from_ref(&pkgbase));
     crate::security::verify_local_clone_or_rescan(&pkgbase, &dir, fetched.get(&pkgbase));
 
     // --edit: top-level only (not recursive deps).
@@ -1626,8 +1622,8 @@ fn resolve_and_build_aur(
     let srcinfo_path = dir.join(".SRCINFO");
 
     // .SRCINFO pkgbase should match the cloned name.
-    if let Some(declared) = crate::aur::srcinfo_pkgbase(&srcinfo_path) {
-        if declared != pkgbase {
+    if let Some(declared) = crate::aur::srcinfo_pkgbase(&srcinfo_path)
+        && declared != pkgbase {
             eprintln!(
                 "{} '{}' clone's .SRCINFO declares pkgbase '{}', which doesn't match -- the repo may be stale or the AUR git branch mismatched.",
                 ">>> Warning:".t_yellow().bold(),
@@ -1635,7 +1631,6 @@ fn resolve_and_build_aur(
                 declared
             );
         }
-    }
 
     let deps = crate::aur::srcinfo_dependencies(&srcinfo_path, &current_arch()).unwrap_or_else(|| {
         eprintln!(
@@ -1736,20 +1731,18 @@ pub(crate) fn abs_build_base() -> std::path::PathBuf {
 }
 
 fn build_base_dir(name: &str) -> std::path::PathBuf {
-    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
-        if !xdg.is_empty() {
+    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME")
+        && !xdg.is_empty() {
             return std::path::PathBuf::from(xdg)
                 .join("aura-emerge/build")
                 .join(name);
         }
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        if !home.is_empty() {
+    if let Ok(home) = std::env::var("HOME")
+        && !home.is_empty() {
             return std::path::PathBuf::from(home)
                 .join(".cache/aura-emerge/build")
                 .join(name);
         }
-    }
     std::path::PathBuf::from(format!("/var/tmp/aura-emerge-{}", name))
 }
 
@@ -1794,7 +1787,7 @@ pub(crate) fn aur_install(
 
     let bare: Vec<String> = pkgs
         .iter()
-        .map(|p| p.split('/').last().unwrap_or(p).to_string())
+        .map(|p| p.split('/').next_back().unwrap_or(p).to_string())
         .collect();
     if bare.is_empty() {
         return false;
@@ -2046,15 +2039,14 @@ fn save_devel_state(state: &HashMap<String, String>) {
         eprintln!(">>> Warning: could not determine $HOME, devel state not saved");
         return;
     };
-    if let Some(parent) = path.parent() {
-        if fs::create_dir_all(parent).is_err() {
+    if let Some(parent) = path.parent()
+        && fs::create_dir_all(parent).is_err() {
             eprintln!(
                 ">>> Warning: could not create {}, devel state not saved",
                 parent.display()
             );
             return;
         }
-    }
     let tmp = path.with_extension("tmp");
     let write_result = (|| -> std::io::Result<()> {
         let mut f = fs::File::create(&tmp)?;
@@ -2899,7 +2891,7 @@ pub(crate) fn abs_install(
     let pkg_infos: Vec<PkgInfo> = pkgs
         .iter()
         .filter_map(|pkg| {
-            let bare = pkg.split('/').last().unwrap_or(pkg);
+            let bare = pkg.split('/').next_back().unwrap_or(pkg);
             if !validate_pkg(bare) || bare.contains('/') {
                 eprintln!(">>> Error: invalid package name '{}' - skipping", bare);
                 return None;
@@ -3351,8 +3343,8 @@ pub(crate) fn source_builds_parallel(
     }
 
     let aur_base = aur_build_base();
-    if !aur_pkgs.is_empty() {
-        if std::fs::create_dir_all(&aur_base).is_err() {
+    if !aur_pkgs.is_empty()
+        && std::fs::create_dir_all(&aur_base).is_err() {
             eprintln!(
                 "{} could not create AUR build directory {}",
                 ">>> Fatal:".t_red().bold(),
@@ -3360,7 +3352,6 @@ pub(crate) fn source_builds_parallel(
             );
             return false;
         }
-    }
 
     let mut jobs: Vec<Job> = abs_infos.iter().cloned().map(Job::Abs).collect();
     jobs.extend(aur_pkgs.iter().cloned().map(Job::Aur));
@@ -3592,7 +3583,7 @@ pub(crate) fn portageq_shim(args: &[String]) {
                 .map(String::as_str)
                 .unwrap_or("");
             if let Some(ver) = crate::alpm_db::installed_version(pkg) {
-                let bare = pkg.split('/').last().unwrap_or(pkg);
+                let bare = pkg.split('/').next_back().unwrap_or(pkg);
                 println!("{}-{}", bare, ver);
             }
         }
@@ -3663,11 +3654,10 @@ pub(crate) fn extra_makepkg_dest_dirs(
 
 /// Default SRCDEST under ~/.cache/aura-emerge/sources (survives build-dir wipes).
 pub(crate) fn source_cache_dir() -> Option<std::path::PathBuf> {
-    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
-        if !xdg.is_empty() {
+    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME")
+        && !xdg.is_empty() {
             return Some(std::path::PathBuf::from(xdg).join("aura-emerge/sources"));
         }
-    }
     let home = std::env::var("HOME").ok()?;
     Some(std::path::PathBuf::from(home).join(".cache/aura-emerge/sources"))
 }
@@ -3681,12 +3671,11 @@ pub(crate) fn resolve_dest_dirs(
 ) {
     let mut dirs = extra_makepkg_dest_dirs(build_dir);
     let mut default_cache = None;
-    if !dirs.iter().any(|(name, _)| *name == "SRCDEST") {
-        if let Some(cache) = source_cache_dir() {
+    if !dirs.iter().any(|(name, _)| *name == "SRCDEST")
+        && let Some(cache) = source_cache_dir() {
             dirs.push(("SRCDEST", cache.clone()));
             default_cache = Some(cache);
         }
-    }
     (dirs, default_cache)
 }
 
@@ -3712,15 +3701,13 @@ fn effective_build_vars(cfg: &crate::config::Config) -> HashMap<String, String> 
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()
-    {
-        if output.status.success() {
+        && output.status.success() {
             for line in String::from_utf8_lossy(&output.stdout).lines() {
                 if let Some((k, v)) = line.split_once('=') {
                     map.insert(k.to_string(), v.to_string());
                 }
             }
         }
-    }
     map
 }
 
@@ -3768,15 +3755,13 @@ fi
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()
-    {
-        if output.status.success() {
+        && output.status.success() {
             for line in String::from_utf8_lossy(&output.stdout).lines() {
                 if let Some((k, v)) = line.split_once('=') {
                     map.insert(k.to_string(), v.to_string());
                 }
             }
         }
-    }
     map
 }
 

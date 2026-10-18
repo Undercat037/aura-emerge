@@ -177,15 +177,14 @@ fn save_read_guids(guids: &std::collections::HashSet<String>) {
         eprintln!(">>> Warning: could not determine $HOME, news read-state not saved");
         return;
     };
-    if let Some(parent) = path.parent() {
-        if fs::create_dir_all(parent).is_err() {
+    if let Some(parent) = path.parent()
+        && fs::create_dir_all(parent).is_err() {
             eprintln!(
                 ">>> Warning: could not create {}, news read-state not saved",
                 parent.display()
             );
             return;
         }
-    }
     let tmp = path.with_extension("tmp");
     let write_result = (|| -> std::io::Result<()> {
         let mut f = fs::File::create(&tmp)?;

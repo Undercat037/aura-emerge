@@ -10,7 +10,7 @@
 //!   `hook run <pos>/<total> <name> [<desc…>]`
 
 use std::fs;
-use std::io::{self, ErrorKind};
+use std::io::{self};
 use std::path::PathBuf;
 use std::sync::mpsc;
 
@@ -35,7 +35,7 @@ const REQUIRED_HOOK_DIRS: &[&str] = &[
 ];
 
 fn fail(msg: impl Into<String>) -> io::Error {
-    io::Error::new(ErrorKind::Other, msg.into())
+    io::Error::other(msg.into())
 }
 
 /// Root handle from /etc/pacman.conf.
@@ -374,8 +374,8 @@ pub(crate) fn sync_in_with(
     let sink = Rc::clone(&seen);
     let cb_tx = tx.clone();
     alpm.set_dl_cb((), move |file, ev, _| {
-        if let alpm::DownloadEvent::Completed(c) = ev.event() {
-            if let Some(db) = file.strip_suffix(".db") {
+        if let alpm::DownloadEvent::Completed(c) = ev.event()
+            && let Some(db) = file.strip_suffix(".db") {
                 let state = match c.result {
                     alpm::DownloadResult::Success => "updated",
                     alpm::DownloadResult::UpToDate => "uptodate",
@@ -384,7 +384,6 @@ pub(crate) fn sync_in_with(
                 sink.borrow_mut().insert(db.to_string());
                 let _ = cb_tx.send(format!("sync {} {}", db, state));
             }
-        }
     });
 
     alpm.trans_init(TransFlag::NONE)
@@ -529,7 +528,7 @@ fn install_in_with(
 fn find_sync<'a>(alpm: &'a Alpm, repo: Option<&str>, name: &str) -> Option<&'a alpm::Package> {
     alpm.syncdbs()
         .iter()
-        .filter(|d| repo.map_or(true, |r| d.name() == r))
+        .filter(|d| repo.is_none_or(|r| d.name() == r))
         .find_map(|d| d.pkg(name).ok())
 }
 

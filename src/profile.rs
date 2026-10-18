@@ -212,7 +212,7 @@ fn load_packages(
             (true, rest.trim())
         } else if let Some(rest) = t.strip_prefix('-') {
             // removal of a package from the set
-            let bare = rest.trim().split('/').last().unwrap_or(rest.trim());
+            let bare = rest.trim().split('/').next_back().unwrap_or(rest.trim());
             system.retain(|n| n != bare);
             packages.retain(|n| n != bare);
             seen_sys.remove(bare);
@@ -224,7 +224,7 @@ fn load_packages(
         if atom.is_empty() {
             continue;
         }
-        let bare = atom.split('/').last().unwrap_or(atom).to_string();
+        let bare = atom.split('/').next_back().unwrap_or(atom).to_string();
         if seen_pkg.insert(bare.clone()) {
             packages.push(bare.clone());
         }
@@ -291,7 +291,7 @@ pub(crate) fn is_masked(name: &str, repo: Option<&str>) -> bool {
     let Some(p) = current() else {
         return false;
     };
-    let bare = name.split('/').last().unwrap_or(name);
+    let bare = name.split('/').next_back().unwrap_or(name);
     p.masks.iter().any(|(pat, mrepo)| {
         let repo_ok = match (mrepo.as_deref(), repo) {
             (None, _) => true,
@@ -351,14 +351,13 @@ pub(crate) fn list_profiles() -> Vec<(String, String)> {
         while let Some(dir) = q.pop_front() {
             let kids = subdirs(&dir);
             if kids.is_empty() {
-                if has_profile_files(&dir) {
-                    if let Ok(rel) = dir.strip_prefix(root_p) {
+                if has_profile_files(&dir)
+                    && let Ok(rel) = dir.strip_prefix(root_p) {
                         let s = rel.display().to_string();
                         if !s.is_empty() {
                             out.push((root.to_string(), s));
                         }
                     }
-                }
             } else {
                 q.extend(kids);
             }

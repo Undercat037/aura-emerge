@@ -378,7 +378,7 @@ fn providers_of(soname: &str) -> Vec<String> {
         .filter(|l| !l.is_empty())
         // -Fq prints "repo/name"; world and pacman -S both take the
         // bare name, and the repo is visible in the report anyway.
-        .map(|l| l.split('/').last().unwrap_or(l).to_string())
+        .map(|l| l.split('/').next_back().unwrap_or(l).to_string())
         .filter(|l| !l.is_empty())
         .collect()
 }
@@ -588,8 +588,8 @@ pub(crate) fn revdep_rebuild(
 
     let mut ok = true;
 
-    if !to_install.is_empty() {
-        if let Err(e) = crate::alpm_install_quiet(&to_install, true, true) {
+    if !to_install.is_empty()
+        && let Err(e) = crate::alpm_install_quiet(&to_install, true, true) {
             eprintln!("{} {}", ">>> Error:".t_red().bold(), e);
             eprintln!(
                 "{} failed to install the library package(s)",
@@ -603,7 +603,6 @@ pub(crate) fn revdep_rebuild(
                 return false;
             }
         }
-    }
 
     if !to_rebuild.is_empty() {
         println!(

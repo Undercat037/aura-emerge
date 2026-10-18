@@ -29,7 +29,7 @@ pub(crate) fn init(colors: &[(String, Color)]) {
             "special" => &mut p.special,
             _ => continue,
         };
-        *slot = Some(c.clone());
+        *slot = Some(*c);
     }
     let _ = PALETTE.set(p);
 }
@@ -49,7 +49,7 @@ pub(crate) trait Themed: Sized {
 }
 
 macro_rules! themed_impl {
-    ($t:ty, $to:expr) => {
+    ($t:ty, $to:expr_2021) => {
         impl Themed for $t {
             fn t_green(self) -> ColoredString {
                 paint($to(self), |p| p.ok.clone(), Color::Green)

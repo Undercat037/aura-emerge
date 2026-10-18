@@ -156,13 +156,18 @@ fn ensure_std_fds() -> Result<(), GuardError> {
 fn clean_env() {
     let keys: Vec<_> = std::env::vars_os().map(|(k, _)| k).collect();
     for k in keys {
-        std::env::remove_var(k);
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var(k) };
     }
-    std::env::set_var("PATH", SAFE_PATH);
-    std::env::set_var("LANG", "C");
-    std::env::set_var("LC_ALL", "C");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("PATH", SAFE_PATH) };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("LANG", "C") };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("LC_ALL", "C") };
     // Hooks/scriptlets that touch $HOME (gpg, user unit paths, …).
-    std::env::set_var("HOME", "/root");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("HOME", "/root") };
 }
 
 /// Closes every fd >= `min`.

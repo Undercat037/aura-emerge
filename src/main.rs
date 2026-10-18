@@ -698,47 +698,44 @@ fn print_set_completion_glue(shell: Shell) {
     match shell {
         Shell::Bash => {
             println!(
-                "{}",
-                r#"
+                "
 # aura-emerge: dynamic @<set> completion (world, preserved-rebuild, sets/*)
-_emerge_with_sets() {
+_emerge_with_sets() {{
     _emerge
-    local cur="${COMP_WORDS[COMP_CWORD]}"
-    if [[ "$cur" == @* ]]; then
+    local cur=\"${{COMP_WORDS[COMP_CWORD]}}\"
+    if [[ \"$cur\" == @* ]]; then
         local sets
         sets=$(emerge --list-sets 2>/dev/null)
-        COMPREPLY=( $(compgen -W "$sets" -- "$cur") )
+        COMPREPLY=( $(compgen -W \"$sets\" -- \"$cur\") )
     fi
-}
-complete -o bashdefault -o default -F _emerge_with_sets emerge 2>/dev/null \
+}}
+complete -o bashdefault -o default -F _emerge_with_sets emerge 2>/dev/null \\
     || complete -F _emerge_with_sets emerge
-"#
+"
             );
         }
         Shell::Zsh => {
             println!(
-                "{}",
-                r#"
+                "
 # aura-emerge: dynamic @<set> completion (world, preserved-rebuild, sets/*)
-_emerge_with_sets() {
-    _emerge "$@"
-    if [[ "$PREFIX" == @* ]]; then
+_emerge_with_sets() {{
+    _emerge \"$@\"
+    if [[ \"$PREFIX\" == @* ]]; then
         local -a sets
-        sets=(${(f)"$(emerge --list-sets 2>/dev/null)"})
+        sets=(${{(f)\"$(emerge --list-sets 2>/dev/null)\"}})
         compadd -a sets
     fi
-}
+}}
 compdef _emerge_with_sets emerge
-"#
+"
             );
         }
         Shell::Fish => {
             println!(
-                "{}",
-                r#"
+                "
 # aura-emerge: dynamic @<set> completion (world, preserved-rebuild, sets/*)
-complete -c emerge -f -n 'string match -q "@*" -- (commandline -ct)' -a '(emerge --list-sets 2>/dev/null)'
-"#
+complete -c emerge -f -n 'string match -q \"@*\" -- (commandline -ct)' -a '(emerge --list-sets 2>/dev/null)'
+"
             );
         }
         _ => {
@@ -864,7 +861,7 @@ fn collect_excludes(raw: &[String]) -> HashSet<String> {
                 eprintln!(">>> Warning: invalid --exclude entry (skipped): {}", token);
                 continue;
             }
-            out.insert(token.split('/').last().unwrap_or(token).to_string());
+            out.insert(token.split('/').next_back().unwrap_or(token).to_string());
         }
     }
     out
@@ -889,8 +886,8 @@ fn collect_excludes(raw: &[String]) -> HashSet<String> {
 
 /// Portage-style unread-news heads-up (non-fatal).
 fn maybe_news_banner() {
-    if let Some(n) = news::unread_count_quiet() {
-        if n > 0 {
+    if let Some(n) = news::unread_count_quiet()
+        && n > 0 {
             println!(
                 " {} {}: {} news item(s) need reading for repository '{}'.",
                 "*".t_yellow().bold(),
@@ -905,7 +902,6 @@ fn maybe_news_banner() {
             );
             println!();
         }
-    }
 }
 
 /// One repo line: `>>> name...` while pending, `done` once downloaded.
@@ -1002,7 +998,7 @@ fn unmerge_loop(names: &[String]) -> (bool, Vec<String>) {
     let mut removed: Vec<String> = Vec::new();
     let mut ok = true;
     for (i, name) in names.iter().enumerate() {
-        let bare = name.split('/').last().unwrap_or(name);
+        let bare = name.split('/').next_back().unwrap_or(name);
         let ver = alpm_db::installed_version(bare).unwrap_or_default();
         let repo = match repos.get(bare) {
             Some(Some(r)) if r != "None" => r.clone(),
@@ -1084,7 +1080,7 @@ pub(crate) fn repo_install_landed(names: &[String], asdeps: bool) -> (bool, Vec<
     let order: Vec<String> = names
         .iter()
         .map(|name| {
-            let bare = name.split('/').last().unwrap_or(name).to_string();
+            let bare = name.split('/').next_back().unwrap_or(name).to_string();
             orig_of.insert(bare.clone(), name.clone());
             match syncd.get(bare.as_str()) {
                 Some(p) => {
@@ -1201,7 +1197,7 @@ pub(crate) fn repo_install_landed(names: &[String], asdeps: bool) -> (bool, Vec<
                         .unwrap_or(batch_err.as_str());
                     eprintln!("{} {}", ">>> Error:".t_red().bold(), m);
                 }
-                for (name, _) in &nums {
+                for name in nums.keys() {
                     if !wave_ok.get(name).copied().unwrap_or(false) {
                         progress::abort_one();
                     }
@@ -1326,7 +1322,7 @@ fn upgrade_selected(cli: &Cli, targets: &[String]) -> anyhow::Result<()> {
     let mut abs: Vec<String> = Vec::new();
 
     for raw in targets {
-        let bare = raw.split('/').last().unwrap_or(raw).to_string();
+        let bare = raw.split('/').next_back().unwrap_or(raw).to_string();
         if raw.starts_with("abs/") || (cli.abs && !raw.contains('/')) {
             abs.push(bare);
             continue;
@@ -1775,7 +1771,7 @@ fn save_failed_resume(cli: &Cli) -> bool {
     }
     let bare: Vec<String> = failed
         .iter()
-        .map(|a| a.split('/').last().unwrap_or(a).to_string())
+        .map(|a| a.split('/').next_back().unwrap_or(a).to_string())
         .collect();
     save_resume_state(&build_resume_args(cli, &bare, false));
     println!(
@@ -1790,7 +1786,7 @@ fn save_failed_resume(cli: &Cli) -> bool {
 /// `--noreplace`: keep only targets that are new, older than the
 /// candidate, or whose candidate version is unknown (normal flow reports).
 fn drop_up_to_date(targets: Vec<String>, abs_flag: bool) -> Vec<String> {
-    let bare = |p: &str| p.split('/').last().unwrap_or(p).to_string();
+    let bare = |p: &str| p.split('/').next_back().unwrap_or(p).to_string();
     // Only installed targets need a version lookup; abs/ is never skipped.
     let installed: Vec<&String> = targets
         .iter()
@@ -2209,7 +2205,7 @@ pub(crate) fn read_line_raw() -> String {
 /// Reset SIGPIPE to its default disposition (terminate, not panic).
 #[cfg(unix)]
 fn reset_sigpipe() {
-    extern "C" {
+    unsafe extern "C" {
         fn signal(signum: i32, handler: usize) -> usize;
     }
     const SIGPIPE: i32 = 13;
@@ -2564,11 +2560,10 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    if cli.sudoloop {
-        if !start_sudoloop() {
+    if cli.sudoloop
+        && !start_sudoloop() {
             eprintln!(">>> Warning: sudo -v failed; continuing without --sudoloop.");
         }
-    }
 
     // --install-pkgbuild <PATH>: a standalone action, same spirit as --news/
     // --list-sets above but *after* check_binaries()/--sudoloop since it
@@ -2903,8 +2898,8 @@ fn run() -> anyhow::Result<()> {
                 });
                 continue;
             }
-            if let Some((repo, name)) = p.split_once('/') {
-                if !repo.is_empty()
+            if let Some((repo, name)) = p.split_once('/')
+                && !repo.is_empty()
                     && !name.is_empty()
                     && repo
                         .chars()
@@ -2921,7 +2916,6 @@ fn run() -> anyhow::Result<()> {
                     });
                     continue;
                 }
-            }
             atoms.push(SearchAtom {
                 bare: p.clone(),
                 src: SearchSrc::Any,
@@ -3270,7 +3264,7 @@ fn run() -> anyhow::Result<()> {
         let mut missing = Vec::new();
         let mut asdeps = Vec::new();
         for entry in &world_lines {
-            let bare = entry.split('/').last().unwrap_or(entry);
+            let bare = entry.split('/').next_back().unwrap_or(entry);
             if !crate::alpm_db::is_installed(bare) {
                 missing.push(entry.clone());
             } else if !explicit.contains(bare) {
@@ -3347,7 +3341,7 @@ fn run() -> anyhow::Result<()> {
                 .map_while(Result::ok)
                 .filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#'))
                 .filter(|l| !l.trim().starts_with('@'))
-                .map(|l| l.trim().split('/').last().unwrap_or("").to_string())
+                .map(|l| l.trim().split('/').next_back().unwrap_or("").to_string())
                 .collect(),
             Err(_) => {
                 eprintln!(">>> Error: cannot open world");
@@ -3479,7 +3473,7 @@ fn run() -> anyhow::Result<()> {
                 );
                 let bare: Vec<String> = atoms
                     .iter()
-                    .map(|a| a.split('/').last().unwrap_or(a).to_string())
+                    .map(|a| a.split('/').next_back().unwrap_or(a).to_string())
                     .collect();
                 if cli.pretend {
                     return Ok(());
@@ -3549,7 +3543,7 @@ fn run() -> anyhow::Result<()> {
                 if !official.is_empty() {
                     let names: Vec<String> = official
                         .iter()
-                        .map(|a| a.split('/').last().unwrap_or(a).to_string())
+                        .map(|a| a.split('/').next_back().unwrap_or(a).to_string())
                         .collect();
                     if repo_install_landed(&names, false).0 {
                         mark_asexplicit(&names);
@@ -3563,7 +3557,7 @@ fn run() -> anyhow::Result<()> {
                 if !aur.is_empty() {
                     let names: Vec<String> = aur
                         .iter()
-                        .map(|a| a.split('/').last().unwrap_or(a).to_string())
+                        .map(|a| a.split('/').next_back().unwrap_or(a).to_string())
                         .collect();
                     scan_aur_pkgbuilds_or_abort(&names);
                     // aur_install() always leaves the explicit bit set on
@@ -3946,17 +3940,16 @@ fn run() -> anyhow::Result<()> {
         {
             // World packages + members of @sets listed in world + package.protect.
             let mut world_bare: HashSet<String> = HashSet::new();
-            if is_safe_path(WORLD_SET_FILE) {
-                if let Ok(file) = fs::File::open(WORLD_SET_FILE) {
+            if is_safe_path(WORLD_SET_FILE)
+                && let Ok(file) = fs::File::open(WORLD_SET_FILE) {
                     world_bare = io::BufReader::new(file)
                         .lines()
                         .map_while(Result::ok)
                         .filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#'))
                         .filter(|l| !l.trim().starts_with('@'))
-                        .map(|l| l.trim().split('/').last().unwrap_or("").to_string())
+                        .map(|l| l.trim().split('/').next_back().unwrap_or("").to_string())
                         .collect();
                 }
-            }
             world_bare.extend(world_set::world_set_member_bares());
             world_bare.extend(crate::profile::system_names());
             let protected: Vec<String> = crate::alpm_db::orphan_names()
@@ -4049,7 +4042,7 @@ fn run() -> anyhow::Result<()> {
         // warning / countdown instead of after it.
         let (installed_targets, not_installed): (Vec<String>, Vec<String>) =
             target_pkgs.iter().cloned().partition(|p| {
-                crate::alpm_db::installed_version(p.split('/').last().unwrap_or(p)).is_some()
+                crate::alpm_db::installed_version(p.split('/').next_back().unwrap_or(p)).is_some()
             });
         if installed_targets.is_empty() {
             eprintln!(
@@ -4092,7 +4085,7 @@ fn run() -> anyhow::Result<()> {
         let repos = get_pkg_repos_batch(&target_pkgs);
         let mut all_selected: Vec<String> = Vec::new();
         for p in &target_pkgs {
-            let bare = p.split('/').last().unwrap_or(p);
+            let bare = p.split('/').next_back().unwrap_or(p);
             let ver = crate::alpm_db::installed_version(bare).unwrap_or_else(|| "?".to_string());
             // "None" = no single sync repo has this version (local/AUR/ABS
             // build): shown bare, saved as Err/ for --undo.
@@ -4203,7 +4196,7 @@ fn run() -> anyhow::Result<()> {
             } else if let Some(name) = p.strip_prefix("aur/") {
                 aur_pkgs.push(name.to_string());
             } else if cli.abs {
-                abs_pkgs.push(p.split('/').last().unwrap_or(p).to_string());
+                abs_pkgs.push(p.split('/').next_back().unwrap_or(p).to_string());
             } else if cli.aur {
                 // repo/name is official even under --aur
                 if p.contains('/') {
@@ -4386,7 +4379,7 @@ fn run() -> anyhow::Result<()> {
                         .filter(|p| {
                             landed_names
                                 .iter()
-                                .any(|n| n.split('/').last().unwrap_or(n) == p.name)
+                                .any(|n| n.split('/').next_back().unwrap_or(n) == p.name)
                         })
                         .collect();
                     if !landed.is_empty() {
@@ -4461,7 +4454,7 @@ fn run() -> anyhow::Result<()> {
             let missing: Vec<String> = missing
                 .into_iter()
                 .filter(|m| {
-                    let bare = m.split('/').last().unwrap_or(m);
+                    let bare = m.split('/').next_back().unwrap_or(m);
                     !aur_pkgs.iter().any(|a| a == bare)
                 })
                 .collect();
@@ -4537,7 +4530,7 @@ fn run() -> anyhow::Result<()> {
                         .filter(|p| {
                             landed_names
                                 .iter()
-                                .any(|n| n.split('/').last().unwrap_or(n) == p.name)
+                                .any(|n| n.split('/').next_back().unwrap_or(n) == p.name)
                         })
                         .collect();
                     if !landed.is_empty() {
@@ -4599,7 +4592,7 @@ fn run() -> anyhow::Result<()> {
                         .filter(|p| {
                             landed_names
                                 .iter()
-                                .any(|n| n.split('/').last().unwrap_or(n) == p.name)
+                                .any(|n| n.split('/').next_back().unwrap_or(n) == p.name)
                         })
                         .collect();
                     if !landed.is_empty() {
@@ -4655,7 +4648,7 @@ fn run() -> anyhow::Result<()> {
                         .filter(|p| {
                             landed_names
                                 .iter()
-                                .any(|n| n.split('/').last().unwrap_or(n) == p.name)
+                                .any(|n| n.split('/').next_back().unwrap_or(n) == p.name)
                         })
                         .collect();
                     if !landed.is_empty() {
@@ -4773,7 +4766,7 @@ fn run() -> anyhow::Result<()> {
                         .filter(|p| {
                             landed_names
                                 .iter()
-                                .any(|n| n.split('/').last().unwrap_or(n) == p.name)
+                                .any(|n| n.split('/').next_back().unwrap_or(n) == p.name)
                         })
                         .collect();
                     if !landed.is_empty() {
@@ -4844,7 +4837,7 @@ fn run() -> anyhow::Result<()> {
                     // world only gets explicitly requested names.
                     let target_bare: HashSet<String> = target_pkgs
                         .iter()
-                        .map(|p| p.split('/').last().unwrap_or(p).to_string())
+                        .map(|p| p.split('/').next_back().unwrap_or(p).to_string())
                         .collect();
                     let explicit_infos: Vec<&PkgInfo> = installed_infos
                         .iter()
@@ -4878,14 +4871,13 @@ fn run() -> anyhow::Result<()> {
                     }
                     // Sets invoked as @name stay in world so their members
                     // remain depclean-protected until dropped from the set.
-                    if !custom_set_names.is_empty() {
-                        if let Err(e) = world_set::register_sets_in_world(&custom_set_names) {
+                    if !custom_set_names.is_empty()
+                        && let Err(e) = world_set::register_sets_in_world(&custom_set_names) {
                             eprintln!(
                                 ">>> Warning: set(s) installed but not recorded in world: {:#}",
                                 e
                             );
                         }
-                    }
                     if !aur_names.is_empty() {
                         mark_asexplicit(&aur_names);
                     }

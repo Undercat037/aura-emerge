@@ -32,13 +32,11 @@ fn split_ae(name: &str) -> Option<(&str, &'static str)> {
         if let Some(stem) = name.strip_suffix(ext) {
             return Some((stem, ext));
         }
-        if let Some((head, n)) = name.rsplit_once('.') {
-            if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) {
-                if let Some(stem) = head.strip_suffix(ext) {
+        if let Some((head, n)) = name.rsplit_once('.')
+            && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())
+                && let Some(stem) = head.strip_suffix(ext) {
                     return Some((stem, ext));
                 }
-            }
-        }
     }
     None
 }
@@ -140,7 +138,7 @@ pub(crate) fn clean(kind: &str) -> bool {
     let paths: Vec<&str> = pick
         .iter()
         .map(|l| l.path.as_str())
-        .filter(|p| fs::symlink_metadata(p).map_or(false, |m| !m.is_dir()))
+        .filter(|p| fs::symlink_metadata(p).is_ok_and(|m| !m.is_dir()))
         .collect();
     let mut ok = true;
     for chunk in paths.chunks(200) {

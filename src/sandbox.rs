@@ -158,15 +158,14 @@ fn rustup_env(build_dir: &Path) -> RustEnv {
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
         .or_else(|| real_home.as_ref().map(|h| h.join(".rustup")));
-    if let Some(rustup_home) = real_rustup_home {
-        if rustup_home.is_dir() {
+    if let Some(rustup_home) = real_rustup_home
+        && rustup_home.is_dir() {
             out.env.push((
                 "RUSTUP_HOME".to_string(),
                 rustup_home.to_string_lossy().to_string(),
             ));
             out.ro_binds.push(rustup_home);
         }
-    }
     if let Some(h) = &real_home {
         let cargo_bin = h.join(".cargo").join("bin");
         if cargo_bin.is_dir() {
@@ -540,11 +539,10 @@ pub(crate) fn sandboxed_makepkg(
         }
     }
     for (k, v) in std::env::vars_os() {
-        if let (Some(k), Some(v)) = (k.to_str(), v.to_str()) {
-            if k.starts_with("LC_") {
+        if let (Some(k), Some(v)) = (k.to_str(), v.to_str())
+            && k.starts_with("LC_") {
                 cmd.args(["--setenv", k, v]);
             }
-        }
     }
     if net {
         for key in ENV_PROXY {

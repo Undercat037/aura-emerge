@@ -47,7 +47,7 @@ pub(crate) struct HoldList {
 
 impl HoldList {
     pub(crate) fn find(&self, name: &str, repo: Option<&str>) -> Option<&HoldEntry> {
-        let bare = name.split('/').last().unwrap_or(name);
+        let bare = name.split('/').next_back().unwrap_or(name);
         self.entries.iter().find(|e| {
             let repo_ok = match (&e.repo, repo) {
                 (None, _) => true,
@@ -206,7 +206,7 @@ pub(crate) fn is_protected(name: &str) -> bool {
         return true;
     }
     // Profile @system packages are never depcleaned/unmerged by accident.
-    let bare = name.split('/').last().unwrap_or(name);
+    let bare = name.split('/').next_back().unwrap_or(name);
     crate::profile::system_names().contains(bare)
 }
 

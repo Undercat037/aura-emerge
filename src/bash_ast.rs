@@ -110,11 +110,10 @@ pub(crate) fn curl_pipe_shell(source: &str) -> Option<usize> {
             } else {
                 Some(name)
             };
-            if let Some(eff) = effective {
-                if SHELL_NAMES.contains(&basename(&eff)) {
+            if let Some(eff) = effective
+                && SHELL_NAMES.contains(&basename(&eff)) {
                     return Some(line_of(pipeline));
                 }
-            }
         }
     }
     None
@@ -268,11 +267,10 @@ pub(crate) fn sudo_escalation(source: &str) -> Option<usize> {
     let mut commands = Vec::new();
     find_descendants(tree.root_node(), "command", &mut commands);
     for cmd in commands {
-        if let Some(name) = command_name_of(cmd, src) {
-            if ESCALATORS.contains(&name.as_str()) {
+        if let Some(name) = command_name_of(cmd, src)
+            && ESCALATORS.contains(&name.as_str()) {
                 return Some(line_of(cmd));
             }
-        }
     }
     None
 }
@@ -299,8 +297,8 @@ pub(crate) fn python_inline_exec(source: &str) -> Option<usize> {
             continue;
         }
         for a in &args {
-            if matches!(a.kind(), "string" | "raw_string") {
-                if let Some(text) = resolve_word(*a, src) {
+            if matches!(a.kind(), "string" | "raw_string")
+                && let Some(text) = resolve_word(*a, src) {
                     let lower = text.to_lowercase();
                     if ["exec(", "eval(", "os.system(", "subprocess.", "os.popen("]
                         .iter()
@@ -309,7 +307,6 @@ pub(crate) fn python_inline_exec(source: &str) -> Option<usize> {
                         return Some(line_of(cmd));
                     }
                 }
-            }
         }
     }
     None
@@ -353,13 +350,11 @@ pub(crate) fn perl_inline_exec(source: &str) -> Option<usize> {
             continue;
         }
         for a in &args {
-            if matches!(a.kind(), "string" | "raw_string" | "word" | "concatenation") {
-                if let Some(text) = resolve_word(*a, src) {
-                    if is_suspicious_perl_e_payload(&text) {
+            if matches!(a.kind(), "string" | "raw_string" | "word" | "concatenation")
+                && let Some(text) = resolve_word(*a, src)
+                    && is_suspicious_perl_e_payload(&text) {
                         return Some(line_of(cmd));
                     }
-                }
-            }
         }
     }
     None
@@ -416,7 +411,7 @@ fn interpreter_flag_exec(
             continue;
         };
         let base = basename(&name);
-        if !names.iter().any(|n| *n == base) {
+        if !names.contains(&base) {
             continue;
         }
         let mut cursor = cmd.walk();
@@ -442,13 +437,11 @@ fn interpreter_flag_exec(
             continue;
         }
         for a in &args {
-            if matches!(a.kind(), "string" | "raw_string" | "word" | "concatenation") {
-                if let Some(text) = resolve_word(*a, src) {
-                    if suspicious(&text) {
+            if matches!(a.kind(), "string" | "raw_string" | "word" | "concatenation")
+                && let Some(text) = resolve_word(*a, src)
+                    && suspicious(&text) {
                         return Some(line_of(cmd));
                     }
-                }
-            }
         }
     }
     None
@@ -569,8 +562,8 @@ pub(crate) fn shell_c_exec(source: &str) -> Option<usize> {
         let mut saw_c = false;
         for child in &children {
             // plain "-c" or combined short flags containing c (-ec, -ce, ...)
-            if child.kind() == "word" {
-                if let Ok(text) = child.utf8_text(src) {
+            if child.kind() == "word"
+                && let Ok(text) = child.utf8_text(src) {
                     let t = text.trim();
                     if t == "-c"
                         || (t.starts_with('-')
@@ -582,7 +575,6 @@ pub(crate) fn shell_c_exec(source: &str) -> Option<usize> {
                         continue;
                     }
                 }
-            }
 
             if !saw_c {
                 continue;
@@ -592,13 +584,11 @@ pub(crate) fn shell_c_exec(source: &str) -> Option<usize> {
             if matches!(
                 child.kind(),
                 "string" | "raw_string" | "word" | "concatenation"
-            ) {
-                if let Some(text) = resolve_word(*child, src) {
-                    if is_suspicious_shell_c_payload(&text) {
+            )
+                && let Some(text) = resolve_word(*child, src)
+                    && is_suspicious_shell_c_payload(&text) {
                         return Some(line_of(cmd));
                     }
-                }
-            }
             break;
         }
     }

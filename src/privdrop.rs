@@ -250,7 +250,7 @@ pub(crate) fn user_env(
 ) -> Vec<(OsString, OsString)> {
     let mut out: Vec<(OsString, OsString)> = old
         .into_iter()
-        .filter(|(k, _)| k.to_str().map_or(false, keep_var))
+        .filter(|(k, _)| k.to_str().is_some_and(keep_var))
         .collect();
     fn set(out: &mut Vec<(OsString, OsString)>, k: &str, v: OsString) {
         out.retain(|(ek, _)| ek != k);
@@ -272,10 +272,12 @@ fn apply_env(acc: &Account) {
     let old: Vec<(OsString, OsString)> = std::env::vars_os().collect();
     let new = user_env(acc, old.clone());
     for (k, _) in &old {
-        std::env::remove_var(k);
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var(k) };
     }
     for (k, v) in new {
-        std::env::set_var(k, v);
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var(k, v) };
     }
 }
 
@@ -283,16 +285,15 @@ fn apply_env(acc: &Account) {
 /// (`sudo emerge` from /root). Fall back to $HOME, then `/`.
 fn fix_cwd(home: &Path) {
     let usable = |p: &Path| -> bool {
-        CString::new(p.as_os_str().as_bytes()).map_or(false, |c| {
+        CString::new(p.as_os_str().as_bytes()).is_ok_and(|c| {
             // SAFETY: valid C string.
             unsafe { libc::access(c.as_ptr(), libc::R_OK | libc::X_OK) == 0 }
         })
     };
-    if let Ok(cwd) = std::env::current_dir() {
-        if usable(&cwd) {
+    if let Ok(cwd) = std::env::current_dir()
+        && usable(&cwd) {
             return;
         }
-    }
     if usable(home) && std::env::set_current_dir(home).is_ok() {
         return;
     }

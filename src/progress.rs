@@ -288,12 +288,11 @@ fn start_ticker() {
                     continue;
                 }
                 // Rewrite in place under OUT so we don't race with line().
-                if let Ok(_g) = OUT.try_lock() {
-                    if SHOWN.load(Ordering::Relaxed) {
+                if let Ok(_g) = OUT.try_lock()
+                    && SHOWN.load(Ordering::Relaxed) {
                         status_erase();
                         status_draw();
                     }
-                }
             }
         }
     });

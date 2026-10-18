@@ -120,7 +120,7 @@ pub(crate) fn acquire_job_slot() -> JobSlot {
 
 /// True if `--exclude` named this package (bare match).
 pub(crate) fn is_excluded(name: &str) -> bool {
-    let bare = name.split('/').last().unwrap_or(name);
+    let bare = name.split('/').next_back().unwrap_or(name);
     get().exclude.contains(bare)
 }
 

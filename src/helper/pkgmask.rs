@@ -35,7 +35,7 @@ pub(crate) struct MaskList {
 impl MaskList {
     /// First matching entry, or `None`.
     pub(crate) fn find(&self, name: &str, repo: Option<&str>) -> Option<&MaskEntry> {
-        let bare = name.split('/').last().unwrap_or(name);
+        let bare = name.split('/').next_back().unwrap_or(name);
         self.entries.iter().find(|e| {
             let repo_ok = match (&e.repo, repo) {
                 (None, _) => true,

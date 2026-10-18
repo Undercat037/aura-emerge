@@ -98,7 +98,7 @@ pub(crate) fn pin(files: &[String]) -> io::Result<Vec<Pinned>> {
 /// True when every file still hashes to what was pinned.
 pub(crate) fn unchanged(pins: &[Pinned]) -> bool {
     pins.iter()
-        .all(|p| hash_nofollow(Path::new(&p.path)).map_or(false, |h| h == p.sha256))
+        .all(|p| hash_nofollow(Path::new(&p.path)).is_ok_and(|h| h == p.sha256))
 }
 
 pub(crate) fn specs(pins: &[Pinned]) -> Result<Vec<String>, String> {

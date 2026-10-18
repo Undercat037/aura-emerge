@@ -160,14 +160,13 @@ pub(crate) fn applied_for(repo: Option<&str>, names: &[String]) -> Applied {
             let origin = format!("{} [{}]", e.at(), env);
             for (k, v) in vars {
                 let shown = v.display();
-                if let Some((prev_at, prev_val)) = set.get(&k) {
-                    if *prev_val != shown {
+                if let Some((prev_at, prev_val)) = set.get(&k)
+                    && *prev_val != shown {
                         res.conflicts.push(format!(
                             "package.env: {} = '{}' from {} overrides '{}' from {}",
                             k, shown, origin, prev_val, prev_at
                         ));
                     }
-                }
                 set.insert(k.clone(), (origin.clone(), shown));
                 merged.insert(k, v);
             }

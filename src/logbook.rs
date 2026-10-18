@@ -113,8 +113,8 @@ pub(crate) fn session_open(path: &Path, command_line: &str) {
 }
 
 fn session_append_line(line: &str) {
-    if let Ok(mut slot) = SESSION.lock() {
-        if let Some(s) = slot.as_mut() {
+    if let Ok(mut slot) = SESSION.lock()
+        && let Some(s) = slot.as_mut() {
             // After build output, open a final section for emerge.log lines.
             if s.had_output {
                 let _ = writeln!(s.file, "===");
@@ -123,7 +123,6 @@ fn session_append_line(line: &str) {
             let _ = writeln!(s.file, "{}", line);
             let _ = s.file.flush();
         }
-    }
 }
 
 /// Append build/command output to the session log.
@@ -131,8 +130,8 @@ pub(crate) fn session_write_output(text: &str) {
     if text.is_empty() {
         return;
     }
-    if let Ok(mut slot) = SESSION.lock() {
-        if let Some(s) = slot.as_mut() {
+    if let Ok(mut slot) = SESSION.lock()
+        && let Some(s) = slot.as_mut() {
             s.had_output = true;
             let _ = write!(s.file, "{}", text);
             if !text.ends_with('\n') {
@@ -140,7 +139,6 @@ pub(crate) fn session_write_output(text: &str) {
             }
             let _ = s.file.flush();
         }
-    }
 }
 
 pub(crate) fn session_active() -> bool {
@@ -224,11 +222,10 @@ pub(crate) fn parse_stats(text: &str) -> LogStats {
         match kind {
             "MERGE" => {
                 stats.merges += 1;
-                if let Some(dur) = line.rsplit('(').next().and_then(|s| s.strip_suffix(')')) {
-                    if let Some(d) = parse_duration(dur) {
+                if let Some(dur) = line.rsplit('(').next().and_then(|s| s.strip_suffix(')'))
+                    && let Some(d) = parse_duration(dur) {
                         stats.total_build_time += d;
                     }
-                }
             }
             "UNMERGE" => stats.unmerges += 1,
             _ => {}

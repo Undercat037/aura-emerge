@@ -73,14 +73,13 @@ fn strip_trailing_comment(rest: &str) -> &str {
     let trimmed = rest.trim_start();
     let lead_ws = rest.len() - trimmed.len();
     let bytes = trimmed.as_bytes();
-    if let Some(&first) = bytes.first() {
-        if first == b'\'' || first == b'"' {
+    if let Some(&first) = bytes.first()
+        && (first == b'\'' || first == b'"') {
             if let Some(close_rel) = trimmed[1..].find(first as char) {
                 return &rest[..lead_ws + close_rel + 2];
             }
             return rest; // unterminated quote - nothing sane to cut, leave as-is
         }
-    }
     let mut prev_was_space = true; // start of the (already-trimmed) value counts as a boundary
     for (i, c) in trimmed.char_indices() {
         if c == '#' && prev_was_space {
@@ -127,7 +126,7 @@ pub(crate) fn curl_pipe_shell_line(line: &str) -> bool {
     if !has_fetcher || !lower.contains('|') {
         return false;
     }
-    let after_pipe = lower.splitn(2, '|').nth(1).unwrap_or("").trim();
+    let after_pipe = lower.split_once('|').map(|x| x.1).unwrap_or("").trim();
     let mut tokens = after_pipe.split_whitespace();
     let mut first = tokens.next().unwrap_or("");
     // `env sh` / `env -S bash` wrapper - skip past `env` and its flags to
@@ -171,7 +170,7 @@ pub(crate) fn line_of_base64_decode(source: &str) -> Option<usize> {
 
 /// Last `|` stage is a shell? (decoders often sit mid-pipeline).
 fn pipes_into_shell(lower_line: &str) -> bool {
-    let after_pipe = lower_line.rsplitn(2, '|').next().unwrap_or("").trim();
+    let after_pipe = lower_line.rsplit('|').next().unwrap_or("").trim();
     let mut tokens = after_pipe.split_whitespace();
     let mut first = tokens.next().unwrap_or("");
     if first == "env" {
@@ -733,11 +732,10 @@ pub(crate) fn foreign_pkg_manager_install_line(line: &str) -> bool {
                 first_pkg_tok = Some(tok);
                 break;
             }
-            if let Some(tok) = first_pkg_tok {
-                if !tok.starts_with('.') && !tok.starts_with('/') {
+            if let Some(tok) = first_pkg_tok
+                && !tok.starts_with('.') && !tok.starts_with('/') {
                     return true;
                 }
-            }
         }
     }
     false
@@ -1426,8 +1424,8 @@ fn pkgbuild_shell_script_refs(pkgbuild: &str) -> Vec<String> {
         let parts: Vec<&str> = t.split_whitespace().collect();
         for (i, w) in parts.iter().enumerate() {
             let shell = matches!(*w, "bash" | "sh" | "dash" | "zsh" | "fish" | "ksh" | "ash");
-            if shell {
-                if let Some(next) = parts.get(i + 1) {
+            if shell
+                && let Some(next) = parts.get(i + 1) {
                     // Skip flags like -c, -e.
                     if next.starts_with('-') {
                         continue;
@@ -1441,7 +1439,6 @@ fn pkgbuild_shell_script_refs(pkgbuild: &str) -> Vec<String> {
                         out.push(path.to_string());
                     }
                 }
-            }
             // `./something.sh` or `path/to/script.sh`
             if (w.starts_with("./") || w.contains('/'))
                 && (w.ends_with(".sh")

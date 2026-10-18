@@ -20,7 +20,7 @@ pub(crate) fn get_pkg_repos_batch(
 ) -> std::collections::HashMap<String, Option<String>> {
     let bares: Vec<String> = names
         .iter()
-        .map(|n| n.split('/').last().unwrap_or(n).to_string())
+        .map(|n| n.split('/').next_back().unwrap_or(n).to_string())
         .collect();
     if bares.is_empty() {
         return std::collections::HashMap::new();
@@ -170,7 +170,7 @@ pub(crate) fn world_set_member_bares() -> HashSet<String> {
         }
         if let Ok(pkgs) = read_custom_set(set) {
             for p in pkgs {
-                let bare = p.split('/').last().unwrap_or(&p).to_string();
+                let bare = p.split('/').next_back().unwrap_or(&p).to_string();
                 out.insert(bare);
             }
         }
@@ -597,7 +597,7 @@ pub(crate) fn regen_world_set() -> Result<()> {
 
     let bares: Vec<String> = entries
         .iter()
-        .map(|e| e.split('/').last().unwrap_or(e).to_string())
+        .map(|e| e.split('/').next_back().unwrap_or(e).to_string())
         .collect();
     let repos = get_pkg_repos_batch(&bares);
 
@@ -605,7 +605,7 @@ pub(crate) fn regen_world_set() -> Result<()> {
     let mut changed = 0usize;
 
     for entry in &entries {
-        let bare = entry.split('/').last().unwrap_or(entry);
+        let bare = entry.split('/').next_back().unwrap_or(entry);
         // Keep abs/aur prefix if re-resolution can't find a live repo.
         let old_prefix = entry
             .split('/')
@@ -678,7 +678,7 @@ pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
         .iter()
         .map(|l| l.trim())
         .filter(|t| !t.is_empty() && !t.starts_with('#') && validate_pkg(t))
-        .map(|t| t.split('/').last().unwrap_or(t).to_string())
+        .map(|t| t.split('/').next_back().unwrap_or(t).to_string())
         .collect();
     let repos = get_pkg_repos_batch(&bares);
 
@@ -703,7 +703,7 @@ pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
             continue;
         }
 
-        let bare = trimmed.split('/').last().unwrap_or(trimmed);
+        let bare = trimmed.split('/').next_back().unwrap_or(trimmed);
         // Keep abs/aur if re-resolution misses (same as regen_world_set).
         let old_prefix = trimmed
             .split('/')
@@ -826,7 +826,7 @@ pub(crate) fn register_sets_in_world(set_names: &[String]) -> Result<()> {
                 let key = if trimmed.starts_with('@') {
                     trimmed.clone()
                 } else {
-                    trimmed.split('/').last().unwrap_or(&trimmed).to_string()
+                    trimmed.split('/').next_back().unwrap_or(&trimmed).to_string()
                 };
                 current.insert(key, trimmed);
             }
@@ -880,7 +880,7 @@ pub(crate) fn add_to_world_groups(groups: &[(&[String], Option<&str>)]) -> Resul
                 let key = if trimmed.starts_with('@') {
                     trimmed.clone()
                 } else {
-                    trimmed.split('/').last().unwrap_or(&trimmed).to_string()
+                    trimmed.split('/').next_back().unwrap_or(&trimmed).to_string()
                 };
                 current_set.insert(key, trimmed);
             }
@@ -891,7 +891,7 @@ pub(crate) fn add_to_world_groups(groups: &[(&[String], Option<&str>)]) -> Resul
     let mut all_bares: Vec<String> = Vec::new();
     for (packages, _) in groups {
         for pkg in *packages {
-            all_bares.push(pkg.split('/').last().unwrap_or(pkg).to_string());
+            all_bares.push(pkg.split('/').next_back().unwrap_or(pkg).to_string());
         }
     }
     let repos = get_pkg_repos_batch(&all_bares);
@@ -899,7 +899,7 @@ pub(crate) fn add_to_world_groups(groups: &[(&[String], Option<&str>)]) -> Resul
     let mut changed = false;
     for (packages, forced_prefix) in groups {
         for pkg in *packages {
-            let bare = pkg.split('/').last().unwrap_or(pkg).to_string();
+            let bare = pkg.split('/').next_back().unwrap_or(pkg).to_string();
             let entry = pkg_world_entry_from(&bare, *forced_prefix, &repos);
             // Overwrite so stale prefixes get corrected.
             let stale = current_set.get(&bare).map(|e| e != &entry).unwrap_or(true);
@@ -936,7 +936,7 @@ pub(crate) fn world_installed_snapshot() -> HashSet<String> {
         Ok(file) => io::BufReader::new(file)
             .lines()
             .map_while(Result::ok)
-            .map(|l| l.trim().split('/').last().unwrap_or("").to_string())
+            .map(|l| l.trim().split('/').next_back().unwrap_or("").to_string())
             .filter(|s| !s.is_empty())
             .collect(),
         Err(_) => return HashSet::new(),
@@ -988,7 +988,7 @@ pub(crate) fn remove_from_world_set(packages: &[String]) -> Result<()> {
             for line in io::BufReader::new(file).lines().map_while(Result::ok) {
                 let trimmed = line.trim().to_string();
                 if !trimmed.is_empty() && validate_pkg(&trimmed) {
-                    let bare = trimmed.split('/').last().unwrap_or(&trimmed).to_string();
+                    let bare = trimmed.split('/').next_back().unwrap_or(&trimmed).to_string();
                     current_set.insert(bare, trimmed);
                 }
             }
@@ -998,7 +998,7 @@ pub(crate) fn remove_from_world_set(packages: &[String]) -> Result<()> {
 
     let mut changed = false;
     for pkg in packages {
-        let bare = pkg.split('/').last().unwrap_or(pkg).to_string();
+        let bare = pkg.split('/').next_back().unwrap_or(pkg).to_string();
         if current_set.remove(&bare).is_some() {
             changed = true;
         }
