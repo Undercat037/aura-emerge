@@ -40,16 +40,20 @@ make install            # or build by hand:
 
 ```bash
 cargo build --release
-sudo cp target/release/aura-emerge /usr/bin/emerge
+sudo install -Dm755 -o root -g root target/release/aura-emerge /usr/bin/emerge
 sudo ln -sf /usr/bin/emerge /usr/bin/portageq
+sudo ln -sf /usr/bin/emerge /usr/bin/eselect
 emerge --gen-completions bash | sudo tee /usr/share/bash-completion/completions/emerge
 emerge --gen-completions zsh  | sudo tee /usr/share/zsh/site-functions/_emerge
 emerge --gen-completions fish | sudo tee /usr/share/fish/vendor_completions.d/emerge.fish
 emerge --gen-manpage | sudo tee /usr/share/man/man1/emerge.1 >/dev/null
+sudo install -Dm644 misc/eselect.bash-completion /usr/share/bash-completion/completions/eselect
+sudo install -Dm644 misc/_eselect /usr/share/zsh/site-functions/_eselect
+sudo install -Dm644 misc/eselect.fish /usr/share/fish/vendor_completions.d/eselect.fish
 ```
 </details>
 
-**Dependencies:** `git`, `bubblewrap` (build sandbox for AUR/ABS)
+**Dependencies:** `git`, `sudo`, `bubblewrap` (build sandbox for AUR/ABS), `pacman` (libalpm, makepkg)
 **Optional:** `devtools` (`--abs` support), `gnupg` (`--autopgp`, automatic PGP key import)
 
 ## Usage
@@ -60,13 +64,16 @@ emerge neovim                       # official repos, falls back to AUR
 emerge neovim-git --aur             # AUR only (AUR-only deps are built recursively)
 emerge neovim --repos               # official repos only, never touch the AUR
 emerge neovim --abs                 # build from ABS (pkgctl) in the sandbox
+emerge aur/neovim-git abs/nano cachyos-extra-v3/neovim   # pick the source per package with a prefix
 emerge -p neovim                    # dry run
 emerge -a neovim                    # ask before acting
 emerge -1 htop                      # install as a dependency (not added to world)
+emerge -at aur/setrixtui abs/nano @fonts --jobsr=7 --jobsa=2   # mixed sources, parallel jobs
 
 # Remove
 emerge -C neovim                    # unmerge
 emerge -c                           # remove orphans (depclean)
+emerge -cp --show-protected         # preview orphans, also list those kept because they're in world
 emerge --prune                      # remove packages not in world
 
 # Update
@@ -74,6 +81,7 @@ emerge --sync                       # refresh package databases
 emerge -u                           # full upgrade (repos + AUR)
 emerge -u --devel                   # ...and rebuild -git/-hg/-svn/-bzr packages whose upstream moved
 emerge -u --exclude linux --keep-going
+emerge -uat @world --sync           # sync, then upgrade (asks first)
 
 # World and sets
 emerge @world                       # install whatever is in world but missing
@@ -85,6 +93,8 @@ emerge --deselect neovim            # remove from world without unmerging
 emerge -s neovim                    # search: repos, then ABS, then AUR
 emerge -S neovim                    # search by description
 emerge -sv neovim                   # detailed package info
+emerge -s abs/nano                  # search ABS only (aur/ and <repo>/ prefixes work too)
+emerge -s emacs --repos             # official repos only
 emerge --info                       # system info
 emerge --news                       # Arch Linux news
 
@@ -98,6 +108,8 @@ emerge --install-pkgbuild ~/src/my-pkg       # build a local PKGBUILD through sc
 emerge --resume                     # resume an interrupted transaction
 emerge --undo                       # undo the last install/unmerge
 emerge --revdep-rebuild             # fix binaries linked to missing libraries
+emerge --list-profiles             # profiles (also: eselect profile list)
+emerge --aelist                     # files left by AE Force (.aenew / .aeforce / .aepark)
 ```
 
 The full flag table is at the bottom of this page.
@@ -182,7 +194,7 @@ Not the same as `--exclude`: a mask is permanent, `--exclude` is for one run.
 
 ### `package.protect`
 
-`/etc/portage/package.protect` (file or directory of files) lists packages that must not be removed. Syntax matches `package.mask` (optional `repo/` prefix, `*` globs, `#` comments). Covers `-C`/`--unmerge`, `-c`/`--depclean`, `--prune`, and conflict-driven removals. `--deselect` may still drop the name from world, but the package stays installed and depclean will not take it.
+`/etc/portage/package.protect` (file or directory of files) lists packages that must not be removed. Syntax matches `package.mask` (optional `repo/` prefix, `*` globs, `#` comments). Covers `-C`/`--unmerge`, `-c`/`--depclean`, `--prune`, and conflict-driven removals. `--deselect` may still drop the name from world, but the package stays installed and depclean will not take it. Profile `@system` packages are protected the same way.
 
 ### `package.freeze`
 
@@ -190,13 +202,15 @@ Not the same as `--exclude`: a mask is permanent, `--exclude` is for one run.
 
 ### Profiles
 
-`/etc/portage/make.profile` is a symlink to a profile directory (Portage layout). Profile trees are searched under `/var/db/repos/{portage,gentoo,arch}/profiles`, `/usr/portage/profiles`, and `/usr/share/portage/profiles`. A profile may define `parent`, `packages` (`*` = `@system` bootstrap set), `package.mask`, and `make.defaults`. Nested `parent` chains are expanded depth-first. `emerge @system` installs the profile system set; those packages are protected from depclean like world entries. List and switch:
+`/etc/portage/make.profile` is a symlink to a profile directory (Portage layout). `--list-profiles` lists the tree under `/var/db/repos/portage/profiles`; a `parent` of the form `repo:path` is resolved under `/var/db/repos/<repo>/profiles/`. A profile may define `parent`, `packages` (`*` = `@system` bootstrap set), `package.mask`, and `make.defaults`. Nested `parent` chains are expanded depth-first. `emerge @system` installs the profile system set; those packages are protected from depclean like world entries. List and switch:
 
 ```
 emerge --list-profiles
 sudo emerge --set-profile 12
 # or: sudo ln -sf /usr/bin/emerge /usr/bin/eselect && eselect profile set 12
 ```
+
+`ln -sf /usr/bin/emerge /usr/bin/eselect` turns the binary into a minimal `eselect` (only `eselect profile list|set|show`). `--list-profiles` and `--set-profile` don't need the shim.
 
 
 ### `package.env`
@@ -257,6 +271,69 @@ emerge -pt noctalia --aur --deep     # full depth
 ```
 
 A dependency that isn't named in anyone's "Depends On" (resolved via `provides`, or beyond `--deep`) is still shown, just without a parent. For a pure `--aur` install, transitive AUR-only dependencies aren't resolved at the plan step yet, so the tree is flat there.
+
+### Parallel jobs
+
+`--jobsr=N` runs up to N official-repo installs at once, `--jobsa=N` up to N AUR/ABS builds (both default to 1; `--jobs` is an alias for `--jobsr`). Put your defaults in `EMERGE_DEFAULT_OPTS`. `--load-average=X` holds new builds back while the 1-minute load is above X (never when nothing else is running); `--nospinner` hides the live Jobs row.
+
+```bash
+emerge -at aur/setrixtui cachyos-extra-v3/neovim abs/nano @fonts --jobsr=7 --jobsa=2
+```
+
+```
+>>> Jobs: 26 of 26 complete  2m53s                         Load avg: 2.49, 3.11, 2.17
+```
+
+If the helper refuses one package out of a batch (for example it is masked), the batch is retried one package at a time so everything else still installs; with `--keep-going` the failures are summarised at the end and `--resume` retries only them.
+
+### Search
+
+`-s` looks in the official repos, then ABS, then the AUR. A prefix picks the source: `-s aur/<name>` AUR only, `-s abs/<name>` ABS, `-s <repo>/<name>` that repo first; `--repos` limits the search to official repos. Masked packages are tagged `[ Masked ]`. `-sv` adds the installed version and, for AUR hits, maintainer, votes, popularity, homepage, last update and license.
+
+```bash
+emerge -sv ttf-comic-sans
+emerge -s emacs --repos
+emerge -s abs/nano
+```
+
+### Removing packages
+
+`-C` removes the named packages, `-c` removes orphans, `--prune` removes everything that isn't in world. `-C` prints what is `selected`, `protected` and `omitted`; `-C` and `-c` then wait 5 seconds (`Unmerging in: 5 4 3 2 1`, Ctrl-C aborts), unless `-a` already asked you or `-p` is given. After `-C` the names also leave world.
+
+`-c` never removes a world entry, a member of a set recorded in world, a `package.protect` entry or a profile `@system` package. It says how many were skipped; `--show-protected` lists them.
+
+```bash
+emerge -cp --show-protected
+emerge -c
+emerge --unmerge --ask linux-zen-headers
+```
+
+### Hooks
+
+libalpm runs every `*.hook` on install, remove, `-U` and `-Su`, exactly like pacman (depmod, DKMS, dracut/mkinitcpio, fontconfig and icon caches, `grub-mkconfig`, …). Directories, earlier ones win on a name clash:
+
+```
+/usr/share/libalpm/hooks/    package-shipped hooks
+/etc/pacman.d/hooks/         admin hooks
+/etc/portage/hooks/          aura-emerge's own (same format, alpm-hooks(5))
+```
+
+All three are always registered, even if `pacman.conf` sets no `HookDir`. Progress is printed as `>>> Running pre-transaction hooks...` / `>>> (2 of 4) Install DKMS modules`.
+
+### AE Force (file conflicts)
+
+When an install would overwrite a file that no package owns, aura-emerge asks `AE Force: Create .aenew for conflict files?` Yes keeps your file and saves the package's version as `<file>.aenew`.
+
+| Flag | What happens |
+|------|--------------|
+| `--aeforce` | no question; your old file moves to `<file>.aeforce`, the new one takes its place |
+| `--noaefile` | no question; no `.ae*` files left: old kept, new dropped (with `--aeforce`: old dropped, new kept) |
+
+`<file>.aepark` is left by an interrupted install; a `.N` suffix is added when the name is taken. `emerge --aelist` lists all of these, `emerge --aeclean [new|old|park|all]` removes them after a question (bare `--aeclean` means `all`).
+
+### `--info`
+
+`emerge --info` prints the version (with the libalpm it was built against), kernel, CPU/memory/swap, the effective `--jobsr`/`--jobsa`, every repository in `pacman.conf` order with its mirror, the `makepkg.conf` and `make.conf` values (and which overrides won), the profile, mask/world sizes, and merge-log totals.
 
 ### Merge log
 
@@ -372,6 +449,8 @@ Reverses the last successful install or unmerge (one step of history):
 - **after unmerge** - reinstalls from the recorded source (`Err/`/`abs/` are only listed);
 - **after `-u`** - not supported (no version snapshot).
 
+State lives in `/etc/portage/lastaction.state` (`--undo`) and `/etc/portage/resume.state` (`--resume`).
+
 ### News
 
 `emerge --news` reads the official [Arch Linux news feed](https://archlinux.org/feeds/news/). Read state is kept in `~/.cache/aura-emerge/news.state` (no root needed).
@@ -392,6 +471,8 @@ Before every AUR install, the raw `PKGBUILD` (and any `.install` hook) is fetche
 2. **Line heuristics:** `chmod 777`, raw IPv4, foreign package managers (`npm install …`), paste sites, `.onion`, anti-sandbox probes, known campaign IOCs (Atomic Arch, openconnect-sso, 2018 `compromised.txt`, …).
 
 Findings are `Suspicious` or `ConfirmedIoc`. A hit doesn't hard-block: you get the file/line, a cgit link and `Continue anyway? [y/N]`.
+
+**Support files:** when the checkout is on disk (a build, or `--install-pkgbuild <PATH> --scan`), a `Makefile` (`Makefile`/`makefile`/`GNUmakefile`) and the shell scripts the PKGBUILD references (`*.sh`, `*.bash`, `*.zsh`, `*.fish`) get a line-based scan too: `curl|sh`, base64/hex into a shell, raw IPs and the rest of the shell-level IOCs. Findings name the file and line. `--scan <pkg> --aur` only sees what cgit serves (`PKGBUILD` and `.install`). Patch files are not scanned yet.
 
 ### Sandbox
 
@@ -415,6 +496,10 @@ If `bubblewrap` is missing, the build is refused.
 **Third gate before install:** the finished `*.pkg.tar.*` is audited with `bsdtar` for setuid/setgid, `.INSTALL` scripts and sensitive paths (alpm hooks, systemd units, sudoers, udev, …). `.INSTALL` is re-scanned with the PKGBUILD scanner. With `-a` you must confirm; with `--noconfirm` it warns and continues.
 
 Dependency install (`pacman -S`) and the final `pacman -U` run **outside** the sandbox - they don't execute PKGBUILD code.
+
+### Privileges
+
+The frontend never works as root. Started as root (`sudo emerge …`, `doas`, `pkexec`, `su -`), it first starts the root helper, then drops for good to the invoking user (taken from `AE_USER`, `SUDO_UID`, `DOAS_USER`, `PKEXEC_UID` or the audit login uid; if none is known it stops). Started as a normal user, the helper is launched through `sudo` on first need. The resolver, AUR/ABS builds, the sandbox and all caches run unprivileged; libalpm work (install/remove/sync/upgrade/`-U`, signature checks) goes through the helper (`--ae-service`), which validates every request and enforces `package.mask` itself (`helper refused: … masked by …`).
 
 ### Other hardening
 
@@ -454,8 +539,6 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `-1`, `--oneshot` | Install as dependency (skip world) |
 | `-n`, `--noreplace` | Do not reinstall if already present at the same or newer version |
 | `--with-optdeps` | Also install optional dependencies of official-repo packages |
-| `-N`, `--newuse` | Include installed packages with changed USE flags |
-| `-e`, `--emptytree` | Reinstall all world packages |
 | `--aur` | Force AUR only (AUR-only dependencies are always built recursively) |
 | `--repos` | Official repos only (never AUR) |
 | `--abs` | Build from ABS (`pkgctl`) in the bwrap sandbox |
@@ -497,10 +580,20 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `--jobsr <N>` | Max parallel official-repo installs (default 1) |
 | `--jobsa <N>` | Max parallel AUR/ABS builds (default 1) |
 | `--jobs <N>` | Alias for `--jobsr` (Portage-style) |
-| `--verbose-conflicts` | Verbose slot/conflict info (informational) |
+| `--load-average <X>` | Hold new builds while the 1-minute load average is above X |
+| `--nospinner` | No live Jobs row |
+| `--color <y\|n\|auto>` | Force or disable colour output |
+| `--quiet-build=n` | Same as `--debug` (Gentoo spelling) |
+| `--list-profiles` | List Portage-style profiles (like `eselect profile list`) |
+| `--set-profile <N\|PATH>` | Set `/etc/portage/make.profile`: index from `--list-profiles`, or a path |
+| `--aeforce` | AE Force: move files that block an install to `<file>.aeforce`, without asking |
+| `--noaefile` | AE Force: leave no `.ae*` files (keep old, drop new; with `--aeforce`: drop old) |
+| `--aelist` | List files left by AE Force (`.aenew` / `.aeforce` / `.aepark`) |
+| `--aeclean [new\|old\|park\|all]` | Remove AE Force files after a question (bare = `all`) |
 | `--ignore-default-opts` | Ignore `EMERGE_DEFAULT_OPTS` from make.conf for this run |
 | `--debug` | Show makepkg/compiler output live (also `AE_DEBUG=1`); by default it's hidden to keep the `>>>` lines readable, and a failed build still dumps the captured log |
 | `--log <PATH>` | Write a session log (command, emerge.log lines, full build output) for bug reports - no `| tee` needed |
+| `-N`/`--newuse`, `-e`/`--emptytree`, `-q`, `-O`, `-o`, `-k`, `-K`, `-g`, `-G`, `-b`, `-B`, `-f`, `-F`, `-l`, `-A`, `--nodeps`, `--onlydeps`, `--complete-graph`, `--changed-use`, `--backtrack`, `--columns`, `--newrepo`, `--reinstall`, `--with-bdeps`, `--metadata`, `--clean`, `--config`, `--noconfmem`, `--verbose-conflicts` | Gentoo-compat: accepted, no effect |
 | `-h`, `--help` | Help |
 | `-V`, `--version` | Version |
 

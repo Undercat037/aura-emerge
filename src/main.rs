@@ -109,6 +109,10 @@ libalpm runs the normal pacman hooks (depmod, DKMS, dracut/mkinitcpio, \
 grub-mkconfig, …) on every install, remove, -U and -Su. Hook directories are \
 /usr/share/libalpm/hooks/, /etc/pacman.d/hooks/, and /etc/portage/hooks/ \
 (see FILES).\n\n\
+The frontend never works as root: libalpm work (install, remove, sync, upgrade, \
+-U, signature checks) goes through a small root helper that validates every \
+request and enforces package.mask itself, while the resolver, AUR/ABS builds, \
+the sandbox and all caches run as your user.\n\n\
 Three operations that look similar are kept deliberately distinct: refreshing the \
 package databases (--sync), upgrading everything already installed (-u / -u @world), \
 and making sure this machine actually has everything world says it should \
@@ -136,7 +140,10 @@ CUSTOM SETS
     A file /etc/portage/sets/<name> or <name>.set (one package atom per
     line, '#' comments allowed; having both is an error) is invoked as
     @<name>, and can be combined with other
-    sets and plain package names in the same command. --list-sets prints
+    sets and plain package names in the same command. A set file may name
+    other sets as @other (expanded recursively, cycle-safe); installing
+    @name records @name in world, so its members stay depclean-protected
+    until removed from the set file. --list-sets prints
     every set currently available. --regen-sets @<name> re-resolves and
     rewrites the repository prefix on every entry in that set file (same
     idea as --regen-world, but for a custom set instead of world).
@@ -158,6 +165,60 @@ UNRESOLVED (Err/) PACKAGES AND --err-install
     entry is more suspect -- it was already installed from *somewhere*
     unknown -- so by default it's only listed, not touched. Pass --err-install
     to have those installed the normal way too.
+
+SOURCE PREFIXES
+    A package may carry a prefix that picks its source: aur/<name>,
+    abs/<name>, or <repo>/<name> (extra/nano, chaotic-aur/foo). They work
+    in install commands, in world and set files, and in -s:
+    emerge -s abs/nano searches ABS only, emerge -s emacs --repos searches
+    official repos only. Masked hits are tagged [ Masked ]; -sv adds
+    version, maintainer, votes, popularity and license for AUR packages.
+
+PARALLEL JOBS
+    --jobsr=N runs up to N official-repo installs at once, --jobsa=N up to
+    N AUR/ABS builds (both default to 1; --jobs is an alias for --jobsr).
+    Keep defaults in EMERGE_DEFAULT_OPTS. --load-average=X holds new builds
+    back while the 1-minute load is above X. Progress is shown as
+    '>>> Emerging (k of n, p%)' lines and a live Jobs footer
+    ('>>> Jobs: N of M complete'). Quiet builds print a heartbeat every
+    30s (pid, RSS); a build killed by a signal (OOM) is reported as such.
+    If the helper refuses one package of a batch, the batch is retried one
+    package at a time. --keep-going collects failures; --resume retries
+    just those. Use --debug (or AE_DEBUG=1) for live compiler output.
+
+REMOVING PACKAGES
+    -C removes the named packages, -c removes orphans, --prune removes
+    everything not in world. -C and -c wait 5 seconds (Ctrl-C aborts)
+    unless -a or -p is given. -c never removes world entries, members of
+    sets recorded in world, package.protect entries or profile @system
+    packages; --show-protected lists them.
+
+PROTECT AND FREEZE
+    package.protect lists packages that must never be removed (-C, -c,
+    --prune, conflict removals). package.freeze (and EMERGE_FREEZE in
+    make.conf) holds packages at the installed version during -u, AUR/ABS
+    rebuilds included. Syntax is that of package.mask.
+
+PROFILES
+    /etc/portage/make.profile points at a profile directory (Portage
+    layout: parent, packages, package.mask, make.defaults). --list-profiles
+    lists them, --set-profile <N|PATH> selects one, @system installs the
+    profile's * packages. With /usr/bin/eselect symlinked to emerge,
+    'eselect profile list|set|show' works too.
+
+AE FORCE
+    When an install would overwrite a file no package owns, emerge asks
+    whether to keep yours and save the package's copy as <file>.aenew.
+    --aeforce moves your file to <file>.aeforce instead, --noaefile leaves
+    no .ae* files. <file>.aepark is left by an interrupted install.
+    --aelist lists these files, --aeclean [new|old|park|all] removes them.
+
+SCANNER
+    Before an AUR/ABS build the PKGBUILD and .install are scanned (bash
+    AST plus line heuristics, known-IOC list). When the checkout is on
+    disk, a Makefile and shell scripts next to the PKGBUILD are scanned
+    too. The built package is audited again before -U. --scan audits only
+    and exits non-zero on any finding.
 
 NEWS
     emerge --news fetches https://archlinux.org/feeds/news/ and lists the
@@ -201,7 +262,19 @@ EXAMPLES
     emerge -u @world                Upgrade the whole system
     emerge @game-kit                Install a custom set
     emerge --prune                  Remove anything not tracked in world
-    emerge --news                   List Arch Linux news, newest first
+    emerge -uat @world --sync       Sync, then upgrade (asks first)
+    emerge -at aur/foo abs/nano @fonts --jobsr=7 --jobsa=2
+                                     Mixed sources and sets, parallel jobs
+    emerge -pt pkg --deep --keep-going  Dependency tree, full depth
+    emerge -s abs/nano              Search ABS only
+    emerge -cp --show-protected     Preview orphans, list the protected ones
+    emerge -C linux-zen             Remove a package (5s countdown)
+    emerge @preserved-rebuild -a    Reinstall missing declared dependencies
+    emerge --list-profiles          List profiles
+    emerge --set-profile 12         Select profile number 12
+    emerge --aelist                 List files left by AE Force
+    emerge --info                   System, repos, make.conf and log stats
+    emerge --news                  List Arch Linux news, newest first
     emerge --news 3                 Read news item 3 in full
     emerge --news all               Dismiss all news notifications
 
@@ -214,7 +287,8 @@ ALPM HOOKS
         /etc/portage/hooks/                 aura-emerge user hooks (same format)
 
     Earlier directories win on name collisions. Format: alpm-hooks(5).
-    Example and notes: misc/hooks/ in the source tree.
+    All three are registered even if pacman.conf sets no HookDir. Progress
+    is printed as '>>> Running pre-transaction hooks...'.
 
 FILES
     /etc/portage/world                      Explicitly-installed packages
@@ -250,8 +324,9 @@ FILES
 
 INSTALLATION
     Built with `cargo build --release`; the resulting binary is installed as
-    /usr/bin/emerge, with /usr/bin/portageq symlinked to it so it can also
-    answer as the portageq shim.
+    /usr/bin/emerge (root-owned, mode 755: the helper refuses to start
+    otherwise), with /usr/bin/portageq and /usr/bin/eselect symlinked to it
+    so it can also answer as the portageq and eselect shims.
 
     Everything below is generated straight from this Cli definition at
     install time (never hand-edited, so none of it can drift from
@@ -413,11 +488,11 @@ struct Cli {
     #[arg(long = "with-optdeps")]
     with_optdeps: bool,
 
-    // Dummy flags for compatibility
+    /// Gentoo compat: accepted, no effect
     #[arg(short = 'N', long = "newuse")]
     newuse: bool,
 
-    /// Reinstall all world pkgs
+    /// Gentoo compat: accepted, no effect
     #[arg(short = 'e', long = "emptytree")]
     emptytree: bool,
 
@@ -516,8 +591,10 @@ struct Cli {
     config: bool,
 
     // Output control
+    /// Gentoo compat: accepted, no effect
     #[arg(short = 'q', long = "quiet")]
     quiet: bool,
+    /// Hide the live Jobs row
     #[arg(long = "nospinner")]
     nospinner: bool,
     /// Show makepkg/compiler output live (also AE_DEBUG=1). Default hides
@@ -534,6 +611,7 @@ struct Cli {
     moo: bool,
     #[arg(long = "noconfmem")]
     noconfmem: bool,
+    /// Force or disable colour: y | n | auto
     #[arg(long = "color")]
     color: Option<String>,
     #[arg(long = "columns")]
@@ -568,6 +646,7 @@ struct Cli {
     /// Alias for --jobsr (Portage-style)
     #[arg(long = "jobs", value_name = "N")]
     jobs: Option<u32>,
+    /// Hold new builds while the 1-minute load average is above X
     #[arg(long = "load-average")]
     load_average: Option<f32>,
 
@@ -655,8 +734,10 @@ fn print_help() {
     println!("          [ --skippgp               ] [ --autopgp                   ]");
     println!("          [ --repos                 ] [ --jobsr=N   | --jobsa=N     ]");
     println!("          [ --edit                  ] [ --skip-srcinfo-regen        ]");
-    println!("          [ --pkgbuild-view         ] [ --emptytree                 ]");
+    println!("          [ --pkgbuild-view         ] [ --list-profiles             ]");
     println!("          [ --noreplace             ] [ --with-optdeps              ]");
+    println!("          [ --jobs=N | --load-average=X ] [ --debug | --log <PATH>  ]");
+    println!("          [ --set-profile <N|PATH>  ] [ --color <y|n|auto>          ]");
     println!("          [ --aeforce               ] [ --noaefile                   ]");
     println!("          [ --aelist                ] [ --aeclean [new|old|park|all]]");
     println!("          [ --oneshot               ] [ --pretend                   ]");

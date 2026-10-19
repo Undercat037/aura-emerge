@@ -1,0 +1,23 @@
+#compdef eselect
+# aura-emerge eselect shim - only the profile module
+_eselect() {
+  local -a ws profs
+  local l
+  # words before the cursor, minus global flags (--brief, --color, ...)
+  ws=( ${(M)words[2,CURRENT-1]:#[^-]*} )
+
+  if (( $#ws == 0 )); then
+    compadd profile
+  elif [[ $ws[1] == profile ]]; then
+    if (( $#ws == 1 )); then
+      compadd list set show
+    elif [[ $ws[2] == set && $#ws -eq 2 ]]; then
+      for l in ${(f)"$(emerge --list-profiles 2>/dev/null)"}; do
+        [[ $l =~ '^ *([0-9]+) +\*? *([^ ]+)$' ]] && profs+=( "${match[1]}:${match[2]}" )
+      done
+      _describe -t profiles 'profile' profs
+    fi
+  fi
+}
+
+_eselect "$@"

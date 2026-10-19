@@ -40,16 +40,20 @@ make install            # або вручну:
 
 ```bash
 cargo build --release
-sudo cp target/release/aura-emerge /usr/bin/emerge
+sudo install -Dm755 -o root -g root target/release/aura-emerge /usr/bin/emerge
 sudo ln -sf /usr/bin/emerge /usr/bin/portageq
+sudo ln -sf /usr/bin/emerge /usr/bin/eselect
 emerge --gen-completions bash | sudo tee /usr/share/bash-completion/completions/emerge
 emerge --gen-completions zsh  | sudo tee /usr/share/zsh/site-functions/_emerge
 emerge --gen-completions fish | sudo tee /usr/share/fish/vendor_completions.d/emerge.fish
 emerge --gen-manpage | sudo tee /usr/share/man/man1/emerge.1 >/dev/null
+sudo install -Dm644 misc/eselect.bash-completion /usr/share/bash-completion/completions/eselect
+sudo install -Dm644 misc/_eselect /usr/share/zsh/site-functions/_eselect
+sudo install -Dm644 misc/eselect.fish /usr/share/fish/vendor_completions.d/eselect.fish
 ```
 </details>
 
-**Залежності:** `git`, `bubblewrap` (пісочниця збірки для AUR/ABS)
+**Залежності:** `git`, `sudo`, `bubblewrap` (пісочниця збірки для AUR/ABS), `pacman` (libalpm, makepkg)
 **Опційно:** `devtools` (підтримка `--abs`), `gnupg` (`--autopgp`, автоімпорт PGP-ключів)
 
 ## Використання
@@ -60,13 +64,16 @@ emerge neovim                       # офіційні репозиторії, �
 emerge neovim-git --aur             # лише AUR (залежності лише з AUR збираються рекурсивно)
 emerge neovim --repos               # лише офіційні репозиторії, AUR не чіпати
 emerge neovim --abs                 # збірка з ABS (pkgctl) у пісочниці
+emerge aur/neovim-git abs/nano cachyos-extra-v3/neovim   # джерело для кожного пакунка - префіксом
 emerge -p neovim                    # пробний прогін
 emerge -a neovim                    # запитати перед дією
 emerge -1 htop                      # встановити як залежність (у world не потрапляє)
+emerge -at aur/setrixtui abs/nano @fonts --jobsr=7 --jobsa=2   # різні джерела, паралельні jobs
 
 # Видалення
 emerge -C neovim                    # видалити пакунок (unmerge)
 emerge -c                           # видалити сиріт (depclean)
+emerge -cp --show-protected         # показати сиріт, а також тих, що залишені через world
 emerge --prune                      # видалити пакунки, яких немає у world
 
 # Оновлення
@@ -74,6 +81,7 @@ emerge --sync                       # оновити бази пакунків
 emerge -u                           # повне оновлення (репозиторії + AUR)
 emerge -u --devel                   # ...і перезібрати -git/-hg/-svn/-bzr, чий upstream пішов уперед
 emerge -u --exclude linux --keep-going
+emerge -uat @world --sync           # синхронізація, потім оновлення (запитає)
 
 # World і набори
 emerge @world                       # встановити все зі world, чого ще немає
@@ -85,6 +93,8 @@ emerge --deselect neovim            # прибрати зі world без вид�
 emerge -s neovim                    # пошук: репозиторії, потім ABS, потім AUR
 emerge -S neovim                    # пошук за описом
 emerge -sv neovim                   # докладна інформація про пакунок
+emerge -s abs/nano                  # пошук лише в ABS (префікси aur/ і <repo>/ теж працюють)
+emerge -s emacs --repos             # лише офіційні репозиторії
 emerge --info                       # інформація про систему
 emerge --news                       # новини Arch Linux
 
@@ -98,6 +108,8 @@ emerge --install-pkgbuild ~/src/my-pkg       # зібрати локальний
 emerge --resume                     # продовжити перервану транзакцію
 emerge --undo                       # скасувати останнє встановлення/видалення
 emerge --revdep-rebuild             # полагодити бінарники зі зламаними посиланнями на бібліотеки
+emerge --list-profiles             # профілі (також: eselect profile list)
+emerge --aelist                     # файли, залишені AE Force (.aenew / .aeforce / .aepark)
 ```
 
 Повна таблиця прапорів - наприкінці сторінки.
@@ -165,10 +177,6 @@ FEATURES="ccache -test"
 
 `emerge --info` показує, що було прочитано, і підсумкове значення кожного перевизначення. [**→ Приклад make.conf**](misc/make.conf)
 
-### Вкладені сети
-
-У файлах `/etc/portage/sets/` дозволені рядки `@other` — рекурсивне розгортання (з захистом від циклів). Встановлення `@name` записує `@name` у world, щоб члени сета лишались захищені від depclean, доки пакет не прибрано з файлу сета.
-
 ### `package.mask`
 
 Пакунки, які ця машина не повинна встановлювати ніколи: перевірка спрацьовує навіть для транзитивних залежностей з AUR і навіть коли пакунок запитано за іменем. Замаскований пакунок жорстко зупиняє запит - без питань і без прапора для обходу.
@@ -186,21 +194,23 @@ extra/nano                     # конкретний пакунок з конк
 
 ### `package.protect`
 
-`/etc/portage/package.protect` (file or directory of files) lists packages that must not be removed. Syntax matches `package.mask` (optional `repo/` prefix, `*` globs, `#` comments). Covers `-C`/`--unmerge`, `-c`/`--depclean`, `--prune`, and conflict-driven removals. `--deselect` may still drop the name from world, but the package stays installed and depclean will not take it.
+`/etc/portage/package.protect` (файл або каталог файлів) перелічує пакунки, які не можна видаляти. Синтаксис як у `package.mask` (необов'язковий префікс `repo/`, глоби `*`, коментарі `#`). Діє на `-C`/`--unmerge`, `-c`/`--depclean`, `--prune` та видалення через конфлікти. `--deselect` і далі може прибрати ім'я зі world, але пакунок залишиться встановленим, і depclean його не чіпатиме. Пакунки `@system` з профілю захищені так само.
 
 ### `package.freeze`
 
-`/etc/portage/package.freeze` (and optional `EMERGE_FREEZE` in `make.conf`) holds packages at their installed version during `-u` / sysupgrade, including AUR/ABS rebuilds. Stricter than pacman's `IgnorePkg`: applies to selective `emerge -u pkg` too.
+`/etc/portage/package.freeze` (і необов'язковий `EMERGE_FREEZE` у `make.conf`) утримує пакунки на встановленій версії під час `-u` / sysupgrade, включно з перезбірками AUR/ABS. Суворіше за `IgnorePkg` у pacman: діє і на вибірковий `emerge -u pkg`.
 
-### Profiles
+### Профілі
 
-`/etc/portage/make.profile` is a symlink to a profile directory (Portage layout). Profile trees are searched under `/var/db/repos/{portage,gentoo,arch}/profiles`, `/usr/portage/profiles`, and `/usr/share/portage/profiles`. A profile may define `parent`, `packages` (`*` = `@system` bootstrap set), `package.mask`, and `make.defaults`. Nested `parent` chains are expanded depth-first. `emerge @system` installs the profile system set; those packages are protected from depclean like world entries. List and switch:
+`/etc/portage/make.profile` - символічне посилання на каталог профілю (розкладка Portage). `--list-profiles` показує дерево з `/var/db/repos/portage/profiles`; `parent` виду `repo:path` шукається в `/var/db/repos/<repo>/profiles/`. Профіль може задавати `parent`, `packages` (`*` = стартовий набір `@system`), `package.mask` і `make.defaults`. Ланцюжки `parent` розгортаються вглиб. `emerge @system` встановлює системний набір профілю; ці пакунки захищені від depclean так само, як записи world. Список і перемикання:
 
 ```
 emerge --list-profiles
 sudo emerge --set-profile 12
-# or: sudo ln -sf /usr/bin/emerge /usr/bin/eselect && eselect profile set 12
+# або: sudo ln -sf /usr/bin/emerge /usr/bin/eselect && eselect profile set 12
 ```
+
+`ln -sf /usr/bin/emerge /usr/bin/eselect` перетворює бінарник на мінімальний `eselect` (лише `eselect profile list|set|show`). Для `--list-profiles` і `--set-profile` шим не потрібен.
 
 
 ### `package.env`
@@ -260,6 +270,69 @@ emerge -pt noctalia --aur --deep     # на всю глибину
 ```
 
 Залежність, яку не названо в чиємусь «Depends On» (розв'язано через `provides` або вона глибше за `--deep`), усе одно показується, просто без батька. Для чистого встановлення через `--aur` транзитивні залежності лише з AUR на кроці плану поки не розв'язуються, тож дерево там пласке.
+
+### Паралельні jobs
+
+`--jobsr=N` встановлює до N пакунків з офіційних репозиторіїв одночасно, `--jobsa=N` - до N збірок AUR/ABS (за замовчуванням 1 і 1; `--jobs` - псевдонім `--jobsr`). Значення за замовчуванням можна задати в `EMERGE_DEFAULT_OPTS`. `--load-average=X` не запускає нові збірки, доки середнє навантаження за хвилину вище за X (але ніколи, якщо більше нічого не працює); `--nospinner` прибирає живий рядок Jobs.
+
+```bash
+emerge -at aur/setrixtui cachyos-extra-v3/neovim abs/nano @fonts --jobsr=7 --jobsa=2
+```
+
+```
+>>> Jobs: 26 of 26 complete  2m53s                         Load avg: 2.49, 3.11, 2.17
+```
+
+Якщо helper відхилив один пакунок із пачки (наприклад, він замаскований), пачка повторюється по одному пакунку, щоб усе інше все одно встановилося; з `--keep-going` збої виводяться підсумком у кінці, а `--resume` повторює лише їх.
+
+### Пошук
+
+`-s` шукає в офіційних репозиторіях, потім в ABS, потім в AUR. Префікс обирає джерело: `-s aur/<name>` - лише AUR, `-s abs/<name>` - ABS, `-s <repo>/<name>` - спочатку цей репозиторій; `--repos` обмежує пошук офіційними репозиторіями. Замасковані пакунки позначаються `[ Masked ]`. `-sv` додає встановлену версію, а для пакунків AUR - мейнтейнера, голоси, популярність, домашню сторінку, дату оновлення та ліцензію.
+
+```bash
+emerge -sv ttf-comic-sans
+emerge -s emacs --repos
+emerge -s abs/nano
+```
+
+### Видалення пакунків
+
+`-C` видаляє вказані пакунки, `-c` видаляє сиріт, `--prune` видаляє все, чого немає у world. `-C` друкує, що `selected`, `protected` і `omitted`; потім `-C` і `-c` чекають 5 секунд (`Unmerging in: 5 4 3 2 1`, Ctrl-C перериває), якщо тільки `-a` уже не запитав вас або не задано `-p`. Після `-C` імена також прибираються зі world.
+
+`-c` ніколи не видаляє запис world, члена набору, записаного у world, запис `package.protect` і пакунок `@system` з профілю. Він повідомляє, скільки пропущено; `--show-protected` перелічує їх.
+
+```bash
+emerge -cp --show-protected
+emerge -c
+emerge --unmerge --ask linux-zen-headers
+```
+
+### Хуки
+
+libalpm виконує кожен `*.hook` під час встановлення, видалення, `-U` та `-Su`, як і pacman (depmod, DKMS, dracut/mkinitcpio, кеші fontconfig та іконок, `grub-mkconfig`, …). Каталоги; за збігу імен перемагає ранніший:
+
+```
+/usr/share/libalpm/hooks/    хуки з пакунків
+/etc/pacman.d/hooks/         хуки адміністратора
+/etc/portage/hooks/          власні хуки aura-emerge (той самий формат, alpm-hooks(5))
+```
+
+Усі три реєструються завжди, навіть якщо в `pacman.conf` немає `HookDir`. Хід виконання друкується як `>>> Running pre-transaction hooks...` / `>>> (2 of 4) Install DKMS modules`.
+
+### AE Force (конфлікти файлів)
+
+Якщо встановлення перезаписало б файл, яким не володіє жоден пакунок, aura-emerge питає `AE Force: Create .aenew for conflict files?` «Так» залишає ваш файл на місці, а версію з пакунка зберігає як `<file>.aenew`.
+
+| Прапор | Що відбувається |
+|--------|-----------------|
+| `--aeforce` | без питання; ваш старий файл переноситься до `<file>.aeforce`, новий займає його місце |
+| `--noaefile` | без питання; файлів `.ae*` не лишається: старий збережено, новий відкинуто (з `--aeforce`: старий відкинуто, новий збережено) |
+
+`<file>.aepark` лишається після перерваного встановлення; якщо ім'я зайняте, додається суфікс `.N`. `emerge --aelist` перелічує всі такі файли, `emerge --aeclean [new|old|park|all]` видаляє їх після питання (просто `--aeclean` = `all`).
+
+### `--info`
+
+`emerge --info` друкує версію (і версію libalpm, з якою зібрано), ядро, CPU/пам'ять/swap, чинні `--jobsr`/`--jobsa`, кожен репозиторій у порядку `pacman.conf` із дзеркалом, значення з `makepkg.conf` і `make.conf` (і які перевизначення перемогли), профіль, розміри mask/world та підсумки журналу merge.
 
 ### Журнал merge
 
@@ -349,7 +422,7 @@ chaotic-aur/visual-studio-code-bin
 
 ### Власні набори (sets)
 
-`/etc/portage/sets/<name>` (або `<name>.set`) викликається як `@<name>`. Один пакунок на рядок, коментарі `#` дозволені.
+`/etc/portage/sets/<name>` (або `<name>.set`) викликається як `@<name>`. Один пакунок на рядок, коментарі `#` дозволені. Рядки виду `@other` вкладають інший набір (розгортається рекурсивно, цикли безпечні). Встановлення `@name` записує `@name` у world, тож члени набору захищені від depclean, доки їх не приберуть із файлу набору.
 
 ```
 # /etc/portage/sets/game-kit
@@ -375,6 +448,8 @@ emerge -s @game-kit                   # звідки береться кожен
 - **після видалення** - перевстановлює із записаного джерела (`Err/`/`abs/` лише перелічуються);
 - **після `-u`** - не підтримується (немає знімка версій).
 
+Стан зберігається в `/etc/portage/lastaction.state` (`--undo`) і `/etc/portage/resume.state` (`--resume`).
+
 ### Новини
 
 `emerge --news` отримує [RSS-стрічку новин Arch Linux](https://archlinux.org/feeds/news/). Стан прочитаного зберігається в `~/.cache/aura-emerge/news.state` (root не потрібен).
@@ -395,6 +470,8 @@ emerge --news all    # позначити все прочитаним
 2. **Рядкові евристики:** `chmod 777`, «голі» IPv4, сторонні менеджери пакунків (`npm install …`), paste-сайти, `.onion`, перевірки на антипісочницю, відомі IOC кампаній (Atomic Arch, openconnect-sso, `compromised.txt` 2018 року, …).
 
 Знахідки бувають `Suspicious` або `ConfirmedIoc`. Спрацювання не блокує жорстко: ви отримуєте файл/рядок, посилання на cgit і `Continue anyway? [y/N]`.
+
+**Допоміжні файли:** коли checkout лежить на диску (збірка або `--install-pkgbuild <PATH> --scan`), `Makefile` (`Makefile`/`makefile`/`GNUmakefile`) та shell-скрипти, на які посилається PKGBUILD (`*.sh`, `*.bash`, `*.zsh`, `*.fish`), теж перевіряються построково: `curl|sh`, base64/hex у shell, «голі» IP та решта shell-IOC. У знахідці вказано файл і рядок. `--scan <pkg> --aur` бачить лише те, що віддає cgit (`PKGBUILD` і `.install`). Патчі поки не скануються.
 
 ### Пісочниця
 
@@ -418,6 +495,10 @@ emerge --news all    # позначити все прочитаним
 **Третій бар'єр перед встановленням:** готовий `*.pkg.tar.*` перевіряється через `bsdtar` на setuid/setgid, скрипти `.INSTALL` і чутливі шляхи (хуки alpm, юніти systemd, sudoers, udev, …). `.INSTALL` повторно сканується сканером PKGBUILD. З `-a` потрібно підтвердити; з `--noconfirm` - попередження і продовження.
 
 Встановлення залежностей (`pacman -S`) і фінальний `pacman -U` виконуються **поза** пісочницею - вони не запускають код PKGBUILD.
+
+### Привілеї
+
+Фронтенд ніколи не працює від root. Якщо запуск від root (`sudo emerge …`, `doas`, `pkexec`, `su -`), він спершу стартує root-helper, потім назавжди знижує права до користувача, що викликав (береться з `AE_USER`, `SUDO_UID`, `DOAS_USER`, `PKEXEC_UID` або audit login uid; якщо нічого не знайдено - зупинка). Під час запуску від звичайного користувача helper стартує через `sudo` при першій потребі. Резолвер, збірки AUR/ABS, пісочниця та всі кеші працюють без привілеїв; робота через libalpm (install/remove/sync/upgrade/`-U`, перевірка підписів) іде через helper (`--ae-service`), який перевіряє кожен запит і сам застосовує `package.mask` (`helper refused: … masked by …`).
 
 ### Інше посилення
 
@@ -457,8 +538,6 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `-1`, `--oneshot` | Встановити як залежність (у world не потрапляє) |
 | `-n`, `--noreplace` | Не перевстановлювати, якщо вже є (та сама або новіша версія) |
 | `--with-optdeps` | Заодно встановлювати опційні залежності пакунків з офіційних репозиторіїв |
-| `-N`, `--newuse` | Включити встановлені пакунки зі зміненими USE-прапорами |
-| `-e`, `--emptytree` | Перевстановити всі пакунки зі world |
 | `--aur` | Примусово лише AUR (залежності лише з AUR завжди збираються рекурсивно) |
 | `--repos` | Лише офіційні репозиторії (AUR не чіпати) |
 | `--abs` | Збірка з ABS (`pkgctl`) у пісочниці bwrap |
@@ -500,10 +579,20 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `--jobsr <N>` | Макс. паралельних встановлень з офіційних репозиторіїв (за замовчуванням 1) |
 | `--jobsa <N>` | Макс. паралельних збірок AUR/ABS (за замовчуванням 1) |
 | `--jobs <N>` | Псевдонім `--jobsr` (у стилі Portage) |
-| `--verbose-conflicts` | Докладні відомості про слоти/конфлікти (довідково) |
+| `--load-average <X>` | Не запускати нові збірки, доки середнє навантаження за хвилину вище за X |
+| `--nospinner` | Без живого рядка Jobs |
+| `--color <y\|n\|auto>` | Примусово ввімкнути або вимкнути колір |
+| `--quiet-build=n` | Те саме, що `--debug` (написання Gentoo) |
+| `--list-profiles` | Список профілів у стилі Portage (як `eselect profile list`) |
+| `--set-profile <N\|PATH>` | Задати `/etc/portage/make.profile`: індекс із `--list-profiles` або шлях |
+| `--aeforce` | AE Force: переносити файли, що заважають встановленню, до `<file>.aeforce` без питання |
+| `--noaefile` | AE Force: не лишати файли `.ae*` (старий зберегти, новий відкинути; з `--aeforce`: відкинути старий) |
+| `--aelist` | Список файлів, залишених AE Force (`.aenew` / `.aeforce` / `.aepark`) |
+| `--aeclean [new\|old\|park\|all]` | Видалити файли AE Force після питання (без аргументу = `all`) |
 | `--ignore-default-opts` | Ігнорувати `EMERGE_DEFAULT_OPTS` з make.conf на цей запуск |
 | `--debug` | Показувати вивід makepkg/компілятора наживо (також `AE_DEBUG=1`); за замовчуванням він прихований заради читабельності рядків `>>>`, а при падінні збірки збережений лог усе одно виводиться |
 | `--log <PATH>` | Записати лог сесії (команда, рядки emerge.log, повний вивід збірки) для баг-репортів - `| tee` не потрібен |
+| `-N`/`--newuse`, `-e`/`--emptytree`, `-q`, `-O`, `-o`, `-k`, `-K`, `-g`, `-G`, `-b`, `-B`, `-f`, `-F`, `-l`, `-A`, `--nodeps`, `--onlydeps`, `--complete-graph`, `--changed-use`, `--backtrack`, `--columns`, `--newrepo`, `--reinstall`, `--with-bdeps`, `--metadata`, `--clean`, `--config`, `--noconfmem`, `--verbose-conflicts` | Сумісність із Gentoo: приймаються, нічого не роблять |
 | `-h`, `--help` | Довідка |
 | `-V`, `--version` | Версія |
 

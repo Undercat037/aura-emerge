@@ -1,6 +1,6 @@
 post_install() {
   ln -sf /usr/bin/emerge /usr/bin/portageq
-  install -dm755 /etc/portage/sets
+  ln -sf /usr/bin/emerge /usr/bin/eselect
 }
 
 post_upgrade() {
@@ -8,5 +8,5 @@ post_upgrade() {
 }
 
 pre_remove() {
-  rm -f /usr/bin/portageq
+  rm -f /usr/bin/portageq /usr/bin/eselect
 }
