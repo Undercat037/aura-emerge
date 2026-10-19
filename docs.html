@@ -51,6 +51,8 @@
         <a class="nav-link" href="#makeconf"><span class="dot"></span> make.conf</a>
         <a class="nav-link" href="#mask"><span class="dot"></span> package.mask</a>
         <a class="nav-link" href="#package-env"><span class="dot"></span> package.env</a>
+        <a class="nav-link" href="#hold"><span class="dot"></span> protect / freeze</a>
+        <a class="nav-link" href="#profiles"><span class="dot"></span> Profiles</a>
       </div>
       <div class="nav-section">
         <div class="nav-section-title" data-i18n="nav_core">Core</div>
@@ -59,6 +61,12 @@
         <a class="nav-link" href="#log"><span class="dot"></span> emerge.log</a>
         <a class="nav-link" href="#news"><span class="dot"></span> --news</a>
         <a class="nav-link" href="#usage"><span class="dot"></span> <span data-i18n="nav_usage">Usage</span></a>
+        <a class="nav-link" href="#examples"><span class="dot"></span> Examples</a>
+        <a class="nav-link" href="#progress"><span class="dot"></span> Progress / cache</a>
+        <a class="nav-link" href="#batch"><span class="dot"></span> --undo / --batchinstall</a>
+        <a class="nav-link" href="#aeforce"><span class="dot"></span> AE Force</a>
+        <a class="nav-link" href="#hooks"><span class="dot"></span> ALPM hooks</a>
+        <a class="nav-link" href="#completion"><span class="dot"></span> Completion</a>
       </div>
       <div class="nav-section">
         <div class="nav-section-title" data-i18n="nav_security">Security</div>
@@ -119,12 +127,16 @@ cd aura-emerge</code></pre>
                 </div>
                 <div class="tab-panel active" data-panel="manual" role="tabpanel">
                   <pre><code>cargo build --release
-sudo cp target/release/aura-emerge /usr/bin/emerge
+sudo install -Dm755 -o root -g root target/release/aura-emerge /usr/bin/emerge   # helper needs root:root 755
 sudo ln -sf /usr/bin/emerge /usr/bin/portageq
+sudo ln -sf /usr/bin/emerge /usr/bin/eselect
 emerge --gen-completions bash | sudo tee /usr/share/bash-completion/completions/emerge
 emerge --gen-completions zsh  | sudo tee /usr/share/zsh/site-functions/_emerge
 emerge --gen-completions fish | sudo tee /usr/share/fish/vendor_completions.d/emerge.fish
-emerge --gen-manpage | sudo tee /usr/share/man/man1/emerge.1 &gt;/dev/null</code></pre>
+emerge --gen-manpage | sudo tee /usr/share/man/man1/emerge.1 &gt;/dev/null
+sudo install -Dm644 misc/eselect.bash-completion /usr/share/bash-completion/completions/eselect
+sudo install -Dm644 misc/_eselect /usr/share/zsh/site-functions/_eselect
+sudo install -Dm644 misc/eselect.fish /usr/share/fish/vendor_completions.d/eselect.fish</code></pre>
                 </div>
                 <div class="tab-panel" data-panel="makepkg" role="tabpanel" hidden>
                   <pre><code>makepkg -si</code></pre>
@@ -140,17 +152,20 @@ emerge --gen-manpage | sudo tee /usr/share/man/man1/emerge.1 &gt;/dev/null</code
           <h3 class="lang-block" data-lang-block="ua" hidden>Залежності</h3>
 <h3 class="lang-block" data-lang-block="ru" hidden>Зависимости</h3>
           <ul>
-            <li><strong data-i18n="deps_req">Required:</strong> <code>git</code></li>
+            <li><strong data-i18n="deps_req">Required:</strong> <code>git</code>, <code>sudo</code>, <code>bubblewrap</code>, <code>pacman</code> (libalpm)</li>
             <li><strong data-i18n="deps_opt">Optional:</strong>
-              <span class="lang-block" data-lang-block="en"><code>devtools</code> (<code>--abs</code>), <code>gnupg</code> (<code>--autopgp</code>), <code>bubblewrap</code> (sandbox; without it builds fall back to plain makepkg)</span>
-              <span class="lang-block" data-lang-block="ua" hidden><code>devtools</code> (<code>--abs</code>), <code>gnupg</code> (<code>--autopgp</code>), <code>bubblewrap</code> (пісочниця; без нього збірка виконується звичайним makepkg)</span>
-<span class="lang-block" data-lang-block="ru" hidden><code>devtools</code> (<code>--abs</code>), <code>gnupg</code> (<code>--autopgp</code>), <code>bubblewrap</code> (песочница; без неё сборка откатывается к обычному makepkg)</span>
+              <span class="lang-block" data-lang-block="en"><code>devtools</code> (<code>--abs</code>), <code>gnupg</code> (<code>--autopgp</code>)</span>
+              <span class="lang-block" data-lang-block="ua" hidden><code>devtools</code> (<code>--abs</code>), <code>gnupg</code> (<code>--autopgp</code>)</span>
+<span class="lang-block" data-lang-block="ru" hidden><code>devtools</code> (<code>--abs</code>), <code>gnupg</code> (<code>--autopgp</code>)</span>
             </li>
           </ul>
+          <p class="lang-block" data-lang-block="en"><code>bubblewrap</code> is required for AUR/ABS builds; the only way around it is an explicit <code>--no-sandbox</code>.</p>
+          <p class="lang-block" data-lang-block="ua" hidden><code>bubblewrap</code> обов’язковий для збірок AUR/ABS; обійти його можна лише явним <code>--no-sandbox</code>.</p>
+          <p class="lang-block" data-lang-block="ru" hidden><code>bubblewrap</code> обязателен для сборок AUR/ABS; обойти его можно только явным <code>--no-sandbox</code>.</p>
 
           <div class="callout callout-stripe blue">
             <div class="callout-title" data-i18n="binary_name">Binary name</div>
-            <span data-i18n="binary_name_body" data-i18n-html>The installed binary is <code>emerge</code> (with a <code>portageq</code> symlink). Completions and the man page are generated from the same CLI definition.</span>
+            <span data-i18n="binary_name_body" data-i18n-html>The installed binary is <code>emerge</code> (with <code>portageq</code> and <code>eselect</code> symlinks). Completions (bash/zsh/fish) and the man page ship with the package and are generated from the CLI definition.</span>
           </div>
         </section>
 
@@ -178,6 +193,7 @@ chaotic-aur/chaotic-keyring</code></pre>
             <p><code>/etc/portage/sets/&lt;name&gt;.set</code> is invoked as <code>@&lt;name&gt;</code>. One atom per line, <code>#</code> comments allowed. Sets combine freely with each other and with plain packages:</p>
             <pre class="blue"><code>emerge @game-kit @dev-tools neovim
 emerge --list-sets</code></pre>
+            <p>A set file may name other sets as <code>@other</code> (expanded recursively, cycle-safe). Installing <code>@name</code> records <code>@name</code> in world, so its members stay protected from depclean until you remove them from the set file. <code>-s @name</code> shows where each member comes from (repo / aur / not found).</p>
             <p>Entries without a prefix are resolved through the official repos first, and through the AUR only if that misses — here <code>ttf-comic-sans</code> comes from the AUR:</p>
             <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -at @fonts</span>
 <span class="t-ok">&gt;&gt;&gt;</span> Not found in official repos: 'ttf-comic-sans'. Searching AUR...
@@ -199,7 +215,11 @@ Total: 8 package(s)</code></pre>
 ├── make.conf
 ├── env/                 <span class="t-dim"># env files for package.env</span>
 ├── package.env/         <span class="t-dim"># a file, or a directory of files</span>
+├── make.profile -&gt;      <span class="t-dim"># profile symlink (see Profiles)</span>
 ├── package.mask/        <span class="t-dim"># a file, or a directory of files</span>
+├── package.protect/     <span class="t-dim"># never remove</span>
+├── package.freeze/      <span class="t-dim"># never upgrade</span>
+├── hooks/               <span class="t-dim"># user alpm hooks (*.hook)</span>
 ├── sets/                <span class="t-dim"># custom sets: &lt;name&gt;.set</span>
 ├── world
 ├── lastaction.state     <span class="t-dim"># emerge's own state files</span>
@@ -251,6 +271,7 @@ chaotic-aur/chaotic-keyring</code></pre>
             <p><code>/etc/portage/sets/&lt;name&gt;.set</code> викликається як <code>@&lt;name&gt;</code>. Один атом на рядок, коментарі через <code>#</code> дозволені. Набори вільно комбінуються між собою та зі звичайними пакунками:</p>
             <pre class="blue"><code>emerge @game-kit @dev-tools neovim
 emerge --list-sets</code></pre>
+            <p>Файл набору може містити інші набори як <code>@other</code> (розкриваються рекурсивно, цикли безпечні). Встановлення <code>@name</code> записує <code>@name</code> у world, тож учасники набору захищені від depclean, доки їх не приберуть із файлу набору. <code>-s @name</code> показує, звідки походить кожен пакунок (repo / aur / не знайдено).</p>
             <p>Записи без префікса спершу шукаються в офіційних репозиторіях і лише за невдачі — в AUR. Тут <code>ttf-comic-sans</code> береться з AUR:</p>
             <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -at @fonts</span>
 <span class="t-ok">&gt;&gt;&gt;</span> Not found in official repos: 'ttf-comic-sans'. Searching AUR...
@@ -272,7 +293,11 @@ Total: 8 package(s)</code></pre>
 ├── make.conf
 ├── env/                 <span class="t-dim"># env files for package.env</span>
 ├── package.env/         <span class="t-dim"># a file, or a directory of files</span>
+├── make.profile -&gt;      <span class="t-dim"># profile symlink (see Profiles)</span>
 ├── package.mask/        <span class="t-dim"># a file, or a directory of files</span>
+├── package.protect/     <span class="t-dim"># never remove</span>
+├── package.freeze/      <span class="t-dim"># never upgrade</span>
+├── hooks/               <span class="t-dim"># user alpm hooks (*.hook)</span>
 ├── sets/                <span class="t-dim"># custom sets: &lt;name&gt;.set</span>
 ├── world
 ├── lastaction.state     <span class="t-dim"># emerge's own state files</span>
@@ -324,6 +349,7 @@ chaotic-aur/chaotic-keyring</code></pre>
             <p><code>/etc/portage/sets/&lt;name&gt;.set</code> вызывается как <code>@&lt;name&gt;</code>. Один атом на строку, допускаются комментарии <code>#</code>. Наборы свободно сочетаются друг с другом и с обычными пакетами:</p>
             <pre class="blue"><code>emerge @game-kit @dev-tools neovim
 emerge --list-sets</code></pre>
+            <p>Файл набора может перечислять другие наборы как <code>@other</code> (раскрываются рекурсивно, циклы безопасны). Установка <code>@name</code> записывает <code>@name</code> в world, так что участники набора защищены от depclean, пока их не уберут из файла набора. <code>-s @name</code> показывает, откуда берётся каждый пакет (repo / aur / не найден).</p>
             <p>Записи без префикса сначала ищутся в официальных репозиториях, и только при промахе — в AUR; здесь <code>ttf-comic-sans</code> приходит из AUR:</p>
             <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -at @fonts</span>
 <span class="t-ok">&gt;&gt;&gt;</span> Not found in official repos: 'ttf-comic-sans'. Searching AUR...
@@ -345,7 +371,11 @@ Total: 8 package(s)</code></pre>
 ├── make.conf
 ├── env/                 <span class="t-dim"># env-файлы для package.env</span>
 ├── package.env/         <span class="t-dim"># файл или каталог файлов</span>
+├── make.profile -&gt;      <span class="t-dim"># симлинк профиля (см. Profiles)</span>
 ├── package.mask/        <span class="t-dim"># файл или каталог файлов</span>
+├── package.protect/     <span class="t-dim"># никогда не удалять</span>
+├── package.freeze/      <span class="t-dim"># никогда не обновлять</span>
+├── hooks/               <span class="t-dim"># пользовательские alpm-хуки (*.hook)</span>
 ├── sets/                <span class="t-dim"># пользовательские наборы: &lt;name&gt;.set</span>
 ├── world
 ├── lastaction.state     <span class="t-dim"># служебные state-файлы emerge</span>
@@ -380,7 +410,7 @@ Would you like to merge these packages? [Yes/No] <span class="t-in">y</span>
         <section id="makeconf">
           <h2 data-i18n="section_config">make.conf</h2>
           <div class="lang-block" data-lang-block="en">
-            <p><code>/etc/portage/make.conf</code> and <code>~/.config/emerge/make.conf</code> are aura-emerge's own config (not <code>makepkg.conf</code>). The system file is read first and the user file last; the last key wins.</p>
+            <p><code>/etc/portage/make.conf</code> is aura-emerge's own config (not <code>makepkg.conf</code>). Only the system path is read — there is no per-user make.conf.</p>
             <p>A real config from a working machine:</p>
             <pre><code>EMERGE_DEFAULT_OPTS="--jobsr=8 --tree --deep"
 COLORS="ok=#FFB3AE warn=#E7BDB9 error=#FDB1AC info=#E7BDB9 special=#cba6f7"
@@ -412,7 +442,7 @@ OPTIONS="strip docs !libtool !staticlibs emptydirs zipman purge !debug !lto"</co
             </ul>
           </div>
           <div class="lang-block" data-lang-block="ua" hidden>
-            <p><code>/etc/portage/make.conf</code> і <code>~/.config/emerge/make.conf</code> — власний конфіг aura-emerge (а не <code>makepkg.conf</code>). Системний файл читається першим, користувацький — останнім; переможе останній ключ.</p>
+            <p><code>/etc/portage/make.conf</code> — власний конфіг aura-emerge (а не <code>makepkg.conf</code>). Читається лише системний шлях — користувацького make.conf немає.</p>
             <p>Справжній конфіг з робочої машини:</p>
             <pre><code>EMERGE_DEFAULT_OPTS="--jobsr=8 --tree --deep"
 COLORS="ok=#FFB3AE warn=#E7BDB9 error=#FDB1AC info=#E7BDB9 special=#cba6f7"
@@ -444,7 +474,7 @@ OPTIONS="strip docs !libtool !staticlibs emptydirs zipman purge !debug !lto"</co
             </ul>
           </div>
 <div class="lang-block" data-lang-block="ru" hidden>
-            <p><code>/etc/portage/make.conf</code> и <code>~/.config/emerge/make.conf</code> — собственный конфиг aura-emerge (не <code>makepkg.conf</code>). Системный файл читается первым, пользовательский — последним; побеждает последний ключ.</p>
+            <p><code>/etc/portage/make.conf</code> — собственный конфиг aura-emerge (не <code>makepkg.conf</code>). Читается только системный путь — пользовательского make.conf нет.</p>
             <p>Реальный конфиг с рабочей машины:</p>
             <pre><code>EMERGE_DEFAULT_OPTS="--jobsr=8 --tree --deep"
 COLORS="ok=#FFB3AE warn=#E7BDB9 error=#FDB1AC info=#E7BDB9 special=#cba6f7"
@@ -644,6 +674,86 @@ OPTIONS="strip docs !debug lto"</code></pre>
               <li>Env-файлы имеют синтаксис <code>make.conf</code>. Учитываются только переменные сборки (<code>CFLAGS</code>, <code>CXXFLAGS</code>, <code>MAKEFLAGS</code>, <code>OPTIONS</code>, …).</li>
               <li><strong>Ошибки:</strong> символическая ссылка, некорректная запись или отсутствующий env-файл пропускаются с предупреждением; остальное применяется.</li>
             </ul>
+          </div>
+        </section>
+
+        <section id="hold">
+          <h2>package.protect / package.freeze</h2>
+          <div class="lang-block" data-lang-block="en">
+            <p>Two sibling lists to <a href="#mask">package.mask</a>, same syntax (optional <code>repo/</code> prefix, <code>*</code> globs, <code># comment</code>; a file or a directory of files):</p>
+            <ul>
+              <li><code>/etc/portage/package.protect</code> — packages that must <strong>not be removed</strong>: <code>-C</code>, <code>-c</code>, <code>--prune</code> and conflict-driven removals. <code>--deselect</code> may still drop the name from world, but the package stays installed and depclean skips it.</li>
+              <li><code>/etc/portage/package.freeze</code> (and <code>EMERGE_FREEZE="a b *-git"</code> in <code>make.conf</code>) — packages held at the installed version during <code>-u</code>, including AUR/ABS rebuilds. Stricter than pacman's <code>IgnorePkg</code>: it also applies to a selective <code>emerge -u pkg</code>.</li>
+            </ul>
+            <pre><code># /etc/portage/package.protect
+linux-cachyos-bore
+extra/linux-firmware     # never unmerge
+
+# /etc/portage/package.freeze
+aur/*-git
+nvidia-open-dkms</code></pre>
+            <p>Held-back packages are reported once per run: <code>&gt;&gt;&gt; holding back 1 package(s) …</code>. Members of the profile's <a href="#profiles"><code>@system</code></a> are protected from depclean in the same way.</p>
+          </div>
+          <div class="lang-block" data-lang-block="ua" hidden>
+            <p>Два списки, споріднені з <a href="#mask">package.mask</a>, із тим самим синтаксисом (необов’язковий префікс <code>repo/</code>, глоби <code>*</code>, <code># коментар</code>; файл або каталог файлів):</p>
+            <ul>
+              <li><code>/etc/portage/package.protect</code> — пакунки, які <strong>не можна видаляти</strong>: <code>-C</code>, <code>-c</code>, <code>--prune</code> і видалення через конфлікти. <code>--deselect</code> усе ще може прибрати ім’я зі world, але пакунок лишається встановленим, а depclean його не чіпає.</li>
+              <li><code>/etc/portage/package.freeze</code> (і <code>EMERGE_FREEZE="a b *-git"</code> у <code>make.conf</code>) — пакунки, що лишаються на встановленій версії під час <code>-u</code>, зокрема й перезбірки AUR/ABS. Суворіше за <code>IgnorePkg</code> у pacman: діє й на вибіркове <code>emerge -u pkg</code>.</li>
+            </ul>
+            <pre><code># /etc/portage/package.protect
+linux-cachyos-bore
+extra/linux-firmware     # never unmerge
+
+# /etc/portage/package.freeze
+aur/*-git
+nvidia-open-dkms</code></pre>
+            <p>Про утримані пакунки повідомляється раз за запуск: <code>&gt;&gt;&gt; holding back 1 package(s) …</code>. Члени <a href="#profiles"><code>@system</code></a> профілю захищені від depclean так само.</p>
+          </div>
+          <div class="lang-block" data-lang-block="ru" hidden>
+            <p>Два списка, родственные <a href="#mask">package.mask</a>, с тем же синтаксисом (необязательный префикс <code>repo/</code>, глобы <code>*</code>, <code># комментарий</code>; файл или каталог файлов):</p>
+            <ul>
+              <li><code>/etc/portage/package.protect</code> — пакеты, которые <strong>нельзя удалять</strong>: <code>-C</code>, <code>-c</code>, <code>--prune</code> и удаления из-за конфликтов. <code>--deselect</code> всё ещё может убрать имя из world, но пакет остаётся установленным, а depclean его не трогает.</li>
+              <li><code>/etc/portage/package.freeze</code> (и <code>EMERGE_FREEZE="a b *-git"</code> в <code>make.conf</code>) — пакеты, остающиеся на установленной версии при <code>-u</code>, включая пересборки AUR/ABS. Строже, чем <code>IgnorePkg</code> в pacman: действует и на выборочный <code>emerge -u pkg</code>.</li>
+            </ul>
+            <pre><code># /etc/portage/package.protect
+linux-cachyos-bore
+extra/linux-firmware     # never unmerge
+
+# /etc/portage/package.freeze
+aur/*-git
+nvidia-open-dkms</code></pre>
+            <p>Об удержанных пакетах сообщается один раз за запуск: <code>&gt;&gt;&gt; holding back 1 package(s) …</code>. Члены <a href="#profiles"><code>@system</code></a> профиля защищены от depclean так же.</p>
+          </div>
+        </section>
+
+        <section id="profiles">
+          <h2>Profiles / @system / eselect</h2>
+          <div class="lang-block" data-lang-block="en">
+            <p><code>/etc/portage/make.profile</code> is a symlink to a profile directory in Portage layout; profile trees live under <code>/var/db/repos/portage/profiles</code>. A profile may define <code>parent</code> (chains are expanded depth-first), <code>packages</code> (a <code>*name</code> line puts the package into the <code>@system</code> bootstrap set), <code>package.mask</code> and <code>make.defaults</code>. <code>emerge @system</code> installs that set.</p>
+            <pre class="blue"><code>emerge --list-profiles                    # numbered list, current one marked *
+sudo emerge --set-profile 12              # by index, or by path
+# or the eselect shim:
+sudo ln -sf /usr/bin/emerge /usr/bin/eselect
+eselect profile list | show | set 12</code></pre>
+            <p>The shim only implements the <code>profile</code> module. <code>emerge --info</code> prints <code>profile: none …</code> while no profile is set.</p>
+          </div>
+          <div class="lang-block" data-lang-block="ua" hidden>
+            <p><code>/etc/portage/make.profile</code> — символічне посилання на каталог профілю в розкладці Portage; дерева профілів лежать у <code>/var/db/repos/portage/profiles</code>. Профіль може задавати <code>parent</code> (ланцюги розкриваються вглиб), <code>packages</code> (рядок <code>*name</code> додає пакунок до початкового набору <code>@system</code>), <code>package.mask</code> і <code>make.defaults</code>. <code>emerge @system</code> встановлює цей набір.</p>
+            <pre class="blue"><code>emerge --list-profiles                    # нумерований список, поточний позначено *
+sudo emerge --set-profile 12              # за індексом або шляхом
+# або через shim eselect:
+sudo ln -sf /usr/bin/emerge /usr/bin/eselect
+eselect profile list | show | set 12</code></pre>
+            <p>Shim реалізує лише модуль <code>profile</code>. Поки профіль не задано, <code>emerge --info</code> друкує <code>profile: none …</code>.</p>
+          </div>
+          <div class="lang-block" data-lang-block="ru" hidden>
+            <p><code>/etc/portage/make.profile</code> — симлинк на каталог профиля в раскладке Portage; деревья профилей лежат в <code>/var/db/repos/portage/profiles</code>. Профиль может задавать <code>parent</code> (цепочки раскрываются вглубь), <code>packages</code> (строка <code>*name</code> добавляет пакет в начальный набор <code>@system</code>), <code>package.mask</code> и <code>make.defaults</code>. <code>emerge @system</code> устанавливает этот набор.</p>
+            <pre class="blue"><code>emerge --list-profiles                    # нумерованный список, текущий помечен *
+sudo emerge --set-profile 12              # по индексу или пути
+# или через shim eselect:
+sudo ln -sf /usr/bin/emerge /usr/bin/eselect
+eselect profile list | show | set 12</code></pre>
+            <p>Shim реализует только модуль <code>profile</code>. Пока профиль не задан, <code>emerge --info</code> печатает <code>profile: none …</code>.</p>
           </div>
         </section>
 
@@ -877,14 +987,19 @@ emerge --news all    # отметить всё прочитанным</code></pr
           <div class="lang-block" data-lang-block="en">
             <pre><code>emerge neovim                              # repos → AUR fallback
 emerge neovim-git --aur                    # AUR only, recursive AUR deps
+emerge neovim --repos                      # official repos only
 emerge neovim --abs                        # ABS in bwrap
+emerge abs/nano aur/setrixtui              # source prefixes
 emerge -u @world                           # full upgrade (does not read world)
 emerge @world                              # provision from world
+emerge -u --exclude linux --keep-going     # upgrade, skip one, don't stop on failure
+emerge -at @fonts --deep                   # sets, tree plan
 emerge --scan neovim-git --aur             # audit only
 emerge --install-pkgbuild ~/src/my-pkg     # local PKGBUILD (scanner + sandbox)
 emerge -u --devel                          # upgrade + rebuild moved -git
 emerge --revdep-rebuild                    # broken shared-library links
 emerge --batchinstall pkgs.txt             # mass-install from list
+emerge -cp --show-protected                # orphans, incl. those kept by world
 emerge --news                              # Arch news
 emerge --undo                              # undo last install/unmerge
 emerge --resume                            # resume interrupted run</code></pre>
@@ -925,19 +1040,24 @@ Would you like to merge these packages? [Yes/No] <span class="t-in">y</span>
 
           </div>
           <div class="lang-block" data-lang-block="ua" hidden>
-            <pre><code>emerge neovim
-emerge neovim-git --aur
-emerge neovim --abs
-emerge -u @world
-emerge @world
-emerge --scan neovim-git --aur
-emerge --install-pkgbuild ~/src/my-pkg
-emerge -u --devel
-emerge --revdep-rebuild
-emerge --batchinstall pkgs.txt
-emerge --news
-emerge --undo
-emerge --resume</code></pre>
+            <pre><code>emerge neovim                              # репо → fallback на AUR
+emerge neovim-git --aur                    # лише AUR, рекурсивні AUR-залежності
+emerge neovim --repos                      # лише офіційні репозиторії
+emerge neovim --abs                        # ABS у bwrap
+emerge abs/nano aur/setrixtui              # префікси джерел
+emerge -u @world                           # повне оновлення (world не читає)
+emerge @world                              # provision зі world
+emerge -u --exclude linux --keep-going     # оновити, пропустити один, не зупинятися при збої
+emerge -at @fonts --deep                   # набори, план деревом
+emerge --scan neovim-git --aur             # лише аудит
+emerge --install-pkgbuild ~/src/my-pkg     # локальний PKGBUILD (сканер + sandbox)
+emerge -u --devel                          # оновити + перезібрати -git, що пішли вперед
+emerge --revdep-rebuild                    # биті посилання на бібліотеки
+emerge --batchinstall pkgs.txt             # масове встановлення зі списку
+emerge -cp --show-protected                # сироти, зокрема утримані world
+emerge --news                              # новини Arch
+emerge --undo                              # скасувати останнє встановлення/unmerge
+emerge --resume                            # продовжити перервений запуск</code></pre>
             <p>Повна таблиця — на сторінці <a href="flags.html">Прапори</a>.</p>
 
             <h3>Змішані джерела + паралельні jobs</h3>
@@ -978,20 +1098,21 @@ Would you like to merge these packages? [Yes/No] <span class="t-in">y</span>
             <pre><code>emerge neovim                              # репозитории → fallback на AUR
 emerge neovim-git --aur                    # только AUR, рекурсивные зависимости AUR
 emerge neovim --repos                      # только официальные репозитории
-emerge neovim --abs                        # сборка из ABS в песочнице
-emerge -p neovim                           # пробный прогон
-emerge -a neovim                           # спросить перед действием
-emerge -1 htop                             # как зависимость (не в world)
-emerge -C neovim                           # unmerge
-emerge -c                                  # depclean (сироты)
-emerge --prune                             # убрать то, чего нет в world
-emerge --sync                              # обновить базы
-emerge -u                                  # полное обновление
-emerge -u --devel                          # ...и -git/-hg/-svn/-bzr с ушедшим upstream
+emerge neovim --abs                        # ABS в песочнице
+emerge abs/nano aur/setrixtui              # префиксы источников
+emerge -u @world                           # полное обновление (world не читает)
 emerge @world                              # provision из world
+emerge -u --exclude linux --keep-going     # обновить, пропустить один, не останавливаться при сбое
+emerge -at @fonts --deep                   # наборы, план деревом
+emerge --scan neovim-git --aur             # только аудит
+emerge --install-pkgbuild ~/src/my-pkg     # локальный PKGBUILD (сканер + sandbox)
+emerge -u --devel                          # обновить + пересобрать -git, ушедшие вперёд
 emerge --revdep-rebuild                    # битые ссылки на библиотеки
-emerge --scan neovim-git --aur             # только аудит PKGBUILD
-emerge --install-pkgbuild ~/src/my-pkg     # локальный PKGBUILD через сканер + sandbox</code></pre>
+emerge --batchinstall pkgs.txt             # массовая установка из списка
+emerge -cp --show-protected                # сироты, включая удержанные world
+emerge --news                              # новости Arch
+emerge --undo                              # отменить последнюю установку/unmerge
+emerge --resume                            # продолжить прерванный запуск</code></pre>
 
             <h3>Смешанные источники + параллельные jobs</h3>
             <p>Пакеты из репо, ABS и AUR в одном плане; <code>--jobsr</code> / <code>--jobsa</code> задают параллелизм для официальных установок и сборок AUR/ABS:</p>
@@ -1026,6 +1147,717 @@ Would you like to merge these packages? [Yes/No] <span class="t-in">y</span>
 <span class="t-ok">&gt;&gt;&gt;</span> (4 of 4) Updating initramfs with dracut
 <span class="t-ok">&gt;&gt;&gt;</span> Jobs: 2 of 2 complete</code></pre>
 
+          </div>
+        </section>
+
+        <section id="examples">
+          <h2>Examples from a real system</h2>
+          <div class="lang-block" data-lang-block="en">
+            <h3>Search</h3>
+            <p><code>-sv</code> adds maintainer, votes, popularity and license for AUR hits. <code>--repos</code> restricts the search to the sync repos; masked packages are flagged <code>[ Masked ]</code>. An <code>abs/</code> prefix searches ABS.</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -sv ttf-comic-sans</span>
+[ Results for search key : ttf-comic-sans ]
+Searching...
+
+*  aur/ttf-comic-sans
+      Latest version available: 5.14-1
+      Latest version installed: 5.14-1
+      Maintainer:    Adiee5
+      Votes:         7
+      Popularity:    0.57
+      Last Updated:   2023-08-02
+      Description:   The famous sans-serif font
+      License:        custom:Desktop font license
+
+[ Applications found : 1 ]</code></pre>
+<pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -s emacs --repos</span>
+[ Results for search key : emacs ]
+Searching...
+
+*  extra/emacs [ Masked ]
+      Latest version available: 31.1-2
+      Description:   The extensible, customizable, self-documenting real-time display editor
+
+*  extra/cl-swank
+      Latest version available: 2.32-1
+      Description:   Superior Lisp Interaction Mode for Emacs (Lisp-side server)
+...
+[ Applications found : 17 ]</code></pre>
+<pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -s abs/nano</span>
+[ Results for search key : nano ]
+Searching...
+
+*  abs/nano
+      Latest version available: 9.2-1
+      Description:   Pico editor clone with enhancements
+
+*  abs/nano-syntax-highlighting
+      Latest version available: 2025.07.01.r0.g256995b-2
+...
+[ Applications found : 9 ]</code></pre>
+            <h3>Install by source prefix</h3>
+            <p><code>abs/name</code> is the same as <code>name --abs</code>; <code>aur/name</code> as <code>name --aur</code>. The prefix is recorded in world. <code>--oneshot</code> installs without touching world.</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge abs/nano</span>
+
+These are the packages that would be merged, in order:
+
+Calculating dependencies ... done!
+
+<span class="t-tag">[ebuild  R ]</span> abs/nano-9.2-1 (ABS)
+
+Total: 1 package(s)
+
+<span class="t-ok">&gt;&gt;&gt;</span> Emerging (1 of 1, 100%) abs/nano-9.2-1
+<span class="t-ok">&gt;&gt;&gt;</span> Installing (1 of 1) abs/nano-9.2-1
+<span class="t-ok">&gt;&gt;&gt;</span> applying build flags from /etc/portage/make.conf
+<span class="t-ok">&gt;&gt;&gt;</span> Running post-transaction hooks...
+<span class="t-ok">&gt;&gt;&gt;</span> Completed (1 of 1) abs/nano-9.2-1
+<span class="t-ok">&gt;&gt;&gt;</span> Jobs: 1 of 1 complete</code></pre>
+<pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge setrixtui --aur</span>
+...
+<span class="t-tag">[ebuild  R ]</span> aur/setrixtui-0.4.1-1
+
+<span class="t-ok">&gt;&gt;&gt;</span> Scanning AUR PKGBUILDs and .install hooks for suspicious patterns...
+<span class="t-ok">&gt;&gt;&gt;</span> Emerging (1 of 1, 100%) aur/setrixtui-0.4.1-1
+<span class="t-ok">&gt;&gt;&gt;</span> Installing (1 of 1) aur/setrixtui-0.4.1-1
+<span class="t-ok">&gt;&gt;&gt;</span> applying build flags from /etc/portage/make.conf
+<span class="t-ok">&gt;&gt;&gt;</span> Completed (1 of 1) aur/setrixtui-0.4.1-1
+<span class="t-ok">&gt;&gt;&gt;</span> Jobs: 1 of 1 complete  1m01s</code></pre>
+<pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge --oneshot neofetch ttf-comic-sans htop</span>
+<span class="t-ok">&gt;&gt;&gt;</span> Not found in official repos: 'neofetch, ttf-comic-sans'. Searching AUR...
+...
+<span class="t-tag">[ebuild  N ]</span> cachyos-extra-v3/htop-3.5.3-1.1
+<span class="t-tag">[ebuild  N ]</span> aur/neofetch-7.1.0-2
+<span class="t-tag">[ebuild  R ]</span> aur/ttf-comic-sans-5.14-1</code></pre>
+            <h3>Depclean and protected world entries</h3>
+            <p>Orphans that are listed in world are skipped; <code>--show-protected</code> lists them. Removal starts with a 5-second Portage-style countdown.</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -cp --show-protected</span>
+Calculating dependencies ... done!
+<span class="t-ok">&gt;&gt;&gt;</span> Checking for orphaned packages...
+
+<span class="t-ok">&gt;&gt;&gt;</span> 1 orphan(s) not removed (listed in world, install reason is dependency):
+    ttf-comic-sans
+
+<span class="t-tag">[unmerge]</span> htop
+<span class="t-tag">[unmerge]</span> neofetch
+
+Total: 2 orphaned package(s) to remove
+
+<span class="t-ps">$</span> <span class="t-cmd">emerge -c</span>
+<span class="t-ok">&gt;&gt;&gt;</span> 1 package(s) skipped (tracked in world). Pass --show-protected to list them.
+...
+<span class="t-ok">&gt;&gt;&gt;</span> Waiting 5 seconds before starting...
+<span class="t-ok">&gt;&gt;&gt;</span> (Control-C to abort)...
+<span class="t-ok">&gt;&gt;&gt;</span> Unmerging in: 5 4 3 2 1
+<span class="t-ok">&gt;&gt;&gt;</span> Unmerging (1 of 2) cachyos-extra-v3/htop-3.5.3-1.1...
+<span class="t-ok">&gt;&gt;&gt;</span> Unmerging (2 of 2) neofetch-7.1.0-2...</code></pre>
+            <h3>Unmerge</h3>
+            <p>Selected, protected and omitted packages are shown before anything is removed; pacman hooks run around the removal.</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge --unmerge linux-zen</span>
+<span class="t-w"> * </span>This action can remove important packages! In order to be safer, use
+<span class="t-w"> * </span>`emerge -pc` to check for orphaned packages before
+<span class="t-w"> * </span>removing packages.
+
+ extra/linux-zen
+    selected: 7.2.11.zen1-1
+   protected: none
+     omitted: none
+
+<span class="t-ok">&gt;&gt;&gt;</span> 'Selected' packages are slated for removal.
+<span class="t-ok">&gt;&gt;&gt;</span> 'Protected' and 'omitted' packages will not be removed.
+
+<span class="t-ok">&gt;&gt;&gt;</span> Waiting 5 seconds before starting...
+<span class="t-ok">&gt;&gt;&gt;</span> Unmerging in: 5 4 3 2 1
+<span class="t-ok">&gt;&gt;&gt;</span> Unmerging (1 of 1) extra/linux-zen-7.2.11.zen1-1...
+<span class="t-ok">&gt;&gt;&gt;</span> Running pre-transaction hooks...
+<span class="t-ok">&gt;&gt;&gt;</span> (1 of 1) Removing initramfs with dracut
+<span class="t-ok">&gt;&gt;&gt;</span> Running post-transaction hooks...
+<span class="t-ok">&gt;&gt;&gt;</span> Removing from world...</code></pre>
+            <h3>Sync, refresh, info</h3>
+            <p><code>--sync</code> refreshes the databases, <code>--refresh</code> forces it (<code>-Syy</code>). <code>--info</code> prints the system, repositories, effective make.conf overrides, mask/world counts and log totals.</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge --sync</span>
+<span class="t-ok">&gt;&gt;&gt;</span> Syncing package databases...
+<span class="t-ok">&gt;&gt;&gt;</span> core... done
+<span class="t-ok">&gt;&gt;&gt;</span> extra... done
+<span class="t-ok">&gt;&gt;&gt;</span> chaotic-aur... done
+
+<span class="t-ps">$</span> <span class="t-cmd">emerge --refresh</span>
+<span class="t-ok">&gt;&gt;&gt;</span> Syncing package databases (force refresh)...
+<span class="t-ok">&gt;&gt;&gt;</span> core... done
+<span class="t-ok">&gt;&gt;&gt;</span> extra... done</code></pre>
+<pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge --info</span>
+aura-emerge 3.0.15-indev-beta (alpm crate v5.0.2 - libalpm v16.0.1, linux 7.2.9-2-cachyos-bore, x86_64)
+======================================================================
+System uname: Linux 7.2.9-2-cachyos-bore #1 SMP PREEMPT_DYNAMIC x86_64
+profile: none (/etc/portage/make.profile not set)
+CPU: AMD Ryzen 7 7435HS
+Jobs:       --jobsr=8 (repo), --jobsa=1 (aur/abs)
+
+Repositories:
+
+core
+    priority: 8 (order of appearance in /etc/pacman.conf)
+    Include = /etc/pacman.d/mirrorlist  (Server = https://…/$repo/os/$arch)
+...
+make.conf: /etc/portage/make.conf
+    EMERGE_DEFAULT_OPTS="--jobsr=8 --tree --deep"
+    CFLAGS="-march=znver3 -O2 …"  (overrides makepkg.conf)
+mask: 8 entry(ies) (/etc/portage/package.mask)
+
+world: 86 package(s), 2012 bytes (/etc/portage/world)
+log: 344 merge(s), 45 unmerge(s), 5h34m23s total build time (/var/log/emerge.log)</code></pre>
+            <h3>@preserved-rebuild</h3>
+            <p>Checks declared dependencies of every installed package and offers to reinstall the missing ones (as dependencies).</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -a @preserved-rebuild</span>
+<span class="t-ok">&gt;&gt;&gt;</span> Checking installed packages for missing dependencies...
+
+<span class="t-tag">[ebuild N   ]</span> xxd
+
+Total: 1 missing dependency
+
+<span class="t-ok">&gt;&gt;&gt;</span> Reinstall the missing dependencies above? [y/N] y</code></pre>
+          </div>
+          <div class="lang-block" data-lang-block="ua" hidden>
+            <h3>Пошук</h3>
+            <p><code>-sv</code> додає мейнтейнера, голоси, популярність і ліцензію для AUR. <code>--repos</code> обмежує пошук репозиторіями; замасковані пакунки позначено <code>[ Masked ]</code>. Префікс <code>abs/</code> шукає в ABS.</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -sv ttf-comic-sans</span>
+[ Results for search key : ttf-comic-sans ]
+Searching...
+
+*  aur/ttf-comic-sans
+      Latest version available: 5.14-1
+      Latest version installed: 5.14-1
+      Maintainer:    Adiee5
+      Votes:         7
+      Popularity:    0.57
+      Last Updated:   2023-08-02
+      Description:   The famous sans-serif font
+      License:        custom:Desktop font license
+
+[ Applications found : 1 ]</code></pre>
+<pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -s emacs --repos</span>
+[ Results for search key : emacs ]
+Searching...
+
+*  extra/emacs [ Masked ]
+      Latest version available: 31.1-2
+      Description:   The extensible, customizable, self-documenting real-time display editor
+
+*  extra/cl-swank
+      Latest version available: 2.32-1
+      Description:   Superior Lisp Interaction Mode for Emacs (Lisp-side server)
+...
+[ Applications found : 17 ]</code></pre>
+<pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -s abs/nano</span>
+[ Results for search key : nano ]
+Searching...
+
+*  abs/nano
+      Latest version available: 9.2-1
+      Description:   Pico editor clone with enhancements
+
+*  abs/nano-syntax-highlighting
+      Latest version available: 2025.07.01.r0.g256995b-2
+...
+[ Applications found : 9 ]</code></pre>
+            <h3>Встановлення за префіксом джерела</h3>
+            <p><code>abs/name</code> — те саме, що <code>name --abs</code>; <code>aur/name</code> — що <code>name --aur</code>. Префікс записується у world. <code>--oneshot</code> встановлює, не чіпаючи world.</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge abs/nano</span>
+
+These are the packages that would be merged, in order:
+
+Calculating dependencies ... done!
+
+<span class="t-tag">[ebuild  R ]</span> abs/nano-9.2-1 (ABS)
+
+Total: 1 package(s)
+
+<span class="t-ok">&gt;&gt;&gt;</span> Emerging (1 of 1, 100%) abs/nano-9.2-1
+<span class="t-ok">&gt;&gt;&gt;</span> Installing (1 of 1) abs/nano-9.2-1
+<span class="t-ok">&gt;&gt;&gt;</span> applying build flags from /etc/portage/make.conf
+<span class="t-ok">&gt;&gt;&gt;</span> Running post-transaction hooks...
+<span class="t-ok">&gt;&gt;&gt;</span> Completed (1 of 1) abs/nano-9.2-1
+<span class="t-ok">&gt;&gt;&gt;</span> Jobs: 1 of 1 complete</code></pre>
+<pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge setrixtui --aur</span>
+...
+<span class="t-tag">[ebuild  R ]</span> aur/setrixtui-0.4.1-1
+
+<span class="t-ok">&gt;&gt;&gt;</span> Scanning AUR PKGBUILDs and .install hooks for suspicious patterns...
+<span class="t-ok">&gt;&gt;&gt;</span> Emerging (1 of 1, 100%) aur/setrixtui-0.4.1-1
+<span class="t-ok">&gt;&gt;&gt;</span> Installing (1 of 1) aur/setrixtui-0.4.1-1
+<span class="t-ok">&gt;&gt;&gt;</span> applying build flags from /etc/portage/make.conf
+<span class="t-ok">&gt;&gt;&gt;</span> Completed (1 of 1) aur/setrixtui-0.4.1-1
+<span class="t-ok">&gt;&gt;&gt;</span> Jobs: 1 of 1 complete  1m01s</code></pre>
+<pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge --oneshot neofetch ttf-comic-sans htop</span>
+<span class="t-ok">&gt;&gt;&gt;</span> Not found in official repos: 'neofetch, ttf-comic-sans'. Searching AUR...
+...
+<span class="t-tag">[ebuild  N ]</span> cachyos-extra-v3/htop-3.5.3-1.1
+<span class="t-tag">[ebuild  N ]</span> aur/neofetch-7.1.0-2
+<span class="t-tag">[ebuild  R ]</span> aur/ttf-comic-sans-5.14-1</code></pre>
+            <h3>Depclean і захищені записи world</h3>
+            <p>Сироти, що є у world, пропускаються; <code>--show-protected</code> їх показує. Видалення починається з 5-секундного відліку, як у Portage.</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -cp --show-protected</span>
+Calculating dependencies ... done!
+<span class="t-ok">&gt;&gt;&gt;</span> Checking for orphaned packages...
+
+<span class="t-ok">&gt;&gt;&gt;</span> 1 orphan(s) not removed (listed in world, install reason is dependency):
+    ttf-comic-sans
+
+<span class="t-tag">[unmerge]</span> htop
+<span class="t-tag">[unmerge]</span> neofetch
+
+Total: 2 orphaned package(s) to remove
+
+<span class="t-ps">$</span> <span class="t-cmd">emerge -c</span>
+<span class="t-ok">&gt;&gt;&gt;</span> 1 package(s) skipped (tracked in world). Pass --show-protected to list them.
+...
+<span class="t-ok">&gt;&gt;&gt;</span> Waiting 5 seconds before starting...
+<span class="t-ok">&gt;&gt;&gt;</span> (Control-C to abort)...
+<span class="t-ok">&gt;&gt;&gt;</span> Unmerging in: 5 4 3 2 1
+<span class="t-ok">&gt;&gt;&gt;</span> Unmerging (1 of 2) cachyos-extra-v3/htop-3.5.3-1.1...
+<span class="t-ok">&gt;&gt;&gt;</span> Unmerging (2 of 2) neofetch-7.1.0-2...</code></pre>
+            <h3>Unmerge</h3>
+            <p>Перед видаленням показуються вибрані, захищені й пропущені пакунки; навколо видалення працюють хуки pacman.</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge --unmerge linux-zen</span>
+<span class="t-w"> * </span>This action can remove important packages! In order to be safer, use
+<span class="t-w"> * </span>`emerge -pc` to check for orphaned packages before
+<span class="t-w"> * </span>removing packages.
+
+ extra/linux-zen
+    selected: 7.2.11.zen1-1
+   protected: none
+     omitted: none
+
+<span class="t-ok">&gt;&gt;&gt;</span> 'Selected' packages are slated for removal.
+<span class="t-ok">&gt;&gt;&gt;</span> 'Protected' and 'omitted' packages will not be removed.
+
+<span class="t-ok">&gt;&gt;&gt;</span> Waiting 5 seconds before starting...
+<span class="t-ok">&gt;&gt;&gt;</span> Unmerging in: 5 4 3 2 1
+<span class="t-ok">&gt;&gt;&gt;</span> Unmerging (1 of 1) extra/linux-zen-7.2.11.zen1-1...
+<span class="t-ok">&gt;&gt;&gt;</span> Running pre-transaction hooks...
+<span class="t-ok">&gt;&gt;&gt;</span> (1 of 1) Removing initramfs with dracut
+<span class="t-ok">&gt;&gt;&gt;</span> Running post-transaction hooks...
+<span class="t-ok">&gt;&gt;&gt;</span> Removing from world...</code></pre>
+            <h3>Sync, refresh, info</h3>
+            <p><code>--sync</code> оновлює бази, <code>--refresh</code> робить це примусово (<code>-Syy</code>). <code>--info</code> друкує систему, репозиторії, чинні перевизначення make.conf, кількість mask/world і підсумки журналу.</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge --sync</span>
+<span class="t-ok">&gt;&gt;&gt;</span> Syncing package databases...
+<span class="t-ok">&gt;&gt;&gt;</span> core... done
+<span class="t-ok">&gt;&gt;&gt;</span> extra... done
+<span class="t-ok">&gt;&gt;&gt;</span> chaotic-aur... done
+
+<span class="t-ps">$</span> <span class="t-cmd">emerge --refresh</span>
+<span class="t-ok">&gt;&gt;&gt;</span> Syncing package databases (force refresh)...
+<span class="t-ok">&gt;&gt;&gt;</span> core... done
+<span class="t-ok">&gt;&gt;&gt;</span> extra... done</code></pre>
+<pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge --info</span>
+aura-emerge 3.0.15-indev-beta (alpm crate v5.0.2 - libalpm v16.0.1, linux 7.2.9-2-cachyos-bore, x86_64)
+======================================================================
+System uname: Linux 7.2.9-2-cachyos-bore #1 SMP PREEMPT_DYNAMIC x86_64
+profile: none (/etc/portage/make.profile not set)
+CPU: AMD Ryzen 7 7435HS
+Jobs:       --jobsr=8 (repo), --jobsa=1 (aur/abs)
+
+Repositories:
+
+core
+    priority: 8 (order of appearance in /etc/pacman.conf)
+    Include = /etc/pacman.d/mirrorlist  (Server = https://…/$repo/os/$arch)
+...
+make.conf: /etc/portage/make.conf
+    EMERGE_DEFAULT_OPTS="--jobsr=8 --tree --deep"
+    CFLAGS="-march=znver3 -O2 …"  (overrides makepkg.conf)
+mask: 8 entry(ies) (/etc/portage/package.mask)
+
+world: 86 package(s), 2012 bytes (/etc/portage/world)
+log: 344 merge(s), 45 unmerge(s), 5h34m23s total build time (/var/log/emerge.log)</code></pre>
+            <h3>@preserved-rebuild</h3>
+            <p>Перевіряє декларовані залежності всіх встановлених пакунків і пропонує перевстановити відсутні (як залежності).</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -a @preserved-rebuild</span>
+<span class="t-ok">&gt;&gt;&gt;</span> Checking installed packages for missing dependencies...
+
+<span class="t-tag">[ebuild N   ]</span> xxd
+
+Total: 1 missing dependency
+
+<span class="t-ok">&gt;&gt;&gt;</span> Reinstall the missing dependencies above? [y/N] y</code></pre>
+          </div>
+          <div class="lang-block" data-lang-block="ru" hidden>
+            <h3>Поиск</h3>
+            <p><code>-sv</code> добавляет мейнтейнера, голоса, популярность и лицензию для AUR. <code>--repos</code> ограничивает поиск репозиториями; замаскированные пакеты помечены <code>[ Masked ]</code>. Префикс <code>abs/</code> ищет в ABS.</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -sv ttf-comic-sans</span>
+[ Results for search key : ttf-comic-sans ]
+Searching...
+
+*  aur/ttf-comic-sans
+      Latest version available: 5.14-1
+      Latest version installed: 5.14-1
+      Maintainer:    Adiee5
+      Votes:         7
+      Popularity:    0.57
+      Last Updated:   2023-08-02
+      Description:   The famous sans-serif font
+      License:        custom:Desktop font license
+
+[ Applications found : 1 ]</code></pre>
+<pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -s emacs --repos</span>
+[ Results for search key : emacs ]
+Searching...
+
+*  extra/emacs [ Masked ]
+      Latest version available: 31.1-2
+      Description:   The extensible, customizable, self-documenting real-time display editor
+
+*  extra/cl-swank
+      Latest version available: 2.32-1
+      Description:   Superior Lisp Interaction Mode for Emacs (Lisp-side server)
+...
+[ Applications found : 17 ]</code></pre>
+<pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -s abs/nano</span>
+[ Results for search key : nano ]
+Searching...
+
+*  abs/nano
+      Latest version available: 9.2-1
+      Description:   Pico editor clone with enhancements
+
+*  abs/nano-syntax-highlighting
+      Latest version available: 2025.07.01.r0.g256995b-2
+...
+[ Applications found : 9 ]</code></pre>
+            <h3>Установка по префиксу источника</h3>
+            <p><code>abs/name</code> — то же, что <code>name --abs</code>; <code>aur/name</code> — что <code>name --aur</code>. Префикс записывается в world. <code>--oneshot</code> устанавливает, не трогая world.</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge abs/nano</span>
+
+These are the packages that would be merged, in order:
+
+Calculating dependencies ... done!
+
+<span class="t-tag">[ebuild  R ]</span> abs/nano-9.2-1 (ABS)
+
+Total: 1 package(s)
+
+<span class="t-ok">&gt;&gt;&gt;</span> Emerging (1 of 1, 100%) abs/nano-9.2-1
+<span class="t-ok">&gt;&gt;&gt;</span> Installing (1 of 1) abs/nano-9.2-1
+<span class="t-ok">&gt;&gt;&gt;</span> applying build flags from /etc/portage/make.conf
+<span class="t-ok">&gt;&gt;&gt;</span> Running post-transaction hooks...
+<span class="t-ok">&gt;&gt;&gt;</span> Completed (1 of 1) abs/nano-9.2-1
+<span class="t-ok">&gt;&gt;&gt;</span> Jobs: 1 of 1 complete</code></pre>
+<pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge setrixtui --aur</span>
+...
+<span class="t-tag">[ebuild  R ]</span> aur/setrixtui-0.4.1-1
+
+<span class="t-ok">&gt;&gt;&gt;</span> Scanning AUR PKGBUILDs and .install hooks for suspicious patterns...
+<span class="t-ok">&gt;&gt;&gt;</span> Emerging (1 of 1, 100%) aur/setrixtui-0.4.1-1
+<span class="t-ok">&gt;&gt;&gt;</span> Installing (1 of 1) aur/setrixtui-0.4.1-1
+<span class="t-ok">&gt;&gt;&gt;</span> applying build flags from /etc/portage/make.conf
+<span class="t-ok">&gt;&gt;&gt;</span> Completed (1 of 1) aur/setrixtui-0.4.1-1
+<span class="t-ok">&gt;&gt;&gt;</span> Jobs: 1 of 1 complete  1m01s</code></pre>
+<pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge --oneshot neofetch ttf-comic-sans htop</span>
+<span class="t-ok">&gt;&gt;&gt;</span> Not found in official repos: 'neofetch, ttf-comic-sans'. Searching AUR...
+...
+<span class="t-tag">[ebuild  N ]</span> cachyos-extra-v3/htop-3.5.3-1.1
+<span class="t-tag">[ebuild  N ]</span> aur/neofetch-7.1.0-2
+<span class="t-tag">[ebuild  R ]</span> aur/ttf-comic-sans-5.14-1</code></pre>
+            <h3>Depclean и защищённые записи world</h3>
+            <p>Сироты, записанные в world, пропускаются; <code>--show-protected</code> их показывает. Удаление начинается с 5-секундного отсчёта, как в Portage.</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -cp --show-protected</span>
+Calculating dependencies ... done!
+<span class="t-ok">&gt;&gt;&gt;</span> Checking for orphaned packages...
+
+<span class="t-ok">&gt;&gt;&gt;</span> 1 orphan(s) not removed (listed in world, install reason is dependency):
+    ttf-comic-sans
+
+<span class="t-tag">[unmerge]</span> htop
+<span class="t-tag">[unmerge]</span> neofetch
+
+Total: 2 orphaned package(s) to remove
+
+<span class="t-ps">$</span> <span class="t-cmd">emerge -c</span>
+<span class="t-ok">&gt;&gt;&gt;</span> 1 package(s) skipped (tracked in world). Pass --show-protected to list them.
+...
+<span class="t-ok">&gt;&gt;&gt;</span> Waiting 5 seconds before starting...
+<span class="t-ok">&gt;&gt;&gt;</span> (Control-C to abort)...
+<span class="t-ok">&gt;&gt;&gt;</span> Unmerging in: 5 4 3 2 1
+<span class="t-ok">&gt;&gt;&gt;</span> Unmerging (1 of 2) cachyos-extra-v3/htop-3.5.3-1.1...
+<span class="t-ok">&gt;&gt;&gt;</span> Unmerging (2 of 2) neofetch-7.1.0-2...</code></pre>
+            <h3>Unmerge</h3>
+            <p>Перед удалением показываются выбранные, защищённые и пропущенные пакеты; вокруг удаления работают хуки pacman.</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge --unmerge linux-zen</span>
+<span class="t-w"> * </span>This action can remove important packages! In order to be safer, use
+<span class="t-w"> * </span>`emerge -pc` to check for orphaned packages before
+<span class="t-w"> * </span>removing packages.
+
+ extra/linux-zen
+    selected: 7.2.11.zen1-1
+   protected: none
+     omitted: none
+
+<span class="t-ok">&gt;&gt;&gt;</span> 'Selected' packages are slated for removal.
+<span class="t-ok">&gt;&gt;&gt;</span> 'Protected' and 'omitted' packages will not be removed.
+
+<span class="t-ok">&gt;&gt;&gt;</span> Waiting 5 seconds before starting...
+<span class="t-ok">&gt;&gt;&gt;</span> Unmerging in: 5 4 3 2 1
+<span class="t-ok">&gt;&gt;&gt;</span> Unmerging (1 of 1) extra/linux-zen-7.2.11.zen1-1...
+<span class="t-ok">&gt;&gt;&gt;</span> Running pre-transaction hooks...
+<span class="t-ok">&gt;&gt;&gt;</span> (1 of 1) Removing initramfs with dracut
+<span class="t-ok">&gt;&gt;&gt;</span> Running post-transaction hooks...
+<span class="t-ok">&gt;&gt;&gt;</span> Removing from world...</code></pre>
+            <h3>Sync, refresh, info</h3>
+            <p><code>--sync</code> обновляет базы, <code>--refresh</code> делает это принудительно (<code>-Syy</code>). <code>--info</code> печатает систему, репозитории, действующие переопределения make.conf, счётчики mask/world и итоги журнала.</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge --sync</span>
+<span class="t-ok">&gt;&gt;&gt;</span> Syncing package databases...
+<span class="t-ok">&gt;&gt;&gt;</span> core... done
+<span class="t-ok">&gt;&gt;&gt;</span> extra... done
+<span class="t-ok">&gt;&gt;&gt;</span> chaotic-aur... done
+
+<span class="t-ps">$</span> <span class="t-cmd">emerge --refresh</span>
+<span class="t-ok">&gt;&gt;&gt;</span> Syncing package databases (force refresh)...
+<span class="t-ok">&gt;&gt;&gt;</span> core... done
+<span class="t-ok">&gt;&gt;&gt;</span> extra... done</code></pre>
+<pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge --info</span>
+aura-emerge 3.0.15-indev-beta (alpm crate v5.0.2 - libalpm v16.0.1, linux 7.2.9-2-cachyos-bore, x86_64)
+======================================================================
+System uname: Linux 7.2.9-2-cachyos-bore #1 SMP PREEMPT_DYNAMIC x86_64
+profile: none (/etc/portage/make.profile not set)
+CPU: AMD Ryzen 7 7435HS
+Jobs:       --jobsr=8 (repo), --jobsa=1 (aur/abs)
+
+Repositories:
+
+core
+    priority: 8 (order of appearance in /etc/pacman.conf)
+    Include = /etc/pacman.d/mirrorlist  (Server = https://…/$repo/os/$arch)
+...
+make.conf: /etc/portage/make.conf
+    EMERGE_DEFAULT_OPTS="--jobsr=8 --tree --deep"
+    CFLAGS="-march=znver3 -O2 …"  (overrides makepkg.conf)
+mask: 8 entry(ies) (/etc/portage/package.mask)
+
+world: 86 package(s), 2012 bytes (/etc/portage/world)
+log: 344 merge(s), 45 unmerge(s), 5h34m23s total build time (/var/log/emerge.log)</code></pre>
+            <h3>@preserved-rebuild</h3>
+            <p>Проверяет декларированные зависимости всех установленных пакетов и предлагает переустановить отсутствующие (как зависимости).</p>
+            <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge -a @preserved-rebuild</span>
+<span class="t-ok">&gt;&gt;&gt;</span> Checking installed packages for missing dependencies...
+
+<span class="t-tag">[ebuild N   ]</span> xxd
+
+Total: 1 missing dependency
+
+<span class="t-ok">&gt;&gt;&gt;</span> Reinstall the missing dependencies above? [y/N] y</code></pre>
+          </div>
+        </section>
+
+        <section id="progress">
+          <h2>Progress, Jobs line and source cache</h2>
+          <div class="lang-block" data-lang-block="en">
+            <p>Every stage line carries plan progress: <code>&gt;&gt;&gt; Emerging (3 of 12, 25%) extra/nano-9.2-1</code>. The live footer shows the job state and load; it ends as <code>&gt;&gt;&gt; Jobs: 23 of 23 complete  2m04s  Load avg: 7.31, 3.71, 2.48</code>, and while running reads like <code>Jobs: 0 of 6 complete, 1 running, 5 merge wait</code>.</p>
+            <ul>
+              <li><strong>Quiet builds by default.</strong> makepkg/compiler output is hidden to keep the <code>&gt;&gt;&gt;</code> lines readable; <code>--debug</code> (or <code>AE_DEBUG=1</code>) shows it live, and a failed build always dumps the captured log. <code>--log PATH</code> writes a session log for bug reports.</li>
+              <li><strong>Heartbeat.</strong> During a quiet build a line every 30 s reports the pid and memory (<em>still building … process alive</em>). If the build is killed (OOM / <code>SIGKILL</code>), that is reported explicitly instead of looking like a compiler error.</li>
+              <li><strong>Source cache.</strong> <code>SRCDEST</code> defaults to <code>~/.cache/aura-emerge/sources</code> for <em>all</em> AUR/ABS builds, not only VCS ones; PKGBUILD checkouts persist under <code>~/.cache/aura-emerge/build/{aur,abs}/</code> and are refreshed in place. A <code>SRCDEST</code> in <code>makepkg.conf</code> wins. Wipe the cache with <code>emerge --clean-source-cache</code>.</li>
+              <li><strong>Harmless noise.</strong> <code>libfakeroot internal error: payload not recognized!</code> inside the sandbox is an upstream fakeroot message; the package still builds. It is intentionally not filtered.</li>
+            </ul>
+          </div>
+          <div class="lang-block" data-lang-block="ua" hidden>
+            <p>Кожен рядок етапу показує прогрес плану: <code>&gt;&gt;&gt; Emerging (3 of 12, 25%) extra/nano-9.2-1</code>. Живий підсумковий рядок показує стан завдань і навантаження; завершується як <code>&gt;&gt;&gt; Jobs: 23 of 23 complete  2m04s  Load avg: 7.31, 3.71, 2.48</code>, а під час роботи виглядає як <code>Jobs: 0 of 6 complete, 1 running, 5 merge wait</code>.</p>
+            <ul>
+              <li><strong>Збірки мовчазні за замовчуванням.</strong> Вивід makepkg/компілятора приховано, щоб рядки <code>&gt;&gt;&gt;</code> лишалися читабельними; <code>--debug</code> (або <code>AE_DEBUG=1</code>) показує його наживо, а невдала збірка завжди друкує збережений лог. <code>--log PATH</code> пише журнал сесії для баг-репортів.</li>
+              <li><strong>Heartbeat.</strong> Під час тихої збірки кожні 30 с з’являється рядок із pid і пам’яттю (<em>still building … process alive</em>). Якщо збірку вбито (OOM / <code>SIGKILL</code>), про це повідомляється прямо, а не як про помилку компілятора.</li>
+              <li><strong>Кеш джерел.</strong> <code>SRCDEST</code> за замовчуванням — <code>~/.cache/aura-emerge/sources</code> для <em>всіх</em> збірок AUR/ABS, а не лише VCS; checkout-и PKGBUILD зберігаються в <code>~/.cache/aura-emerge/build/{aur,abs}/</code> і оновлюються на місці. <code>SRCDEST</code> у <code>makepkg.conf</code> має пріоритет. Очистити кеш: <code>emerge --clean-source-cache</code>.</li>
+              <li><strong>Безпечний шум.</strong> <code>libfakeroot internal error: payload not recognized!</code> у пісочниці — повідомлення upstream-fakeroot; пакунок усе одно збирається. Його навмисно не фільтруємо.</li>
+            </ul>
+          </div>
+          <div class="lang-block" data-lang-block="ru" hidden>
+            <p>Каждая строка этапа показывает прогресс плана: <code>&gt;&gt;&gt; Emerging (3 of 12, 25%) extra/nano-9.2-1</code>. Живая итоговая строка показывает состояние задач и нагрузку; завершается как <code>&gt;&gt;&gt; Jobs: 23 of 23 complete  2m04s  Load avg: 7.31, 3.71, 2.48</code>, а во время работы выглядит как <code>Jobs: 0 of 6 complete, 1 running, 5 merge wait</code>.</p>
+            <ul>
+              <li><strong>Сборки тихие по умолчанию.</strong> Вывод makepkg/компилятора скрыт, чтобы строки <code>&gt;&gt;&gt;</code> оставались читаемыми; <code>--debug</code> (или <code>AE_DEBUG=1</code>) показывает его вживую, а упавшая сборка всегда печатает сохранённый лог. <code>--log PATH</code> пишет журнал сессии для баг-репортов.</li>
+              <li><strong>Heartbeat.</strong> Во время тихой сборки каждые 30 с выводится строка с pid и памятью (<em>still building … process alive</em>). Если сборку убили (OOM / <code>SIGKILL</code>), об этом сообщается прямо, а не как об ошибке компилятора.</li>
+              <li><strong>Кэш исходников.</strong> <code>SRCDEST</code> по умолчанию — <code>~/.cache/aura-emerge/sources</code> для <em>всех</em> сборок AUR/ABS, а не только VCS; checkout-ы PKGBUILD хранятся в <code>~/.cache/aura-emerge/build/{aur,abs}/</code> и обновляются на месте. <code>SRCDEST</code> в <code>makepkg.conf</code> имеет приоритет. Очистить кэш: <code>emerge --clean-source-cache</code>.</li>
+              <li><strong>Безвредный шум.</strong> <code>libfakeroot internal error: payload not recognized!</code> в песочнице — сообщение upstream-fakeroot; пакет всё равно собирается. Его намеренно не фильтруем.</li>
+            </ul>
+          </div>
+        </section>
+
+        <section id="batch">
+          <h2>--undo / --batchinstall / --check-world</h2>
+          <div class="lang-block" data-lang-block="en">
+            <ul>
+              <li><strong><code>--undo</code></strong> reverses the last successful install or unmerge (one step). After an install it removes only packages that were new in that run; after an unmerge it reinstalls from the recorded source (<code>Err/</code> and <code>abs/</code> are only listed). <code>-u</code> is not reversible. State: <code>/etc/portage/lastaction.state</code>.</li>
+              <li><strong><code>--batchinstall FILE</code></strong> installs every atom in a plain-text list (one per line, <code>#</code> comments) — the custom-set format, but from any path with no registration. It combines with <code>-p</code>, <code>-a</code>, <code>--aur</code>, <code>--abs</code>, <code>--repos</code>, …</li>
+              <li><strong><code>--check-world</code></strong> lists world entries that are missing or not explicitly installed.</li>
+              <li><strong><code>--resume</code></strong> continues an interrupted run (<code>--skipfirst</code> drops the first package); after <code>--keep-going</code> it retries only what failed. State: <code>/etc/portage/resume.state</code>.</li>
+            </ul>
+            <pre><code>emerge --batchinstall pkgs.txt -a
+emerge --check-world
+emerge --undo
+emerge --resume --skipfirst</code></pre>
+          </div>
+          <div class="lang-block" data-lang-block="ua" hidden>
+            <ul>
+              <li><strong><code>--undo</code></strong> скасовує останнє успішне встановлення або unmerge (один крок). Після встановлення видаляє лише пакунки, які були новими в тому запуску; після unmerge перевстановлює із записаного джерела (<code>Err/</code> і <code>abs/</code> лише перелічуються). <code>-u</code> не скасовується. Стан: <code>/etc/portage/lastaction.state</code>.</li>
+              <li><strong><code>--batchinstall FILE</code></strong> встановлює всі атоми з текстового списку (по одному в рядку, коментарі <code>#</code>) — формат власного набору, але з будь-якого шляху без реєстрації. Поєднується з <code>-p</code>, <code>-a</code>, <code>--aur</code>, <code>--abs</code>, <code>--repos</code>, …</li>
+              <li><strong><code>--check-world</code></strong> показує записи world, яких бракує або які не встановлені явно.</li>
+              <li><strong><code>--resume</code></strong> продовжує перервений запуск (<code>--skipfirst</code> пропускає перший пакунок); після <code>--keep-going</code> повторює лише невдалі. Стан: <code>/etc/portage/resume.state</code>.</li>
+            </ul>
+            <pre><code>emerge --batchinstall pkgs.txt -a
+emerge --check-world
+emerge --undo
+emerge --resume --skipfirst</code></pre>
+          </div>
+          <div class="lang-block" data-lang-block="ru" hidden>
+            <ul>
+              <li><strong><code>--undo</code></strong> отменяет последнюю успешную установку или unmerge (один шаг). После установки удаляет только пакеты, которые были новыми в том запуске; после unmerge переустанавливает из записанного источника (<code>Err/</code> и <code>abs/</code> только перечисляются). <code>-u</code> не отменяется. Состояние: <code>/etc/portage/lastaction.state</code>.</li>
+              <li><strong><code>--batchinstall FILE</code></strong> устанавливает все атомы из текстового списка (по одному в строке, комментарии <code>#</code>) — формат пользовательского набора, но из любого пути без регистрации. Сочетается с <code>-p</code>, <code>-a</code>, <code>--aur</code>, <code>--abs</code>, <code>--repos</code>, …</li>
+              <li><strong><code>--check-world</code></strong> показывает записи world, которых не хватает или которые установлены не явно.</li>
+              <li><strong><code>--resume</code></strong> продолжает прерванный запуск (<code>--skipfirst</code> пропускает первый пакет); после <code>--keep-going</code> повторяет только упавшие. Состояние: <code>/etc/portage/resume.state</code>.</li>
+            </ul>
+            <pre><code>emerge --batchinstall pkgs.txt -a
+emerge --check-world
+emerge --undo
+emerge --resume --skipfirst</code></pre>
+          </div>
+        </section>
+
+        <section id="aeforce">
+          <h2>AE Force (--aeforce / --noaefile)</h2>
+          <div class="lang-block" data-lang-block="en">
+            <p>When a package wants to install a file that no package owns, the install is blocked. AE Force decides what happens to such files, Portage <code>CONFIG_PROTECT</code>-style:</p>
+            <div class="table-wrap"><table>
+              <thead><tr><th>Flags</th><th>Result</th></tr></thead>
+              <tbody>
+                <tr><td><em>(none)</em></td><td>Asks, then keeps the old file and installs the new one as <code>&lt;file&gt;.aenew</code></td></tr>
+                <tr><td><code>--aeforce</code></td><td>Old file moved to <code>&lt;file&gt;.aeforce</code>; the new file takes its place</td></tr>
+                <tr><td><code>--noaefile</code></td><td>Old file stays; the new one is dropped (no <code>.ae*</code> files)</td></tr>
+                <tr><td><code>--aeforce --noaefile</code></td><td>New file replaces the old one; the old one is dropped</td></tr>
+              </tbody>
+            </table></div>
+            <pre class="blue"><code>emerge --aelist                # list .aenew / .aeforce / .aepark
+emerge --aeclean new           # remove one kind: new | old | park | all
+emerge --aeclean               # same as: --aeclean all</code></pre>
+            <p><code>.aepark</code> is left by an interrupted install. <code>--aelist</code> finds leftovers beside every file an installed package owns, so nothing has to be remembered between runs; <code>--aeclean</code> asks first (Enter = No).</p>
+          </div>
+          <div class="lang-block" data-lang-block="ua" hidden>
+            <p>Коли пакунок хоче встановити файл, якого не належить жодному пакунку, встановлення блокується. AE Force вирішує, що робити з такими файлами, у дусі Portage <code>CONFIG_PROTECT</code>:</p>
+            <div class="table-wrap"><table>
+              <thead><tr><th>Прапори</th><th>Результат</th></tr></thead>
+              <tbody>
+                <tr><td><em>(без прапорів)</em></td><td>Питає, потім лишає старий файл і ставить новий як <code>&lt;file&gt;.aenew</code></td></tr>
+                <tr><td><code>--aeforce</code></td><td>Старий файл переїжджає в <code>&lt;file&gt;.aeforce</code>; новий займає його місце</td></tr>
+                <tr><td><code>--noaefile</code></td><td>Старий файл лишається; новий відкидається (без файлів <code>.ae*</code>)</td></tr>
+                <tr><td><code>--aeforce --noaefile</code></td><td>Новий файл замінює старий; старий відкидається</td></tr>
+              </tbody>
+            </table></div>
+            <pre class="blue"><code>emerge --aelist                # список .aenew / .aeforce / .aepark
+emerge --aeclean new           # видалити один вид: new | old | park | all
+emerge --aeclean               # те саме, що --aeclean all</code></pre>
+            <p><code>.aepark</code> лишається після перерваного встановлення. <code>--aelist</code> шукає залишки поруч із кожним файлом встановленого пакунка, тож нічого не треба пам’ятати між запусками; <code>--aeclean</code> спершу питає (Enter = Ні).</p>
+          </div>
+          <div class="lang-block" data-lang-block="ru" hidden>
+            <p>Когда пакет хочет установить файл, который не принадлежит ни одному пакету, установка блокируется. AE Force решает, что делать с такими файлами, в духе Portage <code>CONFIG_PROTECT</code>:</p>
+            <div class="table-wrap"><table>
+              <thead><tr><th>Флаги</th><th>Результат</th></tr></thead>
+              <tbody>
+                <tr><td><em>(без флагов)</em></td><td>Спрашивает, затем оставляет старый файл и ставит новый как <code>&lt;file&gt;.aenew</code></td></tr>
+                <tr><td><code>--aeforce</code></td><td>Старый файл уходит в <code>&lt;file&gt;.aeforce</code>; новый занимает его место</td></tr>
+                <tr><td><code>--noaefile</code></td><td>Старый файл остаётся; новый отбрасывается (без файлов <code>.ae*</code>)</td></tr>
+                <tr><td><code>--aeforce --noaefile</code></td><td>Новый файл заменяет старый; старый отбрасывается</td></tr>
+              </tbody>
+            </table></div>
+            <pre class="blue"><code>emerge --aelist                # список .aenew / .aeforce / .aepark
+emerge --aeclean new           # удалить один вид: new | old | park | all
+emerge --aeclean               # то же, что --aeclean all</code></pre>
+            <p><code>.aepark</code> остаётся после прерванной установки. <code>--aelist</code> ищет остатки рядом с каждым файлом установленного пакета, так что ничего не нужно помнить между запусками; <code>--aeclean</code> сначала спрашивает (Enter = Нет).</p>
+          </div>
+        </section>
+
+        <section id="hooks">
+          <h2>ALPM hooks</h2>
+          <div class="lang-block" data-lang-block="en">
+            <p>libalpm runs every matching <code>*.hook</code> during install, remove, <code>-U</code> and <code>-Su</code> — the same mechanism as pacman (depmod, DKMS, dracut/mkinitcpio, <code>grub-mkconfig</code>, fontconfig/icon caches, …). Hook output appears live between the <code>&gt;&gt;&gt;</code> lines.</p>
+            <pre><code>/usr/share/libalpm/hooks/    # package-shipped hooks
+/etc/pacman.d/hooks/         # admin hooks (HookDir in pacman.conf)
+/etc/portage/hooks/          # aura-emerge user hooks, same format</code></pre>
+            <p>Earlier directories win on name collisions. Hook files follow <code>alpm-hooks(5)</code>.</p>
+            <pre class="term term-blue"><code><span class="t-ok">&gt;&gt;&gt;</span> Running pre-transaction hooks...
+<span class="t-ok">&gt;&gt;&gt;</span> (1 of 2) Removing initramfs with dracut
+<span class="t-ok">&gt;&gt;&gt;</span> (2 of 2) Remove DKMS modules
+...
+<span class="t-ok">&gt;&gt;&gt;</span> Running post-transaction hooks...
+<span class="t-ok">&gt;&gt;&gt;</span> (1 of 4) Arming ConditionNeedsUpdate...
+<span class="t-ok">&gt;&gt;&gt;</span> (3 of 4) Install DKMS modules
+<span class="t-ok">&gt;&gt;&gt;</span> (4 of 4) Updating initramfs with dracut</code></pre>
+          </div>
+          <div class="lang-block" data-lang-block="ua" hidden>
+            <p>libalpm виконує кожен відповідний <code>*.hook</code> під час встановлення, видалення, <code>-U</code> і <code>-Su</code> — той самий механізм, що в pacman (depmod, DKMS, dracut/mkinitcpio, <code>grub-mkconfig</code>, кеші fontconfig/іконок, …). Вивід хуків з’являється наживо між рядками <code>&gt;&gt;&gt;</code>.</p>
+            <pre><code>/usr/share/libalpm/hooks/    # хуки з пакунків
+/etc/pacman.d/hooks/         # адмінські хуки (HookDir у pacman.conf)
+/etc/portage/hooks/          # користувацькі хуки aura-emerge, той самий формат</code></pre>
+            <p>Раніші каталоги мають пріоритет за збігу імен. Формат файлів — <code>alpm-hooks(5)</code>.</p>
+            <pre class="term term-blue"><code><span class="t-ok">&gt;&gt;&gt;</span> Running pre-transaction hooks...
+<span class="t-ok">&gt;&gt;&gt;</span> (1 of 2) Removing initramfs with dracut
+<span class="t-ok">&gt;&gt;&gt;</span> (2 of 2) Remove DKMS modules
+...
+<span class="t-ok">&gt;&gt;&gt;</span> Running post-transaction hooks...
+<span class="t-ok">&gt;&gt;&gt;</span> (1 of 4) Arming ConditionNeedsUpdate...
+<span class="t-ok">&gt;&gt;&gt;</span> (3 of 4) Install DKMS modules
+<span class="t-ok">&gt;&gt;&gt;</span> (4 of 4) Updating initramfs with dracut</code></pre>
+          </div>
+          <div class="lang-block" data-lang-block="ru" hidden>
+            <p>libalpm выполняет каждый подходящий <code>*.hook</code> при установке, удалении, <code>-U</code> и <code>-Su</code> — тот же механизм, что в pacman (depmod, DKMS, dracut/mkinitcpio, <code>grub-mkconfig</code>, кэши fontconfig/иконок, …). Вывод хуков появляется вживую между строками <code>&gt;&gt;&gt;</code>.</p>
+            <pre><code>/usr/share/libalpm/hooks/    # хуки из пакетов
+/etc/pacman.d/hooks/         # админские хуки (HookDir в pacman.conf)
+/etc/portage/hooks/          # пользовательские хуки aura-emerge, тот же формат</code></pre>
+            <p>Более ранние каталоги побеждают при совпадении имён. Формат файлов — <code>alpm-hooks(5)</code>.</p>
+            <pre class="term term-blue"><code><span class="t-ok">&gt;&gt;&gt;</span> Running pre-transaction hooks...
+<span class="t-ok">&gt;&gt;&gt;</span> (1 of 2) Removing initramfs with dracut
+<span class="t-ok">&gt;&gt;&gt;</span> (2 of 2) Remove DKMS modules
+...
+<span class="t-ok">&gt;&gt;&gt;</span> Running post-transaction hooks...
+<span class="t-ok">&gt;&gt;&gt;</span> (1 of 4) Arming ConditionNeedsUpdate...
+<span class="t-ok">&gt;&gt;&gt;</span> (3 of 4) Install DKMS modules
+<span class="t-ok">&gt;&gt;&gt;</span> (4 of 4) Updating initramfs with dracut</code></pre>
+          </div>
+        </section>
+
+        <section id="completion">
+          <h2>Shell completion</h2>
+          <div class="lang-block" data-lang-block="en">
+            <p>The AUR packages install completions for bash, zsh and fish. <code>emerge @&lt;TAB&gt;</code> offers real set names in all three.</p>
+            <ul>
+              <li><strong>emerge</strong> — bash, zsh and fish completions are generated from the CLI definition (<code>emerge --gen-completions bash|zsh|fish</code>), so they always match <code>--help</code>; a small glue adds real <code>@set</code> names.</li>
+              <li><strong>eselect shim</strong> — hand-written completions for <code>eselect profile list|set|show</code> (<code>misc/eselect.bash-completion</code>, <code>misc/_eselect</code>, <code>misc/eselect.fish</code>). TAB on the shim never errors out.</li>
+            </ul>
+            <pre><code>emerge --gen-completions bash | sudo tee /usr/share/bash-completion/completions/emerge
+emerge --gen-completions zsh  | sudo tee /usr/share/zsh/site-functions/_emerge
+emerge --gen-completions fish | sudo tee /usr/share/fish/vendor_completions.d/emerge.fish
+sudo install -Dm644 misc/_eselect /usr/share/zsh/site-functions/_eselect</code></pre>
+            <p>After installing a new zsh completion, run <code>rm -f ~/.zcompdump*; compinit</code> or start a new shell.</p>
+          </div>
+          <div class="lang-block" data-lang-block="ua" hidden>
+            <p>AUR-пакунки встановлюють автодоповнення для bash, zsh і fish. <code>emerge @&lt;TAB&gt;</code> пропонує справжні назви наборів у всіх трьох.</p>
+            <ul>
+              <li><strong>emerge</strong> — автодоповнення для bash, zsh і fish генеруються з опису CLI (<code>emerge --gen-completions bash|zsh|fish</code>), тож завжди збігаються з <code>--help</code>; невеликий glue додає справжні назви <code>@set</code>.</li>
+              <li><strong>shim eselect</strong> — рукописні доповнення для <code>eselect profile list|set|show</code> (<code>misc/eselect.bash-completion</code>, <code>misc/_eselect</code>, <code>misc/eselect.fish</code>). TAB на shim не видає помилок.</li>
+            </ul>
+            <pre><code>emerge --gen-completions bash | sudo tee /usr/share/bash-completion/completions/emerge
+emerge --gen-completions zsh  | sudo tee /usr/share/zsh/site-functions/_emerge
+emerge --gen-completions fish | sudo tee /usr/share/fish/vendor_completions.d/emerge.fish
+sudo install -Dm644 misc/_eselect /usr/share/zsh/site-functions/_eselect</code></pre>
+            <p>Після встановлення нового zsh-доповнення виконайте <code>rm -f ~/.zcompdump*; compinit</code> або відкрийте нову оболонку.</p>
+          </div>
+          <div class="lang-block" data-lang-block="ru" hidden>
+            <p>AUR-пакеты устанавливают автодополнение для bash, zsh и fish. <code>emerge @&lt;TAB&gt;</code> предлагает настоящие имена наборов во всех трёх.</p>
+            <ul>
+              <li><strong>emerge</strong> — автодополнения для bash, zsh и fish генерируются из описания CLI (<code>emerge --gen-completions bash|zsh|fish</code>), поэтому всегда совпадают с <code>--help</code>; небольшой glue добавляет настоящие имена <code>@set</code>.</li>
+              <li><strong>shim eselect</strong> — рукописные дополнения для <code>eselect profile list|set|show</code> (<code>misc/eselect.bash-completion</code>, <code>misc/_eselect</code>, <code>misc/eselect.fish</code>). TAB на shim не выдаёт ошибок.</li>
+            </ul>
+            <pre><code>emerge --gen-completions bash | sudo tee /usr/share/bash-completion/completions/emerge
+emerge --gen-completions zsh  | sudo tee /usr/share/zsh/site-functions/_emerge
+emerge --gen-completions fish | sudo tee /usr/share/fish/vendor_completions.d/emerge.fish
+sudo install -Dm644 misc/_eselect /usr/share/zsh/site-functions/_eselect</code></pre>
+            <p>После установки нового zsh-дополнения выполните <code>rm -f ~/.zcompdump*; compinit</code> или откройте новую оболочку.</p>
           </div>
         </section>
 
@@ -1099,9 +1931,12 @@ Would you like to merge these packages? [Yes/No] <span class="t-in">y</span>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 10:</span> fetches from or references a hardcoded raw IP address instead of a domain
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 26:</span> invokes sudo/pkexec/doas from inside the build script - makepkg builds unprivileged on purpose, so this escalates privilege mid-build; the exact mechanism reported in the openconnect-sso-anchored AUR wave (Jul/Aug 2026)
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 7:</span> references a .onion address - legitimate PKGBUILDs don't hardcode Tor hidden-service addresses; matches the Tor-backed second-stage delivery reused across the June 2026 and Jul/Aug 2026 AUR campaigns
-<span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">… 13 more findings …</span>
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file Makefile line 6:</span> downloads and pipes a remote script straight into a shell (curl/wget | sh)
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file Makefile line 7:</span> decodes a base64/hex-encoded blob and pipes it straight into a shell (base64 -d | sh / xxd -r -p | bash) - same obfuscated-execution role as curl|sh, just an inline-stashed payload instead of a network fetch
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">… 16 more findings …</span>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/PKGBUILD</span>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/scaner-test-therandtxt.install</span>
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/Makefile</span>
 
 <span class="t-p">&gt;&gt;&gt;</span> 'scaner-test''s cloned PKGBUILD/.install content (which differs from what was pre-scanned) matches known-suspicious patterns. Review it yourself before proceeding:
     ./scaner-test
@@ -1111,6 +1946,8 @@ Would you like to merge these packages? [Yes/No] <span class="t-in">y</span>
               <div class="callout-title" data-i18n="not_hard_block">Not a hard block</div>
               <span data-i18n="not_hard_block_body">Findings are reported with file/line and a cgit link. You get Continue anyway? [y/N] — the decision stays with you.</span>
             </div>
+            <h3>Support files</h3>
+            <p>Next to the PKGBUILD the scanner also reads a <code>Makefile</code> (<code>Makefile</code> / <code>makefile</code> / <code>GNUmakefile</code>) and shell scripts the build refers to (<code>bash foo.sh</code>, <code>./install.sh</code>, …). Scripts get the full PKGBUILD-grade scan; Makefiles get a line-only scan, since make syntax has no bash AST. Findings name the file and line, like the PKGBUILD ones.</p>
             <h3>Audit only</h3>
             <pre class="red"><code>emerge --scan neovim-git --aur
 emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
@@ -1185,9 +2022,12 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 10:</span> fetches from or references a hardcoded raw IP address instead of a domain
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 26:</span> invokes sudo/pkexec/doas from inside the build script - makepkg builds unprivileged on purpose, so this escalates privilege mid-build; the exact mechanism reported in the openconnect-sso-anchored AUR wave (Jul/Aug 2026)
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 7:</span> references a .onion address - legitimate PKGBUILDs don't hardcode Tor hidden-service addresses; matches the Tor-backed second-stage delivery reused across the June 2026 and Jul/Aug 2026 AUR campaigns
-<span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">… 13 more findings …</span>
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file Makefile line 6:</span> downloads and pipes a remote script straight into a shell (curl/wget | sh)
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file Makefile line 7:</span> decodes a base64/hex-encoded blob and pipes it straight into a shell (base64 -d | sh / xxd -r -p | bash) - same obfuscated-execution role as curl|sh, just an inline-stashed payload instead of a network fetch
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">… 16 more findings …</span>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/PKGBUILD</span>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/scaner-test-therandtxt.install</span>
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/Makefile</span>
 
 <span class="t-p">&gt;&gt;&gt;</span> 'scaner-test''s cloned PKGBUILD/.install content (which differs from what was pre-scanned) matches known-suspicious patterns. Review it yourself before proceeding:
     ./scaner-test
@@ -1197,6 +2037,8 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
               <div class="callout-title" data-i18n="not_hard_block">Not a hard block</div>
               <span data-i18n="not_hard_block_body">Findings are reported with file/line and a cgit link. You get Continue anyway? [y/N] — the decision stays with you.</span>
             </div>
+            <h3>Допоміжні файли</h3>
+            <p>Поруч із PKGBUILD сканер читає й <code>Makefile</code> (<code>Makefile</code> / <code>makefile</code> / <code>GNUmakefile</code>) та shell-скрипти, на які посилається збірка (<code>bash foo.sh</code>, <code>./install.sh</code>, …). Скрипти скануються так само ретельно, як PKGBUILD; Makefile — лише по рядках, бо в синтаксису make немає bash AST. Знахідки вказують файл і рядок, як і для PKGBUILD.</p>
             <h3>Лише аудит</h3>
             <pre class="red"><code>emerge --scan neovim-git --aur
 emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
@@ -1271,9 +2113,12 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 10:</span> fetches from or references a hardcoded raw IP address instead of a domain
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 26:</span> invokes sudo/pkexec/doas from inside the build script - makepkg builds unprivileged on purpose, so this escalates privilege mid-build; the exact mechanism reported in the openconnect-sso-anchored AUR wave (Jul/Aug 2026)
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 7:</span> references a .onion address - legitimate PKGBUILDs don't hardcode Tor hidden-service addresses; matches the Tor-backed second-stage delivery reused across the June 2026 and Jul/Aug 2026 AUR campaigns
-<span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">… 13 more findings …</span>
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file Makefile line 6:</span> downloads and pipes a remote script straight into a shell (curl/wget | sh)
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file Makefile line 7:</span> decodes a base64/hex-encoded blob and pipes it straight into a shell (base64 -d | sh / xxd -r -p | bash) - same obfuscated-execution role as curl|sh, just an inline-stashed payload instead of a network fetch
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">… 16 more findings …</span>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/PKGBUILD</span>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/scaner-test-therandtxt.install</span>
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/Makefile</span>
 
 <span class="t-p">&gt;&gt;&gt;</span> 'scaner-test''s cloned PKGBUILD/.install content (which differs from what was pre-scanned) matches known-suspicious patterns. Review it yourself before proceeding:
     ./scaner-test
@@ -1283,6 +2128,8 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
               <div class="callout-title" data-i18n="not_hard_block">Не жёсткая блокировка</div>
               <span data-i18n="not_hard_block_body">Находки сообщаются с файлом/строкой и ссылкой на cgit. Вы получаете Continue anyway? [y/N] — решение остаётся за вами.</span>
             </div>
+            <h3>Вспомогательные файлы</h3>
+            <p>Рядом с PKGBUILD сканер читает и <code>Makefile</code> (<code>Makefile</code> / <code>makefile</code> / <code>GNUmakefile</code>), и shell-скрипты, на которые ссылается сборка (<code>bash foo.sh</code>, <code>./install.sh</code>, …). Скрипты сканируются так же тщательно, как PKGBUILD; Makefile — только построчно, так как у синтаксиса make нет bash AST. Находки указывают файл и строку, как и для PKGBUILD.</p>
             <h3>Только аудит</h3>
             <pre class="red"><code>emerge --scan neovim-git --aur
 emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>

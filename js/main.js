@@ -140,15 +140,15 @@
     section_links: { en: "Links", ua: "Посилання", ru: "Ссылки" },
     binary_name: { en: "Binary name", ua: "Назва виконуваного файлу", ru: "Имя бинарника" },
     binary_name_body: {
-      en: "The installed binary is <code>emerge</code> (with a <code>portageq</code> symlink). Completions and the man page are generated from the same CLI definition.",
-      ua: "Встановлюється виконуваний файл <code>emerge</code> (із символічним посиланням <code>portageq</code>). Автодоповнення та man-сторінка генеруються з того самого опису CLI.",
-      ru: "Пакет ставит <code>emerge</code> в <code>/usr/bin/emerge</code> (и <code>portageq</code>). Это намеренно: CLI совместим с привычками Gentoo."
+      en: "The installed binary is <code>emerge</code> (with <code>portageq</code> and <code>eselect</code> symlinks). Completions (bash/zsh/fish) and the man page ship with the package and are generated from the CLI definition.",
+      ua: "Встановлюється виконуваний файл <code>emerge</code> (із символічними посиланнями <code>portageq</code> і <code>eselect</code>). Автодоповнення (bash/zsh/fish) і man-сторінка входять до пакунка та генеруються з опису CLI.",
+      ru: "Устанавливается исполняемый файл <code>emerge</code> (с симлинками <code>portageq</code> и <code>eselect</code>). Автодополнение (bash/zsh/fish) и man-страница входят в пакет и генерируются из описания CLI."
     },
     tab_manual: { en: "Manual", ua: "Вручну", ru: "Вручную" },
     qs_not_installed: { en: "Not installed yet?", ua: "Ще не встановили?", ru: "Ещё не установлено?" },
     qs_see_install: { en: "See the installation guide.", ua: "Перегляньте інструкцію зі встановлення.", ru: "См. раздел «Установка»." },
-    deps_req: { en: "Required:", ua: "Обов'язково:", ru: "Зависимости" },
-    deps_opt: { en: "Optional:", ua: "Опційно:", ru: "Опционально" },
+    deps_req: { en: "Required:", ua: "Обов'язково:", ru: "Обязательно:" },
+    deps_opt: { en: "Optional:", ua: "Опційно:", ru: "Опционально:" },
     not_hard_block: { en: "Not a hard block", ua: "Не жорстке блокування", ru: "Не жёсткая блокировка" },
     not_hard_block_body: {
       en: "Findings are reported with file/line and a cgit link. You get Continue anyway? [y/N] — the decision stays with you.",

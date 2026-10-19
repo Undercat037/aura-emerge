@@ -210,6 +210,58 @@
                 <code>--devel</code> пересобирает пакеты <code>-git</code>, когда upstream ушёл вперёд.
               </p>
             </article>
+            <article class="feature-card blue">
+              <span class="tag tag-blue">Hold</span>
+              <h3>package.protect · package.freeze</h3>
+              <p class="lang-block" data-lang-block="en">
+                Never remove, never upgrade: two more lists next to <code>package.mask</code>,
+                stricter than pacman's <code>IgnorePkg</code>.
+              </p>
+              <p class="lang-block" data-lang-block="ua" hidden>
+                Ніколи не видаляти, ніколи не оновлювати: ще два списки поруч із <code>package.mask</code>,
+                суворіші за <code>IgnorePkg</code> у pacman.
+              </p>
+<p class="lang-block" data-lang-block="ru" hidden>
+                Никогда не удалять, никогда не обновлять: ещё два списка рядом с <code>package.mask</code>,
+                строже, чем <code>IgnorePkg</code> в pacman.
+              </p>
+            </article>
+            <article class="feature-card purple">
+              <span class="tag tag-purple">Portage parity</span>
+              <h3 class="lang-block" data-lang-block="en">Profiles, hooks, AE Force</h3>
+              <h3 class="lang-block" data-lang-block="ua" hidden>Профілі, хуки, AE Force</h3>
+<h3 class="lang-block" data-lang-block="ru" hidden>Профили, хуки, AE Force</h3>
+              <p class="lang-block" data-lang-block="en">
+                <code>make.profile</code> + <code>@system</code>, an <code>eselect profile</code> shim,
+                real libalpm hooks (DKMS, initramfs, …) and <code>.aenew</code>-style handling of conflicting files.
+              </p>
+              <p class="lang-block" data-lang-block="ua" hidden>
+                <code>make.profile</code> + <code>@system</code>, shim <code>eselect profile</code>,
+                справжні хуки libalpm (DKMS, initramfs, …) і обробка конфліктних файлів у стилі <code>.aenew</code>.
+              </p>
+<p class="lang-block" data-lang-block="ru" hidden>
+                <code>make.profile</code> + <code>@system</code>, shim <code>eselect profile</code>,
+                настоящие хуки libalpm (DKMS, initramfs, …) и обработка конфликтующих файлов в стиле <code>.aenew</code>.
+              </p>
+            </article>
+            <article class="feature-card red">
+              <span class="tag tag-red">UX</span>
+              <h3 class="lang-block" data-lang-block="en">Progress, jobs, completion</h3>
+              <h3 class="lang-block" data-lang-block="ua" hidden>Прогрес, jobs, автодоповнення</h3>
+<h3 class="lang-block" data-lang-block="ru" hidden>Прогресс, jobs, автодополнение</h3>
+              <p class="lang-block" data-lang-block="en">
+                Percent progress, a live <code>Jobs:</code> line, build heartbeat with OOM detection,
+                <code>--jobsr</code>/<code>--jobsa</code>, and bash/zsh/fish completion that knows your <code>@sets</code>.
+              </p>
+              <p class="lang-block" data-lang-block="ua" hidden>
+                Відсотковий прогрес, жива лінія <code>Jobs:</code>, heartbeat збірки з виявленням OOM,
+                <code>--jobsr</code>/<code>--jobsa</code> і автодоповнення bash/zsh/fish, що знає ваші <code>@sets</code>.
+              </p>
+<p class="lang-block" data-lang-block="ru" hidden>
+                Процентный прогресс, живая строка <code>Jobs:</code>, heartbeat сборки с обнаружением OOM,
+                <code>--jobsr</code>/<code>--jobsa</code> и автодополнение bash/zsh/fish, знающее ваши <code>@sets</code>.
+              </p>
+            </article>
           </div>
         </section>
 
@@ -338,8 +390,7 @@ emerge --list-sets</code></pre>
           <h2 data-i18n="section_config">make.conf</h2>
           <div class="lang-block" data-lang-block="en">
             <p>
-              <code>/etc/portage/make.conf</code> (and
-              <code>~/.config/emerge/make.conf</code>) is aura-emerge's own config —
+              <code>/etc/portage/make.conf</code> (system path only) is aura-emerge's own config —
               default flags plus build-env overrides applied via a generated makepkg.conf.
             </p>
             <pre><code># EMERGE_DEFAULT_OPTS spliced into every run
@@ -358,8 +409,7 @@ BUILDENV=(!distcc color check !sign)</code></pre>
           </div>
           <div class="lang-block" data-lang-block="ua" hidden>
             <p>
-              <code>/etc/portage/make.conf</code> (і
-              <code>~/.config/emerge/make.conf</code>) — окремий конфіг aura-emerge:
+              <code>/etc/portage/make.conf</code> (лише системний шлях) — окремий конфіг aura-emerge:
               прапори за замовчуванням і перевизначення середовища збірки через згенерований makepkg.conf.
             </p>
             <pre><code>EMERGE_DEFAULT_OPTS="--pkgbuild-view --unshare-net-build"
@@ -377,8 +427,7 @@ BUILDENV=(!distcc color check !sign)</code></pre>
           </div>
 <div class="lang-block" data-lang-block="ru" hidden>
             <p>
-              <code>/etc/portage/make.conf</code> (и
-              <code>~/.config/emerge/make.conf</code>) — собственный конфиг aura-emerge:
+              <code>/etc/portage/make.conf</code> (только системный путь) — собственный конфиг aura-emerge:
               флаги по умолчанию и переопределения окружения сборки, применяемые через
               сгенерированный makepkg.conf (без правки системного файла).
             </p>
@@ -455,6 +504,21 @@ OPTIONS=(strip docs !debug lto)</code></pre>
                   <td><code>emerge -c</code> / <code>-C pkg</code></td>
                   <td><span class="lang-block" data-lang-block="en">Depclean / unmerge</span><span class="lang-block" data-lang-block="ua" hidden>Depclean / unmerge</span>
 <span class="lang-block" data-lang-block="ru" hidden>Depclean / unmerge</span></td>
+                </tr>
+                <tr>
+                  <td><code>emerge -cp --show-protected</code></td>
+                  <td><span class="lang-block" data-lang-block="en">Orphans, including ones kept by world</span><span class="lang-block" data-lang-block="ua" hidden>Сироти, зокрема утримані world</span>
+<span class="lang-block" data-lang-block="ru" hidden>Сироты, включая удержанные world</span></td>
+                </tr>
+                <tr>
+                  <td><code>emerge --list-profiles</code></td>
+                  <td><span class="lang-block" data-lang-block="en">Profiles; switch with <code>--set-profile N</code></span><span class="lang-block" data-lang-block="ua" hidden>Профілі; перемикання через <code>--set-profile N</code></span>
+<span class="lang-block" data-lang-block="ru" hidden>Профили; переключение через <code>--set-profile N</code></span></td>
+                </tr>
+                <tr>
+                  <td><code>emerge --aelist</code></td>
+                  <td><span class="lang-block" data-lang-block="en">Files left by AE Force (<code>.aenew</code> etc.)</span><span class="lang-block" data-lang-block="ua" hidden>Файли, залишені AE Force (<code>.aenew</code> тощо)</span>
+<span class="lang-block" data-lang-block="ru" hidden>Файлы, оставленные AE Force (<code>.aenew</code> и т.п.)</span></td>
                 </tr>
               </tbody>
             </table>
@@ -662,6 +726,8 @@ extra/nano                     # конкретный репозиторий/и�
             </li>
             <li>
               <a href="https://aur.archlinux.org/packages/aura-emerge" target="_blank" rel="noopener">AUR: aura-emerge</a>
+              ·
+              <a href="https://aur.archlinux.org/packages/aura-emerge-git" target="_blank" rel="noopener">aura-emerge-git</a>
             </li>
             <li>
               <a href="docs.html" data-i18n="nav_docs">Docs</a>
@@ -672,6 +738,8 @@ extra/nano                     # конкретный репозиторий/и�
               <a href="https://github.com/Undercat037/aura-emerge/blob/main/README.MD" target="_blank" rel="noopener">Full README (EN)</a>
               ·
               <a href="https://github.com/Undercat037/aura-emerge/blob/main/UA-README.MD" target="_blank" rel="noopener">README (UA)</a>
+              ·
+              <a href="https://github.com/Undercat037/aura-emerge/blob/main/RU-README.MD" target="_blank" rel="noopener">README (RU)</a>
             </li>
           </ul>
         </section>

@@ -54,6 +54,8 @@
         <a class="nav-link" href="#output"><span class="dot"></span> Output / plan</a>
         <a class="nav-link" href="#batch"><span class="dot"></span> Batch / resume</a>
         <a class="nav-link" href="#misc"><span class="dot"></span> Misc</a>
+        <a class="nav-link" href="#compat"><span class="dot"></span> Gentoo compat</a>
+        <a class="nav-link" href="#env-files"><span class="dot"></span> Env &amp; files</a>
       </div>
     </nav>
   </aside>
@@ -70,14 +72,26 @@
 
         <p class="lang-block" data-lang-block="en">
           The <code>emerge(1)</code> man page is generated from the same CLI definition via <code>clap_mangen</code>
-          (<code>(emerge --gen-manpage)</code>, so it cannot drift from <code>--help</code>.
+          (<code>emerge --gen-manpage</code>), so it cannot drift from <code>--help</code>.
         </p>
         <p class="lang-block" data-lang-block="ua" hidden>
           Man-сторінка <code>emerge(1)</code> генерується з того ж визначення CLI через <code>clap_mangen</code>
-          (<code>(emerge --gen-manpage)</code>, тож не розходиться з <code>--help</code>.
+          (<code>emerge --gen-manpage</code>), тож не розходиться з <code>--help</code>.
         </p>
 <p class="lang-block" data-lang-block="ru" hidden>Страница руководства <code>emerge(1)</code> генерируется из того же определения CLI через <code>clap_mangen</code>
           (<code>emerge --gen-manpage</code>), поэтому не может разойтись с <code>--help</code>.</p>
+
+
+
+        <p class="lang-block" data-lang-block="en">
+          <strong>Shell completion:</strong> bash, zsh and fish are supported. The completions are generated from the CLI (<code>emerge --gen-completions bash|zsh|fish</code>) and installed by the package; <code>emerge @&lt;TAB&gt;</code> offers real set names. The <code>eselect</code> shim has its own hand-written completions (<code>misc/eselect.bash-completion</code>, <code>misc/_eselect</code>, <code>misc/eselect.fish</code>).
+        </p>
+        <p class="lang-block" data-lang-block="ua" hidden>
+          <strong>Автодоповнення оболонки:</strong> підтримуються bash, zsh і fish. Доповнення генеруються з CLI (<code>emerge --gen-completions bash|zsh|fish</code>) і ставляться пакунком; <code>emerge @&lt;TAB&gt;</code> пропонує справжні назви наборів. Shim <code>eselect</code> має власні рукописні доповнення (<code>misc/eselect.bash-completion</code>, <code>misc/_eselect</code>, <code>misc/eselect.fish</code>).
+        </p>
+        <p class="lang-block" data-lang-block="ru" hidden>
+          <strong>Автодополнение оболочки:</strong> поддерживаются bash, zsh и fish. Дополнения генерируются из CLI (<code>emerge --gen-completions bash|zsh|fish</code>) и ставятся пакетом; <code>emerge @&lt;TAB&gt;</code> предлагает настоящие имена наборов. Shim <code>eselect</code> имеет собственные рукописные дополнения (<code>misc/eselect.bash-completion</code>, <code>misc/_eselect</code>, <code>misc/eselect.fish</code>).
+        </p>
 
         <!-- ── Actions ─────────────────────────────────────────── -->
         <section class="flag-group" id="actions">
@@ -96,22 +110,28 @@
               </thead>
               <tbody>
                 <tr>
-                  <td><code>-s</code></td>
-                  <td class="lang-block" data-lang-block="en">Search packages</td>
-                  <td class="lang-block" data-lang-block="ua" hidden>Пошук пакунків</td>
-<td class="lang-block" data-lang-block="ru" hidden>Поиск пакетов</td>
+                  <td><code>-s</code> / <code>--search</code></td>
+                  <td class="lang-block" data-lang-block="en">Search packages: repos, then ABS, then AUR. Prefix <code>aur/</code> or <code>abs/</code> (<code>-s abs/nano</code>) limits the search to that source; <code>--repos</code> searches official repos only</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Пошук пакунків: репо, потім ABS, потім AUR. Префікс <code>aur/</code> або <code>abs/</code> (<code>-s abs/nano</code>) обмежує пошук цим джерелом; <code>--repos</code> — лише офіційні репо</td>
+<td class="lang-block" data-lang-block="ru" hidden>Поиск пакетов: репозитории, затем ABS, затем AUR. Префикс <code>aur/</code> или <code>abs/</code> (<code>-s abs/nano</code>) ограничивает поиск этим источником; <code>--repos</code> — только официальные репозитории</td>
                 </tr>
                 <tr>
-                  <td><code>--searchdesc</code></td>
+                  <td><code>-S</code> / <code>--searchdesc</code></td>
                   <td class="lang-block" data-lang-block="en">Search by description</td>
                   <td class="lang-block" data-lang-block="ua" hidden>Пошук за описом</td>
 <td class="lang-block" data-lang-block="ru" hidden>Поиск по описанию</td>
                 </tr>
                 <tr>
                   <td><code>-sv</code></td>
-                  <td class="lang-block" data-lang-block="en">Detailed package info</td>
+                  <td class="lang-block" data-lang-block="en">Detailed package info (version, maintainer, votes, popularity, homepage, license for AUR)</td>
                   <td class="lang-block" data-lang-block="ua" hidden>Детальна інформація</td>
 <td class="lang-block" data-lang-block="ru" hidden>Подробная информация о пакете</td>
+                </tr>
+                <tr>
+                  <td><code>--search-all</code></td>
+                  <td class="lang-block" data-lang-block="en">With <code>-s</code>: list the same name from every repo (like <code>pacman -Ss</code>)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>З <code>-s</code>: показати однакову назву з усіх репо (як <code>pacman -Ss</code>)</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>С <code>-s</code>: показать одно и то же имя из всех репозиториев (как <code>pacman -Ss</code>)</td>
                 </tr>
                 <tr>
                   <td><code>-u</code></td>
@@ -133,33 +153,39 @@
                 </tr>
                 <tr>
                   <td><code>-C</code> / <code>--unmerge</code></td>
-                  <td class="lang-block" data-lang-block="en">Remove packages (unmerge)</td>
-                  <td class="lang-block" data-lang-block="ua" hidden>Видалити пакунки (unmerge)</td>
-<td class="lang-block" data-lang-block="ru" hidden>Удалить пакеты (unmerge)</td>
+                  <td class="lang-block" data-lang-block="en">Remove packages (unmerge); shows selected/protected/omitted, 5 s countdown, then removes from world</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Видалити пакунки (unmerge); показує selected/protected/omitted, відлік 5 с, потім прибирає з world</td>
+<td class="lang-block" data-lang-block="ru" hidden>Удалить пакеты (unmerge); показывает selected/protected/omitted, отсчёт 5 с, затем убирает из world</td>
                 </tr>
                 <tr>
                   <td><code>-c</code> / <code>--depclean</code></td>
-                  <td class="lang-block" data-lang-block="en">Remove orphans</td>
-                  <td class="lang-block" data-lang-block="ua" hidden>Видалити сиріт</td>
-<td class="lang-block" data-lang-block="ru" hidden>Удалить сироты</td>
+                  <td class="lang-block" data-lang-block="en">Remove orphans (world, <code>@sets</code> in world, <code>package.protect</code> and profile <code>@system</code> are kept); 5 s countdown like Portage</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Видалити сиріт (world, <code>@sets</code> у world, <code>package.protect</code> і <code>@system</code> профілю лишаються); відлік 5 с як у Portage</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Удалить сироты (world, <code>@sets</code> из world, <code>package.protect</code> и <code>@system</code> профиля остаются); отсчёт 5 с как в Portage</td>
+                </tr>
+                <tr>
+                  <td><code>--show-protected</code></td>
+                  <td class="lang-block" data-lang-block="en">With <code>-c</code>: list orphans kept only because they are in world</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>З <code>-c</code>: показати сиріт, яких лишено лише через world</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>С <code>-c</code>: показать сироты, оставленные только из-за world</td>
                 </tr>
                 <tr>
                   <td><code>--sync</code></td>
-                  <td class="lang-block" data-lang-block="en">Sync package databases</td>
-                  <td class="lang-block" data-lang-block="ua" hidden>Синхронізувати бази</td>
-<td class="lang-block" data-lang-block="ru" hidden>Синхронизировать базы пакетов</td>
+                  <td class="lang-block" data-lang-block="en">Sync package databases (combine with <code>-u</code>: <code>emerge -uat @world --sync</code>)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Синхронізувати бази (разом з <code>-u</code>: <code>emerge -uat @world --sync</code>)</td>
+<td class="lang-block" data-lang-block="ru" hidden>Синхронизировать базы пакетов (вместе с <code>-u</code>: <code>emerge -uat @world --sync</code>)</td>
                 </tr>
                 <tr>
                   <td><code>--refresh</code></td>
                   <td class="lang-block" data-lang-block="en">Force <code>-Syy</code> (with <code>--sync</code> or <code>-u</code>)</td>
-                  <td class="lang-block" data-lang-block="ua" hidden>Примусово <code>-Syy</code></td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Примусово <code>-Syy</code> (з <code>--sync</code> або <code>-u</code>)</td>
 <td class="lang-block" data-lang-block="ru" hidden>Принудительно <code>-Syy</code> (с <code>--sync</code> или <code>-u</code>)</td>
                 </tr>
                 <tr>
                   <td><code>--info</code></td>
-                  <td class="lang-block" data-lang-block="en">System info (Gentoo-style)</td>
-                  <td class="lang-block" data-lang-block="ua" hidden>Інформація про систему</td>
-<td class="lang-block" data-lang-block="ru" hidden>Информация о системе (в стиле Gentoo)</td>
+                  <td class="lang-block" data-lang-block="en">System info (Gentoo-style): version, CPU/RAM, jobs, repositories, makepkg.conf / make.conf overrides, mask/world/log stats</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Інформація про систему: версія, CPU/RAM, jobs, репозиторії, перевизначення makepkg.conf / make.conf, статистика mask/world/log</td>
+<td class="lang-block" data-lang-block="ru" hidden>Информация о системе (в стиле Gentoo): версия, CPU/RAM, jobs, репозитории, переопределения makepkg.conf / make.conf, статистика mask/world/log</td>
                 </tr>
                 <tr>
                   <td><code>--news [N|all]</code></td>
@@ -190,6 +216,12 @@
                   <td class="lang-block" data-lang-block="en">Remove from world without unmerging</td>
                   <td class="lang-block" data-lang-block="ua" hidden>Прибрати з world без видалення</td>
 <td class="lang-block" data-lang-block="ru" hidden>Убрать из world без удаления</td>
+                </tr>
+                <tr>
+                  <td><code>--check-world</code></td>
+                  <td class="lang-block" data-lang-block="en">List world entries that are missing or not explicitly installed</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Показати записи world, яких немає або що встановлені не явно</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Показать записи world, которых нет или которые установлены не явно</td>
                 </tr>
                 <tr>
                   <td><code>--revdep-rebuild</code></td>
@@ -269,6 +301,30 @@
                   <td class="lang-block" data-lang-block="ua" hidden>Міграція: наповнити world з <code>pacman -Qeq</code></td>
 <td class="lang-block" data-lang-block="ru" hidden>Одноразовая миграция: заполнить world из <code>pacman -Qeq</code></td>
                 </tr>
+                <tr>
+                  <td><code>--list-profiles</code></td>
+                  <td class="lang-block" data-lang-block="en">List Portage-style profiles (<code>eselect profile list</code>)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Показати профілі у стилі Portage (<code>eselect profile list</code>)</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Показать профили в стиле Portage (<code>eselect profile list</code>)</td>
+                </tr>
+                <tr>
+                  <td><code>--set-profile &lt;N|PATH&gt;</code></td>
+                  <td class="lang-block" data-lang-block="en">Set the active profile (<code>/etc/portage/make.profile</code>): index from <code>--list-profiles</code>, or a path. Also via <code>ln -s emerge eselect</code> → <code>eselect profile set N</code></td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Встановити активний профіль (<code>/etc/portage/make.profile</code>): номер із <code>--list-profiles</code> або шлях. Також через <code>ln -s emerge eselect</code> → <code>eselect profile set N</code></td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Установить активный профиль (<code>/etc/portage/make.profile</code>): номер из <code>--list-profiles</code> или путь. Также через <code>ln -s emerge eselect</code> → <code>eselect profile set N</code></td>
+                </tr>
+                <tr>
+                  <td><code>--aelist</code></td>
+                  <td class="lang-block" data-lang-block="en">List files left by AE Force (<code>.aenew</code> / <code>.aeforce</code> / <code>.aepark</code>)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Показати файли, залишені AE Force (<code>.aenew</code> / <code>.aeforce</code> / <code>.aepark</code>)</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Показать файлы, оставленные AE Force (<code>.aenew</code> / <code>.aeforce</code> / <code>.aepark</code>)</td>
+                </tr>
+                <tr>
+                  <td><code>--aeclean [KIND]</code></td>
+                  <td class="lang-block" data-lang-block="en">Remove AE Force files: <code>new</code> | <code>old</code> | <code>park</code> | <code>all</code> (default <code>all</code>)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Видалити файли AE Force: <code>new</code> | <code>old</code> | <code>park</code> | <code>all</code> (типово <code>all</code>)</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Удалить файлы AE Force: <code>new</code> | <code>old</code> | <code>park</code> | <code>all</code> (по умолчанию <code>all</code>)</td>
+                </tr>
               </tbody>
             </table>
           </div>
@@ -297,8 +353,8 @@
 <td class="lang-block" data-lang-block="ru" hidden>Только AUR (зависимости только из AUR разрешаются рекурсивно)</td>
                 </tr>
                 <tr>
-                  <td><code>--only-repos</code></td>
-                  <td class="lang-block" data-lang-block="en">Official repos only (never AUR)</td>
+                  <td><code>--repos</code></td>
+                  <td class="lang-block" data-lang-block="en">Official repos only (never AUR); does not conflict with <code>--abs</code>, conflicts with <code>--aur</code></td>
                   <td class="lang-block" data-lang-block="ua" hidden>Лише офіційні репо</td>
 <td class="lang-block" data-lang-block="ru" hidden>Только официальные репозитории (без AUR)</td>
                 </tr>
@@ -345,10 +401,28 @@
 <td class="lang-block" data-lang-block="ru" hidden>С <code>--edit</code>: не пересоздавать <code>.SRCINFO</code></td>
                 </tr>
                 <tr>
+                  <td><code>--with-optdeps</code></td>
+                  <td class="lang-block" data-lang-block="en">Also install optional dependencies of official-repo packages</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Також встановлювати опційні залежності пакунків з офіційних репо</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Также устанавливать опциональные зависимости пакетов из официальных репозиториев</td>
+                </tr>
+                <tr>
                   <td><code>--pkgbuild-view</code></td>
                   <td class="lang-block" data-lang-block="en">Show/diff PKGBUILD, confirm before build</td>
                   <td class="lang-block" data-lang-block="ua" hidden>Показати/diff PKGBUILD, підтвердити перед збіркою</td>
 <td class="lang-block" data-lang-block="ru" hidden>Показать/сравнить PKGBUILD, подтвердить перед сборкой</td>
+                </tr>
+                <tr>
+                  <td><code>--aeforce</code></td>
+                  <td class="lang-block" data-lang-block="en">AE Force: move files that block an install to <code>&lt;file&gt;.aeforce</code> and continue</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>AE Force: перенести файли, що блокують встановлення, у <code>&lt;file&gt;.aeforce</code> і продовжити</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>AE Force: переместить файлы, мешающие установке, в <code>&lt;file&gt;.aeforce</code> и продолжить</td>
+                </tr>
+                <tr>
+                  <td><code>--noaefile</code></td>
+                  <td class="lang-block" data-lang-block="en">AE Force: leave no <code>.ae*</code> files (keep old, drop new; with <code>--aeforce</code> drop old)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>AE Force: не лишати файлів <code>.ae*</code> (лишити старий, прибрати новий; з <code>--aeforce</code> прибрати старий)</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>AE Force: не оставлять файлы <code>.ae*</code> (оставить старый, убрать новый; с <code>--aeforce</code> убрать старый)</td>
                 </tr>
               </tbody>
             </table>
@@ -373,13 +447,13 @@
               <tbody>
                 <tr>
                   <td><code>--scan</code></td>
-                  <td class="lang-block" data-lang-block="en">Audit PKGBUILD/.install only</td>
-                  <td class="lang-block" data-lang-block="ua" hidden>Лише аудит PKGBUILD/.install</td>
-<td class="lang-block" data-lang-block="ru" hidden>Только аудит PKGBUILD/.install</td>
+                  <td class="lang-block" data-lang-block="en">Audit PKGBUILD, <code>.install</code> and neighbouring Makefile/shell scripts only; exit 1 on findings</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Лише аудит PKGBUILD, <code>.install</code> і сусідніх Makefile/shell-скриптів; код 1 при знахідках</td>
+<td class="lang-block" data-lang-block="ru" hidden>Только аудит PKGBUILD, <code>.install</code> и соседних Makefile/shell-скриптов; код 1 при находках</td>
                 </tr>
                 <tr>
                   <td><code>--no-sandbox</code></td>
-                  <td class="lang-block" data-lang-block="en">Turn off bwrap (warning printed)</td>
+                  <td class="lang-block" data-lang-block="en">Turn off bwrap (warning printed); conflicts with <code>--unshare-net-build</code></td>
                   <td class="lang-block" data-lang-block="ua" hidden>Вимкнути bwrap (з попередженням)</td>
 <td class="lang-block" data-lang-block="ru" hidden>Отключить bwrap (с предупреждением)</td>
                 </tr>
@@ -431,7 +505,7 @@
                 <tr>
                   <td><code>--exclude &lt;ATOM&gt;</code></td>
                   <td class="lang-block" data-lang-block="en">Leave a package out of this run (repeatable / comma-separated)</td>
-                  <td class="lang-block" data-lang-block="ua" hidden>Виключити пакунок з цього запуску</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Виключити пакунок з цього запуску (можна повторювати / через кому)</td>
 <td class="lang-block" data-lang-block="ru" hidden>Исключить пакет из этого запуска (можно повторять / через запятую)</td>
                 </tr>
               </tbody>
@@ -457,7 +531,7 @@
               <tbody>
                 <tr>
                   <td><code>-p</code> / <code>--pretend</code></td>
-                  <td class="lang-block" data-lang-block="en">Dry run</td>
+                  <td class="lang-block" data-lang-block="en">Dry run (print the plan, change nothing)</td>
                   <td class="lang-block" data-lang-block="ua" hidden>Симуляція (dry run)</td>
 <td class="lang-block" data-lang-block="ru" hidden>Пробный прогон</td>
                 </tr>
@@ -474,6 +548,42 @@
 <td class="lang-block" data-lang-block="ru" hidden>Подробный вывод</td>
                 </tr>
                 <tr>
+                  <td><code>--debug</code></td>
+                  <td class="lang-block" data-lang-block="en">Show makepkg/compiler output live (also <code>AE_DEBUG=1</code>, <code>--quiet-build=n</code>). By default it is hidden so the <code>&gt;&gt;&gt;</code> lines stay readable; a failed build still dumps the captured log</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Показувати вивід makepkg/компілятора наживо (також <code>AE_DEBUG=1</code>, <code>--quiet-build=n</code>). Типово він прихований, щоб рядки <code>&gt;&gt;&gt;</code> лишались читабельними; невдала збірка все одно друкує зібраний лог</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Показывать вывод makepkg/компилятора вживую (также <code>AE_DEBUG=1</code>, <code>--quiet-build=n</code>). По умолчанию он скрыт, чтобы строки <code>&gt;&gt;&gt;</code> оставались читаемыми; упавшая сборка всё равно печатает собранный лог</td>
+                </tr>
+                <tr>
+                  <td><code>--quiet-build [y|n]</code></td>
+                  <td class="lang-block" data-lang-block="en">Gentoo-style: <code>n</code> = live build output (same as <code>--debug</code>); <code>y</code> / omitted = default quiet mode</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>У стилі Gentoo: <code>n</code> = вивід збірки наживо (як <code>--debug</code>); <code>y</code> / без значення = типовий тихий режим</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>В стиле Gentoo: <code>n</code> = вывод сборки вживую (как <code>--debug</code>); <code>y</code> / без значения = тихий режим по умолчанию</td>
+                </tr>
+                <tr>
+                  <td><code>--log &lt;PATH&gt;</code></td>
+                  <td class="lang-block" data-lang-block="en">Write a session log (command, <code>emerge.log</code> lines, full build output) for bug reports — no <code>| tee</code> needed</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Записати лог сесії (команда, рядки <code>emerge.log</code>, повний вивід збірки) для баг-репортів — без <code>| tee</code></td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Записать лог сессии (команда, строки <code>emerge.log</code>, полный вывод сборки) для баг-репортов — без <code>| tee</code></td>
+                </tr>
+                <tr>
+                  <td><code>--color [y|n|auto]</code></td>
+                  <td class="lang-block" data-lang-block="en">Force colours on/off; <code>auto</code> follows the TTY / <code>NO_COLOR</code></td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Примусово вмикати/вимикати кольори; <code>auto</code> — за TTY / <code>NO_COLOR</code></td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Принудительно включить/выключить цвета; <code>auto</code> — по TTY / <code>NO_COLOR</code></td>
+                </tr>
+                <tr>
+                  <td><code>--nospinner</code></td>
+                  <td class="lang-block" data-lang-block="en">No spinner / live progress redraws (for logs and dumb terminals)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Без спінера / живого перемальовування прогресу (для логів і простих терміналів)</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Без спиннера / живой перерисовки прогресса (для логов и простых терминалов)</td>
+                </tr>
+                <tr>
+                  <td><code>--verbose-conflicts</code></td>
+                  <td class="lang-block" data-lang-block="en">Verbose slot/conflict info (informational)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Докладна інформація про слоти/конфлікти (довідково)</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Подробная информация о слотах/конфликтах (справочно)</td>
+                </tr>
+                <tr>
                   <td><code>-t</code> / <code>--tree</code></td>
                   <td class="lang-block" data-lang-block="en">Show plan as a dependency tree</td>
                   <td class="lang-block" data-lang-block="ua" hidden>Показати план як дерево залежностей</td>
@@ -487,16 +597,28 @@
                 </tr>
 
                 <tr>
-                  <td><code>--jobsr[=N]</code></td>
+                  <td><code>--jobsr N</code></td>
                   <td class="lang-block" data-lang-block="en">Parallel official-repo installs (default from <code>EMERGE_DEFAULT_OPTS</code> / make.conf). <code>N</code> concurrent <code>pacman</code> transactions.</td>
                   <td class="lang-block" data-lang-block="ua" hidden>Паралельні встановлення з офіційних репо (дефолт з <code>EMERGE_DEFAULT_OPTS</code> / make.conf). <code>N</code> одночасних транзакцій <code>pacman</code>.</td>
                   <td class="lang-block" data-lang-block="ru" hidden>Параллельные установки из официальных репо (дефолт из <code>EMERGE_DEFAULT_OPTS</code> / make.conf). <code>N</code> одновременных транзакций <code>pacman</code>.</td>
                 </tr>
                 <tr>
-                  <td><code>--jobsa[=N]</code></td>
+                  <td><code>--jobsa N</code></td>
                   <td class="lang-block" data-lang-block="en">Parallel AUR/ABS builds. Each build still goes through scanner + sandbox; <code>N</code> concurrent compile jobs.</td>
                   <td class="lang-block" data-lang-block="ua" hidden>Паралельні збірки AUR/ABS. Кожна збірка все одно через сканер + sandbox; <code>N</code> одночасних compile jobs.</td>
                   <td class="lang-block" data-lang-block="ru" hidden>Параллельные сборки AUR/ABS. Каждая сборка всё равно через сканер + sandbox; <code>N</code> одновременных compile jobs.</td>
+                </tr>
+                <tr>
+                  <td><code>--jobs N</code></td>
+                  <td class="lang-block" data-lang-block="en">Alias for <code>--jobsr</code> (Portage-style)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Синонім <code>--jobsr</code> (у стилі Portage)</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Псевдоним <code>--jobsr</code> (в стиле Portage)</td>
+                </tr>
+                <tr>
+                  <td><code>--load-average N</code></td>
+                  <td class="lang-block" data-lang-block="en">Hold new AUR/ABS builds while the 1-minute load is above N (a build still starts when nothing else is running)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Притримувати нові збірки AUR/ABS, поки навантаження за 1 хв вище N (збірка стартує, якщо більше нічого не працює)</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Придерживать новые сборки AUR/ABS, пока загрузка за 1 мин выше N (сборка стартует, если больше ничего не запущено)</td>
                 </tr>
 
                 <tr>
@@ -507,9 +629,9 @@
                 </tr>
                 <tr>
                   <td><code>-n</code> / <code>--noreplace</code></td>
-                  <td class="lang-block" data-lang-block="en">Do not reinstall if present</td>
-                  <td class="lang-block" data-lang-block="ua" hidden>Не перевстановлювати</td>
-<td class="lang-block" data-lang-block="ru" hidden>Не переустанавливать, если уже есть</td>
+                  <td class="lang-block" data-lang-block="en">Update everything, but skip packages already at the same or newer version (no re-download / rebuild)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Оновити все, але пропустити пакунки, що вже тієї ж або новішої версії (без повторного завантаження / збірки)</td>
+<td class="lang-block" data-lang-block="ru" hidden>Обновить всё, но пропустить пакеты той же или более новой версии (без повторной загрузки / сборки)</td>
                 </tr>
                 <tr>
                   <td><code>--sudoloop</code></td>
@@ -564,9 +686,9 @@
                 </tr>
                 <tr>
                   <td><code>--resume</code></td>
-                  <td class="lang-block" data-lang-block="en">Retry failed packages from last run</td>
-                  <td class="lang-block" data-lang-block="ua" hidden>Повторити пакунки, що впали</td>
-<td class="lang-block" data-lang-block="ru" hidden>Повторить неудавшиеся пакеты прошлого запуска</td>
+                  <td class="lang-block" data-lang-block="en">Resume an interrupted transaction (after <code>--keep-going</code>: retries only what failed)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Продовжити перерваний процес (після <code>--keep-going</code>: повторює лише невдалі)</td>
+<td class="lang-block" data-lang-block="ru" hidden>Продолжить прерванную транзакцию (после <code>--keep-going</code>: повторяет только неудавшиеся)</td>
                 </tr>
                 <tr>
                   <td><code>--skipfirst</code></td>
@@ -609,9 +731,9 @@
                 </tr>
                 <tr>
                   <td><code>--gen-completions &lt;SHELL&gt;</code></td>
-                  <td class="lang-block" data-lang-block="en">Generate shell completions (bash/zsh/fish) to stdout</td>
-                  <td class="lang-block" data-lang-block="ua" hidden>Генерувати completions у stdout</td>
-<td class="lang-block" data-lang-block="ru" hidden>Сгенерировать дополнения оболочки (bash/zsh/fish) в stdout</td>
+                  <td class="lang-block" data-lang-block="en">Print shell completions (bash/zsh/fish) to stdout</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Друкувати completions (bash/zsh/fish) у stdout</td>
+<td class="lang-block" data-lang-block="ru" hidden>Напечатать дополнения оболочки (bash/zsh/fish) в stdout</td>
                 </tr>
                 <tr>
                   <td><code>--gen-manpage</code></td>
@@ -625,20 +747,278 @@
           <div class="callout callout-stripe blue">
             <div class="callout-title lang-block" data-lang-block="en">Gentoo compat</div>
             <div class="callout-title lang-block" data-lang-block="ua" hidden>Сумісність з Gentoo</div>
-<div class="callout-title lang-block" data-lang-block="ru" hidden>Совместимость с Gentoo</div>
-            <span class="lang-block" data-lang-block="en">
-              Many Portage flags (<code>-N/--newuse</code>, <code>-e/--emptytree</code>, <code>-O/--nodeps</code>,
-              <code>-k/-K/-g/-G/-b/-B</code>, <code>--jobs</code>, <code>--load-average</code>, …) are accepted
-              silently as no-ops so scripts and muscle memory don’t break. Parallelism here is <code>--jobsr</code> (repos) and <code>--jobsa</code> (AUR/ABS), not Portage <code>--jobs</code>.
-            </span>
-            <span class="lang-block" data-lang-block="ua" hidden>
-              Багато прапорів Portage (<code>-N/--newuse</code>, <code>-e/--emptytree</code>, <code>-O/--nodeps</code>,
-              <code>-k/-K/-g/-G/-b/-B</code>, <code>--jobs</code>, …) приймаються мовчки як no-op,
-              щоб скрипти і м'язова пам'ять не ламались. Паралелізм тут — <code>--jobsr</code> (репо) і <code>--jobsa</code> (AUR/ABS), не Portage <code>--jobs</code>.
-            </span>
-<span class="lang-block" data-lang-block="ru" hidden>Многие флаги Portage (<code>-N/--newuse</code>, <code>-e/--emptytree</code>, <code>-O/--nodeps</code>,
-              <code>-k/-K/-g/-G/-b/-B</code>, <code>--jobs</code>, <code>--load-average</code>, …) принимаются
-              молча как no-op, чтобы не ломать скрипты и мышечную память. Параллелизм здесь — <code>--jobsr</code> (репо) и <code>--jobsa</code> (AUR/ABS), не Portage <code>--jobs</code>.</span>
+            <div class="callout-title lang-block" data-lang-block="ru" hidden>Совместимость с Gentoo</div>
+            <span class="lang-block" data-lang-block="en">See <a href="#compat">Gentoo compat</a> below for flags that are accepted and ignored. Parallelism here is <code>--jobsr</code> (repos) and <code>--jobsa</code> (AUR/ABS).</span>
+            <span class="lang-block" data-lang-block="ua" hidden>Прапори, що приймаються й ігноруються, див. у розділі <a href="#compat">Сумісність з Gentoo</a> нижче. Паралелізм тут — <code>--jobsr</code> (репо) і <code>--jobsa</code> (AUR/ABS).</span>
+            <span class="lang-block" data-lang-block="ru" hidden>Флаги, которые принимаются и игнорируются, смотри в разделе <a href="#compat">Совместимость с Gentoo</a> ниже. Параллелизм здесь — <code>--jobsr</code> (репо) и <code>--jobsa</code> (AUR/ABS).</span>
+          </div>
+        </section>
+
+        <section class="flag-group" id="compat">
+          <h2 class="lang-block" data-lang-block="en">Gentoo compat (accepted, no-op)</h2>
+          <h2 class="lang-block" data-lang-block="ua" hidden>Сумісність з Gentoo (приймається, no-op)</h2>
+          <h2 class="lang-block" data-lang-block="ru" hidden>Совместимость с Gentoo (принимается, no-op)</h2>
+          <div class="table-wrap">
+            <table class="flag-table">
+              <thead>
+                <tr>
+                  <th>Flag</th>
+                  <th class="lang-block" data-lang-block="en">Description</th>
+                  <th class="lang-block" data-lang-block="ua" hidden>Опис</th>
+                  <th class="lang-block" data-lang-block="ru" hidden>Описание</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>-N</code> / <code>--newuse</code></td>
+                  <td class="lang-block" data-lang-block="en">Include packages with changed USE (Arch has no USE flags)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Врахувати пакунки зі зміненими USE (в Arch немає USE)</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Учитывать пакеты с изменёнными USE (в Arch нет USE)</td>
+                </tr>
+                <tr>
+                  <td><code>-e</code> / <code>--emptytree</code></td>
+                  <td class="lang-block" data-lang-block="en">Accepted; has no effect (use <code>emerge @world</code> to provision)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Приймається; не діє (для відновлення — <code>emerge @world</code>)</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Принимается; не действует (для развёртывания — <code>emerge @world</code>)</td>
+                </tr>
+                <tr>
+                  <td><code>-A</code> / <code>--alert</code></td>
+                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
+                </tr>
+                <tr>
+                  <td><code>--backtrack</code></td>
+                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
+                </tr>
+                <tr>
+                  <td><code>-b</code> / <code>--buildpkg</code></td>
+                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
+                </tr>
+                <tr>
+                  <td><code>-B</code> / <code>--buildpkgonly</code></td>
+                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
+                </tr>
+                <tr>
+                  <td><code>--changed-use</code></td>
+                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
+                </tr>
+                <tr>
+                  <td><code>-l</code> / <code>--changelog</code></td>
+                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
+                </tr>
+                <tr>
+                  <td><code>--clean</code></td>
+                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
+                </tr>
+                <tr>
+                  <td><code>--columns</code></td>
+                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
+                </tr>
+                <tr>
+                  <td><code>--complete-graph</code></td>
+                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
+                </tr>
+                <tr>
+                  <td><code>--config</code></td>
+                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
+                </tr>
+                <tr>
+                  <td><code>-F</code> / <code>--fetch-all-uri</code></td>
+                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
+                </tr>
+                <tr>
+                  <td><code>-f</code> / <code>--fetchonly</code></td>
+                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
+                </tr>
+                <tr>
+                  <td><code>-g</code> / <code>--getbinpkg</code></td>
+                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
+                </tr>
+                <tr>
+                  <td><code>-G</code> / <code>--getbinpkgonly</code></td>
+                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
+                </tr>
+                <tr>
+                  <td><code>--metadata</code></td>
+                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
+                </tr>
+                <tr>
+                  <td><code>--newrepo</code></td>
+                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
+                </tr>
+                <tr>
+                  <td><code>--noconfmem</code></td>
+                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
+                </tr>
+                <tr>
+                  <td><code>-O</code> / <code>--nodeps</code></td>
+                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
+                </tr>
+                <tr>
+                  <td><code>-o</code> / <code>--onlydeps</code></td>
+                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
+                </tr>
+                <tr>
+                  <td><code>-q</code> / <code>--quiet</code></td>
+                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
+                </tr>
+                <tr>
+                  <td><code>--reinstall</code></td>
+                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
+                </tr>
+                <tr>
+                  <td><code>-k</code> / <code>--usepkg</code></td>
+                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
+                </tr>
+                <tr>
+                  <td><code>-K</code> / <code>--usepkgonly</code></td>
+                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
+                </tr>
+                <tr>
+                  <td><code>--with-bdeps</code></td>
+                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="flag-group" id="env-files">
+          <h2 class="lang-block" data-lang-block="en">Environment &amp; files</h2>
+          <h2 class="lang-block" data-lang-block="ua" hidden>Середовище і файли</h2>
+          <h2 class="lang-block" data-lang-block="ru" hidden>Окружение и файлы</h2>
+          <div class="table-wrap">
+            <table class="flag-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th class="lang-block" data-lang-block="en">Description</th>
+                  <th class="lang-block" data-lang-block="ua" hidden>Опис</th>
+                  <th class="lang-block" data-lang-block="ru" hidden>Описание</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>AE_DEBUG=1</code></td>
+                  <td class="lang-block" data-lang-block="en">Environment: live makepkg/compiler output (same as <code>--debug</code>)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Змінна середовища: вивід makepkg/компілятора наживо (як <code>--debug</code>)</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Переменная окружения: вывод makepkg/компилятора вживую (как <code>--debug</code>)</td>
+                </tr>
+                <tr>
+                  <td><code>EMERGE_DEFAULT_OPTS</code></td>
+                  <td class="lang-block" data-lang-block="en"><code>make.conf</code>: default modifier flags added before the command line (skip with <code>--ignore-default-opts</code>)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden><code>make.conf</code>: типові прапори-модифікатори перед командним рядком (пропустити: <code>--ignore-default-opts</code>)</td>
+                  <td class="lang-block" data-lang-block="ru" hidden><code>make.conf</code>: флаги-модификаторы по умолчанию перед командной строкой (пропустить: <code>--ignore-default-opts</code>)</td>
+                </tr>
+                <tr>
+                  <td><code>EMERGE_FREEZE</code></td>
+                  <td class="lang-block" data-lang-block="en"><code>make.conf</code>: packages held at their installed version during <code>-u</code> (same as <code>package.freeze</code>)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden><code>make.conf</code>: пакунки, що тримаються на встановленій версії під час <code>-u</code> (як <code>package.freeze</code>)</td>
+                  <td class="lang-block" data-lang-block="ru" hidden><code>make.conf</code>: пакеты, удерживаемые на установленной версии при <code>-u</code> (как <code>package.freeze</code>)</td>
+                </tr>
+                <tr>
+                  <td><code>/etc/portage/make.conf</code></td>
+                  <td class="lang-block" data-lang-block="en">Default flags and build-env overrides (<code>CFLAGS</code>, <code>MAKEFLAGS</code>, <code>FEATURES</code>, <code>COLORS</code>, …); system path only</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Типові прапори й перевизначення середовища збірки (<code>CFLAGS</code>, <code>MAKEFLAGS</code>, <code>FEATURES</code>, <code>COLORS</code>, …); лише системний шлях</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Флаги по умолчанию и переопределения окружения сборки (<code>CFLAGS</code>, <code>MAKEFLAGS</code>, <code>FEATURES</code>, <code>COLORS</code>, …); только системный путь</td>
+                </tr>
+                <tr>
+                  <td><code>/etc/portage/package.mask</code></td>
+                  <td class="lang-block" data-lang-block="en">Never-install list (file or directory); a hard stop, even for dependencies</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Список заборонених до встановлення (файл або каталог); жорстка зупинка, навіть для залежностей</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Список запрещённых к установке (файл или каталог); жёсткая остановка, даже для зависимостей</td>
+                </tr>
+                <tr>
+                  <td><code>/etc/portage/package.protect</code></td>
+                  <td class="lang-block" data-lang-block="en">Never-remove list: <code>-C</code>, <code>-c</code>, <code>--prune</code>, conflict removals</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Список заборонених до видалення: <code>-C</code>, <code>-c</code>, <code>--prune</code>, видалення через конфлікти</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Список запрещённых к удалению: <code>-C</code>, <code>-c</code>, <code>--prune</code>, удаления из-за конфликтов</td>
+                </tr>
+                <tr>
+                  <td><code>/etc/portage/package.freeze</code></td>
+                  <td class="lang-block" data-lang-block="en">Never-upgrade list for <code>-u</code> (stricter than <code>IgnorePkg</code>)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Список заборонених до оновлення для <code>-u</code> (суворіше за <code>IgnorePkg</code>)</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Список запрещённых к обновлению для <code>-u</code> (строже, чем <code>IgnorePkg</code>)</td>
+                </tr>
+                <tr>
+                  <td><code>/etc/portage/package.env</code>, <code>/etc/portage/env/</code></td>
+                  <td class="lang-block" data-lang-block="en">Per-package build-env overrides (AUR/ABS builds)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Перевизначення середовища збірки для окремих пакунків (збірки AUR/ABS)</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Переопределения окружения сборки для отдельных пакетов (сборки AUR/ABS)</td>
+                </tr>
+                <tr>
+                  <td><code>/etc/portage/world</code>, <code>/etc/portage/sets/</code></td>
+                  <td class="lang-block" data-lang-block="en">World file and custom <code>@sets</code> (<code>&lt;name&gt;</code> or <code>&lt;name&gt;.set</code>)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Файл world і власні <code>@sets</code> (<code>&lt;name&gt;</code> або <code>&lt;name&gt;.set</code>)</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Файл world и пользовательские <code>@sets</code> (<code>&lt;name&gt;</code> или <code>&lt;name&gt;.set</code>)</td>
+                </tr>
+                <tr>
+                  <td><code>/etc/portage/make.profile</code></td>
+                  <td class="lang-block" data-lang-block="en">Symlink to the active profile (<code>--list-profiles</code>, <code>--set-profile</code>)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Символічне посилання на активний профіль (<code>--list-profiles</code>, <code>--set-profile</code>)</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Симлинк на активный профиль (<code>--list-profiles</code>, <code>--set-profile</code>)</td>
+                </tr>
+                <tr>
+                  <td><code>/etc/portage/hooks/</code></td>
+                  <td class="lang-block" data-lang-block="en">User alpm hooks (<code>*.hook</code>), run by libalpm like <code>/usr/share/libalpm/hooks/</code> and <code>/etc/pacman.d/hooks/</code></td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Користувацькі alpm-хуки (<code>*.hook</code>), виконуються libalpm як <code>/usr/share/libalpm/hooks/</code> і <code>/etc/pacman.d/hooks/</code></td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Пользовательские alpm-хуки (<code>*.hook</code>), выполняются libalpm как <code>/usr/share/libalpm/hooks/</code> и <code>/etc/pacman.d/hooks/</code></td>
+                </tr>
+                <tr>
+                  <td><code>/var/log/emerge.log</code></td>
+                  <td class="lang-block" data-lang-block="en">Append-only merge/unmerge log with build time; totals shown in <code>--info</code></td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Журнал merge/unmerge лише з дописуванням, з часом збірки; підсумки в <code>--info</code></td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Журнал merge/unmerge только с дозаписью, со временем сборки; итоги в <code>--info</code></td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </section>
 
