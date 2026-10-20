@@ -147,28 +147,77 @@ pub(crate) fn session_active() -> bool {
     SESSION.lock().map(|s| s.is_some()).unwrap_or(false)
 }
 
-/// One line for a batch that merged together (repo transaction, or a
-/// whole AUR/ABS phase). Wall time is the phase duration; partial
-/// success still writes the packages that actually installed.
+/// Batches of one run, held back so repo + aur + abs merges of a single
+/// emerge land on ONE line. Flushed at exit (atexit) or before an UNMERGE.
+static PENDING: Mutex<Vec<(String, Vec<String>, Duration)>> = Mutex::new(Vec::new());
+static ATEXIT_SET: std::sync::Once = std::sync::Once::new();
+
+extern "C" fn flush_at_exit() {
+    flush_pending();
+}
+
+/// One line for everything merged in this run (partial success included).
+/// Source label is `repo`, `aur`, or e.g. `repo+aur`; with several sources
+/// aur/abs atoms get an `aur/` / `abs/` prefix. Wall time is the sum.
+pub(crate) fn flush_pending() {
+    let batches = match PENDING.lock() {
+        Ok(mut p) => std::mem::take(&mut *p),
+        Err(_) => return,
+    };
+    if batches.is_empty() {
+        return;
+    }
+    let mut kinds: Vec<&str> = Vec::new();
+    for (k, _, _) in &batches {
+        if !kinds.contains(&k.as_str()) {
+            kinds.push(k.as_str());
+        }
+    }
+    let mixed = kinds.len() > 1;
+    let mut atoms: Vec<String> = Vec::new();
+    let mut total = Duration::ZERO;
+    for (k, names, d) in &batches {
+        total += *d;
+        for n in names {
+            if mixed && (k == "aur" || k == "abs") {
+                atoms.push(format!("{}/{}", k, n));
+            } else {
+                atoms.push(n.clone());
+            }
+        }
+    }
+    append(&format!(
+        "{}  MERGE    {:<9} {}  ({})",
+        timestamp(),
+        kinds.join("+"),
+        atoms.join("  "),
+        fmt_duration(total)
+    ));
+}
+
+/// Queue a batch that merged (repo transaction, or an AUR/ABS phase).
 pub(crate) fn log_merge_batch(repo: &str, atoms: &[String], elapsed: Duration) {
     if atoms.is_empty() {
         return;
     }
-    append(&format!(
-        "{}  MERGE    {:<6} {}  ({})",
-        timestamp(),
-        repo,
-        atoms.join("  "),
-        fmt_duration(elapsed)
-    ));
+    ATEXIT_SET.call_once(|| {
+        // SAFETY: handler is a plain extern "C" fn with no captured state.
+        unsafe {
+            libc::atexit(flush_at_exit);
+        }
+    });
+    if let Ok(mut p) = PENDING.lock() {
+        p.push((repo.to_string(), atoms.to_vec(), elapsed));
+    }
 }
 
 pub(crate) fn log_unmerge(atoms: &[String]) {
     if atoms.is_empty() {
         return;
     }
+    flush_pending();
     append(&format!(
-        "{}  UNMERGE  -      {}",
+        "{}  UNMERGE  -         {}",
         timestamp(),
         atoms.join("  ")
     ));

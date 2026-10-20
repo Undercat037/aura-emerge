@@ -2,7 +2,7 @@
 //! `@world` provisioning (no -u).
 
 use crate::theme::Themed;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use colored::Colorize;
 use std::collections::HashSet;
 use std::fs;
@@ -254,6 +254,35 @@ fn hold_back(list: &mut Vec<String>, repo: Option<&str>, held: &mut Vec<String>)
     });
 }
 
+/// world lines -> atoms: `@set` lines are replaced by the set's members
+/// (nested sets too); duplicates dropped, order kept.
+fn expand_world_sets(lines: impl Iterator<Item = String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for l in lines {
+        if let Some(set) = l.strip_prefix('@') {
+            let set = set.trim();
+            if !valid_set_name(set) {
+                eprintln!(">>> Warning: invalid set in world (skipped): {}", l);
+                continue;
+            }
+            match read_custom_set(set) {
+                Ok(members) => {
+                    for m in members {
+                        if seen.insert(m.clone()) {
+                            out.push(m);
+                        }
+                    }
+                }
+                Err(e) => eprintln!(">>> Warning: set @{} in world: {:#}", set, e),
+            }
+        } else if seen.insert(l.clone()) {
+            out.push(l);
+        }
+    }
+    out
+}
+
 /// Provision missing packages from world (bare `@world`, no -u).
 /// Prefix picks the source; `abs/` is listed only; bare always resolved;
 /// `Err/` only with err_install. Fixes world prefixes on success.
@@ -275,12 +304,13 @@ pub(crate) fn provision_from_world_set(
         Err(e) if is_symlink_open_error(&e) => {
             bail!("{} is a symlink - refusing to read", WORLD_SET_FILE);
         }
-        Ok(file) => io::BufReader::new(file)
-            .lines()
-            .map_while(io::Result::ok)
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
-            .collect(),
+        Ok(file) => expand_world_sets(
+            io::BufReader::new(file)
+                .lines()
+                .map_while(io::Result::ok)
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty() && !l.starts_with('#')),
+        ),
         Err(_) => {
             println!(">>> world not found - nothing to provision.");
             return Ok(true);
@@ -419,7 +449,12 @@ pub(crate) fn provision_from_world_set(
         );
     }
     for p in &unresolved_listed {
-        println!("[{} {:<4}] {} (installed from an unknown source - retry with --err-install, or install manually)", "ebuild".t_green(), "N".t_red().bold(), p.t_red().bold());
+        println!(
+            "[{} {:<4}] {} (installed from an unknown source - retry with --err-install, or install manually)",
+            "ebuild".t_green(),
+            "N".t_red().bold(),
+            p.t_red().bold()
+        );
     }
     println!();
     println!("{}: {} package(s)", "Total".bold(), total);
@@ -458,7 +493,6 @@ pub(crate) fn provision_from_world_set(
             ">>>".t_green().bold(),
             aur_missing.len()
         );
-        scan_aur_pkgbuilds_or_abort(&aur_missing);
         // aur_install sets explicit on success; no mark_asexplicit needed.
         if !aur_install(
             &aur_missing,
@@ -502,7 +536,9 @@ pub(crate) fn provision_from_world_set(
             }
         } else {
             overall_ok = false;
-            eprintln!(">>> Warning: some previously-unresolved package(s) failed to install from official repos.");
+            eprintln!(
+                ">>> Warning: some previously-unresolved package(s) failed to install from official repos."
+            );
             if !crate::runtime::keep_going() {
                 return Ok(false);
             }
@@ -515,7 +551,6 @@ pub(crate) fn provision_from_world_set(
             ">>>".t_green().bold(),
             resolved_aur.len()
         );
-        scan_aur_pkgbuilds_or_abort(&resolved_aur);
         if aur_install(
             &resolved_aur,
             false,
@@ -826,7 +861,11 @@ pub(crate) fn register_sets_in_world(set_names: &[String]) -> Result<()> {
                 let key = if trimmed.starts_with('@') {
                     trimmed.clone()
                 } else {
-                    trimmed.split('/').next_back().unwrap_or(&trimmed).to_string()
+                    trimmed
+                        .split('/')
+                        .next_back()
+                        .unwrap_or(&trimmed)
+                        .to_string()
                 };
                 current.insert(key, trimmed);
             }
@@ -880,7 +919,11 @@ pub(crate) fn add_to_world_groups(groups: &[(&[String], Option<&str>)]) -> Resul
                 let key = if trimmed.starts_with('@') {
                     trimmed.clone()
                 } else {
-                    trimmed.split('/').next_back().unwrap_or(&trimmed).to_string()
+                    trimmed
+                        .split('/')
+                        .next_back()
+                        .unwrap_or(&trimmed)
+                        .to_string()
                 };
                 current_set.insert(key, trimmed);
             }
@@ -988,7 +1031,11 @@ pub(crate) fn remove_from_world_set(packages: &[String]) -> Result<()> {
             for line in io::BufReader::new(file).lines().map_while(Result::ok) {
                 let trimmed = line.trim().to_string();
                 if !trimmed.is_empty() && validate_pkg(&trimmed) {
-                    let bare = trimmed.split('/').next_back().unwrap_or(&trimmed).to_string();
+                    let bare = trimmed
+                        .split('/')
+                        .next_back()
+                        .unwrap_or(&trimmed)
+                        .to_string();
                     current_set.insert(bare, trimmed);
                 }
             }
@@ -1074,11 +1121,7 @@ pub(crate) fn load_resume_state() -> Option<Vec<String>> {
         .map(|l| l.trim().to_string())
         .filter(|l| !l.is_empty())
         .collect();
-    if lines.is_empty() {
-        None
-    } else {
-        Some(lines)
-    }
+    if lines.is_empty() { None } else { Some(lines) }
 }
 
 // --undo: one step of install/unmerge history (no version snapshot for -u).
