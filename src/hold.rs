@@ -190,6 +190,10 @@ static PROTECT: OnceLock<HoldList> = OnceLock::new();
 fn load_protect() -> HoldList {
     let mut entries = Vec::new();
     load_path_entries(Path::new(PROTECT_FILE), "protect", &mut entries);
+    // Profile `package.protect` (parents first); user file is listed first.
+    for dir in crate::profile::chain_dirs() {
+        load_path_entries(&dir.join("package.protect"), "protect", &mut entries);
+    }
     HoldList { entries }
 }
 
@@ -205,9 +209,9 @@ pub(crate) fn is_protected(name: &str) -> bool {
     if find_protect(name, None).is_some() {
         return true;
     }
-    // Profile @system packages are never depcleaned/unmerged by accident.
+    // package.profile entries (incl. @system) are never depcleaned/unmerged by accident.
     let bare = name.split('/').next_back().unwrap_or(name);
-    crate::profile::system_names().contains(bare)
+    crate::profile::package_names().contains(bare)
 }
 
 pub(crate) fn split_protected(pkgs: &[String]) -> (Vec<String>, Vec<(String, &'static HoldEntry)>) {

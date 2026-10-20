@@ -159,13 +159,14 @@ fn rustup_env(build_dir: &Path) -> RustEnv {
         .map(PathBuf::from)
         .or_else(|| real_home.as_ref().map(|h| h.join(".rustup")));
     if let Some(rustup_home) = real_rustup_home
-        && rustup_home.is_dir() {
-            out.env.push((
-                "RUSTUP_HOME".to_string(),
-                rustup_home.to_string_lossy().to_string(),
-            ));
-            out.ro_binds.push(rustup_home);
-        }
+        && rustup_home.is_dir()
+    {
+        out.env.push((
+            "RUSTUP_HOME".to_string(),
+            rustup_home.to_string_lossy().to_string(),
+        ));
+        out.ro_binds.push(rustup_home);
+    }
     if let Some(h) = &real_home {
         let cargo_bin = h.join(".cargo").join("bin");
         if cargo_bin.is_dir() {
@@ -540,9 +541,10 @@ pub(crate) fn sandboxed_makepkg(
     }
     for (k, v) in std::env::vars_os() {
         if let (Some(k), Some(v)) = (k.to_str(), v.to_str())
-            && k.starts_with("LC_") {
-                cmd.args(["--setenv", k, v]);
-            }
+            && k.starts_with("LC_")
+        {
+            cmd.args(["--setenv", k, v]);
+        }
     }
     if net {
         for key in ENV_PROXY {
@@ -587,6 +589,10 @@ pub(crate) fn sandboxed_makepkg(
         None => host_path,
     };
     cmd.args(["--setenv", "PATH", &sandboxed_path]);
+    // fakeroot tries a real chown() and only ignores EPERM. In the nested
+    // user namespace an unmapped uid/gid gives EINVAL instead, which broke
+    // `install -o/-g`, `mv`, `cp -a` in package(). Fake it only.
+    cmd.args(["--setenv", "FAKEROOTDONTTRYCHOWN", "1"]);
 
     cmd.args(["--chdir", &build_dir_s]);
     cmd.arg("--");
@@ -672,9 +678,11 @@ mod tests {
         std::os::unix::fs::symlink(&victim, dir.join("fakeroot")).unwrap();
         write_shim(&dir, Path::new("/usr/bin/fakeroot"), "--ro-bind / /").unwrap();
         assert_eq!(std::fs::read_to_string(&victim).unwrap(), "precious");
-        assert!(std::fs::read_to_string(dir.join("fakeroot"))
-            .unwrap()
-            .starts_with("#!/bin/sh"));
+        assert!(
+            std::fs::read_to_string(dir.join("fakeroot"))
+                .unwrap()
+                .starts_with("#!/bin/sh")
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

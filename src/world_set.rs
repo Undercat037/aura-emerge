@@ -178,6 +178,99 @@ pub(crate) fn world_set_member_bares() -> HashSet<String> {
     out
 }
 
+/// Bare names that stay explicit: plain world entries, members of `@sets`
+/// in world, and every `package.profile` entry.
+pub(crate) fn keep_explicit_names() -> HashSet<String> {
+    let mut keep = world_set_member_bares();
+    keep.extend(crate::profile::package_names());
+    if let Ok(file) = open_nofollow(std::path::Path::new(WORLD_SET_FILE)) {
+        for line in io::BufReader::new(file).lines().map_while(io::Result::ok) {
+            let t = line.trim();
+            if t.is_empty() || t.starts_with('#') || t.starts_with('@') {
+                continue;
+            }
+            keep.insert(t.split('/').next_back().unwrap_or(t).to_string());
+        }
+    }
+    keep
+}
+
+/// `--sync-explicit`: explicit packages that are not in world, a world set
+/// or package.profile become dependencies, so depclean can see them.
+/// `auto` = run after a merge (one summary line, no prompt).
+pub(crate) fn sync_explicit(pretend: bool, ask: bool, auto: bool) -> bool {
+    let keep = keep_explicit_names();
+    if keep.is_empty() {
+        eprintln!(
+            "{} --sync-explicit: world and package.profile are empty - refusing to demote everything.",
+            ">>> Warning:".t_yellow().bold()
+        );
+        return false;
+    }
+    let mut demote: Vec<String> = crate::alpm_db::explicit_names()
+        .into_iter()
+        .filter(|n| !keep.contains(n))
+        .collect();
+    demote.sort();
+    demote.dedup();
+    if demote.is_empty() {
+        if !auto {
+            println!(">>> Explicit packages already match world + package.profile.");
+        }
+        return true;
+    }
+    if !auto {
+        println!(
+            "{} {} explicit package(s) not in world or package.profile:",
+            ">>>".t_green().bold(),
+            demote.len()
+        );
+        for n in &demote {
+            println!("    {}", n);
+        }
+        if pretend {
+            println!(">>> --pretend: nothing changed.");
+            return true;
+        }
+        if !crate::confirm_action(ask, "demote") {
+            return true;
+        }
+    }
+    crate::mark_asdeps(&demote);
+    println!(
+        "{} Marked {} package(s) as dependencies (not in world or package.profile).",
+        ">>>".t_green().bold(),
+        demote.len()
+    );
+    true
+}
+
+/// Where `name` is listed: `world` (plain entry) and every `@set` that
+/// contains it (nested sets included). For conflict messages.
+pub(crate) fn origins_of(name: &str) -> Vec<String> {
+    let bare = |p: &str| p.split('/').next_back().unwrap_or(p).to_string();
+    let want = bare(name);
+    let mut out = Vec::new();
+    if let Ok(file) = open_nofollow(std::path::Path::new(WORLD_SET_FILE)) {
+        let listed = io::BufReader::new(file)
+            .lines()
+            .map_while(io::Result::ok)
+            .map(|l| l.trim().to_string())
+            .any(|t| !t.is_empty() && !t.starts_with(['#', '@']) && bare(&t) == want);
+        if listed {
+            out.push("world".to_string());
+        }
+    }
+    for set in list_custom_sets() {
+        if let Ok(pkgs) = read_custom_set(&set)
+            && pkgs.iter().any(|p| bare(p) == want)
+        {
+            out.push(format!("@{}", set));
+        }
+    }
+    out
+}
+
 /// Read a --batchinstall list (same format as a custom set, any path).
 pub(crate) fn read_batch_file(path: &str) -> Result<Vec<String>> {
     let file = match open_nofollow(std::path::Path::new(path)) {
@@ -322,8 +415,10 @@ pub(crate) fn provision_from_world_set(
         return Ok(true);
     }
 
-    // Already installed → skip.
-    let installed: HashSet<String> = crate::alpm_db::installed_names();
+    // Already installed → skip. A name an installed package provides counts
+    // too (aura-emerge-git provides aura-emerge): no blocker, nothing to do.
+    let mut installed: HashSet<String> = crate::alpm_db::installed_names();
+    installed.extend(crate::alpm_db::installed_providers().into_keys());
 
     let mut official_missing: Vec<String> = Vec::new();
     let mut aur_missing: Vec<String> = Vec::new();

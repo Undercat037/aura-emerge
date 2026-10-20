@@ -34,6 +34,9 @@ pub(crate) struct Runtime {
     pub(crate) jobsr: u32,
     /// Max concurrent AUR/ABS builds (`--jobsa`).
     pub(crate) jobsa: u32,
+    /// `--sync-explicit`: demote explicit packages outside world/profile
+    /// after a successful merge.
+    pub(crate) sync_explicit: bool,
 }
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();

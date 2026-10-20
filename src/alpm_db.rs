@@ -111,6 +111,24 @@ pub(crate) fn is_installed(name: &str) -> bool {
     installed_version(name).is_some()
 }
 
+/// Provided name -> installed package that provides it (a package's own
+/// name excluded). `aura-emerge-git` providing `aura-emerge` -> one entry.
+pub(crate) fn installed_providers() -> HashMap<String, String> {
+    let Some(alpm) = open() else {
+        return HashMap::new();
+    };
+    let mut m = HashMap::new();
+    for p in alpm.localdb().pkgs() {
+        for d in p.provides() {
+            let n = d.name().to_string();
+            if n != p.name() {
+                m.entry(n).or_insert_with(|| p.name().to_string());
+            }
+        }
+    }
+    m
+}
+
 pub(crate) fn installed_names() -> std::collections::HashSet<String> {
     let Some(alpm) = open() else {
         return std::collections::HashSet::new();
@@ -388,6 +406,123 @@ pub(crate) fn required_by(name: &str) -> Vec<String> {
         Ok(p) => p.required_by().iter().map(|s| s.to_string()).collect(),
         Err(_) => Vec::new(),
     };
+    out
+}
+
+// ── pre-flight conflicts for packages libalpm has no record of (AUR) ─────────
+
+/// An incoming package as the AUR RPC describes it.
+pub(crate) struct Incoming {
+    pub(crate) name: String,
+    pub(crate) ver: String,
+    pub(crate) provides: Vec<String>,
+    pub(crate) conflicts: Vec<String>,
+}
+
+/// `foo>=1.2` -> ("foo", Some((">=", "1.2"))).
+fn split_dep(s: &str) -> (&str, Option<(&str, &str)>) {
+    for op in ["<=", ">=", "=", "<", ">"] {
+        if let Some(i) = s.find(op) {
+            return (&s[..i], Some((op, &s[i + op.len()..])));
+        }
+    }
+    (s, None)
+}
+
+fn op_ok(op: &str, ord: std::cmp::Ordering) -> bool {
+    use std::cmp::Ordering::*;
+    match op {
+        "<" => ord == Less,
+        "<=" => ord != Greater,
+        "=" => ord == Equal,
+        ">=" => ord != Less,
+        ">" => ord == Greater,
+        _ => false,
+    }
+}
+
+/// libalpm's rule: does `dep` match the package `name ver` or one of its
+/// `provides` (a versioned dep needs a versioned `foo=1` provide)?
+fn dep_matches(dep: &str, name: &str, ver: &str, provides: &[String]) -> bool {
+    let (dn, c) = split_dep(dep.trim());
+    if dn.is_empty() {
+        return false;
+    }
+    if dn == name {
+        return match c {
+            None => true,
+            Some((op, v)) => op_ok(op, alpm::vercmp(ver, v)),
+        };
+    }
+    for p in provides {
+        let (pn, pc) = split_dep(p.trim());
+        if pn != dn {
+            continue;
+        }
+        match (c, pc) {
+            (None, _) => return true,
+            (Some((op, v)), Some(("=", pv))) if op_ok(op, alpm::vercmp(pv, v)) => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Blockers between `incoming` and the installed system (both ways: the
+/// new package's `conflicts` and the installed ones'), plus between the
+/// incoming packages themselves. Installed packages that are themselves
+/// incoming (upgrades) are not blockers.
+pub(crate) fn preflight_conflicts(incoming: &[Incoming]) -> Vec<crate::conflict::Conflict> {
+    let Some(alpm) = open() else {
+        return Vec::new();
+    };
+    let mut out: Vec<crate::conflict::Conflict> = Vec::new();
+    let mut push = |c: crate::conflict::Conflict| {
+        if !out.contains(&c) {
+            out.push(c);
+        }
+    };
+    let names: Vec<&str> = incoming.iter().map(|i| i.name.as_str()).collect();
+    for p in alpm.localdb().pkgs() {
+        if names.contains(&p.name()) {
+            continue;
+        }
+        let lprov: Vec<String> = p.provides().iter().map(|d| d.to_string()).collect();
+        let lconf: Vec<String> = p.conflicts().iter().map(|d| d.to_string()).collect();
+        for i in incoming {
+            let hit = i
+                .conflicts
+                .iter()
+                .any(|c| dep_matches(c, p.name(), p.version().as_str(), &lprov))
+                || lconf
+                    .iter()
+                    .any(|c| dep_matches(c, &i.name, &i.ver, &i.provides));
+            if hit {
+                push(crate::conflict::Conflict {
+                    new_name: i.name.clone(),
+                    new_ver: i.ver.clone(),
+                    old_name: p.name().to_string(),
+                    old_ver: p.version().to_string(),
+                });
+            }
+        }
+    }
+    for i in incoming {
+        for j in incoming {
+            if i.name != j.name
+                && i.conflicts
+                    .iter()
+                    .any(|c| dep_matches(c, &j.name, &j.ver, &j.provides))
+            {
+                push(crate::conflict::Conflict {
+                    new_name: i.name.clone(),
+                    new_ver: i.ver.clone(),
+                    old_name: j.name.clone(),
+                    old_ver: j.ver.clone(),
+                });
+            }
+        }
+    }
     out
 }
 

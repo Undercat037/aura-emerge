@@ -190,7 +190,7 @@ REMOVING PACKAGES
     -C removes the named packages, -c removes orphans, --prune removes
     everything not in world. -C and -c wait 5 seconds (Ctrl-C aborts)
     unless -a or -p is given. -c never removes world entries, members of
-    sets recorded in world, package.protect entries or profile @system
+    sets recorded in world, package.protect entries or package.profile
     packages; --show-protected lists them.
 
 PROTECT AND FREEZE
@@ -201,7 +201,8 @@ PROTECT AND FREEZE
 
 PROFILES
     /etc/portage/make.profile points at a profile directory (Portage
-    layout: parent, packages, package.mask, make.defaults). --list-profiles
+    layout: parent, package.profile, package.mask, package.protect,
+    make.defaults). --list-profiles
     lists them, --set-profile <N|PATH> selects one, @system installs the
     profile's * packages. With /usr/bin/eselect symlinked to emerge,
     'eselect profile list|set|show' works too.
@@ -556,6 +557,12 @@ struct Cli {
     #[arg(long = "check-world")]
     check_world: bool,
 
+    /// Mark every explicit package that is not in world, a world set or
+    /// package.profile as a dependency (so -c can see it). Alone: runs now
+    /// (-p lists, -a asks); with an install/upgrade: runs after it succeeds
+    #[arg(long = "sync-explicit")]
+    sync_explicit: bool,
+
     /// Verbose slot/conflict info (informational)
     #[arg(long = "verbose-conflicts")]
     verbose_conflicts: bool,
@@ -748,6 +755,7 @@ fn print_help() {
     println!("          [ --err-install           ] [ --regen-sort                ]");
     println!("          [ --deep[=N]              ] [ --keep-going                ]");
     println!("          [ --exclude <ATOM>        ] [ --ignore-default-opts       ]");
+    println!("          [ --sync-explicit         ]");
     println!("Actions:  [ --depclean  | --deselect | --prune      | --check-world ]");
     println!("          [ --regen     | --resume   | --search     | --searchdesc  ]");
     println!("          [ --select    | --sync     | --unmerge    | --update      ]");
@@ -1362,11 +1370,13 @@ fn repo_conflict_unmerge_list(msg: &str) -> Option<Vec<String>> {
     }
     conflict::print_dependents(&plan, &alpm_db::required_by);
     // Always asked, with or without --ask: this removes installed packages.
-    if !packages::confirm_conflict_unmerge(true) {
+    // (Skipped when the plan's pre-flight question already covered them.)
+    let gone: Vec<String> = plan.unmerge.iter().map(|u| u.name.clone()).collect();
+    if !packages::confirm_conflict_unmerge_for(&gone) {
         return None;
     }
     progress::status_resume();
-    Some(plan.unmerge.into_iter().map(|u| u.name).collect())
+    Some(gone)
 }
 
 /// `--with-optdeps`: install missing optdepends of `landed` as deps.
@@ -1912,6 +1922,40 @@ fn drop_up_to_date(targets: Vec<String>, abs_flag: bool) -> Vec<String> {
         .collect()
 }
 
+/// Targets already satisfied by an installed package that *provides* the
+/// name (aura-emerge-git provides aura-emerge): dropped, with a note.
+/// `all` (--noreplace) covers every target, otherwise only set members.
+fn drop_provided(targets: Vec<String>, all: bool, set_members: &HashSet<String>) -> Vec<String> {
+    let providers = alpm_db::installed_providers();
+    if providers.is_empty() {
+        return targets;
+    }
+    targets
+        .into_iter()
+        .filter(|t| {
+            if t.starts_with("abs/") || !(all || set_members.contains(t)) {
+                return true;
+            }
+            let bare = t.split('/').next_back().unwrap_or(t);
+            if alpm_db::is_installed(bare) {
+                return true;
+            }
+            match providers.get(bare) {
+                Some(by) => {
+                    println!(
+                        "{} {}: already satisfied by installed {} (provides it) - skipped",
+                        ">>>".t_green().bold(),
+                        bare,
+                        by
+                    );
+                    false
+                }
+                None => true,
+            }
+        })
+        .collect()
+}
+
 /// Reconstructs the argv-equivalent of the current invocation for
 /// `--resume`. Excludes --pretend/--ask/--resume/--skipfirst (how to
 /// run it, not what it is).
@@ -2454,6 +2498,11 @@ fn main() {
     if had_failures {
         std::process::exit(1);
     }
+    // --sync-explicit (e.g. from EMERGE_DEFAULT_OPTS): only after something
+    // was really merged, never after -p, searches or failed runs.
+    if runtime::get().sync_explicit && logbook::merged_any() {
+        world_set::sync_explicit(false, false, true);
+    }
 }
 
 /// `--undo` of an install: reinstall packages it removed as conflicts
@@ -2580,6 +2629,7 @@ fn run() -> anyhow::Result<()> {
         load_average: cli.load_average.filter(|v| v.is_finite() && *v > 0.0),
         jobsr,
         jobsa,
+        sync_explicit: cli.sync_explicit,
     });
 
     if cli.moo {
@@ -2824,7 +2874,7 @@ fn run() -> anyhow::Result<()> {
         system_pkgs.sort();
         if system_pkgs.is_empty() {
             eprintln!(
-                "{} @system is empty (no profile or no `*pkg` lines in profile packages)",
+                "{} @system is empty (no profile or no `*pkg` lines in profile package.profile)",
                 ">>> Warning:".t_yellow().bold()
             );
         } else {
@@ -2879,6 +2929,7 @@ fn run() -> anyhow::Result<()> {
             .collect::<Vec<_>>(),
     );
     let from_custom_set = !custom_set_pkgs.is_empty();
+    let set_members: HashSet<String> = custom_set_pkgs.iter().cloned().collect();
     target_pkgs.extend(custom_set_pkgs);
     target_pkgs.extend(system_pkgs);
 
@@ -3401,6 +3452,15 @@ fn run() -> anyhow::Result<()> {
             std::process::exit(1);
         }
         regen_set(name, cli.regen_sort)?;
+        return Ok(());
+    }
+
+    // --sync-explicit alone: demote explicit packages outside world/profile.
+    // With an install/upgrade it runs from main() once that succeeded.
+    if cli.sync_explicit && cli.packages.is_empty() && active_actions(&cli).is_empty() {
+        if !world_set::sync_explicit(cli.pretend, cli.ask, false) {
+            std::process::exit(1);
+        }
         return Ok(());
     }
 
@@ -4125,7 +4185,7 @@ fn run() -> anyhow::Result<()> {
                     .collect();
             }
             world_bare.extend(world_set::world_set_member_bares());
-            world_bare.extend(crate::profile::system_names());
+            world_bare.extend(crate::profile::package_names());
             let protected: Vec<String> = crate::alpm_db::orphan_names()
                 .into_iter()
                 .filter(|p| world_bare.contains(p) || crate::hold::is_protected(p))
@@ -4332,6 +4392,14 @@ fn run() -> anyhow::Result<()> {
     // 6. Install
     // --noreplace: before the plan, drop targets already at the same or a
     // newer version (nothing to download/build). Older ones still update.
+    if !target_pkgs.is_empty() {
+        let before = target_pkgs.len();
+        target_pkgs = drop_provided(target_pkgs, cli.noreplace, &set_members);
+        if target_pkgs.is_empty() && before > 0 && !has_world {
+            println!("{} Nothing to merge; quitting.", ">>>".t_green().bold());
+            return Ok(());
+        }
+    }
     if cli.noreplace && !target_pkgs.is_empty() {
         target_pkgs = drop_up_to_date(target_pkgs, cli.abs);
         if target_pkgs.is_empty() && !has_world {

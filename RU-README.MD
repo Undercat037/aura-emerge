@@ -202,7 +202,7 @@ extra/nano                     # конкретный пакет из конкр
 
 ### Профили
 
-`/etc/portage/make.profile` - символьная ссылка на каталог профиля (раскладка Portage). `--list-profiles` показывает дерево из `/var/db/repos/portage/profiles`; `parent` вида `repo:path` ищется в `/var/db/repos/<repo>/profiles/`. Профиль может задавать `parent`, `packages` (`*` = стартовый набор `@system`), `package.mask` и `make.defaults`. Цепочки `parent` раскрываются в глубину. `emerge @system` ставит системный набор профиля; эти пакеты защищены от depclean так же, как записи world. Список и переключение:
+`/etc/portage/make.profile` - символьная ссылка на каталог профиля (раскладка Portage). `--list-profiles` показывает дерево из `/var/db/repos/portage/profiles`; `parent` вида `repo:path` ищется в `/var/db/repos/<repo>/profiles/`. Профиль может задавать `parent`, `package.profile` (`*` = стартовый набор `@system`; старое имя `packages` тоже читается), `package.mask`, `package.protect` и `make.defaults`. Цепочки `parent` раскрываются в глубину. `emerge @system` ставит системный набор профиля; все записи `package.profile` защищены от depclean так же, как записи world. Список и переключение:
 
 ```
 emerge --list-profiles
@@ -558,6 +558,7 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `--select` | Добавить в world без установки |
 | `--deselect` | Убрать из world без удаления |
 | `--check-world` | Показать записи world, которых нет в системе или которые установлены не явно |
+| `--sync-explicit` | Пометить как зависимости явно установленные пакеты, которых нет в world, в `@set` из world и в `package.profile` (чтобы `-c` их видел). Отдельно: выполняется сразу (`-p` показывает список, `-a` спрашивает). С установкой/обновлением: после успешного завершения. Можно в `EMERGE_DEFAULT_OPTS` |
 | `--prune` | Удалить пакеты, которых нет в world |
 | `--regen` | Пересоздать кэш метаданных пакетов |
 | `--regen-world` | Заново определить префиксы репозиториев в world |

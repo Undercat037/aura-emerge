@@ -202,7 +202,7 @@ Not the same as `--exclude`: a mask is permanent, `--exclude` is for one run.
 
 ### Profiles
 
-`/etc/portage/make.profile` is a symlink to a profile directory (Portage layout). `--list-profiles` lists the tree under `/var/db/repos/portage/profiles`; a `parent` of the form `repo:path` is resolved under `/var/db/repos/<repo>/profiles/`. A profile may define `parent`, `packages` (`*` = `@system` bootstrap set), `package.mask`, and `make.defaults`. Nested `parent` chains are expanded depth-first. `emerge @system` installs the profile system set; those packages are protected from depclean like world entries. List and switch:
+`/etc/portage/make.profile` is a symlink to a profile directory (Portage layout). `--list-profiles` lists the tree under `/var/db/repos/portage/profiles`; a `parent` of the form `repo:path` is resolved under `/var/db/repos/<repo>/profiles/`. A profile may define `parent`, `package.profile` (`*` = `@system` bootstrap set; old name `packages` still read), `package.mask`, `package.protect` and `make.defaults`. Nested `parent` chains are expanded depth-first. `emerge @system` installs the profile system set; every `package.profile` entry is protected from depclean like world entries. List and switch:
 
 ```
 emerge --list-profiles
@@ -559,6 +559,7 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `--select` | Add to world without installing |
 | `--deselect` | Remove from world without unmerging |
 | `--check-world` | List world entries that are missing or not explicitly installed |
+| `--sync-explicit` | Mark explicit packages that are not in world, a world `@set` or `package.profile` as dependencies (so `-c` sees them). Alone: runs now (`-p` lists, `-a` asks). With an install/upgrade: runs after it succeeds. Allowed in `EMERGE_DEFAULT_OPTS` |
 | `--prune` | Remove packages not in world |
 | `--regen` | Regenerate package metadata cache |
 | `--regen-world` | Re-resolve repo prefixes in world |

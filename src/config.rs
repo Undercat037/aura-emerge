@@ -733,6 +733,7 @@ static SPECS: &[FlagSpec] = &[
     sw("--refresh", None),
     sw("--devel", None),
     sw("--keep-going", None),
+    sw("--sync-explicit", None),
     sw("--sudoloop", None),
     FlagSpec {
         long: "--exclude",
@@ -830,14 +831,26 @@ fn check_value(kind: Val, raw: &str) -> Result<String, &'static str> {
 /// Flag pairs that can't both be in effect, with the reason shown when
 /// they are.
 const CONFLICTS: &[(&str, &str, &str)] = &[
-    ("--aur", "--abs", "they name two different build sources for the same package"),
-    ("--aur", "--repos", "one forces the AUR, the other forbids it"),
+    (
+        "--aur",
+        "--abs",
+        "they name two different build sources for the same package",
+    ),
+    (
+        "--aur",
+        "--repos",
+        "one forces the AUR, the other forbids it",
+    ),
     (
         "--no-sandbox",
         "--unshare-net-build",
         "--unshare-net-build drops the build's network inside the bwrap sandbox, which --no-sandbox turns off entirely",
     ),
-    ("--skippgp", "--autopgp", "one skips PGP checks, the other imports keys to satisfy them"),
+    (
+        "--skippgp",
+        "--autopgp",
+        "one skips PGP checks, the other imports keys to satisfy them",
+    ),
 ];
 
 fn base_of(token: &str) -> &str {
@@ -1303,7 +1316,9 @@ mod config_tests {
 
     #[test]
     fn generated_conf_sources_system_then_overrides() {
-        let cfg = parse("CFLAGS=\"-O2\"\nMAKEFLAGS=\"-j$(nproc)\"\nOPTIONS=(strip !debug)\nNINJAFLAGS=\"-j4\"\n");
+        let cfg = parse(
+            "CFLAGS=\"-O2\"\nMAKEFLAGS=\"-j$(nproc)\"\nOPTIONS=(strip !debug)\nNINJAFLAGS=\"-j4\"\n",
+        );
         let conf = makepkg_override_conf(&cfg).expect("build vars set");
         let src = conf.find("source ").expect("sources the system conf");
         // Arrays stay arrays, scalars stay quoted, $() survives.

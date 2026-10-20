@@ -76,7 +76,7 @@ pub(crate) struct Unmerge {
     pub(crate) blocking: Vec<String>,
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct Plan {
     /// Incoming packages that are part of a conflict: (name, ver).
     pub(crate) merge: Vec<(String, String)>,
@@ -237,14 +237,61 @@ pub(crate) fn print(plan: &Plan, dropped: usize) {
 /// ebuild list by `print_emerge_plan`: (pairs, every incoming name).
 static PLANNED: Mutex<Option<(Vec<Conflict>, Vec<String>)>> = Mutex::new(None);
 
+/// Several sources add to it (repo plan, AUR pre-flight); repeats fold.
 pub(crate) fn note_planned(pairs: Vec<Conflict>, incoming: Vec<String>) {
-    if let Ok(mut g) = PLANNED.lock() {
-        *g = if pairs.is_empty() {
-            None
-        } else {
-            Some((pairs, incoming))
-        };
+    if pairs.is_empty() {
+        return;
     }
+    if let Ok(mut g) = PLANNED.lock() {
+        let (p, i) = g.get_or_insert_with(|| (Vec::new(), Vec::new()));
+        for c in pairs {
+            if !p.contains(&c) {
+                p.push(c);
+            }
+        }
+        for n in incoming {
+            if !i.contains(&n) {
+                i.push(n);
+            }
+        }
+    }
+}
+
+/// The plan list's blockers, kept for the one question asked before
+/// anything is installed (`preflight_confirm`).
+static PREFLIGHT: Mutex<Option<Plan>> = Mutex::new(None);
+/// Installed packages the user already agreed to unmerge in that question.
+static APPROVED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Asked right after the plan, before any package is touched. Hard
+/// blockers stop the run; removable ones need one yes (always asked --
+/// installed packages go). False = stop.
+pub(crate) fn preflight_confirm() -> bool {
+    let Some(plan) = PREFLIGHT.lock().ok().and_then(|mut g| g.take()) else {
+        return true;
+    };
+    if !plan.hard.is_empty() {
+        eprintln!("{} Nothing was installed.", ">>> Error:".t_red().bold());
+        std::process::exit(1);
+    }
+    if plan.unmerge.is_empty() {
+        return true;
+    }
+    if !crate::packages::confirm_conflict_unmerge(true) {
+        return false;
+    }
+    if let Ok(mut a) = APPROVED.lock() {
+        a.extend(plan.unmerge.iter().map(|u| u.name.clone()));
+    }
+    true
+}
+
+/// True if every name was already approved by `preflight_confirm`.
+pub(crate) fn is_approved(names: &[String]) -> bool {
+    APPROVED
+        .lock()
+        .map(|a| !names.is_empty() && names.iter().all(|n| a.contains(n)))
+        .unwrap_or(false)
 }
 
 pub(crate) fn take_planned() -> Option<(Vec<Conflict>, Vec<String>)> {
@@ -259,6 +306,9 @@ pub(crate) fn print_planned(
     needed_by: &dyn Fn(&str) -> Vec<String>,
 ) {
     let plan = plan_with(pairs, incoming);
+    if let Ok(mut g) = PREFLIGHT.lock() {
+        *g = Some(plan.clone());
+    }
     for r in rows(&plan).into_iter().filter(|r| r.kind != Kind::Merge) {
         let atom = r.atom.t_red().bold().to_string();
         match &r.note {
@@ -266,6 +316,7 @@ pub(crate) fn print_planned(
             None => println!("{} {}", tag(r.kind), atom),
         }
     }
+    print_origins(&plan);
     println!();
     if plan.hard.is_empty() {
         println!(
@@ -284,6 +335,30 @@ pub(crate) fn print_planned(
             "{} Some of the packages above cannot be installed at the same time.",
             " * Error:".t_red().bold()
         );
+    }
+}
+
+/// Which set / world line lists each package in a conflict, so it is
+/// clear what to edit if the other side should win.
+fn print_origins(plan: &Plan) {
+    let mut names: Vec<(String, &str)> = Vec::new();
+    for (n, _) in &plan.merge {
+        names.push((n.clone(), "to be merged"));
+    }
+    for u in &plan.unmerge {
+        names.push((u.name.clone(), "installed, would be unmerged"));
+    }
+    for (n, what) in names {
+        let from = crate::world_set::origins_of(&n);
+        if !from.is_empty() {
+            println!(
+                "{} {} ({}) is listed in: {}",
+                " *".t_yellow().bold(),
+                n,
+                what,
+                from.join(", ")
+            );
+        }
     }
 }
 

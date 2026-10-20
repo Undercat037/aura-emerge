@@ -428,6 +428,19 @@ pub(crate) fn resolve_aur_split(pkgs: &[String]) -> (Vec<PkgInfo>, Vec<String>) 
     let by_name: HashMap<&str, &crate::aur::AurPkgInfo> =
         infos.iter().map(|i| (i.name.as_str(), i)).collect();
 
+    // Conflicts of the AUR targets against the system, before any build.
+    let incoming: Vec<crate::alpm_db::Incoming> = infos
+        .iter()
+        .map(|i| crate::alpm_db::Incoming {
+            name: i.name.clone(),
+            ver: i.version.clone(),
+            provides: i.provides.split_whitespace().map(String::from).collect(),
+            conflicts: i.conflicts.split_whitespace().map(String::from).collect(),
+        })
+        .collect();
+    let pairs = crate::alpm_db::preflight_conflicts(&incoming);
+    crate::conflict::note_planned(pairs, incoming.iter().map(|i| i.name.clone()).collect());
+
     let mut result = Vec::new();
     let mut missing = Vec::new();
     for pkg in pkgs {
@@ -600,10 +613,10 @@ fn install_files_resolving_conflicts(
 
     // Always asked, with or without --ask: this removes installed packages.
     let _ = ask;
-    if !confirm_conflict_unmerge(true) {
+    let gone: Vec<String> = plan.unmerge.iter().map(|u| u.name.clone()).collect();
+    if !confirm_conflict_unmerge_for(&gone) {
         return false;
     }
-    let gone: Vec<String> = plan.unmerge.iter().map(|u| u.name.clone()).collect();
     let in_world = crate::world_set::world_installed_snapshot();
     if let Err(e) = unmerge_blockers(&gone) {
         let m = e.strip_prefix("helper refused: ").unwrap_or(e.as_str());
@@ -792,7 +805,25 @@ pub(crate) fn confirm_conflict_unmerge(ask: bool) -> bool {
 }
 
 pub(crate) fn confirm_merge(ask: bool) -> bool {
-    confirm_action(ask, "merge")
+    if !confirm_action(ask, "merge") {
+        return false;
+    }
+    // Plan blockers (repo + AUR) are settled here, before anything installs.
+    crate::conflict::preflight_confirm()
+}
+
+/// Conflict question during an install: skipped if these very packages
+/// were already approved for unmerge in the plan's pre-flight question.
+pub(crate) fn confirm_conflict_unmerge_for(names: &[String]) -> bool {
+    if crate::conflict::is_approved(names) {
+        println!(
+            "{} Unmerging the conflicting packages approved in the plan: {}",
+            ">>>".t_yellow().bold(),
+            names.join(", ")
+        );
+        return true;
+    }
+    confirm_conflict_unmerge(true)
 }
 
 /// Same as `confirm_merge`, with a custom verb (`unmerge`, `prune`, ...).

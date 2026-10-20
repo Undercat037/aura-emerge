@@ -151,6 +151,12 @@ pub(crate) fn session_active() -> bool {
 /// emerge land on ONE line. Flushed at exit (atexit) or before an UNMERGE.
 static PENDING: Mutex<Vec<(String, Vec<String>, Duration)>> = Mutex::new(Vec::new());
 static ATEXIT_SET: std::sync::Once = std::sync::Once::new();
+static MERGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// True once any merge batch was queued in this run.
+pub(crate) fn merged_any() -> bool {
+    MERGED.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 extern "C" fn flush_at_exit() {
     flush_pending();
@@ -200,6 +206,7 @@ pub(crate) fn log_merge_batch(repo: &str, atoms: &[String], elapsed: Duration) {
     if atoms.is_empty() {
         return;
     }
+    MERGED.store(true, std::sync::atomic::Ordering::Relaxed);
     ATEXIT_SET.call_once(|| {
         // SAFETY: handler is a plain extern "C" fn with no captured state.
         unsafe {

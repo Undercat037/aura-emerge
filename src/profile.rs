@@ -3,8 +3,9 @@
 //! Layout (same as Gentoo):
 //! ```text
 //! /etc/portage/make.profile -> …/profiles/default/linux/amd64/systemd
-//! …/profiles/base/packages          *bash *coreutils …
+//! …/profiles/base/package.profile    *bash *coreutils …
 //! …/profiles/base/package.mask
+//! …/profiles/base/package.protect
 //! …/profiles/default/linux/parent   ../base
 //! …/profiles/.../make.defaults      ARCH=amd64
 //! ```
@@ -23,6 +24,10 @@ use colored::Colorize;
 
 pub(crate) const MAKE_PROFILE: &str = "/etc/portage/make.profile";
 
+/// Profile package set (`*pkg` = @system). `packages` = old name, still read.
+const PROFILE_PKG_FILE: &str = "package.profile";
+const PROFILE_PKG_LEGACY: &str = "packages";
+
 /// Profile tree root (`eselect profile` style). Cynosure/portage layout only.
 pub(crate) const PROFILE_ROOTS: &[&str] = &["/var/db/repos/portage/profiles"];
 
@@ -32,7 +37,7 @@ pub(crate) struct Profile {
     pub(crate) chain: Vec<PathBuf>,
     /// Bare names from `packages` lines starting with `*` (`@system`).
     pub(crate) system: Vec<String>,
-    /// All `packages` entries (system + profile set).
+    /// All `package.profile` entries (system + profile set); protected like world.
     pub(crate) packages: Vec<String>,
     /// Flattened profile `package.mask` entries.
     pub(crate) masks: Vec<(String, Option<String>)>, // (pattern, repo)
@@ -193,7 +198,11 @@ fn load_packages(
     seen_sys: &mut HashSet<String>,
     seen_pkg: &mut HashSet<String>,
 ) {
-    let path = dir.join("packages");
+    // `package.profile`; legacy `packages` is read only if it is absent.
+    let mut path = dir.join(PROFILE_PKG_FILE);
+    if !path.is_file() {
+        path = dir.join(PROFILE_PKG_LEGACY);
+    }
     let Ok(text) = crate::read_to_string_nofollow(&path) else {
         return;
     };
@@ -309,6 +318,18 @@ pub(crate) fn system_names() -> HashSet<String> {
         .unwrap_or_default()
 }
 
+/// Bare names of every `package.profile` entry (protected like world).
+pub(crate) fn package_names() -> HashSet<String> {
+    current()
+        .map(|p| p.packages.iter().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// Dirs of the active profile chain (parents first) -- `package.protect` lookup.
+pub(crate) fn chain_dirs() -> Vec<PathBuf> {
+    current().map(|p| p.chain.clone()).unwrap_or_default()
+}
+
 /// Human-readable path of the leaf profile.
 pub(crate) fn show_path() -> Option<String> {
     current().and_then(|p| p.chain.last().map(|d| d.display().to_string()))
@@ -333,7 +354,8 @@ fn subdirs(dir: &Path) -> Vec<PathBuf> {
 
 /// Profile files; filters `desc/`, `updates/` and similar leaf dirs.
 fn has_profile_files(dir: &Path) -> bool {
-    dir.join("packages").is_file()
+    dir.join(PROFILE_PKG_FILE).is_file()
+        || dir.join(PROFILE_PKG_LEGACY).is_file()
         || dir.join("make.defaults").is_file()
         || dir.join("parent").is_file()
 }
@@ -544,7 +566,7 @@ pub(crate) fn print_info() {
             }
             if !p.packages.is_empty() {
                 println!(
-                    "  packages: {} total ({} in @system)",
+                    "  package.profile: {} total ({} in @system)",
                     p.packages.len(),
                     p.system.len()
                 );
@@ -600,6 +622,47 @@ mod tests {
         assert!(system.contains(&"systemd".into()));
         assert!(packages.contains(&"nano".into()));
         assert_eq!(system.len(), 3);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn package_profile_wins_over_legacy_packages() {
+        let dir = std::env::temp_dir().join(format!("ae-prof-new-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        write(&dir.join("package.profile"), "*bash\nnano\n");
+        write(&dir.join("packages"), "*old\n");
+        let mut system = Vec::new();
+        let mut packages = Vec::new();
+        load_packages(
+            &dir,
+            &mut system,
+            &mut packages,
+            &mut HashSet::new(),
+            &mut HashSet::new(),
+        );
+        assert_eq!(system, vec!["bash".to_string()]);
+        assert_eq!(packages, vec!["bash".to_string(), "nano".to_string()]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_packages_file_still_read() {
+        let dir = std::env::temp_dir().join(format!("ae-prof-old-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        write(&dir.join("packages"), "*old\n");
+        let mut system = Vec::new();
+        let mut packages = Vec::new();
+        load_packages(
+            &dir,
+            &mut system,
+            &mut packages,
+            &mut HashSet::new(),
+            &mut HashSet::new(),
+        );
+        assert_eq!(system, vec!["old".to_string()]);
+        assert!(has_profile_files(&dir));
         let _ = fs::remove_dir_all(&dir);
     }
 
