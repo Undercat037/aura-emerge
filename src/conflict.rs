@@ -8,6 +8,11 @@
 //! Parses the helper's line `conflicting dependencies: new [ver] vs
 //! installed [ver]; ...` and prints the plan. The question is in
 //! packages.rs. Removed packages are remembered for `--undo`.
+//!
+//! Blockers are also looked for *before* anything is installed, for every
+//! source of a run (repo plan, AUR, ABS): each source registers what it
+//! brings (`register_incoming`) and `take_planned` adds the conflicts the
+//! incoming packages have with each other across sources.
 
 use crate::theme::Themed;
 use colored::Colorize;
@@ -113,7 +118,12 @@ pub(crate) fn plan_with(pairs: &[Conflict], incoming: &[String]) -> Plan {
                 label(&c.new_name, &c.new_ver),
                 label(&c.old_name, &c.old_ver),
             );
-            if !p.hard.contains(&h) {
+            // `a vs b` and `b vs a` are one blocker (both declare it).
+            let seen = p
+                .hard
+                .iter()
+                .any(|(a, b)| (*a == h.0 && *b == h.1) || (*a == h.1 && *b == h.0));
+            if !seen {
                 p.hard.push(h);
             }
             continue;
@@ -294,8 +304,60 @@ pub(crate) fn is_approved(names: &[String]) -> bool {
         .unwrap_or(false)
 }
 
+/// Everything this run is about to bring, from every source (repo plan,
+/// AUR, ABS), so blockers *between* sources show up in the plan too.
+static REGISTRY: Mutex<Vec<crate::alpm_db::Incoming>> = Mutex::new(Vec::new());
+
+/// Adds to the registry; the same name + version is kept once.
+pub(crate) fn register_incoming(items: Vec<crate::alpm_db::Incoming>) {
+    if let Ok(mut g) = REGISTRY.lock() {
+        for it in items {
+            if !g.iter().any(|x| x.name == it.name && x.ver == it.ver) {
+                g.push(it);
+            }
+        }
+    }
+}
+
+/// Folds the cross-source conflicts into what the sources noted. Pure,
+/// so it is testable without libalpm.
+fn merge_cross(
+    taken: Option<(Vec<Conflict>, Vec<String>)>,
+    cross: Vec<Conflict>,
+    names: Vec<String>,
+) -> Option<(Vec<Conflict>, Vec<String>)> {
+    match taken {
+        Some((mut pairs, mut inc)) => {
+            for c in cross {
+                if !pairs.contains(&c) {
+                    pairs.push(c);
+                }
+            }
+            for n in names {
+                if !inc.contains(&n) {
+                    inc.push(n);
+                }
+            }
+            Some((pairs, inc))
+        }
+        None if !cross.is_empty() => Some((cross, names)),
+        None => None,
+    }
+}
+
 pub(crate) fn take_planned() -> Option<(Vec<Conflict>, Vec<String>)> {
-    PLANNED.lock().ok().and_then(|mut g| g.take())
+    let taken = PLANNED.lock().ok().and_then(|mut g| g.take());
+    let reg: Vec<crate::alpm_db::Incoming> = REGISTRY
+        .lock()
+        .map(|mut g| std::mem::take(&mut *g))
+        .unwrap_or_default();
+    // One source alone was already checked against the system.
+    let cross = if reg.len() > 1 {
+        crate::alpm_db::incoming_conflicts(&reg)
+    } else {
+        Vec::new()
+    };
+    merge_cross(taken, cross, reg.into_iter().map(|r| r.name).collect())
 }
 
 /// The `[conflict]` / `[blocks]` lines for the plan list (the ebuild
@@ -487,6 +549,44 @@ mod tests {
         assert_eq!(p.hard, vec![("a-1-1".to_string(), "b-1-1".to_string())]);
         assert_eq!(p.unmerge.len(), 1);
         assert_eq!(p.unmerge[0].name, "x");
+    }
+
+    #[test]
+    fn both_directions_fold_into_one_hard_blocker() {
+        // a conflicts b and b conflicts a: libalpm-style pairs both ways
+        let pairs = [c("a", "1-1", "b", "1-1"), c("b", "1-1", "a", "1-1")];
+        let p = plan_with(&pairs, &["a".to_string(), "b".to_string()]);
+        assert_eq!(p.hard.len(), 1);
+        assert!(p.unmerge.is_empty());
+    }
+
+    #[test]
+    fn cross_source_conflict_without_prior_notes() {
+        let cross = vec![c("jack2-git", "2-1", "pipewire-jack", "1-1")];
+        let names = vec!["jack2-git".to_string(), "pipewire-jack".to_string()];
+        let (pairs, inc) = merge_cross(None, cross.clone(), names.clone()).unwrap();
+        assert_eq!(pairs, cross);
+        // both sides are incoming: the plan must call it a hard blocker
+        assert_eq!(plan_with(&pairs, &inc).hard.len(), 1);
+    }
+
+    #[test]
+    fn cross_source_folds_into_noted_pairs_once() {
+        let noted = c("a", "1-1", "x", "9-1");
+        let cross = vec![noted.clone(), c("a", "1-1", "b", "1-1")];
+        let (pairs, inc) = merge_cross(
+            Some((vec![noted.clone()], vec!["a".to_string()])),
+            cross,
+            vec!["a".to_string(), "b".to_string()],
+        )
+        .unwrap();
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(inc, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn nothing_noted_and_no_cross_is_none() {
+        assert!(merge_cross(None, Vec::new(), vec!["a".to_string()]).is_none());
     }
 
     #[test]

@@ -411,7 +411,9 @@ pub(crate) fn required_by(name: &str) -> Vec<String> {
 
 // ── pre-flight conflicts for packages libalpm has no record of (AUR) ─────────
 
-/// An incoming package as the AUR RPC describes it.
+/// An incoming package as the AUR RPC, a .SRCINFO (ABS) or the sync db
+/// describes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Incoming {
     pub(crate) name: String,
     pub(crate) ver: String,
@@ -507,6 +509,17 @@ pub(crate) fn preflight_conflicts(incoming: &[Incoming]) -> Vec<crate::conflict:
             }
         }
     }
+    for c in incoming_conflicts(incoming) {
+        push(c);
+    }
+    out
+}
+
+/// Blockers among the incoming packages themselves (`i` declares a
+/// conflict that `j` matches). Both directions are listed when both
+/// declare it; `conflict::plan_with` folds those into one blocker.
+pub(crate) fn incoming_conflicts(incoming: &[Incoming]) -> Vec<crate::conflict::Conflict> {
+    let mut out: Vec<crate::conflict::Conflict> = Vec::new();
     for i in incoming {
         for j in incoming {
             if i.name != j.name
@@ -514,16 +527,31 @@ pub(crate) fn preflight_conflicts(incoming: &[Incoming]) -> Vec<crate::conflict:
                     .iter()
                     .any(|c| dep_matches(c, &j.name, &j.ver, &j.provides))
             {
-                push(crate::conflict::Conflict {
+                let c = crate::conflict::Conflict {
                     new_name: i.name.clone(),
                     new_ver: i.ver.clone(),
                     old_name: j.name.clone(),
                     old_ver: j.ver.clone(),
-                });
+                };
+                if !out.contains(&c) {
+                    out.push(c);
+                }
             }
         }
     }
     out
+}
+
+/// A package libalpm planned (sync db) as an `Incoming`, so repo, AUR
+/// and ABS packages of one run can be checked against each other.
+pub(crate) fn incoming_from(p: &AlpmPkg) -> Incoming {
+    let list = |s: &str| -> Vec<String> { s.split_whitespace().map(String::from).collect() };
+    Incoming {
+        name: p.name.clone(),
+        ver: p.version.clone(),
+        provides: list(&p.provides),
+        conflicts: list(&p.conflicts),
+    }
 }
 
 pub(crate) fn pkg_status(name: &str, new_ver: &str) -> String {
@@ -921,6 +949,68 @@ mod tests {
     #[test]
     fn bare_strips() {
         assert_eq!(bare("extra/nano"), "nano");
+    }
+
+    fn inc(name: &str, ver: &str, provides: &[&str], conflicts: &[&str]) -> Incoming {
+        Incoming {
+            name: name.into(),
+            ver: ver.into(),
+            provides: provides.iter().map(|s| s.to_string()).collect(),
+            conflicts: conflicts.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn incoming_conflict_through_provides() {
+        let a = inc("pipewire-jack", "1-1", &["jack"], &["jack"]);
+        let b = inc("jack2-git", "2-1", &["jack"], &["jack"]);
+        let c = inc("unrelated", "1-1", &[], &[]);
+        let out = incoming_conflicts(&[a, b, c]);
+        // both declare it, both directions are reported
+        assert_eq!(out.len(), 2);
+        assert!(
+            out.iter()
+                .all(|x| x.new_name != "unrelated" && x.old_name != "unrelated")
+        );
+    }
+
+    #[test]
+    fn incoming_does_not_conflict_with_itself() {
+        let a = inc("foo-git", "1-1", &["foo"], &["foo"]);
+        assert!(incoming_conflicts(&[a]).is_empty());
+    }
+
+    #[test]
+    fn versioned_incoming_conflict_respects_the_version() {
+        let old = inc("lib", "1.0-1", &[], &[]);
+        let new = inc("app", "1-1", &[], &["lib<2"]);
+        assert_eq!(incoming_conflicts(&[new.clone(), old]).len(), 1);
+        let fixed = inc("lib", "2.1-1", &[], &[]);
+        assert!(incoming_conflicts(&[new, fixed]).is_empty());
+    }
+
+    #[test]
+    fn planned_package_becomes_incoming() {
+        let p = AlpmPkg {
+            name: "x".into(),
+            version: "1-1".into(),
+            repo: "extra".into(),
+            description: String::new(),
+            installed: false,
+            installed_version: String::new(),
+            size: 0,
+            url: String::new(),
+            licenses: String::new(),
+            base: "x".into(),
+            depends: String::new(),
+            makedepends: String::new(),
+            provides: "a b=1".into(),
+            conflicts: "c".into(),
+            build_date: 0,
+        };
+        let i = incoming_from(&p);
+        assert_eq!(i.provides, vec!["a", "b=1"]);
+        assert_eq!(i.conflicts, vec!["c"]);
     }
 
     #[test]

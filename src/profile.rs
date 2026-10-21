@@ -3,7 +3,7 @@
 //! Layout (same as Gentoo):
 //! ```text
 //! /etc/portage/make.profile -> …/profiles/default/linux/amd64/systemd
-//! …/profiles/base/package.profile    *bash *coreutils …
+//! …/profiles/base/packages           *bash *coreutils …
 //! …/profiles/base/package.mask
 //! …/profiles/base/package.protect
 //! …/profiles/default/linux/parent   ../base
@@ -13,6 +13,9 @@
 //! For cynosure: a leaf profile can `package.mask` rival init systems
 //! (e.g. mask `systemd` on an openrc profile) while `packages` lists the
 //! minimal `@system` set to bootstrap.
+//!
+//! Profile `package.mask` supports `-atom` / `!atom` to drop a mask
+//! inherited from a parent profile (PMS).
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -24,9 +27,10 @@ use colored::Colorize;
 
 pub(crate) const MAKE_PROFILE: &str = "/etc/portage/make.profile";
 
-/// Profile package set (`*pkg` = @system). `packages` = old name, still read.
-const PROFILE_PKG_FILE: &str = "package.profile";
-const PROFILE_PKG_LEGACY: &str = "packages";
+/// Profile package set (`*pkg` = @system). Gentoo name is `packages`;
+/// `package.profile` is still accepted as a legacy AE name.
+const PROFILE_PKG_FILE: &str = "packages";
+const PROFILE_PKG_LEGACY: &str = "package.profile";
 
 /// Profile tree root (`eselect profile` style). Cynosure/portage layout only.
 pub(crate) const PROFILE_ROOTS: &[&str] = &["/var/db/repos/portage/profiles"];
@@ -37,9 +41,9 @@ pub(crate) struct Profile {
     pub(crate) chain: Vec<PathBuf>,
     /// Bare names from `packages` lines starting with `*` (`@system`).
     pub(crate) system: Vec<String>,
-    /// All `package.profile` entries (system + profile set); protected like world.
+    /// All `packages` entries (system + profile set); protected like world.
     pub(crate) packages: Vec<String>,
-    /// Flattened profile `package.mask` entries.
+    /// Flattened profile `package.mask` entries (after `-atom` / `!atom` removals).
     pub(crate) masks: Vec<(String, Option<String>)>, // (pattern, repo)
     /// Key vars from make.defaults (ARCH, …).
     pub(crate) defaults: Vec<(String, String)>,
@@ -198,7 +202,7 @@ fn load_packages(
     seen_sys: &mut HashSet<String>,
     seen_pkg: &mut HashSet<String>,
 ) {
-    // `package.profile`; legacy `packages` is read only if it is absent.
+    // Prefer Gentoo `packages`; fall back to legacy AE `package.profile`.
     let mut path = dir.join(PROFILE_PKG_FILE);
     if !path.is_file() {
         path = dir.join(PROFILE_PKG_LEGACY);
@@ -257,6 +261,18 @@ fn load_mask(dir: &Path, masks: &mut Vec<(String, Option<String>)>) {
         if atom.is_empty() {
             continue;
         }
+        // PMS: `-atom` removes a mask inherited from a parent profile.
+        // `!atom` accepted as an AE alias (same effect).
+        let (remove, atom) = if let Some(rest) = atom.strip_prefix('-') {
+            (true, rest.trim())
+        } else if let Some(rest) = atom.strip_prefix('!') {
+            (true, rest.trim())
+        } else {
+            (false, atom)
+        };
+        if atom.is_empty() {
+            continue;
+        }
         let (repo, pattern) = match atom.split_once('/') {
             Some((r, n)) if !n.is_empty() && valid_pattern(n) => {
                 (Some(r.to_string()), n.to_string())
@@ -264,7 +280,11 @@ fn load_mask(dir: &Path, masks: &mut Vec<(String, Option<String>)>) {
             _ if valid_pattern(atom) => (None, atom.to_string()),
             _ => continue,
         };
-        masks.push((pattern, repo));
+        if remove {
+            masks.retain(|(p, r)| p != &pattern || r != &repo);
+        } else {
+            masks.push((pattern, repo));
+        }
     }
 }
 
@@ -318,7 +338,7 @@ pub(crate) fn system_names() -> HashSet<String> {
         .unwrap_or_default()
 }
 
-/// Bare names of every `package.profile` entry (protected like world).
+/// Bare names of every profile `packages` entry (protected like world).
 pub(crate) fn package_names() -> HashSet<String> {
     current()
         .map(|p| p.packages.iter().cloned().collect())
@@ -566,7 +586,7 @@ pub(crate) fn print_info() {
             }
             if !p.packages.is_empty() {
                 println!(
-                    "  package.profile: {} total ({} in @system)",
+                    "  packages: {} total ({} in @system)",
                     p.packages.len(),
                     p.system.len()
                 );
@@ -626,12 +646,12 @@ mod tests {
     }
 
     #[test]
-    fn package_profile_wins_over_legacy_packages() {
+    fn packages_wins_over_legacy_package_profile() {
         let dir = std::env::temp_dir().join(format!("ae-prof-new-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        write(&dir.join("package.profile"), "*bash\nnano\n");
-        write(&dir.join("packages"), "*old\n");
+        write(&dir.join("packages"), "*bash\nnano\n");
+        write(&dir.join("package.profile"), "*old\n");
         let mut system = Vec::new();
         let mut packages = Vec::new();
         load_packages(
@@ -647,11 +667,11 @@ mod tests {
     }
 
     #[test]
-    fn legacy_packages_file_still_read() {
+    fn legacy_package_profile_file_still_read() {
         let dir = std::env::temp_dir().join(format!("ae-prof-old-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        write(&dir.join("packages"), "*old\n");
+        write(&dir.join("package.profile"), "*old\n");
         let mut system = Vec::new();
         let mut packages = Vec::new();
         load_packages(
@@ -663,6 +683,27 @@ mod tests {
         );
         assert_eq!(system, vec!["old".to_string()]);
         assert!(has_profile_files(&dir));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn package_mask_minus_removes_parent_entry() {
+        let dir = std::env::temp_dir().join(format!("ae-prof-unmask-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        write(
+            &dir.join("package.mask"),
+            "systemd\naur/*-bin\n-systemd\n!aur/*-bin\nextra/linux\n",
+        );
+        let mut masks = Vec::new();
+        load_mask(&dir, &mut masks);
+        assert!(!masks.iter().any(|(p, _)| p == "systemd"));
+        assert!(!masks.iter().any(|(p, _)| p == "*-bin"));
+        assert!(
+            masks
+                .iter()
+                .any(|(p, r)| p == "linux" && r.as_deref() == Some("extra"))
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

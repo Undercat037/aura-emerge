@@ -106,7 +106,7 @@ emerge --install-pkgbuild ~/src/my-pkg       # build a local PKGBUILD through sc
 
 # Recovery
 emerge --resume                     # resume an interrupted transaction
-emerge --undo                       # undo the last install/unmerge
+emerge --undo                       # undo the last install/unmerge/depclean
 emerge --revdep-rebuild             # fix binaries linked to missing libraries
 emerge --list-profiles             # profiles (also: eselect profile list)
 emerge --aelist                     # files left by AE Force (.aenew / .aeforce / .aepark)
@@ -308,6 +308,19 @@ emerge -c
 emerge --unmerge --ask linux-zen-headers
 ```
 
+What `-c` removed can be brought back with `--undo` (see below).
+
+### Conflicts (blockers)
+
+Installed packages that block an incoming one are listed before anything is installed, like Portage blockers:
+
+```
+[ebuild  N    ] pipewire-jack-1:1.4.2-1
+[conflict     ] jack2-1.9.22-1 ("jack2" is blocking pipewire-jack-1:1.4.2-1)
+```
+
+The check covers every source of the run: the repo plan (libalpm), AUR packages and their AUR dependencies, ABS packages (their `.SRCINFO`: `provides`/`conflicts`) and a bare `@world`. The sources are also checked **against each other**: if two packages of the same run block each other (say a repo package and an AUR one), it is shown as `[blocks]` and nothing is installed. Installed blockers need one `Yes` (always asked, with or without `--ask`); the packages that need them are listed first, and `package.protect` entries are never removed. Anything the pre-flight could not see (no network for the `.SRCINFO`, for example) is still caught when the package is installed.
+
 ### Hooks
 
 libalpm runs every `*.hook` on install, remove, `-U` and `-Su`, exactly like pacman (depmod, DKMS, dracut/mkinitcpio, fontconfig and icon caches, `grub-mkconfig`, …). Directories, earlier ones win on a name clash:
@@ -443,10 +456,11 @@ If both `game-kit` and `game-kit.set` exist, `@game-kit` is rejected as ambiguou
 
 ### `--undo`
 
-Reverses the last successful install or unmerge (one step of history):
+Reverses the last successful install, unmerge or depclean (one step of history):
 
-- **after install** - removes only packages that were new in that run;
+- **after install** - removes only packages that were new in that run, and brings back the installed packages that were removed as blockers;
 - **after unmerge** - reinstalls from the recorded source (`Err/`/`abs/` are only listed);
+- **after depclean** - reinstalls the removed orphans **as dependencies** (not added to world): repo packages from the repos, local builds through the AUR if it still has them. The versions are recorded: if the repos have a different one now, you are told; a package that is nowhere any more is listed with the `pacman -U` line for the cached file. If some packages fail, only those stay in the saved state, so `--undo` can be run again;
 - **after `-u`** - not supported (no version snapshot).
 
 State lives in `/etc/portage/lastaction.state` (`--undo`) and `/etc/portage/resume.state` (`--resume`).
@@ -569,7 +583,7 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `--err-install` | With `@world`: also install `Err/` (unknown-source) entries |
 | `--resume` | Resume an interrupted transaction |
 | `--skipfirst` | With `--resume`: skip the first package |
-| `--undo` | Undo the last install/unmerge (one step; `-u` is not reversible) |
+| `--undo` | Undo the last install/unmerge/depclean (one step; `-u` is not reversible) |
 | `--clean-source-cache` | Wipe the persistent VCS source cache and exit |
 | `--batchinstall <FILE>` | Mass-install from a text list (same format as a custom set) |
 | `--list-sets` | List available `@sets` (also used by shell completion) |

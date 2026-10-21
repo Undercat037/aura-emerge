@@ -190,8 +190,8 @@ REMOVING PACKAGES
     -C removes the named packages, -c removes orphans, --prune removes
     everything not in world. -C and -c wait 5 seconds (Ctrl-C aborts)
     unless -a or -p is given. -c never removes world entries, members of
-    sets recorded in world, package.protect entries or package.profile
-    packages; --show-protected lists them.
+    sets recorded in world, package.protect entries or profile packages;
+    --show-protected lists them.
 
 PROTECT AND FREEZE
     package.protect lists packages that must never be removed (-C, -c,
@@ -201,11 +201,12 @@ PROTECT AND FREEZE
 
 PROFILES
     /etc/portage/make.profile points at a profile directory (Portage
-    layout: parent, package.profile, package.mask, package.protect,
-    make.defaults). --list-profiles
-    lists them, --set-profile <N|PATH> selects one, @system installs the
-    profile's * packages. With /usr/bin/eselect symlinked to emerge,
-    'eselect profile list|set|show' works too.
+    layout: parent, packages, package.mask, package.protect,
+    make.defaults). Profile package.mask supports -atom / !atom to drop
+    a parent mask. --list-profiles lists them, --set-profile <N|PATH>
+    selects one, @system installs the profile's * packages. With
+    /usr/bin/eselect symlinked to emerge, 'eselect profile list|set|show'
+    works too.
 
 AE FORCE
     When an install would overwrite a file no package owns, emerge asks
@@ -298,6 +299,7 @@ FILES
                                             build-env overrides (CFLAGS, MAKEFLAGS, ...);
                                             system path only (no per-user file)
     /etc/portage/package.mask               Never-install list (file, or a directory of files)
+    /etc/portage/package.unmask             Exceptions to package.mask (and profile masks)
     /etc/portage/package.protect            Never-remove list (-C/-c/--prune/conflicts)
     /etc/portage/package.freeze             Never-upgrade list (-u; EMERGE_FREEZE in make.conf)
     /etc/portage/make.profile               Symlink to active profile (packages, package.mask)
@@ -306,7 +308,7 @@ FILES
     /etc/portage/env/<name>                 Env files for package.env, make.conf syntax
     /etc/portage/hooks/                     User alpm hooks (*.hook); see ALPM HOOKS
     /etc/portage/resume.state                Saved state for --resume
-    /etc/portage/lastaction.state            Last install/unmerge step, for --undo
+    /etc/portage/lastaction.state            Last install/unmerge/depclean step, for --undo
     /usr/share/libalpm/hooks/               System alpm hooks (from packages)
     /etc/pacman.d/hooks/                    Admin alpm hooks (pacman HookDir)
     /var/log/emerge.log                     Append-only merge/unmerge event log, with
@@ -505,7 +507,7 @@ struct Cli {
     #[arg(long = "skipfirst")]
     skipfirst: bool,
 
-    /// Undo last install/unmerge (one step; -u not reversible)
+    /// Undo last install/unmerge/depclean (one step; -u not reversible)
     #[arg(long = "undo")]
     undo: bool,
 
@@ -558,7 +560,7 @@ struct Cli {
     check_world: bool,
 
     /// Mark every explicit package that is not in world, a world set or
-    /// package.profile as a dependency (so -c can see it). Alone: runs now
+    /// profile packages as a dependency (so -c can see it). Alone: runs now
     /// (-p lists, -a asks); with an install/upgrade: runs after it succeeds
     #[arg(long = "sync-explicit")]
     sync_explicit: bool,
@@ -2874,7 +2876,7 @@ fn run() -> anyhow::Result<()> {
         system_pkgs.sort();
         if system_pkgs.is_empty() {
             eprintln!(
-                "{} @system is empty (no profile or no `*pkg` lines in profile package.profile)",
+                "{} @system is empty (no profile or no `*pkg` lines in profile packages)",
                 ">>> Warning:".t_yellow().bold()
             );
         } else {
@@ -2974,12 +2976,18 @@ fn run() -> anyhow::Result<()> {
         // searching, scanning, unmerging and deselecting only read or
         // remove what's already there, so they pass straight through.
         // (A masked package is exactly the one you may need to -C.)
+        // --select of installed packages only records them in world.
+        let select_installed = cli.select
+            && target_pkgs
+                .iter()
+                .all(|p| crate::alpm_db::is_installed(p.split('/').next_back().unwrap_or(p)));
         let never_installs = cli.search
             || cli.searchdesc
             || cli.scan
             || cli.unmerge
             || cli.deselect
-            || cli.check_world;
+            || cli.check_world
+            || select_installed;
         if !never_installs && !mask::allow_explicit(&target_pkgs, None) {
             std::process::exit(1);
         }
@@ -3820,6 +3828,142 @@ fn run() -> anyhow::Result<()> {
                     std::process::exit(1);
                 }
             }
+            Some((kind, atoms)) if kind == "depclean" => {
+                // Orphans were dependencies: they come back as dependencies
+                // and are not put into world.
+                println!(
+                    "{} Undoing last depclean - reinstalling as dependencies: {}",
+                    ">>>".t_green().bold(),
+                    atoms.join(", ")
+                );
+                if cli.pretend {
+                    return Ok(());
+                }
+                let saved_ver: HashMap<String, String> = load_last_versions().into_iter().collect();
+                let atom_by_name: HashMap<String, String> = atoms
+                    .iter()
+                    .map(|a| (a.split('/').next_back().unwrap_or(a).to_string(), a.clone()))
+                    .collect();
+                // Installed again since (by hand, or by another run): nothing to do.
+                let mut names: Vec<String> = Vec::new();
+                for a in &atoms {
+                    let n = a.split('/').next_back().unwrap_or(a).to_string();
+                    if alpm_db::is_installed(&n) {
+                        println!(
+                            "{} {} is installed again - skipped",
+                            " *".t_yellow().bold(),
+                            n
+                        );
+                    } else if !names.contains(&n) {
+                        names.push(n);
+                    }
+                }
+                let synced = alpm_db::find_sync_many(&names);
+                let (repo, foreign): (Vec<String>, Vec<String>) =
+                    names.iter().cloned().partition(|n| synced.contains_key(n));
+                // Failed ones stay in the saved state, so a retry takes only them.
+                let mut remaining: Vec<String> = Vec::new();
+
+                // Official first: AUR packages may need them.
+                if !repo.is_empty() {
+                    for n in &repo {
+                        if let (Some(p), Some(was)) = (synced.get(n), saved_ver.get(n))
+                            && p.version != *was
+                        {
+                            println!(
+                                "{} {}: the repos have {} now (it was {})",
+                                " *".t_yellow().bold(),
+                                n,
+                                p.version,
+                                was
+                            );
+                        }
+                    }
+                    let (ok, landed) = repo_install_landed(&repo, true);
+                    mark_asdeps(&landed);
+                    if !ok {
+                        remaining.extend(repo.iter().filter(|n| !landed.contains(n)).cloned());
+                    }
+                }
+
+                // Local builds: back through the AUR when it still has them.
+                let mut no_source: Vec<String> = Vec::new();
+                if !foreign.is_empty() {
+                    let in_aur: HashSet<String> = aur::rpc_info(&foreign)
+                        .into_iter()
+                        .map(|i| i.name)
+                        .collect();
+                    let (aur_names, nosrc): (Vec<String>, Vec<String>) =
+                        foreign.iter().cloned().partition(|n| in_aur.contains(n));
+                    no_source = nosrc;
+                    if !aur_names.is_empty() {
+                        scan_aur_pkgbuilds_or_abort(&aur_names);
+                        let built = aur_install(
+                            &aur_names,
+                            false,
+                            cli.ask,
+                            false,
+                            cli.skippgp,
+                            cli.edit,
+                            cli.no_sandbox,
+                            cli.skip_srcinfo_regen,
+                            cli.unshare_net_build,
+                            false,
+                        );
+                        // aur_install leaves the explicit bit set; these
+                        // were dependencies. aur_install does not say which
+                        // of a batch failed, so ask the db.
+                        let back: Vec<String> = aur_names
+                            .iter()
+                            .filter(|n| alpm_db::is_installed(n))
+                            .cloned()
+                            .collect();
+                        mark_asdeps(&back);
+                        if !built {
+                            remaining.extend(
+                                aur_names
+                                    .iter()
+                                    .filter(|n| !alpm_db::is_installed(n))
+                                    .cloned(),
+                            );
+                        }
+                    }
+                }
+                if !no_source.is_empty() {
+                    eprintln!(
+                        "{} not in the repos or the AUR, not reinstalled:",
+                        ">>> Warning:".t_yellow().bold()
+                    );
+                    for n in &no_source {
+                        match saved_ver.get(n) {
+                            Some(v) => eprintln!(
+                                "    {} {} (if still cached: pacman -U /var/cache/pacman/pkg/{}-{}-*.pkg.tar.*)",
+                                n, v, n, v
+                            ),
+                            None => eprintln!("    {}", n),
+                        }
+                    }
+                }
+
+                if remaining.is_empty() {
+                    clear_last_action();
+                } else {
+                    let keep_atoms: Vec<String> = remaining
+                        .iter()
+                        .filter_map(|n| atom_by_name.get(n).cloned())
+                        .collect();
+                    let keep_vers: Vec<(String, String)> = remaining
+                        .iter()
+                        .filter_map(|n| saved_ver.get(n).map(|v| (n.clone(), v.clone())))
+                        .collect();
+                    save_last_action_versions(LastAction::Depclean, &keep_atoms, &keep_vers);
+                    eprintln!(
+                        ">>> Warning: undo did not fully succeed - {} package(s) stay in the saved state, run --undo again to retry.",
+                        remaining.len()
+                    );
+                    std::process::exit(1);
+                }
+            }
             Some((kind, _)) => {
                 eprintln!(">>> Error: unrecognized saved undo state ({})", kind);
                 std::process::exit(1);
@@ -4246,9 +4390,29 @@ fn run() -> anyhow::Result<()> {
             if !cli.ask {
                 progress::countdown("Unmerging", 5);
             }
+            // Where each package came from and which version it had, for
+            // `--undo` (the local db forgets both once it is removed).
+            let repos = get_pkg_repos_batch(&orphans);
+            let vers = alpm_db::installed_versions();
             // The list is already the full closure: remove exactly it,
             // one package at a time so the progress lines are real.
             let (_ok, removed) = unmerge_loop(&orphans);
+            if !removed.is_empty() {
+                // Only what really went away is undoable.
+                let atoms: Vec<String> = removed
+                    .iter()
+                    .map(|n| match repos.get(n.as_str()) {
+                        Some(Some(r)) if r != "None" => format!("{}/{}", r, n),
+                        Some(Some(_)) => format!("Err/{}", n),
+                        _ => n.clone(),
+                    })
+                    .collect();
+                let versions: Vec<(String, String)> = removed
+                    .iter()
+                    .filter_map(|n| vers.get(n).map(|v| (n.clone(), v.clone())))
+                    .collect();
+                save_last_action_versions(LastAction::Depclean, &atoms, &versions);
+            }
             logbook::log_unmerge(&removed);
         }
         return Ok(());
@@ -4517,6 +4681,10 @@ fn run() -> anyhow::Result<()> {
                     })
                 })
                 .collect();
+            // Blockers of the ABS packages (their .SRCINFO), checked against
+            // the system and against the repo/AUR packages of this run;
+            // listed under the plan, asked once before anything is built.
+            packages::note_abs_blockers(&abs_pkgs);
 
             let (official_infos, missing) = if target_pkgs.is_empty() {
                 (Vec::new(), Vec::new())

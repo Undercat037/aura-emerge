@@ -340,6 +340,9 @@ fn expand_with_deps(targets: Vec<PkgInfo>) -> Vec<PkgInfo> {
             // Shown under the list by `print_emerge_plan`.
             let incoming: Vec<String> = planned.iter().map(|p| p.name.clone()).collect();
             crate::conflict::note_planned(blockers, incoming);
+            crate::conflict::register_incoming(
+                planned.iter().map(crate::alpm_db::incoming_from).collect(),
+            );
             planned
                 .into_iter()
                 .map(|p| {
@@ -472,8 +475,67 @@ fn note_aur_blockers<'a>(infos: impl Iterator<Item = &'a crate::aur::AurPkgInfo>
             conflicts: i.conflicts.split_whitespace().map(String::from).collect(),
         })
         .collect();
+    note_incoming(incoming);
+}
+
+/// Checks `incoming` against the installed system and each other, notes
+/// the blockers for the plan list and registers the packages so they are
+/// also checked against what the other sources bring.
+fn note_incoming(incoming: Vec<crate::alpm_db::Incoming>) {
+    if incoming.is_empty() {
+        return;
+    }
     let pairs = crate::alpm_db::preflight_conflicts(&incoming);
     crate::conflict::note_planned(pairs, incoming.iter().map(|i| i.name.clone()).collect());
+    crate::conflict::register_incoming(incoming);
+}
+
+/// AUR targets by name (`@world` provisioning has no RPC info yet).
+pub(crate) fn note_aur_names(names: &[String]) {
+    if names.is_empty() {
+        return;
+    }
+    let infos = crate::aur::rpc_info(names);
+    note_aur_blockers(infos.iter());
+}
+
+/// Repo targets (bare or `repo/name`): libalpm's own plan, so a blocker
+/// is found before anything is downloaded. Names the sync dbs do not know
+/// are left out here; the install reports them.
+pub(crate) fn note_repo_blockers(targets: &[String]) {
+    if targets.is_empty() {
+        return;
+    }
+    let known = crate::alpm_db::find_sync_many(targets);
+    let ok: Vec<String> = targets
+        .iter()
+        .filter(|t| known.contains_key(t.split('/').next_back().unwrap_or(t.as_str())))
+        .cloned()
+        .collect();
+    if ok.is_empty() {
+        return;
+    }
+    if let Ok((planned, blockers)) = crate::alpm_db::plan_sync(&ok) {
+        let names: Vec<String> = planned.iter().map(|p| p.name.clone()).collect();
+        crate::conflict::note_planned(blockers, names);
+        crate::conflict::register_incoming(
+            planned.iter().map(crate::alpm_db::incoming_from).collect(),
+        );
+    }
+}
+
+/// ABS targets: their .SRCINFO says what they provide and conflict with,
+/// so the blockers are known before the clone and the build. Best effort:
+/// without a readable .SRCINFO the install still catches it late.
+pub(crate) fn note_abs_blockers(pkgs: &[String]) {
+    let mut incoming: Vec<crate::alpm_db::Incoming> = Vec::new();
+    for p in pkgs {
+        let bare = p.split('/').next_back().unwrap_or(p);
+        if let Some(text) = abs_srcinfo(bare) {
+            incoming.extend(srcinfo_incoming(&text, bare));
+        }
+    }
+    note_incoming(incoming);
 }
 
 pub(crate) fn resolve_aur_split(pkgs: &[String]) -> (Vec<PkgInfo>, Vec<String>) {
@@ -1052,11 +1114,96 @@ pub(crate) fn print_emerge_completed(pkgs: &[PkgInfo]) {
 /// Full version, not bare pkgver: `vercmp` skips the release when one
 /// side lacks it, so `0.12.5-1.1` vs `0.12.5` read as a reinstall.
 pub(crate) fn abs_get_version(pkg: &str) -> String {
-    let url = format!("{}/{}/raw/HEAD/.SRCINFO", ABS_GITLAB_BASE, pkg);
-    if let Some(text) = crate::http::get(&url, 5) {
-        return srcinfo_full_version(&text).unwrap_or_else(|| "?".to_string());
+    abs_srcinfo(pkg)
+        .and_then(|text| srcinfo_full_version(&text))
+        .unwrap_or_else(|| "?".to_string())
+}
+
+/// .SRCINFO per ABS package, fetched once per run: the version lookup
+/// and the conflict pre-flight both need it. A failed fetch is kept too,
+/// so an offline run does not wait for the timeout twice.
+static ABS_SRCINFO: std::sync::Mutex<Option<HashMap<String, Option<String>>>> =
+    std::sync::Mutex::new(None);
+
+fn abs_srcinfo(pkg: &str) -> Option<String> {
+    if let Ok(g) = ABS_SRCINFO.lock()
+        && let Some(hit) = g.as_ref().and_then(|m| m.get(pkg))
+    {
+        return hit.clone();
     }
-    "?".to_string()
+    let url = format!("{}/{}/raw/HEAD/.SRCINFO", ABS_GITLAB_BASE, pkg);
+    let text = crate::http::get(&url, 5);
+    if let Ok(mut g) = ABS_SRCINFO.lock() {
+        g.get_or_insert_with(HashMap::new)
+            .insert(pkg.to_string(), text.clone());
+    }
+    text
+}
+
+/// What the `pkgname` sections of a .SRCINFO bring: `provides` and
+/// `conflicts` (also the `_<arch>` ones for this machine). The pkgbase
+/// block holds the global arrays; a section that sets its own replaces
+/// them. `want` picks one package of a split base; if it is not a
+/// pkgname (it is the pkgbase), every package of the base is returned.
+pub(crate) fn srcinfo_incoming(text: &str, want: &str) -> Vec<crate::alpm_db::Incoming> {
+    #[derive(Default)]
+    struct Sec {
+        name: String,
+        provides: Vec<String>,
+        conflicts: Vec<String>,
+        has_provides: bool,
+        has_conflicts: bool,
+    }
+    let arch = std::env::consts::ARCH;
+    let key_is = |k: &str, what: &str| k == what || k == format!("{}_{}", what, arch);
+    let mut base = Sec::default();
+    let mut secs: Vec<Sec> = Vec::new();
+    for line in text.lines() {
+        let Some((k, v)) = line.trim().split_once('=') else {
+            continue;
+        };
+        let (k, v) = (k.trim(), v.trim());
+        if k == "pkgname" {
+            secs.push(Sec {
+                name: v.to_string(),
+                ..Sec::default()
+            });
+            continue;
+        }
+        let sec = secs.last_mut().unwrap_or(&mut base);
+        if key_is(k, "provides") {
+            sec.has_provides = true;
+            sec.provides.push(v.to_string());
+        } else if key_is(k, "conflicts") {
+            sec.has_conflicts = true;
+            sec.conflicts.push(v.to_string());
+        }
+    }
+    let Some(ver) = srcinfo_full_version(text) else {
+        return Vec::new();
+    };
+    let picked: Vec<&Sec> = if secs.iter().any(|s| s.name == want) {
+        secs.iter().filter(|s| s.name == want).collect()
+    } else {
+        secs.iter().collect()
+    };
+    picked
+        .into_iter()
+        .map(|s| crate::alpm_db::Incoming {
+            name: s.name.clone(),
+            ver: ver.clone(),
+            provides: if s.has_provides {
+                s.provides.clone()
+            } else {
+                base.provides.clone()
+            },
+            conflicts: if s.has_conflicts {
+                s.conflicts.clone()
+            } else {
+                base.conflicts.clone()
+            },
+        })
+        .collect()
 }
 
 /// First `epoch`/`pkgver`/`pkgrel` in a .SRCINFO (the pkgbase block).
@@ -3112,6 +3259,9 @@ pub(crate) fn abs_install(
     let isolation = choose_build_isolation(no_sandbox);
 
     if !skip_plan {
+        // Blockers from the .SRCINFOs, shown under the list like for AUR.
+        let names: Vec<String> = pkg_infos.iter().map(|p| p.name.clone()).collect();
+        note_abs_blockers(&names);
         println!();
         println!(
             "{}",
@@ -3130,6 +3280,9 @@ pub(crate) fn abs_install(
                 status_colored(&p.status),
                 atom.t_green().bold()
             );
+        }
+        if let Some((pairs, incoming)) = crate::conflict::take_planned() {
+            crate::conflict::print_planned(&pairs, &incoming, &crate::alpm_db::required_by);
         }
         println!();
         println!("{}: {} package(s)", "Total".bold(), pkg_infos.len());
@@ -4471,5 +4624,58 @@ mod plan_tree_tests {
         let out = group_by_parent(vec![&app], vec![&a, &b], &deps, usize::MAX);
         assert_eq!(out.len(), 3);
         assert_eq!(out[0], (&app, 0));
+    }
+}
+
+#[cfg(test)]
+mod abs_srcinfo_tests {
+    use super::*;
+
+    const SPLIT: &str = "pkgbase = foo\n\tpkgver = 1.0\n\tpkgrel = 2\n\tepoch = 1\n\tprovides = foo-libs\n\tconflicts = foo-old\n\npkgname = foo\n\tprovides = foo-x\n\npkgname = foo-docs\n";
+
+    #[test]
+    fn a_section_that_sets_an_array_replaces_the_global_one() {
+        let v = srcinfo_incoming(SPLIT, "foo");
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].name, "foo");
+        assert_eq!(v[0].ver, "1:1.0-2");
+        assert_eq!(v[0].provides, vec!["foo-x"]);
+        // not set in the section: the global one applies
+        assert_eq!(v[0].conflicts, vec!["foo-old"]);
+    }
+
+    #[test]
+    fn a_section_without_arrays_inherits_the_global_ones() {
+        let v = srcinfo_incoming(SPLIT, "foo-docs");
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].provides, vec!["foo-libs"]);
+        assert_eq!(v[0].conflicts, vec!["foo-old"]);
+    }
+
+    #[test]
+    fn a_name_that_is_not_a_pkgname_means_the_whole_base() {
+        let v = srcinfo_incoming(SPLIT, "foo-base");
+        let names: Vec<&str> = v.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec!["foo", "foo-docs"]);
+    }
+
+    #[test]
+    fn versioned_entries_keep_their_operators() {
+        let t = "pkgbase = x\n\tpkgver = 1\n\tpkgrel = 1\n\npkgname = x\n\tprovides = libx.so=1-64\n\tconflicts = y<2\n";
+        let v = srcinfo_incoming(t, "x");
+        assert_eq!(v[0].provides, vec!["libx.so=1-64"]);
+        assert_eq!(v[0].conflicts, vec!["y<2"]);
+    }
+
+    #[test]
+    fn arrays_for_another_architecture_are_ignored() {
+        let t = "pkgbase = x\n\tpkgver = 1\n\tpkgrel = 1\n\tconflicts_no_such_arch = z\n\npkgname = x\n";
+        let v = srcinfo_incoming(t, "x");
+        assert!(v[0].conflicts.is_empty());
+    }
+
+    #[test]
+    fn without_a_version_nothing_is_incoming() {
+        assert!(srcinfo_incoming("pkgname = x\n", "x").is_empty());
     }
 }

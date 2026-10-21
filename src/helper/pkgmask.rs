@@ -1,4 +1,4 @@
-//! `/etc/portage/package.mask` for the root helper.
+//! `/etc/portage/package.mask` + `package.unmask` for the root helper.
 //! No `crate::` imports -- same rules as the rest of `helper/`.
 //! Logic mirrors `src/mask.rs` (glob + repo prefix); keep them in sync.
 
@@ -7,6 +7,7 @@ use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 
 pub(crate) const MASK_FILE: &str = "/etc/portage/package.mask";
+pub(crate) const UNMASK_FILE: &str = "/etc/portage/package.unmask";
 
 #[derive(Debug, Clone)]
 pub(crate) struct MaskEntry {
@@ -157,11 +158,16 @@ fn glob_match(pattern: &str, name: &str) -> bool {
     pi == p.len()
 }
 
-/// Reject any target that is masked. Call before queuing a transaction.
+/// Reject any target that is masked and not unmasked.
+/// Call before queuing a transaction.
 pub(crate) fn refuse_masked(targets: &[(Option<&str>, &str)]) -> io::Result<()> {
     let masks = load();
+    let unmasks = load_from(Path::new(UNMASK_FILE));
     let mut blocked = Vec::new();
     for &(repo, name) in targets {
+        if unmasks.find(name, repo).is_some() || unmasks.find(name, None).is_some() {
+            continue;
+        }
         if let Some(entry) = masks.find(name, repo) {
             blocked.push(format!("{}: masked by {}", name, entry.describe()));
         }

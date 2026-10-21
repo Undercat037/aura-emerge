@@ -540,6 +540,18 @@ pub(crate) fn provision_from_world_set(
         return Ok(true);
     }
 
+    // Blockers before anything is touched: libalpm's own plan for the repo
+    // part, the RPC data for the AUR part, and the two against each other.
+    // Listed under the plan and asked once below.
+    {
+        let mut repo_targets: Vec<String> = official_missing.clone();
+        repo_targets.extend(resolved_official.iter().cloned());
+        crate::packages::note_repo_blockers(&repo_targets);
+        let mut aur_targets: Vec<String> = aur_missing.clone();
+        aur_targets.extend(resolved_aur.iter().cloned());
+        crate::packages::note_aur_names(&aur_targets);
+    }
+
     println!();
     println!(
         "{}",
@@ -591,11 +603,20 @@ pub(crate) fn provision_from_world_set(
             p.t_red().bold()
         );
     }
+    if let Some((pairs, incoming)) = crate::conflict::take_planned() {
+        crate::conflict::print_planned(&pairs, &incoming, &crate::alpm_db::required_by);
+    }
     println!();
     println!("{}: {} package(s)", "Total".bold(), total);
     println!();
 
     if pretend {
+        return Ok(true);
+    }
+
+    // One question for the whole of world (Portage's --ask), and the one
+    // about unmerging blockers: nothing is installed before both are answered.
+    if !crate::packages::confirm_merge(ask) {
         return Ok(true);
     }
 
@@ -1265,6 +1286,8 @@ pub(crate) enum LastAction {
     Install,
     Unmerge,
     Update,
+    /// `--depclean`: packages that went as unneeded dependencies.
+    Depclean,
 }
 
 impl LastAction {
@@ -1273,6 +1296,7 @@ impl LastAction {
             LastAction::Install => "install",
             LastAction::Unmerge => "unmerge",
             LastAction::Update => "update",
+            LastAction::Depclean => "depclean",
         }
     }
 }
@@ -1284,12 +1308,32 @@ pub(crate) fn save_last_action(kind: LastAction, atoms: &[String]) {
 
 const CONFLICT_TAG: &str = "conflict:";
 const CONFLICT_WORLD_TAG: &str = "conflict-world:";
+/// `ver:<name> <version>`: what a depclean removed, for the undo report.
+const VERSION_TAG: &str = "ver:";
 
 /// Same, plus packages removed by conflict resolution (name, in world).
 pub(crate) fn save_last_action_with(
     kind: LastAction,
     atoms: &[String],
     conflicts: &[(String, bool)],
+) {
+    save_state(kind, atoms, conflicts, &[]);
+}
+
+/// Same, plus the version each package had (name, version).
+pub(crate) fn save_last_action_versions(
+    kind: LastAction,
+    atoms: &[String],
+    versions: &[(String, String)],
+) {
+    save_state(kind, atoms, &[], versions);
+}
+
+fn save_state(
+    kind: LastAction,
+    atoms: &[String],
+    conflicts: &[(String, bool)],
+    versions: &[(String, String)],
 ) {
     if atoms.is_empty() {
         return;
@@ -1321,6 +1365,9 @@ pub(crate) fn save_last_action_with(
                     let tag = if *w { CONFLICT_WORLD_TAG } else { CONFLICT_TAG };
                     let _ = writeln!(stdin, "{}{}", tag, n);
                 }
+                for (n, v) in versions {
+                    let _ = writeln!(stdin, "{}{} {}", VERSION_TAG, n, v);
+                }
             }
             child.wait().map(|s| s.success()).unwrap_or(false)
         }
@@ -1344,41 +1391,63 @@ pub(crate) fn clear_last_action() {
         .status();
 }
 
-/// Load undo state: (kind tag, atoms, conflict-removed (name, in world)).
-fn load_state() -> Option<(String, Vec<String>, Vec<(String, bool)>)> {
-    let file = open_nofollow(std::path::Path::new(LASTACTION_FILE)).ok()?;
-    let mut lines = io::BufReader::new(file)
-        .lines()
-        .map_while(io::Result::ok)
+/// What the state file holds.
+struct SavedState {
+    kind: String,
+    atoms: Vec<String>,
+    /// Removed by conflict resolution: (name, was in world).
+    conflicts: Vec<(String, bool)>,
+    /// (name, version) as recorded by `--depclean`.
+    versions: Vec<(String, String)>,
+}
+
+fn parse_state(lines: impl Iterator<Item = String>) -> Option<SavedState> {
+    let mut lines = lines
         .map(|l| l.trim().to_string())
         .filter(|l| !l.is_empty());
     let kind = lines.next()?;
-    let mut atoms = Vec::new();
-    let mut conflicts = Vec::new();
+    let mut st = SavedState {
+        kind,
+        atoms: Vec::new(),
+        conflicts: Vec::new(),
+        versions: Vec::new(),
+    };
     for l in lines {
         if let Some(n) = l.strip_prefix(CONFLICT_WORLD_TAG) {
-            conflicts.push((n.to_string(), true));
+            st.conflicts.push((n.to_string(), true));
         } else if let Some(n) = l.strip_prefix(CONFLICT_TAG) {
-            conflicts.push((n.to_string(), false));
+            st.conflicts.push((n.to_string(), false));
+        } else if let Some(rest) = l.strip_prefix(VERSION_TAG) {
+            // No version after the name: dropped, never mistaken for an atom.
+            st.versions.extend(
+                rest.split_once(' ')
+                    .map(|(n, v)| (n.to_string(), v.trim().to_string())),
+            );
         } else {
-            atoms.push(l);
+            st.atoms.push(l);
         }
     }
-    if atoms.is_empty() {
-        None
-    } else {
-        Some((kind, atoms, conflicts))
-    }
+    if st.atoms.is_empty() { None } else { Some(st) }
+}
+
+fn load_state() -> Option<SavedState> {
+    let file = open_nofollow(std::path::Path::new(LASTACTION_FILE)).ok()?;
+    parse_state(io::BufReader::new(file).lines().map_while(io::Result::ok))
 }
 
 /// Load undo state: (kind tag, atoms).
 pub(crate) fn load_last_action() -> Option<(String, Vec<String>)> {
-    load_state().map(|(k, a, _)| (k, a))
+    load_state().map(|s| (s.kind, s.atoms))
 }
 
 /// Packages removed by conflict resolution in the saved install.
 pub(crate) fn load_last_conflicts() -> Vec<(String, bool)> {
-    load_state().map(|(_, _, c)| c).unwrap_or_default()
+    load_state().map(|s| s.conflicts).unwrap_or_default()
+}
+
+/// (name, version) of what the saved `--depclean` removed.
+pub(crate) fn load_last_versions() -> Vec<(String, String)> {
+    load_state().map(|s| s.versions).unwrap_or_default()
 }
 
 pub(crate) fn write_world_set(packages: &[String]) -> Result<()> {
@@ -1488,6 +1557,58 @@ mod tests {
             format!("{}/nope.set", d)
         );
         let _ = fs::remove_dir_all(dir);
+    }
+
+    fn lines(text: &str) -> impl Iterator<Item = String> {
+        text.lines()
+            .map(String::from)
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
+    #[test]
+    fn state_without_atoms_is_nothing() {
+        assert!(parse_state(lines("depclean\n")).is_none());
+        assert!(parse_state(lines("")).is_none());
+    }
+
+    #[test]
+    fn depclean_state_keeps_atoms_and_versions_apart() {
+        let st = parse_state(lines(
+            "depclean\nextra/libfoo\nErr/bar-git\nver:libfoo 1.2-3\nver:bar-git r45.abc-1\n",
+        ))
+        .unwrap();
+        assert_eq!(st.kind, "depclean");
+        assert_eq!(st.atoms, vec!["extra/libfoo", "Err/bar-git"]);
+        assert_eq!(
+            st.versions,
+            vec![
+                ("libfoo".to_string(), "1.2-3".to_string()),
+                ("bar-git".to_string(), "r45.abc-1".to_string())
+            ]
+        );
+        assert!(st.conflicts.is_empty());
+    }
+
+    #[test]
+    fn install_state_still_reads_conflicts() {
+        let st = parse_state(lines(
+            "install\npipewire-jack\nconflict-world:jack2\nconflict:jack\n",
+        ))
+        .unwrap();
+        assert_eq!(st.atoms, vec!["pipewire-jack"]);
+        assert_eq!(
+            st.conflicts,
+            vec![("jack2".to_string(), true), ("jack".to_string(), false)]
+        );
+        assert!(st.versions.is_empty());
+    }
+
+    #[test]
+    fn a_version_line_without_a_version_is_skipped() {
+        let st = parse_state(lines("depclean\nextra/a\nver:a\n")).unwrap();
+        assert!(st.versions.is_empty());
+        assert_eq!(st.atoms, vec!["extra/a"]);
     }
 
     #[test]

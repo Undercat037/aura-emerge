@@ -1,5 +1,8 @@
-//! `/etc/portage/package.mask`: packages this machine never installs,
-//! Portage's `package.mask` with Arch atoms.
+//! `/etc/portage/package.mask` and `/etc/portage/package.unmask`.
+//!
+//! Mask: packages this machine never installs (Portage `package.mask`
+//! with Arch atoms). Unmask: explicit exceptions that override both
+//! user `package.mask` and profile `package.mask`.
 //!
 
 use std::path::PathBuf;
@@ -9,6 +12,7 @@ use crate::theme::Themed;
 use colored::Colorize;
 
 pub(crate) const MASK_FILE: &str = "/etc/portage/package.mask";
+pub(crate) const UNMASK_FILE: &str = "/etc/portage/package.unmask";
 
 #[derive(Debug, Clone)]
 pub(crate) struct MaskEntry {
@@ -66,23 +70,33 @@ impl MaskList {
 }
 
 static MASKS: OnceLock<MaskList> = OnceLock::new();
+static UNMASKS: OnceLock<MaskList> = OnceLock::new();
 
 /// Parsed masks, read once per process.
 pub(crate) fn masks() -> &'static MaskList {
-    MASKS.get_or_init(load)
+    MASKS.get_or_init(|| load_list(MASK_FILE, "mask"))
 }
 
+/// Parsed unmasks, read once per process.
+pub(crate) fn unmasks() -> &'static MaskList {
+    UNMASKS.get_or_init(|| load_list(UNMASK_FILE, "unmask"))
+}
+
+/// User-mask entry, if any (ignores unmask — callers that need a hard
+/// block should use [`is_blocked`]).
 pub(crate) fn find(name: &str, repo: Option<&str>) -> Option<&'static MaskEntry> {
     masks().find(name, repo)
 }
 
-fn load() -> MaskList {
-    let root = PathBuf::from(MASK_FILE);
+/// True if `/etc/portage/package.unmask` matches this package.
+pub(crate) fn is_unmasked(name: &str, repo: Option<&str>) -> bool {
+    unmasks().find(name, repo).is_some()
+}
 
-    // `package.mask` is either a plain file, or a directory of files
-    // (any name, dotfiles skipped) -- same as real Portage. Only one
-    // of the two shapes exists on disk at a time, so no merge needed
+fn load_list(root_path: &str, kind: &str) -> MaskList {
+    let root = PathBuf::from(root_path);
 
+    // File or directory of files (dotfiles skipped) — same as Portage.
     let files: Vec<PathBuf> = if root.is_dir() {
         let mut extra: Vec<PathBuf> = std::fs::read_dir(&root)
             .into_iter()
@@ -142,10 +156,11 @@ fn load() -> MaskList {
             };
             if pattern.is_empty() || !valid_pattern(&pattern) {
                 eprintln!(
-                    "{} {}:{}: invalid mask entry '{}' (skipped)",
+                    "{} {}:{}: invalid {} entry '{}' (skipped)",
                     ">>> Warning:".t_yellow().bold(),
                     path_s,
                     i + 1,
+                    kind,
                     atom
                 );
                 continue;
@@ -200,23 +215,25 @@ pub(crate) fn glob_match(pattern: &str, name: &str) -> bool {
 // ── enforcement helpers ───────────────────────────────────────────────────────
 
 /// Splits a package list into (allowed, blocked-with-the-entry).
+/// Respects `package.unmask` and profile masks (via [`is_blocked`]).
 pub(crate) fn split_masked(
     pkgs: &[String],
     repo: Option<&str>,
-) -> (Vec<String>, Vec<(String, &'static MaskEntry)>) {
+) -> (Vec<String>, Vec<(String, Option<&'static MaskEntry>)>) {
     let mut allowed = Vec::new();
     let mut blocked = Vec::new();
     for p in pkgs {
-        match find(p, repo) {
-            Some(entry) => blocked.push((p.clone(), entry)),
-            None => allowed.push(p.clone()),
+        if is_blocked(p, repo) {
+            blocked.push((p.clone(), find(p, repo)));
+        } else {
+            allowed.push(p.clone());
         }
     }
     (allowed, blocked)
 }
 
 /// Prints the block notice for masked packages. No-op on an empty list.
-pub(crate) fn report_blocked(blocked: &[(String, &MaskEntry)]) {
+pub(crate) fn report_blocked(blocked: &[(String, Option<&MaskEntry>)]) {
     if blocked.is_empty() {
         return;
     }
@@ -228,16 +245,24 @@ pub(crate) fn report_blocked(blocked: &[(String, &MaskEntry)]) {
     eprintln!();
     for (name, entry) in blocked {
         eprintln!("  {}", name.t_red().bold());
-        eprintln!("    masked by {}", entry.describe().dimmed());
-        if let Some(reason) = &entry.reason {
-            eprintln!("    reason: {}", reason);
+        match entry {
+            Some(entry) => {
+                eprintln!("    masked by {}", entry.describe().dimmed());
+                if let Some(reason) = &entry.reason {
+                    eprintln!("    reason: {}", reason);
+                }
+            }
+            None => {
+                eprintln!("    {}", "masked by profile package.mask".dimmed());
+            }
         }
     }
     eprintln!();
     eprintln!(
-        "{} Edit {} (a file, or a directory of files) to change that.",
+        "{} Edit {} / {} (file or directory) to change that.",
         " *".t_yellow().bold(),
-        MASK_FILE
+        MASK_FILE,
+        UNMASK_FILE
     );
 }
 
@@ -248,10 +273,10 @@ pub(crate) fn allow_plan<'a, I>(pkgs: I) -> bool
 where
     I: IntoIterator<Item = (&'a str, Option<&'a str>)>,
 {
-    let mut blocked: Vec<(String, &MaskEntry)> = Vec::new();
+    let mut blocked: Vec<(String, Option<&MaskEntry>)> = Vec::new();
     for (name, repo) in pkgs {
-        if let Some(entry) = find(name, repo) {
-            blocked.push((name.to_string(), entry));
+        if is_blocked(name, repo) {
+            blocked.push((name.to_string(), find(name, repo)));
         }
     }
     if blocked.is_empty() {
@@ -319,8 +344,12 @@ mod tests {
     }
 }
 
-/// User package.mask **or** active profile package.mask.
+/// User `package.mask` **or** active profile `package.mask`, unless
+/// matched by `package.unmask`.
 pub(crate) fn is_blocked(name: &str, repo: Option<&str>) -> bool {
+    if is_unmasked(name, repo) || is_unmasked(name, None) {
+        return false;
+    }
     if find(name, repo).is_some() {
         return true;
     }
