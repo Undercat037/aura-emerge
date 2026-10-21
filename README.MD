@@ -565,7 +565,7 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `--regen-world` | Re-resolve repo prefixes in world |
 | `--regen-sets <SET>` | Re-resolve prefixes in a custom set (`@game-kit` or `game-kit`) |
 | `--regen-sort` | With `--regen-sets`: also sort the file (drops comments and grouping) |
-| `--regen-world-from-explicit` | Migration: seed world from `pacman -Qeq` (one-time) |
+| `--regen-world-from-explicit` | Migration: add explicit packages (`pacman -Qeq`) that are not in world, a world `@set` or `package.profile` to world (one-time). `-p` lists only, `-a` asks |
 | `--err-install` | With `@world`: also install `Err/` (unknown-source) entries |
 | `--resume` | Resume an interrupted transaction |
 | `--skipfirst` | With `--resume`: skip the first package |

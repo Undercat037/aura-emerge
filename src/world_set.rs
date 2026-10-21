@@ -245,6 +245,46 @@ pub(crate) fn sync_explicit(pretend: bool, ask: bool, auto: bool) -> bool {
     true
 }
 
+/// `--regen-world-from-explicit`: explicit packages outside world, world
+/// sets and package.profile go into world. `-p` lists only (no sudo).
+pub(crate) fn regen_world_from_explicit(pretend: bool, ask: bool) -> Result<()> {
+    println!(
+        "{} Seeding world from explicitly installed packages...",
+        ">>>".t_green().bold()
+    );
+    let explicit = crate::alpm_db::explicit_names();
+    if explicit.is_empty() {
+        println!(">>> No explicitly installed packages found.");
+        return Ok(());
+    }
+    // Already covered (world / @set / profile) stays as is.
+    let keep = keep_explicit_names();
+    let mut missing: Vec<String> = explicit.into_iter().filter(|n| !keep.contains(n)).collect();
+    missing.sort();
+    missing.dedup();
+    if missing.is_empty() {
+        println!(">>> world already covers every explicit package.");
+        return Ok(());
+    }
+    let repos = get_pkg_repos_batch(&missing);
+    println!(
+        "{} {} explicit package(s) to add to world:",
+        ">>>".t_green().bold(),
+        missing.len()
+    );
+    for n in &missing {
+        println!("    {}", pkg_world_entry_from(n, None, &repos));
+    }
+    if pretend {
+        println!(">>> --pretend: nothing changed.");
+        return Ok(());
+    }
+    if !crate::confirm_action(ask, "add") {
+        return Ok(());
+    }
+    add_to_world_set(&missing, None)
+}
+
 /// Where `name` is listed: `world` (plain entry) and every `@set` that
 /// contains it (nested sets included). For conflict messages.
 pub(crate) fn origins_of(name: &str) -> Vec<String> {

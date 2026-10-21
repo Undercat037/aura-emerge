@@ -423,14 +423,48 @@ pub(crate) fn print_similar_names(term: &str) {
     );
 }
 
-pub(crate) fn resolve_aur_split(pkgs: &[String]) -> (Vec<PkgInfo>, Vec<String>) {
-    let infos = crate::aur::rpc_info(pkgs);
-    let by_name: HashMap<&str, &crate::aur::AurPkgInfo> =
-        infos.iter().map(|i| (i.name.as_str(), i)).collect();
+/// AUR-only dependencies (depends + makedepends) `resolve_and_build_aur`
+/// would build for `infos`, found through the RPC, up to 8 levels deep.
+fn aur_dep_infos(infos: &[&crate::aur::AurPkgInfo]) -> Vec<crate::aur::AurPkgInfo> {
+    let mut seen: HashSet<String> = infos.iter().map(|i| i.name.clone()).collect();
+    let mut found: Vec<crate::aur::AurPkgInfo> = Vec::new();
+    let mut level: Vec<crate::aur::AurPkgInfo> = infos.iter().map(|i| (*i).clone()).collect();
+    for _ in 0..8 {
+        let mut want: Vec<String> = Vec::new();
+        for i in &level {
+            for dep in i
+                .depends
+                .split_whitespace()
+                .chain(i.makedepends.split_whitespace())
+            {
+                let name = dep.split(['<', '>', '=']).next().unwrap_or(dep);
+                if name.is_empty() || !seen.insert(name.to_string()) {
+                    continue;
+                }
+                if already_satisfied(name) || is_satisfiable_without_aur(name) {
+                    continue;
+                }
+                want.push(name.to_string());
+            }
+        }
+        if want.is_empty() {
+            break;
+        }
+        level = crate::aur::rpc_info(&want);
+        found.extend(level.iter().cloned());
+    }
+    found
+}
 
-    // Conflicts of the AUR targets against the system, before any build.
-    let incoming: Vec<crate::alpm_db::Incoming> = infos
-        .iter()
+/// Conflicts of AUR packages against the system, before any build.
+/// Shown under the plan by `print_emerge_plan` / `aur_upgrade_plan`.
+/// Includes the AUR-only dependencies that would be built for them.
+fn note_aur_blockers<'a>(infos: impl Iterator<Item = &'a crate::aur::AurPkgInfo>) {
+    let targets: Vec<&crate::aur::AurPkgInfo> = infos.collect();
+    let deps = aur_dep_infos(&targets);
+    let incoming: Vec<crate::alpm_db::Incoming> = targets
+        .into_iter()
+        .chain(deps.iter())
         .map(|i| crate::alpm_db::Incoming {
             name: i.name.clone(),
             ver: i.version.clone(),
@@ -440,6 +474,14 @@ pub(crate) fn resolve_aur_split(pkgs: &[String]) -> (Vec<PkgInfo>, Vec<String>) 
         .collect();
     let pairs = crate::alpm_db::preflight_conflicts(&incoming);
     crate::conflict::note_planned(pairs, incoming.iter().map(|i| i.name.clone()).collect());
+}
+
+pub(crate) fn resolve_aur_split(pkgs: &[String]) -> (Vec<PkgInfo>, Vec<String>) {
+    let infos = crate::aur::rpc_info(pkgs);
+    let by_name: HashMap<&str, &crate::aur::AurPkgInfo> =
+        infos.iter().map(|i| (i.name.as_str(), i)).collect();
+
+    note_aur_blockers(infos.iter());
 
     let mut result = Vec::new();
     let mut missing = Vec::new();
@@ -2350,6 +2392,16 @@ pub(crate) fn aur_upgrade_plan(devel: bool) -> Vec<String> {
             new
         );
     }
+    // New versions vs the system: `[conflict]` lines now, asked in
+    // confirm_merge, not after the build.
+    note_aur_blockers(
+        to_upgrade
+            .iter()
+            .filter_map(|(n, _, _)| latest_by_name.get(n.as_str()).copied()),
+    );
+    if let Some((pairs, incoming)) = crate::conflict::take_planned() {
+        crate::conflict::print_planned(&pairs, &incoming, &crate::alpm_db::required_by);
+    }
     println!();
     println!(
         "{}: {} AUR package(s) to upgrade",
@@ -2806,7 +2858,63 @@ fn build_with_sandbox(
         aenew: false,
         aekeep: false,
     };
-    install_files_resolving_conflicts(&pinned, opts, ask)
+    let ok = install_files_resolving_conflicts(&pinned, opts, ask);
+    if ok && !oneshot {
+        note_built(&pkg_files);
+    }
+    ok
+}
+
+// Every package a source build `-U`'d as explicit this run, split-package
+// siblings included (`zrok` also installs `zrok-agent`, `zrok-share`).
+static BUILT_EXPLICIT: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// `name-ver-rel-arch.pkg.tar.zst` -> `name`.
+fn pkg_file_name(path: &str) -> Option<String> {
+    let file = std::path::Path::new(path).file_name()?.to_str()?;
+    let stem = file.split(".pkg.tar").next()?;
+    let mut it = stem.rsplitn(4, '-');
+    it.next()?; // arch
+    it.next()?; // rel
+    it.next()?; // ver
+    it.next().map(str::to_string)
+}
+
+fn note_built(files: &[String]) {
+    let mut v = BUILT_EXPLICIT.lock().unwrap_or_else(|e| e.into_inner());
+    v.extend(files.iter().filter_map(|f| pkg_file_name(f)));
+}
+
+/// Split-package siblings that rode along with `requested` become
+/// dependencies, unless world / @set / package.profile list them.
+/// Call after the world write.
+pub(crate) fn demote_split_siblings(requested: &[String]) {
+    let built: Vec<String> =
+        std::mem::take(&mut *BUILT_EXPLICIT.lock().unwrap_or_else(|e| e.into_inner()));
+    if built.is_empty() {
+        return;
+    }
+    let keep = crate::world_set::keep_explicit_names();
+    let asked: HashSet<&str> = requested
+        .iter()
+        .map(|r| r.split('/').next_back().unwrap_or(r))
+        .collect();
+    let explicit = crate::alpm_db::explicit_set();
+    let mut extra: Vec<String> = built
+        .into_iter()
+        .filter(|n| !asked.contains(n.as_str()) && !keep.contains(n) && explicit.contains(n))
+        .collect();
+    extra.sort();
+    extra.dedup();
+    if extra.is_empty() {
+        return;
+    }
+    mark_asdeps(&extra);
+    println!(
+        "{} split-package sibling(s) marked as dependencies: {}",
+        ">>>".t_green().bold(),
+        extra.join(", ")
+    );
 }
 
 /// Every `*.pkg.tar.*` file this build actually produced.

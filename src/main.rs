@@ -3529,21 +3529,9 @@ fn run() -> anyhow::Result<()> {
     // it once, and `-c`'s world protection (below) and `--prune`
     // start seeing the whole system instead of just what was installed
     // through `emerge` since world existed.
+    // -p lists what would be added, -a asks first (see world_set).
     if cli.regen_world_from_explicit {
-        println!(
-            "{} Seeding world from explicitly installed packages...",
-            ">>>".t_green().bold()
-        );
-        let explicit = crate::alpm_db::explicit_names();
-        if explicit.is_empty() {
-            println!(">>> No explicitly installed packages found.");
-            return Ok(());
-        }
-        println!(
-            ">>> Found {} explicitly installed package(s). Resolving repo prefixes...",
-            explicit.len()
-        );
-        add_to_world_set(&explicit, None)?;
+        world_set::regen_world_from_explicit(cli.pretend, cli.ask)?;
         return Ok(());
     }
 
@@ -4450,6 +4438,8 @@ fn run() -> anyhow::Result<()> {
                 rest_pkgs.push(p.clone());
             }
         }
+        // `abs/foo` alone (no --abs): world must hear about it too.
+        let pure_abs = !abs_pkgs.is_empty() && aur_pkgs.is_empty() && rest_pkgs.is_empty();
 
         // Pure ABS batch (no AUR/repo atoms): keep the dedicated path.
         if !abs_pkgs.is_empty() && aur_pkgs.is_empty() && rest_pkgs.is_empty() {
@@ -5069,11 +5059,12 @@ fn run() -> anyhow::Result<()> {
             }
 
             if !cli.oneshot {
-                if cli.abs {
+                if cli.abs || pure_abs {
                     if success {
                         println!("{} Auto-cleaning packages...", ">>>".t_green().bold());
-                        mark_asexplicit(&target_pkgs);
-                        if let Err(e) = add_to_world_set(&target_pkgs, Some("abs")) {
+                        let abs_names = if cli.abs { &target_pkgs } else { &abs_pkgs };
+                        mark_asexplicit(abs_names);
+                        if let Err(e) = add_to_world_set(abs_names, Some("abs")) {
                             eprintln!(
                                 ">>> Warning: package(s) built but world was not updated: {:#}",
                                 e
@@ -5144,6 +5135,8 @@ fn run() -> anyhow::Result<()> {
                         mark_asdeps(&dep_only_names);
                     }
                 }
+                // Split-package siblings (zrok-agent, ...) -> deps.
+                packages::demote_split_siblings(&target_pkgs);
             }
 
             if !success {

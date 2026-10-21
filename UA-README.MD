@@ -564,7 +564,7 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `--regen-world` | Заново визначити префікси репозиторіїв у world |
 | `--regen-sets <SET>` | Заново визначити префікси у власному наборі (`@game-kit` або `game-kit`) |
 | `--regen-sort` | З `--regen-sets`: заодно відсортувати файл (коментарі та групування зникають) |
-| `--regen-world-from-explicit` | Міграція: заповнити world із `pacman -Qeq` (одноразово) |
+| `--regen-world-from-explicit` | Міграція: додати у world явно встановлені пакунки (`pacman -Qeq`), яких немає у world, в `@set` зі world та в `package.profile` (одноразово). `-p` лише показує, `-a` питає |
 | `--err-install` | З `@world`: заодно встановлювати записи `Err/` (джерело невідоме) |
 | `--resume` | Продовжити перервану транзакцію |
 | `--skipfirst` | З `--resume`: пропустити перший пакунок |
