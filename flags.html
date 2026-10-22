@@ -134,7 +134,7 @@
                   <td class="lang-block" data-lang-block="ru" hidden>С <code>-s</code>: показать одно и то же имя из всех репозиториев (как <code>pacman -Ss</code>)</td>
                 </tr>
                 <tr>
-                  <td><code>-u</code></td>
+                  <td><code>-u</code> / <code>--update</code></td>
                   <td class="lang-block" data-lang-block="en">Full system upgrade (does not read world)</td>
                   <td class="lang-block" data-lang-block="ua" hidden>Повне оновлення (world не читається)</td>
 <td class="lang-block" data-lang-block="ru" hidden>Полное обновление системы (не читает world)</td>
@@ -224,6 +224,12 @@
                   <td class="lang-block" data-lang-block="ru" hidden>Показать записи world, которых нет или которые установлены не явно</td>
                 </tr>
                 <tr>
+                  <td><code>--sync-explicit</code></td>
+                  <td class="lang-block" data-lang-block="en">Mark explicit packages that are not in world, a world <code>@set</code> or <code>package.profile</code> as dependencies (so <code>-c</code> sees them). Alone: runs now (<code>-p</code> lists, <code>-a</code> asks); with an install/upgrade: runs after it succeeds. Allowed in <code>EMERGE_DEFAULT_OPTS</code></td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Позначити явно встановлені пакунки, яких немає у world, <code>@set</code> world чи <code>package.profile</code>, як залежності (щоб <code>-c</code> їх бачив). Окремо: виконується одразу (<code>-p</code> показує, <code>-a</code> питає); з встановленням/оновленням: виконується після його успіху. Дозволено в <code>EMERGE_DEFAULT_OPTS</code></td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Пометить явно установленные пакеты, которых нет в world, <code>@set</code> world или <code>package.profile</code>, как зависимости (чтобы <code>-c</code> их видел). Отдельно: выполняется сразу (<code>-p</code> показывает, <code>-a</code> спрашивает); с установкой/обновлением: выполняется после её успеха. Разрешено в <code>EMERGE_DEFAULT_OPTS</code></td>
+                </tr>
+                <tr>
                   <td><code>--revdep-rebuild</code></td>
                   <td class="lang-block" data-lang-block="en">Find &amp; fix binaries with broken library links</td>
                   <td class="lang-block" data-lang-block="ua" hidden>Знайти й полагодити биті лінки бібліотек</td>
@@ -231,9 +237,9 @@
                 </tr>
                 <tr>
                   <td><code>--undo</code></td>
-                  <td class="lang-block" data-lang-block="en">Undo last install/unmerge (one step; <code>-u</code> not reversible)</td>
-                  <td class="lang-block" data-lang-block="ua" hidden>Скасувати останнє встановлення/видалення</td>
-<td class="lang-block" data-lang-block="ru" hidden>Отменить последнюю установку/удаление (один шаг; <code>-u</code> необратимо)</td>
+                  <td class="lang-block" data-lang-block="en">Undo last install/unmerge/depclean (one step; <code>-u</code> not reversible)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Скасувати останнє встановлення/видалення/depclean (один крок; <code>-u</code> не скасовується)</td>
+<td class="lang-block" data-lang-block="ru" hidden>Отменить последнюю установку/удаление/depclean (один шаг; <code>-u</code> необратимо)</td>
                 </tr>
                 <tr>
                   <td><code>--resume</code></td>
@@ -297,9 +303,9 @@
                 </tr>
                 <tr>
                   <td><code>--regen-world-from-explicit</code></td>
-                  <td class="lang-block" data-lang-block="en">One-time migration: seed world from <code>pacman -Qeq</code></td>
-                  <td class="lang-block" data-lang-block="ua" hidden>Міграція: наповнити world з <code>pacman -Qeq</code></td>
-<td class="lang-block" data-lang-block="ru" hidden>Одноразовая миграция: заполнить world из <code>pacman -Qeq</code></td>
+                  <td class="lang-block" data-lang-block="en">One-time migration: add explicit packages (<code>pacman -Qeq</code>) that are not in world, a world <code>@set</code> or <code>package.profile</code> to world; <code>-p</code> lists only, <code>-a</code> asks</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Одноразова міграція: додати до world явно встановлені пакунки (<code>pacman -Qeq</code>), яких немає у world, <code>@set</code> world чи <code>package.profile</code>; <code>-p</code> лише показує, <code>-a</code> питає</td>
+<td class="lang-block" data-lang-block="ru" hidden>Одноразовая миграция: добавить в world явно установленные пакеты (<code>pacman -Qeq</code>), которых нет в world, <code>@set</code> world или <code>package.profile</code>; <code>-p</code> только показывает, <code>-a</code> спрашивает</td>
                 </tr>
                 <tr>
                   <td><code>--list-profiles</code></td>

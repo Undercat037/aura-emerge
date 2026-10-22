@@ -1001,7 +1001,7 @@ emerge --revdep-rebuild                    # broken shared-library links
 emerge --batchinstall pkgs.txt             # mass-install from list
 emerge -cp --show-protected                # orphans, incl. those kept by world
 emerge --news                              # Arch news
-emerge --undo                              # undo last install/unmerge
+emerge --undo                              # undo last install/unmerge/depclean
 emerge --resume                            # resume interrupted run</code></pre>
             <p>See the <a href="flags.html">Flags</a> page for the full table.</p>
 
@@ -1056,7 +1056,7 @@ emerge --revdep-rebuild                    # биті посилання на б
 emerge --batchinstall pkgs.txt             # масове встановлення зі списку
 emerge -cp --show-protected                # сироти, зокрема утримані world
 emerge --news                              # новини Arch
-emerge --undo                              # скасувати останнє встановлення/unmerge
+emerge --undo                              # скасувати останнє встановлення/unmerge/depclean
 emerge --resume                            # продовжити перервений запуск</code></pre>
             <p>Повна таблиця — на сторінці <a href="flags.html">Прапори</a>.</p>
 
@@ -1111,7 +1111,7 @@ emerge --revdep-rebuild                    # битые ссылки на биб
 emerge --batchinstall pkgs.txt             # массовая установка из списка
 emerge -cp --show-protected                # сироты, включая удержанные world
 emerge --news                              # новости Arch
-emerge --undo                              # отменить последнюю установку/unmerge
+emerge --undo                              # отменить последнюю установку/unmerge/depclean
 emerge --resume                            # продолжить прерванный запуск</code></pre>
 
             <h3>Смешанные источники + параллельные jobs</h3>
@@ -1286,7 +1286,7 @@ Total: 2 orphaned package(s) to remove
 <span class="t-ok">&gt;&gt;&gt;</span> core... done
 <span class="t-ok">&gt;&gt;&gt;</span> extra... done</code></pre>
 <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge --info</span>
-aura-emerge 3.0.15-indev-beta (alpm crate v5.0.2 - libalpm v16.0.1, linux 7.2.9-2-cachyos-bore, x86_64)
+aura-emerge 3.0.21-beta (alpm crate v5.0.2 - libalpm v16.0.1, linux 7.2.9-2-cachyos-bore, x86_64)
 ======================================================================
 System uname: Linux 7.2.9-2-cachyos-bore #1 SMP PREEMPT_DYNAMIC x86_64
 profile: none (/etc/portage/make.profile not set)
@@ -1451,7 +1451,7 @@ Total: 2 orphaned package(s) to remove
 <span class="t-ok">&gt;&gt;&gt;</span> core... done
 <span class="t-ok">&gt;&gt;&gt;</span> extra... done</code></pre>
 <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge --info</span>
-aura-emerge 3.0.15-indev-beta (alpm crate v5.0.2 - libalpm v16.0.1, linux 7.2.9-2-cachyos-bore, x86_64)
+aura-emerge 3.0.21-beta (alpm crate v5.0.2 - libalpm v16.0.1, linux 7.2.9-2-cachyos-bore, x86_64)
 ======================================================================
 System uname: Linux 7.2.9-2-cachyos-bore #1 SMP PREEMPT_DYNAMIC x86_64
 profile: none (/etc/portage/make.profile not set)
@@ -1616,7 +1616,7 @@ Total: 2 orphaned package(s) to remove
 <span class="t-ok">&gt;&gt;&gt;</span> core... done
 <span class="t-ok">&gt;&gt;&gt;</span> extra... done</code></pre>
 <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge --info</span>
-aura-emerge 3.0.15-indev-beta (alpm crate v5.0.2 - libalpm v16.0.1, linux 7.2.9-2-cachyos-bore, x86_64)
+aura-emerge 3.0.21-beta (alpm crate v5.0.2 - libalpm v16.0.1, linux 7.2.9-2-cachyos-bore, x86_64)
 ======================================================================
 System uname: Linux 7.2.9-2-cachyos-bore #1 SMP PREEMPT_DYNAMIC x86_64
 profile: none (/etc/portage/make.profile not set)
@@ -1684,37 +1684,43 @@ Total: 1 missing dependency
           <h2>--undo / --batchinstall / --check-world</h2>
           <div class="lang-block" data-lang-block="en">
             <ul>
-              <li><strong><code>--undo</code></strong> reverses the last successful install or unmerge (one step). After an install it removes only packages that were new in that run; after an unmerge it reinstalls from the recorded source (<code>Err/</code> and <code>abs/</code> are only listed). <code>-u</code> is not reversible. State: <code>/etc/portage/lastaction.state</code>.</li>
+              <li><strong><code>--undo</code></strong> reverses the last successful install, unmerge or depclean (one step). After an install it removes only packages that were new in that run and brings back installed packages that were removed as blockers; after an unmerge it reinstalls from the recorded source (<code>Err/</code> and <code>abs/</code> are only listed); after a depclean it reinstalls the removed orphans as dependencies (not added to world) — repo packages from the repos, local builds through the AUR if it still has them; you are told if the repos now carry a different version, and a package that is gone everywhere is listed with the <code>pacman -U</code> line for its cached file. If some packages fail, only those stay in the saved state, so <code>--undo</code> can be run again. <code>-u</code> is not reversible. State: <code>/etc/portage/lastaction.state</code>.</li>
               <li><strong><code>--batchinstall FILE</code></strong> installs every atom in a plain-text list (one per line, <code>#</code> comments) — the custom-set format, but from any path with no registration. It combines with <code>-p</code>, <code>-a</code>, <code>--aur</code>, <code>--abs</code>, <code>--repos</code>, …</li>
               <li><strong><code>--check-world</code></strong> lists world entries that are missing or not explicitly installed.</li>
+              <li><strong><code>--sync-explicit</code></strong> marks every explicitly installed package that is not in world, a world <code>@set</code> or <code>package.profile</code> as a dependency, so <code>-c</code> can see it. Alone it runs now (<code>-p</code> lists, <code>-a</code> asks); with an install or upgrade it runs after that succeeds.</li>
               <li><strong><code>--resume</code></strong> continues an interrupted run (<code>--skipfirst</code> drops the first package); after <code>--keep-going</code> it retries only what failed. State: <code>/etc/portage/resume.state</code>.</li>
             </ul>
             <pre><code>emerge --batchinstall pkgs.txt -a
 emerge --check-world
+emerge --sync-explicit -p
 emerge --undo
 emerge --resume --skipfirst</code></pre>
           </div>
           <div class="lang-block" data-lang-block="ua" hidden>
             <ul>
-              <li><strong><code>--undo</code></strong> скасовує останнє успішне встановлення або unmerge (один крок). Після встановлення видаляє лише пакунки, які були новими в тому запуску; після unmerge перевстановлює із записаного джерела (<code>Err/</code> і <code>abs/</code> лише перелічуються). <code>-u</code> не скасовується. Стан: <code>/etc/portage/lastaction.state</code>.</li>
+              <li><strong><code>--undo</code></strong> скасовує останнє успішне встановлення, unmerge або depclean (один крок). Після встановлення видаляє лише пакунки, які були новими в тому запуску, і повертає встановлені пакунки, видалені як блокери; після unmerge перевстановлює із записаного джерела (<code>Err/</code> і <code>abs/</code> лише перелічуються); після depclean перевстановлює видалені сироти як залежності (не додаючи до world) — пакунки з репозиторіїв повертаються з репозиторіїв, локальні збірки — через AUR, якщо він їх ще має; якщо репозиторії тепер мають іншу версію, вас про це повідомлять, а пакунок, якого більше ніде немає, буде перелічено з рядком <code>pacman -U</code> для його кешованого файлу. Якщо частина пакунків не вдалася, у збереженому стані лишаються тільки вони, тож <code>--undo</code> можна запустити ще раз. <code>-u</code> не скасовується. Стан: <code>/etc/portage/lastaction.state</code>.</li>
               <li><strong><code>--batchinstall FILE</code></strong> встановлює всі атоми з текстового списку (по одному в рядку, коментарі <code>#</code>) — формат власного набору, але з будь-якого шляху без реєстрації. Поєднується з <code>-p</code>, <code>-a</code>, <code>--aur</code>, <code>--abs</code>, <code>--repos</code>, …</li>
               <li><strong><code>--check-world</code></strong> показує записи world, яких бракує або які не встановлені явно.</li>
+              <li><strong><code>--sync-explicit</code></strong> позначає як залежності всі явно встановлені пакунки, яких немає у world, <code>@set</code> world чи <code>package.profile</code>, щоб <code>-c</code> їх бачив. Окремо виконується одразу (<code>-p</code> показує, <code>-a</code> питає); з встановленням чи оновленням — після його успіху.</li>
               <li><strong><code>--resume</code></strong> продовжує перервений запуск (<code>--skipfirst</code> пропускає перший пакунок); після <code>--keep-going</code> повторює лише невдалі. Стан: <code>/etc/portage/resume.state</code>.</li>
             </ul>
             <pre><code>emerge --batchinstall pkgs.txt -a
 emerge --check-world
+emerge --sync-explicit -p
 emerge --undo
 emerge --resume --skipfirst</code></pre>
           </div>
           <div class="lang-block" data-lang-block="ru" hidden>
             <ul>
-              <li><strong><code>--undo</code></strong> отменяет последнюю успешную установку или unmerge (один шаг). После установки удаляет только пакеты, которые были новыми в том запуске; после unmerge переустанавливает из записанного источника (<code>Err/</code> и <code>abs/</code> только перечисляются). <code>-u</code> не отменяется. Состояние: <code>/etc/portage/lastaction.state</code>.</li>
+              <li><strong><code>--undo</code></strong> отменяет последнюю успешную установку, unmerge или depclean (один шаг). После установки удаляет только пакеты, которые были новыми в том запуске, и возвращает установленные пакеты, удалённые как блокеры; после unmerge переустанавливает из записанного источника (<code>Err/</code> и <code>abs/</code> только перечисляются); после depclean переустанавливает удалённые сироты как зависимости (не добавляя в world) — пакеты из репозиториев возвращаются из репозиториев, локальные сборки — через AUR, если он их ещё имеет; если репозитории теперь имеют другую версию, вам об этом сообщат, а пакет, которого больше нигде нет, будет перечислен со строкой <code>pacman -U</code> для его кэшированного файла. Если часть пакетов не удалась, в сохранённом состоянии остаются только они, так что <code>--undo</code> можно запустить ещё раз. <code>-u</code> не отменяется. Состояние: <code>/etc/portage/lastaction.state</code>.</li>
               <li><strong><code>--batchinstall FILE</code></strong> устанавливает все атомы из текстового списка (по одному в строке, комментарии <code>#</code>) — формат пользовательского набора, но из любого пути без регистрации. Сочетается с <code>-p</code>, <code>-a</code>, <code>--aur</code>, <code>--abs</code>, <code>--repos</code>, …</li>
               <li><strong><code>--check-world</code></strong> показывает записи world, которых не хватает или которые установлены не явно.</li>
+              <li><strong><code>--sync-explicit</code></strong> помечает как зависимости все явно установленные пакеты, которых нет в world, <code>@set</code> world или <code>package.profile</code>, чтобы <code>-c</code> их видел. Отдельно выполняется сразу (<code>-p</code> показывает, <code>-a</code> спрашивает); с установкой или обновлением — после её успеха.</li>
               <li><strong><code>--resume</code></strong> продолжает прерванный запуск (<code>--skipfirst</code> пропускает первый пакет); после <code>--keep-going</code> повторяет только упавшие. Состояние: <code>/etc/portage/resume.state</code>.</li>
             </ul>
             <pre><code>emerge --batchinstall pkgs.txt -a
 emerge --check-world
+emerge --sync-explicit -p
 emerge --undo
 emerge --resume --skipfirst</code></pre>
           </div>
