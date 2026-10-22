@@ -104,8 +104,8 @@ libalpm directly for official-repo packages, and builds AUR and ABS packages its
 (git clone/checkout, a PKGBUILD supply-chain scan, then a bwrap-sandboxed build) \
 rather than shelling out to another AUR helper. \
 It tracks every explicitly requested package in /etc/portage/world, independent \
-of whatever pacman's own dependency graph currently looks like.\n\n\
-libalpm runs the normal pacman hooks (depmod, DKMS, dracut/mkinitcpio, \
+of whatever the package db's own dependency graph currently looks like.\n\n\
+libalpm runs the normal package hooks (depmod, DKMS, dracut/mkinitcpio, \
 grub-mkconfig, …) on every install, remove, -U and -Su. Hook directories are \
 /usr/share/libalpm/hooks/, /etc/pacman.d/hooks/, and /etc/portage/hooks/ \
 (see FILES).\n\n\
@@ -218,8 +218,9 @@ AE FORCE
 SCANNER
     Before an AUR/ABS build the PKGBUILD and .install are scanned (bash
     AST plus line heuristics, known-IOC list). When the checkout is on
-    disk, a Makefile and shell scripts next to the PKGBUILD are scanned
-    too. The built package is audited again before -U. --scan audits only
+    disk, every Makefile, patch and shell script in the package directory
+    is scanned too (added lines of patches, patch headers, line
+    continuations, odd bytes and hidden characters included). The built package is audited again before -U. --scan audits only
     and exits non-zero on any finding.
 
 NEWS
@@ -282,7 +283,7 @@ EXAMPLES
 
 ALPM HOOKS
     libalpm executes every matching *.hook during trans_commit (install,
-    remove, -U, -Su) — same mechanism as pacman. Search order:
+    remove, -U, -Su) — the usual libalpm mechanism. Search order:
 
         /usr/share/libalpm/hooks/           Package-shipped hooks
         /etc/pacman.d/hooks/                Admin hooks (HookDir in pacman.conf)
@@ -310,7 +311,7 @@ FILES
     /etc/portage/resume.state                Saved state for --resume
     /etc/portage/lastaction.state            Last install/unmerge/depclean step, for --undo
     /usr/share/libalpm/hooks/               System alpm hooks (from packages)
-    /etc/pacman.d/hooks/                    Admin alpm hooks (pacman HookDir)
+    /etc/pacman.d/hooks/                    Admin alpm hooks (HookDir)
     /var/log/emerge.log                     Append-only merge/unmerge event log, with
                                             build time for AUR/ABS packages; stats
                                             shown in --info
@@ -371,7 +372,7 @@ struct Cli {
     #[arg(long)]
     sync: bool,
 
-    /// Force-refresh databases (pacman -Syy)
+    /// Force-refresh databases (-Syy)
     #[arg(long)]
     refresh: bool,
 
@@ -535,7 +536,7 @@ struct Cli {
     #[arg(long = "err-install")]
     err_install: bool,
 
-    /// Seed world from pacman -Qeq (one-time migration)
+    /// Seed world from -Qeq (one-time migration)
     #[arg(long = "regen-world-from-explicit")]
     regen_world_from_explicit: bool,
 
@@ -543,7 +544,7 @@ struct Cli {
     #[arg(short = 'S', long = "searchdesc")]
     searchdesc: bool,
 
-    /// With -s: list the same name from every repo (like `pacman -Ss`)
+    /// With -s: list the same name from every repo (like `-Ss`)
     #[arg(long = "search-all")]
     search_all: bool,
 
@@ -958,8 +959,8 @@ fn collect_excludes(raw: &[String]) -> HashSet<String> {
     out
 }
 
-/// `pacman -S` for a whole batch, with the `--keep-going` retry.
-/// pacman installs a batch as one transaction, so one unresolvable
+/// `-S` for a whole batch, with the `--keep-going` retry.
+/// A batch is one transaction, so one unresolvable
 /// package means nothing gets installed. Without --keep-going this is
 /// just `run_cmd`; with it, failed batches retry one package at a time.
 ///
@@ -973,7 +974,7 @@ fn collect_excludes(raw: &[String]) -> HashSet<String> {
 /// Official-repo install via the root helper (libalpm), with
 /// `--keep-going` retry of individual packages when the batch fails.
 /// `args` is kept for call-site compatibility and is otherwise ignored
-/// -- the helper does not speak the pacman CLI.
+/// -- the helper does not speak a CLI.
 
 /// Portage-style unread-news heads-up (non-fatal).
 fn maybe_news_banner() {
@@ -2365,7 +2366,7 @@ fn run_cmd(prog: &str, args: &[&str], packages: &[String]) -> bool {
 
 /// Reads one line from stdin byte-by-byte via the raw fd, bypassing
 /// Rust's `Stdin` (which over-reads its own buffer) -- a spawned child
-/// (pacman) inheriting stdin needs its own interactive read right
+/// (a package tool) inheriting stdin needs its own interactive read right
 /// after, and any over-read bytes would be lost to it.
 #[cfg(unix)]
 pub(crate) fn read_line_raw() -> String {
@@ -2639,7 +2640,7 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // No pacman/world needed -- just prints a script. Handled
+    // No db/world needed -- just prints a script. Handled
     // before check_binaries() so it works in a clean chroot too.
     if let Some(shell) = cli.gen_completions {
         let mut cmd = <Cli as clap::CommandFactory>::command();
@@ -2676,7 +2677,7 @@ fn run() -> anyhow::Result<()> {
     }
 
     // --news / --check-news (full alias, same [N|all] argument): no
-    // aura/pacman/sudo needed (read state lives under ~/.cache, not
+    // aura/sudo needed (read state lives under ~/.cache, not
     // /etc/emerge), so this runs before check_binaries().
     if let Some(arg) = cli.news.as_deref().or(cli.check_news.as_deref()) {
         news::run_news(arg);
@@ -2695,7 +2696,7 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // --list-profiles / --set-profile: no pacman (symlink under /etc/portage).
+    // --list-profiles / --set-profile: no package db (symlink under /etc/portage).
     if cli.list_profiles {
         crate::profile::print_list();
         return Ok(());
@@ -2710,7 +2711,7 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
-    // --list-sets: no pacman needed - just enumerates what's on disk.
+    // --list-sets: no package db needed - just enumerates what's on disk.
     // Also what shell completion shells out to for '@' completion.
     if cli.list_sets {
         println!("@world");
@@ -2722,7 +2723,7 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // --clean-source-cache: same idea, no pacman/sudo needed - just
+    // --clean-source-cache: same idea, no sudo needed - just
     // removes a directory under $HOME.
     if cli.clean_source_cache {
         match source_cache_dir() {
@@ -2757,7 +2758,7 @@ fn run() -> anyhow::Result<()> {
 
     check_binaries();
 
-    // --check-devel: report-only, no sudo needed (no install/pacman -S/
+    // --check-devel: report-only, no sudo needed (no install/-S/
     // -U happens here) - runs before --sudoloop for that reason.
     if cli.check_devel {
         check_devel_all();
@@ -3532,7 +3533,7 @@ fn run() -> anyhow::Result<()> {
     }
 
     // --regen-world-from-explicit: seed world from every currently
-    // explicitly-installed package (pacman -Qeq). Meant as a one-time
+    // explicitly-installed package (-Qeq). Meant as a one-time
     // migration step on a system that predates world tracking - run
     // it once, and `-c`'s world protection (below) and `--prune`
     // start seeing the whole system instead of just what was installed
@@ -3989,7 +3990,7 @@ fn run() -> anyhow::Result<()> {
         }
         add_to_world_set(&target_pkgs, None)?;
         // world now says these are explicitly wanted - mirror that onto
-        // pacman's own bookkeeping (no-ops for anything not yet installed).
+        // the package db's own bookkeeping (no-ops for anything not yet installed).
         mark_asexplicit(&target_pkgs);
         return Ok(());
     }
@@ -4008,7 +4009,7 @@ fn run() -> anyhow::Result<()> {
         }
         remove_from_world_set(&target_pkgs)?;
         // Opposite of --select: no longer wanted by world, so demote to
-        // a dependency in pacman's bookkeeping - makes it eligible for
+        // a dependency in the package db's bookkeeping - makes it eligible for
         // --depclean like any other transitive dependency.
         mark_asdeps(&target_pkgs);
         return Ok(());
@@ -4104,7 +4105,7 @@ fn run() -> anyhow::Result<()> {
         crate::candy::calculating_deps_line();
         println!();
         println!(">>> Upgrading system (official repos)...");
-        // --exclude and the mask both become `pacman --ignore`.
+        // --exclude and the mask both become `--ignore`.
         let ignores = upgrade_ignores();
         if !ignores.is_empty() {
             println!(
@@ -4568,7 +4569,7 @@ fn run() -> anyhow::Result<()> {
         // --ask is answered once at the plan prompt (confirm_merge); the
         // install itself never prompts, matching Portage.
         // After the plan prompt (or when --ask was off), never re-prompt
-        // pacman/makepkg. Security scanner prompts are separate.
+        // the build/install step. Security scanner prompts are separate.
         let ask_pkgs = false;
 
         let mut success: bool;

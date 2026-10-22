@@ -111,9 +111,10 @@ pub(crate) fn curl_pipe_shell(source: &str) -> Option<usize> {
                 Some(name)
             };
             if let Some(eff) = effective
-                && SHELL_NAMES.contains(&basename(&eff)) {
-                    return Some(line_of(pipeline));
-                }
+                && SHELL_NAMES.contains(&basename(&eff))
+            {
+                return Some(line_of(pipeline));
+            }
         }
     }
     None
@@ -268,9 +269,10 @@ pub(crate) fn sudo_escalation(source: &str) -> Option<usize> {
     find_descendants(tree.root_node(), "command", &mut commands);
     for cmd in commands {
         if let Some(name) = command_name_of(cmd, src)
-            && ESCALATORS.contains(&name.as_str()) {
-                return Some(line_of(cmd));
-            }
+            && ESCALATORS.contains(&name.as_str())
+        {
+            return Some(line_of(cmd));
+        }
     }
     None
 }
@@ -298,15 +300,16 @@ pub(crate) fn python_inline_exec(source: &str) -> Option<usize> {
         }
         for a in &args {
             if matches!(a.kind(), "string" | "raw_string")
-                && let Some(text) = resolve_word(*a, src) {
-                    let lower = text.to_lowercase();
-                    if ["exec(", "eval(", "os.system(", "subprocess.", "os.popen("]
-                        .iter()
-                        .any(|p| lower.contains(p))
-                    {
-                        return Some(line_of(cmd));
-                    }
+                && let Some(text) = resolve_word(*a, src)
+            {
+                let lower = text.to_lowercase();
+                if ["exec(", "eval(", "os.system(", "subprocess.", "os.popen("]
+                    .iter()
+                    .any(|p| lower.contains(p))
+                {
+                    return Some(line_of(cmd));
                 }
+            }
         }
     }
     None
@@ -352,9 +355,10 @@ pub(crate) fn perl_inline_exec(source: &str) -> Option<usize> {
         for a in &args {
             if matches!(a.kind(), "string" | "raw_string" | "word" | "concatenation")
                 && let Some(text) = resolve_word(*a, src)
-                    && is_suspicious_perl_e_payload(&text) {
-                        return Some(line_of(cmd));
-                    }
+                && is_suspicious_perl_e_payload(&text)
+            {
+                return Some(line_of(cmd));
+            }
         }
     }
     None
@@ -439,9 +443,10 @@ fn interpreter_flag_exec(
         for a in &args {
             if matches!(a.kind(), "string" | "raw_string" | "word" | "concatenation")
                 && let Some(text) = resolve_word(*a, src)
-                    && suspicious(&text) {
-                        return Some(line_of(cmd));
-                    }
+                && suspicious(&text)
+            {
+                return Some(line_of(cmd));
+            }
         }
     }
     None
@@ -563,18 +568,19 @@ pub(crate) fn shell_c_exec(source: &str) -> Option<usize> {
         for child in &children {
             // plain "-c" or combined short flags containing c (-ec, -ce, ...)
             if child.kind() == "word"
-                && let Ok(text) = child.utf8_text(src) {
-                    let t = text.trim();
-                    if t == "-c"
-                        || (t.starts_with('-')
-                            && !t.starts_with("--")
-                            && t.contains('c')
-                            && t.chars().all(|c| c == '-' || c.is_ascii_alphabetic()))
-                    {
-                        saw_c = true;
-                        continue;
-                    }
+                && let Ok(text) = child.utf8_text(src)
+            {
+                let t = text.trim();
+                if t == "-c"
+                    || (t.starts_with('-')
+                        && !t.starts_with("--")
+                        && t.contains('c')
+                        && t.chars().all(|c| c == '-' || c.is_ascii_alphabetic()))
+                {
+                    saw_c = true;
+                    continue;
                 }
+            }
 
             if !saw_c {
                 continue;
@@ -584,11 +590,11 @@ pub(crate) fn shell_c_exec(source: &str) -> Option<usize> {
             if matches!(
                 child.kind(),
                 "string" | "raw_string" | "word" | "concatenation"
-            )
-                && let Some(text) = resolve_word(*child, src)
-                    && is_suspicious_shell_c_payload(&text) {
-                        return Some(line_of(cmd));
-                    }
+            ) && let Some(text) = resolve_word(*child, src)
+                && is_suspicious_shell_c_payload(&text)
+            {
+                return Some(line_of(cmd));
+            }
             break;
         }
     }
@@ -644,7 +650,7 @@ fn is_suspicious_shell_c_payload(text: &str) -> bool {
 
 const DEP_ARRAY_NAMES: &[&str] = &["depends", "makedepends", "checkdepends"];
 
-/// Static depends/makedepends/checkdepends (+ arch suffix) for pacman -S.
+/// Static depends/makedepends/checkdepends (+ arch suffix) for -S.
 /// Strips version constraints. `None` if unparseable/dynamic (don't guess).
 pub(crate) fn pkgbuild_dependencies(source: &str, current_arch: &str) -> Option<Vec<String>> {
     let tree = parse(source)?;

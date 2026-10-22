@@ -12,7 +12,7 @@ use std::process::{Command, Stdio};
 use crate::*;
 
 // ── batch repo resolution ────────────────────────────────────────────────
-// Resolves a whole package list in at most two pacman spawns total
+// Resolves a whole package list in at most two spawns total
 // (was one, sometimes two, per package -- see pkg_world_entry_from).
 
 pub(crate) fn get_pkg_repos_batch(
@@ -864,7 +864,7 @@ pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
     }
 
     // Batch-resolve every valid entry's repo up front -- one or two
-    // pacman calls for the whole set instead of one per line.
+    // calls for the whole set instead of one per line.
     let bares: Vec<String> = raw_lines
         .iter()
         .map(|l| l.trim())
@@ -1122,13 +1122,13 @@ pub(crate) fn add_to_world_groups(groups: &[(&[String], Option<&str>)]) -> Resul
 
 // Conflict-removal reconciliation
 //
-// Detection removes the package from world if pacman removed it while resolving a conflict.
+// Detection removes the package from world if it was removed while resolving a conflict.
 
 fn installed_bare_names() -> HashSet<String> {
     crate::alpm_db::installed_names()
 }
 
-/// Call before a `pacman -S` that might conflict-remove another
+/// Call before a `-S` that might conflict-remove another
 /// installed package. Cheap: two reads, no writes.
 pub(crate) fn world_installed_snapshot() -> HashSet<String> {
     let world_bare: HashSet<String> = match open_nofollow(std::path::Path::new(WORLD_SET_FILE)) {
@@ -1144,9 +1144,9 @@ pub(crate) fn world_installed_snapshot() -> HashSet<String> {
     world_bare.intersection(&installed).cloned().collect()
 }
 
-/// Call after that same `pacman -S` with the snapshot from before it.
+/// Call after that same `-S` with the snapshot from before it.
 /// Anything that was installed then and isn't now got removed by
-/// pacman, not us -- untrack it. Best-effort; never fails the caller.
+/// the transaction, not us -- untrack it. Best-effort; never fails the caller.
 pub(crate) fn reconcile_world_after_install(before: &HashSet<String>) {
     if before.is_empty() {
         return;

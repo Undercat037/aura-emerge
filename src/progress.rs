@@ -309,7 +309,7 @@ fn start_ticker() {
                 continue;
             }
             // Only redraw when the Jobs line text actually changed
-            // (elapsed second, load, or counts). Like pacman: no spam.
+            // (elapsed second, load, or counts). No spam.
             let fetching = FETCH.lock().unwrap_or_else(|e| e.into_inner()).len();
             let candidate = jobs_text(
                 DONE.load(Ordering::Relaxed),

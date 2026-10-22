@@ -147,7 +147,7 @@ impl Client {
         self.request(&req, &mut |_| {})
     }
 
-    /// Removes installed packages; `mode` picks the pacman -R flavour.
+    /// Removes installed packages; `mode` picks the -R flavour.
     /// `on_event` gets `pkg`/`hook` lines live.
     pub(crate) fn remove(
         &mut self,
@@ -162,7 +162,7 @@ impl Client {
         self.request(&req, on_event)
     }
 
-    /// `pacman -S`: install from sync dbs by `[repo/]name`.
+    /// `-S`: install from sync dbs by `[repo/]name`.
     /// `on_event` gets `pkg start|done` and `hook …` lines live.
     pub(crate) fn install(
         &mut self,
@@ -177,7 +177,7 @@ impl Client {
         self.request(&req, on_event)
     }
 
-    /// Refresh sync dbs (`pacman -Sy`); `force` is `-Syy`.
+    /// Refresh sync dbs (`-Sy`); `force` is `-Syy`.
     /// `on_event` gets `sync <repo> <updated|uptodate|failed>` per db.
     pub(crate) fn sync(
         &mut self,
@@ -187,7 +187,7 @@ impl Client {
         self.request(&Request::Sync { force }, on_event)
     }
 
-    /// Full official upgrade (`pacman -Su`); `ignore` is `--ignore` names.
+    /// Full official upgrade (`-Su`); `ignore` is `--ignore` names.
     /// `on_event` gets `pkg start|done <name>` per package.
     pub(crate) fn sysupgrade(
         &mut self,
@@ -200,7 +200,7 @@ impl Client {
         self.request(&req, on_event)
     }
 
-    /// `pacman -U`: `specs` are `validate::spec` lines (sha256 + abs path).
+    /// `-U`: `specs` are `validate::spec` lines (sha256 + abs path).
     /// `on_event` gets `pkg`/`hook` lines live.
     pub(crate) fn install_files(
         &mut self,
@@ -215,7 +215,7 @@ impl Client {
         self.request(&req, on_event)
     }
 
-    /// `pacman -D --asexplicit` (true) / `--asdeps` (false).
+    /// `-D --asexplicit` (true) / `--asdeps` (false).
     pub(crate) fn set_reason(
         &mut self,
         explicit: bool,

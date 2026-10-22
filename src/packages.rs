@@ -629,7 +629,7 @@ pub(crate) fn print_emerge_plan(
 /// Anything else aborts.
 
 /// Source-built glibc is a footgun: a bad build can break every dynamic
-/// binary on the system (including pacman). Warn hard and require an
+/// binary on the system (including emerge). Warn hard and require an
 /// explicit yes before abs/aur rebuilds of these packages.
 pub(crate) fn warn_critical_libc(names: &[String], source: &str) -> bool {
     const CRITICAL: &[&str] = &["glibc", "lib32-glibc"];
@@ -654,7 +654,7 @@ pub(crate) fn warn_critical_libc(names: &[String], source: &str) -> bool {
         "glibc".bold()
     );
     eprintln!(
-        "{} dynamic binaries (including pacman). Prefer official repo packages",
+        "{} dynamic binaries (including emerge). Prefer official repo packages",
         "!!!".t_red().bold()
     );
     eprintln!(
@@ -959,7 +959,7 @@ fn bare_of(p: &str) -> &str {
     p.split('/').next_back().unwrap_or(p)
 }
 
-/// Per-package "Depends On", via `pacman -Si` (sync db, so this also
+/// Per-package "Depends On", via `-Si` (sync db, so this also
 /// works for a not-yet-installed package -- what the tree needs to
 /// explain why each dependency showed up in the plan).
 pub(crate) fn depends_on_map(names: &[String]) -> HashMap<String, HashSet<String>> {
@@ -999,7 +999,7 @@ pub(crate) fn build_plan_tree<'a>(
 }
 
 /// Split out from `build_plan_tree` so it's testable without shelling
-/// out to pacman for `deps_by_name`. DFS, not BFS: each parent is
+/// out for `deps_by_name`. DFS, not BFS: each parent is
 /// immediately followed by its own subtree, which is what makes the
 /// indentation read as a tree.
 fn group_by_parent<'a>(
@@ -2201,7 +2201,7 @@ pub(crate) fn aur_install(
 
 /// Upgrades every foreign (AUR-or-local) installed package newer in the
 /// AUR than what's installed -- replaces `aura -Au`. "Foreign" means
-/// `pacman -Qm` (installed but not in a synced repo); an ABS-installed
+/// `-Qm` (installed but not in a synced repo); an ABS-installed
 /// package shows up here too and is silently skipped once the AUR RPC
 /// doesn't know its name (no separate ABS-upgrade path yet).
 ///
@@ -2498,7 +2498,7 @@ pub(crate) fn aur_upgrade_plan(devel: bool) -> Vec<String> {
     }
 
     // --exclude, mask, and package.freeze hold a package at its installed
-    // version (same role as `pacman --ignore` for the official half).
+    // version (same role as `--ignore` for the official half).
     let mut held: Vec<String> = Vec::new();
     to_upgrade.retain(|(name, _, _)| {
         if crate::runtime::is_excluded(name) {
@@ -2586,10 +2586,10 @@ pub(crate) fn aur_upgrade_names(
     )
 }
 
-/// Installs already-built `*.pkg.tar.*` files directly via `pacman -U`
+/// Installs already-built `*.pkg.tar.*` files directly via `-U`
 /// -- used for AUR-only dependencies that a recursive
 /// `resolve_and_build_aur()` call already produced and that therefore
-/// can never be reached by `pacman -S` (they're not in any sync repo).
+/// can never be reached by `-S` (they're not in any sync repo).
 /// This is bwrap's equivalent of what `pkgctl build -I` used to inject
 /// into its chroot. No-op success on an empty slice.
 fn install_local_tarballs(tarballs: &[String], ask: bool, mark_asdeps: bool) -> bool {
@@ -2654,7 +2654,7 @@ fn install_local_tarballs(tarballs: &[String], ask: bool, mark_asdeps: bool) -> 
 /// below are split this way.
 ///
 /// `aur_dep_tarballs` are already-built AUR-only dependencies, installed
-/// via `pacman -U` before anything else since `pacman -S` can't find
+/// via `-U` before anything else since `-S` can't find
 /// them. Pass `&[]` for a plain ABS build with no local AUR deps.
 ///
 /// `unshare_net_build`: when set, step 2 (the sandboxed build) splits
@@ -2718,7 +2718,7 @@ fn build_with_sandbox(
         return false;
     }
 
-    // 1b. Official deps via pacman -S (outside sandbox).
+    // 1b. Official deps via -S (outside sandbox).
     match repo_deps {
         Some(deps) if !deps.is_empty() => {
             println!(
@@ -2962,7 +2962,7 @@ fn build_with_sandbox(
     }
 
     // 3. Install the built package(s), outside the sandbox: another
-    //    plain pacman operation, no PKGBUILD code involved.
+    //    plain package operation, no PKGBUILD code involved.
     let pkg_files = find_built_packages(build_dir, build_started);
     if pkg_files.is_empty() {
         eprintln!(
@@ -2994,7 +2994,7 @@ fn build_with_sandbox(
         );
         return false;
     }
-    // -U through the root helper (libalpm), not sudo pacman.
+    // -U through the root helper (libalpm), not sudo.
     // Honour `-n` / `--noreplace` so a rebuild that produced the same
     // version is a no-op instead of a forced reinstall.
     let opts = crate::helper::validate::FileOpts {
@@ -4249,7 +4249,7 @@ pub(crate) fn world_set_stats() -> Option<(usize, u64)> {
 /// emerge --info: system/build summary (Gentoo-style).
 pub(crate) fn print_system_info() {
     // Crate (build-time) + libalpm (runtime): a mismatch explains breakage.
-    let pacman_ver = format!(
+    let alpm_ver = format!(
         "alpm crate v{} - libalpm v{}",
         env!("AE_ALPM_CRATE_VERSION"),
         alpm::version()
@@ -4270,7 +4270,7 @@ pub(crate) fn print_system_info() {
         "{} {} ({}, linux {}, {})",
         "aura-emerge".bold(),
         env!("CARGO_PKG_VERSION"),
-        pacman_ver,
+        alpm_ver,
         kernel,
         arch
     );
@@ -4433,8 +4433,8 @@ pub(crate) fn strip_version_operator(atom: &str) -> String {
     }
 }
 
-/// Which atoms are currently unsatisfied (libalpm, like `pacman -T`).
-pub(crate) fn missing_via_pacman_t(deps: &[String]) -> Vec<String> {
+/// Which atoms are currently unsatisfied (libalpm, like `-T`).
+pub(crate) fn missing_via_alpm(deps: &[String]) -> Vec<String> {
     if deps.is_empty() {
         return Vec::new();
     }
@@ -4457,7 +4457,7 @@ pub(crate) fn preserved_rebuild(pretend: bool, _ask: bool) {
     let mut deps_sorted: Vec<String> = all_deps.into_iter().collect();
     deps_sorted.sort();
 
-    let missing = missing_via_pacman_t(&deps_sorted);
+    let missing = missing_via_alpm(&deps_sorted);
 
     if missing.is_empty() {
         println!();
@@ -4557,7 +4557,7 @@ mod plan_tree_tests {
 
     #[test]
     fn unattributed_dependency_still_shown_at_depth_one() {
-        // pacman resolved it (e.g. via a provides), but it isn't in
+        // libalpm resolved it (e.g. via a provides), but it isn't in
         // anyone's literal "Depends On" -- still real info, not dropped.
         let requested = pkg("openconnect", "N");
         let mystery = pkg("some-provider", "N");
@@ -4611,7 +4611,7 @@ mod plan_tree_tests {
 
     #[test]
     fn deep_handles_a_dependency_cycle_without_looping() {
-        // Data shouldn't be able to happen in practice (pacman wouldn't
+        // Data shouldn't be able to happen in practice (libalpm wouldn't
         // let a installed this way), but the recursion must not hang
         // if a's deps somehow name b and b's deps somehow name a back.
         let app = pkg("app", "N");

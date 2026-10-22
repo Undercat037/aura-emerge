@@ -55,6 +55,7 @@ jobs:
             "node -e snippet"
             "lua -e snippet"
             "sh/bash -c with suspicious payload"
+            "patch adds a curl, wget or /dev/tcp call"
           )
           for needle in "${needles[@]}"; do
             grep -qF -- "$needle" <<<"$out" \

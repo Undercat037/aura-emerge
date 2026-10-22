@@ -107,7 +107,7 @@ pub(crate) fn specs(pins: &[Pinned]) -> Result<Vec<String>, String> {
         .collect()
 }
 
-/// `pacman -U` through the root helper.
+/// `-U` through the root helper.
 /// `on_event` gets live `pkg`/`hook` lines (pass `&mut |_| {}` if quiet).
 pub(crate) fn install_files(
     pins: &[Pinned],
@@ -127,7 +127,7 @@ fn set_dl_jobs(c: &mut Client) -> Result<(), ClientError> {
     Ok(())
 }
 
-/// `pacman -S` through the root helper (libalpm transaction).
+/// `-S` through the root helper (libalpm transaction).
 /// `on_event` gets live `pkg start|done` and `hook …` lines.
 pub(crate) fn install(
     names: &[String],
@@ -171,7 +171,7 @@ pub(crate) fn remove(
     with_helper(|c| c.remove(mode, names, on_event)).map_err(|e| e.to_string())
 }
 
-/// `pacman -D --asexplicit` / `--asdeps`.
+/// `-D --asexplicit` / `--asdeps`.
 pub(crate) fn set_reason(explicit: bool, names: &[String]) -> Result<(), String> {
     if names.is_empty() {
         return Ok(());

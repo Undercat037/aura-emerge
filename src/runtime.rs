@@ -18,7 +18,7 @@ pub(crate) struct Runtime {
     pub(crate) keep_going: bool,
     /// Live makepkg output (`--debug` / `AE_DEBUG=1` / `--quiet-build=n`).
     pub(crate) debug: bool,
-    /// `emerge -n` / pacman `--needed`.
+    /// `emerge -n` / `--needed`.
     pub(crate) noreplace: bool,
     /// `--aeforce`: move blocking files to `<file>.aeforce` without asking.
     pub(crate) aeforce: bool,

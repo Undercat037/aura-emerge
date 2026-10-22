@@ -65,11 +65,11 @@ impl Target {
 /// of these, never raw flags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RemoveMode {
-    /// `pacman -R`: refuses if something still needs the package.
+    /// `-R`: refuses if something still needs the package.
     Plain,
-    /// `pacman -Rdd --nosave` (`emerge -C`): unconditional, no .pacsave.
+    /// `-Rdd --nosave` (`emerge -C`): unconditional, no .pacsave.
     Unmerge,
-    /// `pacman -Rns` (prune/depclean): takes unneeded deps too, no .pacsave.
+    /// `-Rns` (prune/depclean): takes unneeded deps too, no .pacsave.
     Prune,
 }
 
@@ -169,7 +169,7 @@ pub(crate) const AE_EXTS: [&str; 3] = [AE_FORCE_EXT, AE_NEW_EXT, AE_PARK_EXT];
 /// Highest `<ext>.<n>` tried when `<ext>` is already taken.
 pub(crate) const AE_MAX_N: u32 = 99;
 
-/// `-U` switches the client may pick (never raw pacman flags).
+/// `-U` switches the client may pick (never raw flags).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct FileOpts {
     /// `--needed`: skip what is already installed at that version or newer.

@@ -376,7 +376,7 @@ fn providers_of(soname: &str) -> Vec<String> {
         .lines()
         .map(|l| l.trim())
         .filter(|l| !l.is_empty())
-        // -Fq prints "repo/name"; world and pacman -S both take the
+        // -Fq prints "repo/name"; world and -S both take the
         // bare name, and the repo is visible in the report anyway.
         .map(|l| l.split('/').next_back().unwrap_or(l).to_string())
         .filter(|l| !l.is_empty())
@@ -589,20 +589,21 @@ pub(crate) fn revdep_rebuild(
     let mut ok = true;
 
     if !to_install.is_empty()
-        && let Err(e) = crate::alpm_install_quiet(&to_install, true, true) {
-            eprintln!("{} {}", ">>> Error:".t_red().bold(), e);
-            eprintln!(
-                "{} failed to install the library package(s)",
-                ">>> Error:".t_red().bold()
-            );
-            for p in &to_install {
-                crate::runtime::record_failure(p, "library provider install failed");
-            }
-            ok = false;
-            if !crate::runtime::keep_going() {
-                return false;
-            }
+        && let Err(e) = crate::alpm_install_quiet(&to_install, true, true)
+    {
+        eprintln!("{} {}", ">>> Error:".t_red().bold(), e);
+        eprintln!(
+            "{} failed to install the library package(s)",
+            ">>> Error:".t_red().bold()
+        );
+        for p in &to_install {
+            crate::runtime::record_failure(p, "library provider install failed");
         }
+        ok = false;
+        if !crate::runtime::keep_going() {
+            return false;
+        }
+    }
 
     if !to_rebuild.is_empty() {
         println!(

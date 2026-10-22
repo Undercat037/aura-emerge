@@ -1,7 +1,7 @@
 //! Helper main loop: request in, response out, one at a time.
 //! Std only (plus `proto`/`fsio`/`validate`), no `crate::` imports.
 //!
-//! The loop knows nothing about pacman: all real work sits behind
+//! The loop knows nothing about packages: all real work sits behind
 //! `Backend`, so it can be tested with a mock.
 
 use std::io::{self, BufRead, ErrorKind, Write};
@@ -67,7 +67,7 @@ impl Backend for Real {
     }
 
     fn sync(&mut self, force: bool, emit: &mut dyn FnMut(&str)) -> io::Result<()> {
-        pkgdb::sync(force, emit)
+        pkgdb::retry_after_keyring(|| pkgdb::sync(force, &mut *emit))
     }
 
     fn set_jobs(&mut self, n: u32) -> io::Result<()> {
@@ -76,7 +76,7 @@ impl Backend for Real {
     }
 
     fn sysupgrade(&mut self, ignore: &[String], emit: &mut dyn FnMut(&str)) -> io::Result<()> {
-        pkgdb::sysupgrade(ignore, emit)
+        pkgdb::retry_after_keyring(|| pkgdb::sysupgrade(ignore, &mut *emit))
     }
 
     fn install(
@@ -85,7 +85,7 @@ impl Backend for Real {
         needed: bool,
         emit: &mut dyn FnMut(&str),
     ) -> io::Result<()> {
-        pkgdb::install(names, needed, emit)
+        pkgdb::retry_after_keyring(|| pkgdb::install(names, needed, &mut *emit))
     }
 
     fn install_files(
@@ -94,7 +94,7 @@ impl Backend for Real {
         specs: &[String],
         emit: &mut dyn FnMut(&str),
     ) -> io::Result<()> {
-        pkgdb::install_files(opts, specs, emit)
+        pkgdb::retry_after_keyring(|| pkgdb::install_files(opts, specs, &mut *emit))
     }
 
     fn set_reason(&mut self, explicit: bool, names: &[String]) -> io::Result<()> {

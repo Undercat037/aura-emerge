@@ -152,7 +152,7 @@ pub(crate) fn installed_versions() -> HashMap<String, String> {
         .collect()
 }
 
-/// Local packages not in any sync db (`pacman -Qm`): name + version.
+/// Local packages not in any sync db (`-Qm`): name + version.
 pub(crate) fn foreign_packages() -> Vec<(String, String)> {
     let Some(alpm) = open() else {
         return Vec::new();
@@ -287,7 +287,7 @@ fn sync_pkg<'a>(alpm: &'a Alpm, repo: Option<&str>, name: &str) -> Option<&'a Pa
 }
 
 /// Full install plan for `targets` (`[repo/]name`): the targets plus
-/// whatever libalpm pulls in, deps first -- what `pacman -Sp` printed.
+/// whatever libalpm pulls in, deps first -- what `-Sp` printed.
 /// Prepare only, nothing is committed. NO_LOCK, so a normal user can
 
 pub(crate) fn plan_sync(
@@ -604,7 +604,7 @@ pub(crate) fn repos_batch(names: &[String]) -> HashMap<String, Option<String>> {
 
 // ── local inventory (prune / depclean) ───────────────────────────────────────
 
-/// Explicitly installed names (`pacman -Qeq`).
+/// Explicitly installed names (`-Qeq`).
 pub(crate) fn explicit_names() -> Vec<String> {
     let Some(alpm) = open() else {
         return Vec::new();
@@ -622,7 +622,7 @@ pub(crate) fn explicit_set() -> std::collections::HashSet<String> {
 }
 
 /// Orphans: asdeps, nothing requires them, nothing lists them as optdepend.
-/// Same idea as `pacman -Qttdq`.
+/// Same idea as `-Qttdq`.
 pub(crate) fn orphan_names() -> Vec<String> {
     let Some(alpm) = open() else {
         return Vec::new();
@@ -695,7 +695,7 @@ pub(crate) fn missing_optdeps(names: &[String]) -> Vec<String> {
 
 // ── search / depends / -T ────────────────────────────────────────────────────
 
-/// Sync-db search (`pacman -Ss`).
+/// Sync-db search (`-Ss`).
 /// `all_repos`: false = one row per package name (first repo in conf order);
 
 pub(crate) fn search_sync(term: &str, _in_desc: bool, all_repos: bool) -> Vec<AlpmPkg> {
@@ -789,7 +789,7 @@ pub(crate) fn depends_map(names: &[String]) -> HashMap<String, std::collections:
     map
 }
 
-/// Unsatisfied dependency atoms (`pacman -T`).
+/// Unsatisfied dependency atoms (`-T`).
 pub(crate) fn unsatisfied(deps: &[String]) -> Vec<String> {
     let Some(alpm) = open() else {
         return deps.to_vec();
@@ -816,16 +816,16 @@ pub(crate) fn satisfies_without_aur(dep: &str) -> bool {
         return true;
     }
     // Sync dbs: exact name, then provides (version constraints included
-    // when the atom carries them — same path pacman uses).
+    // when the atom carries them — same path libalpm uses).
     if alpm.syncdbs().find_satisfier(dep).is_some() {
         return true;
     }
     false
 }
 
-// ── replacements for `pacman -Qi/-Ql/-Qo/-Ssq` output parsing ────────────────
+// ── replacements for `-Qi/-Ql/-Qo/-Ssq` output parsing ────────────────
 
-/// Every dependency name of every installed package (what `pacman -Qi`
+/// Every dependency name of every installed package (what `-Qi`
 /// shows under "Depends On", versions already stripped).
 pub(crate) fn all_depends() -> std::collections::HashSet<String> {
     let Some(alpm) = open() else {
@@ -840,7 +840,7 @@ pub(crate) fn all_depends() -> std::collections::HashSet<String> {
     out
 }
 
-/// Absolute paths owned by installed packages (`pacman -Qlq`), directories
+/// Absolute paths owned by installed packages (`-Qlq`), directories
 /// skipped, narrowed by `keep` while walking so the full list is never built.
 pub(crate) fn owned_paths(keep: impl Fn(&str) -> bool) -> Vec<String> {
     let Some(alpm) = open() else {
@@ -864,7 +864,7 @@ pub(crate) fn owned_paths(keep: impl Fn(&str) -> bool) -> Vec<String> {
     out
 }
 
-/// path -> owning package (`pacman -Qo`), exact path match. Paths nobody
+/// path -> owning package (`-Qo`), exact path match. Paths nobody
 /// owns are simply absent from the map.
 pub(crate) fn owners_of(paths: &[String]) -> HashMap<String, String> {
     let Some(alpm) = open() else {
@@ -925,7 +925,7 @@ pub(crate) fn sync_providers(deps: &[String]) -> (Vec<String>, Vec<String>) {
     (found, unresolved)
 }
 
-/// All sync package names, deduped, in pacman.conf order (`pacman -Ssq`).
+/// All sync package names, deduped, in pacman.conf order (`-Ssq`).
 pub(crate) fn sync_pkg_names() -> Vec<String> {
     let Some(alpm) = open() else {
         return Vec::new();

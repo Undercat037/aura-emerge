@@ -38,6 +38,83 @@ fn fail(msg: impl Into<String>) -> io::Error {
     io::Error::other(msg.into())
 }
 
+/// libalpm ERROR log lines of the current handle. The commit error is
+/// often just "unexpected error"; the real reason only goes to the log
+/// (we used to drop it).
+static LOG_ERRS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+fn capture_log(alpm: &Alpm) {
+    if let Ok(mut g) = LOG_ERRS.lock() {
+        g.clear();
+    }
+    alpm.set_log_cb((), |level, msg, _| {
+        if !level.contains(alpm::LogLevel::ERROR) {
+            return;
+        }
+        let m = msg.trim().to_string();
+        if let Ok(mut g) = LOG_ERRS.lock()
+            && !m.is_empty()
+            && g.len() < 6
+            && !g.contains(&m)
+        {
+            g.push(m);
+        }
+    });
+}
+
+/// ` (line; line)` with the captured log errors, or "".
+fn log_suffix() -> String {
+    match LOG_ERRS.lock() {
+        Ok(g) if !g.is_empty() => format!(" ({})", g.join("; ")),
+        _ => String::new(),
+    }
+}
+
+/// Failed for lack of a trusted key ("required key missing
+/// from keyring" / "signature ... is unknown trust").
+fn key_problem(e: &io::Error) -> bool {
+    let s = e.to_string().to_lowercase();
+    s.contains("key missing")
+        || s.contains("unknown trust")
+        || (s.contains("key") && s.contains("is unknown"))
+}
+
+/// Populate every packaged keyring (see `keyring.rs`).
+fn populate_keyrings() -> bool {
+    match super::keyring::populate_all(&mut |m| eprintln!(">>> {}", m)) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!(">>> Keyring: {}", e);
+            false
+        }
+    }
+}
+
+/// Run `run`; on a missing-key failure populate the keyrings and run it
+/// once more. Other errors pass through untouched.
+pub(crate) fn retry_after_keyring<F>(mut run: F) -> io::Result<()>
+where
+    F: FnMut() -> io::Result<()>,
+{
+    let e = match run() {
+        Ok(()) => return Ok(()),
+        Err(e) => e,
+    };
+    if !key_problem(&e) || !populate_keyrings() {
+        return Err(e);
+    }
+    run().map_err(|e2| {
+        if key_problem(&e2) {
+            fail(format!(
+                "{}; key not in any packaged keyring: pacman-key --recv-keys <ID> && pacman-key --lsign-key <ID>",
+                e2
+            ))
+        } else {
+            e2
+        }
+    })
+}
+
 /// Root handle from /etc/pacman.conf.
 /// Keeps pacman.conf SigLevel so package/db signatures are verified
 /// (user-side `alpm_db::open` turns them off to avoid gpg "unsafe
@@ -46,6 +123,7 @@ fn open() -> io::Result<Alpm> {
     let conf = Config::new().map_err(|e| fail(format!("pacman.conf: {}", e)))?;
     let mut alpm = alpm_with_conf(&conf).map_err(|e| fail(format!("libalpm: {}", e)))?;
     ensure_hook_dirs(&mut alpm);
+    capture_log(&alpm);
     Ok(alpm)
 }
 
@@ -180,14 +258,14 @@ fn with_live_events(
     })
 }
 
-/// `pacman -D --asexplicit` / `--asdeps`.
+/// `-D --asexplicit` / `--asdeps`.
 pub(crate) fn set_reason(explicit: bool, names: &[String]) -> io::Result<()> {
     let mut alpm = open()?;
     set_reason_in(&mut alpm, explicit, names)
 }
 
 /// Same, on a given handle (tests use a temp db).
-/// Takes the db lock like pacman does. Every name is tried; the error
+/// Takes the db lock. Every name is tried; the error
 /// lists the ones that were not installed or failed.
 pub(crate) fn set_reason_in(alpm: &mut Alpm, explicit: bool, names: &[String]) -> io::Result<()> {
     let reason = if explicit {
@@ -239,7 +317,7 @@ fn apply(alpm: &Alpm, reason: PackageReason, names: &[&str]) -> io::Result<()> {
     Err(fail(parts.join("; ")))
 }
 
-/// Libalpm flags for each mode (same as the pacman options in `RemoveMode`).
+/// Libalpm flags for each mode (same as the options in `RemoveMode`).
 fn flags_for(mode: RemoveMode) -> TransFlag {
     match mode {
         RemoveMode::Plain => TransFlag::NONE,
@@ -248,7 +326,7 @@ fn flags_for(mode: RemoveMode) -> TransFlag {
     }
 }
 
-/// `pacman -R*` as root. Hooks and scriptlets run as usual.
+/// `-R*` as root. Hooks and scriptlets run as usual.
 /// `emit` gets `pkg`/`hook` event lines live (same format as install/sysupgrade).
 pub(crate) fn remove(
     mode: RemoveMode,
@@ -263,7 +341,7 @@ pub(crate) fn remove(
 }
 
 /// Same, on a given handle. All-or-nothing: an unknown name aborts
-/// before anything is queued, like pacman's "target not found".
+/// before anything is queued, as with "target not found".
 /// Events are drained after commit (for tests on a fixture handle).
 pub(crate) fn remove_in(
     alpm: &mut Alpm,
@@ -324,10 +402,10 @@ fn run_remove(alpm: &mut Alpm, names: &[&str]) -> io::Result<()> {
         Err(e) => return Err(fail(prepare_msg_other(&e))),
     };
     alpm.trans_commit()
-        .map_err(|e| fail(format!("commit: {}", e)))
+        .map_err(|e| fail(format!("commit: {}{}", e, log_suffix())))
 }
 
-/// `pacman -Sy`; `force` = `-Syy` (download even if up to date).
+/// `-Sy`; `force` = `-Syy` (download even if up to date).
 /// `emit` gets `sync <repo> <updated|uptodate|failed>` per db, live, in
 /// completion order (libalpm downloads in parallel).
 ///
@@ -353,7 +431,7 @@ pub(crate) fn sync(force: bool, emit: &mut dyn FnMut(&str)) -> io::Result<()> {
     })
 }
 
-/// Same, on a given handle. Takes the db lock like pacman does.
+/// Same, on a given handle. Takes the db lock.
 /// The "already up to date" flag from libalpm is dropped on purpose.
 pub(crate) fn sync_in(alpm: &mut Alpm, force: bool) -> io::Result<()> {
     let (tx, _rx) = std::sync::mpsc::channel();
@@ -375,15 +453,16 @@ pub(crate) fn sync_in_with(
     let cb_tx = tx.clone();
     alpm.set_dl_cb((), move |file, ev, _| {
         if let alpm::DownloadEvent::Completed(c) = ev.event()
-            && let Some(db) = file.strip_suffix(".db") {
-                let state = match c.result {
-                    alpm::DownloadResult::Success => "updated",
-                    alpm::DownloadResult::UpToDate => "uptodate",
-                    alpm::DownloadResult::Failed => "failed",
-                };
-                sink.borrow_mut().insert(db.to_string());
-                let _ = cb_tx.send(format!("sync {} {}", db, state));
-            }
+            && let Some(db) = file.strip_suffix(".db")
+        {
+            let state = match c.result {
+                alpm::DownloadResult::Success => "updated",
+                alpm::DownloadResult::UpToDate => "uptodate",
+                alpm::DownloadResult::Failed => "failed",
+            };
+            sink.borrow_mut().insert(db.to_string());
+            let _ = cb_tx.send(format!("sync {} {}", db, state));
+        }
     });
 
     alpm.trans_init(TransFlag::NONE)
@@ -406,7 +485,7 @@ pub(crate) fn sync_in_with(
     res
 }
 
-/// `pacman -Su`: upgrade every installed package that has a newer
+/// `-Su`: upgrade every installed package that has a newer
 /// version in a sync db. `ignore` is `--ignore` / package.mask holdback
 /// (bare names). Empty transaction is success (nothing to do).
 /// `emit` gets `pkg start <name>` / `pkg done <name>` per installed or
@@ -447,7 +526,7 @@ fn sysupgrade_in_with(
     alpm.trans_init(TransFlag::NONE)
         .map_err(|e| fail(format!("db lock: {}", e)))?;
     let res = (|| {
-        // false = no downgrade (same as pacman -Su without -d).
+        // false = no downgrade (same as -Su without -d).
         alpm.sync_sysupgrade(false)
             .map_err(|e| fail(format!("sysupgrade: {}", e)))?;
         // Real transaction size, so the client can tell "nothing to do"
@@ -459,7 +538,7 @@ fn sysupgrade_in_with(
     res
 }
 
-/// `pacman -S`: install from the sync dbs by `[repo/]name`.
+/// `-S`: install from the sync dbs by `[repo/]name`.
 /// `emit` gets `pkg`/`hook` event lines live.
 pub(crate) fn install(
     names: &[String],
@@ -552,7 +631,7 @@ fn run_install(alpm: &mut Alpm, targets: &[(Option<&str>, &str)]) -> io::Result<
     prepare_and_commit(alpm, false, &mut Vec::new())
 }
 
-/// `pacman -U`. `specs` are `<sha256> <abs path>` lines. The files are
+/// `-U`. `specs` are `<sha256> <abs path>` lines. The files are
 /// copied into a root-private dir and hash-checked *before* libalpm
 /// sees them (closes the audit -> install TOCTOU); the stage dir is
 /// removed when this returns.
@@ -763,7 +842,7 @@ fn movable_file(alpm: &Alpm, path: &str) -> bool {
 /// `movable` is filled only when every conflict can be moved.
 fn commit_error(alpm: &Alpm, e: &alpm::CommitError, movable: &mut Vec<String>) -> io::Error {
     let Some(alpm::CommitData::FileConflict(list)) = e.data() else {
-        return fail(format!("commit: {}", e));
+        return fail(format!("commit: {}{}", e, log_suffix()));
     };
     let mut ok: Vec<String> = Vec::new();
     let mut stuck: Vec<String> = Vec::new();
@@ -814,7 +893,7 @@ fn run_install_files(
         let path = f.to_str().ok_or_else(|| fail("non-utf8 path"))?;
         let pkg = alpm
             .pkg_load(path, true, level)
-            .map_err(|e| fail(format!("{}: {}", shown, e)))?;
+            .map_err(|e| fail(format!("{}: {}{}", shown, e, log_suffix())))?;
         alpm.trans_add_pkg(pkg)
             .map_err(|e| fail(format!("{}: {}", shown, e)))?;
     }
@@ -826,7 +905,7 @@ fn prepare_and_commit(
     resolve_conflicts: bool,
     movable: &mut Vec<String>,
 ) -> io::Result<()> {
-    // `--needed` can leave nothing to do; that is success, as in pacman.
+    // `--needed` can leave nothing to do; that is success.
     if alpm.trans_add().iter().next().is_none() && alpm.trans_remove().iter().next().is_none() {
         return Ok(());
     }
@@ -1129,7 +1208,7 @@ mod tests {
     }
 
     #[test]
-    fn flags_match_pacman_options() {
+    fn flags_match_remove_options() {
         assert_eq!(flags_for(RemoveMode::Plain), TransFlag::NONE);
         let u = flags_for(RemoveMode::Unmerge);
         assert!(u.contains(TransFlag::NO_SAVE | TransFlag::NO_DEPS | TransFlag::NO_DEP_VERSION));
@@ -1223,13 +1302,15 @@ mod tests {
     fn remove_rejects_bad_names_and_empty_list() {
         let fx = Fixture::new("rmbad", &[]);
         fx.add("foo", "1.0-1", &["usr/bin/foo"], &[], false);
-        assert!(remove_in(
-            &mut fx.handle(),
-            RemoveMode::Plain,
-            &names(&["--nodeps"]),
-            &mut |_| {}
-        )
-        .is_err());
+        assert!(
+            remove_in(
+                &mut fx.handle(),
+                RemoveMode::Plain,
+                &names(&["--nodeps"]),
+                &mut |_| {}
+            )
+            .is_err()
+        );
         assert!(remove_in(&mut fx.handle(), RemoveMode::Plain, &[], &mut |_| {}).is_err());
         assert!(fx.installed("foo"));
     }
@@ -1361,13 +1442,15 @@ mod tests {
     #[test]
     fn install_rejects_bad_names_and_empty_list() {
         let fx = Fixture::new("inbad", &[]);
-        assert!(install_in(
-            &mut fx.handle(),
-            &names(&["--noconfirm"]),
-            false,
-            &mut |_| {}
-        )
-        .is_err());
+        assert!(
+            install_in(
+                &mut fx.handle(),
+                &names(&["--noconfirm"]),
+                false,
+                &mut |_| {}
+            )
+            .is_err()
+        );
         assert!(install_in(&mut fx.handle(), &[], false, &mut |_| {}).is_err());
         assert!(!fx.root.join("db/db.lck").exists());
     }
@@ -1451,14 +1534,16 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().starts_with("junk.pkg:"), "{}", err);
         assert!(!fx.root.join("db/db.lck").exists());
-        assert!(install_files_in(
-            &mut fx.handle(),
-            &[],
-            SigLevel::NONE,
-            FileOpts::default(),
-            &mut |_| {},
-        )
-        .is_err());
+        assert!(
+            install_files_in(
+                &mut fx.handle(),
+                &[],
+                SigLevel::NONE,
+                FileOpts::default(),
+                &mut |_| {},
+            )
+            .is_err()
+        );
     }
 
     #[test]

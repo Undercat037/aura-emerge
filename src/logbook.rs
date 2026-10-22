@@ -1,5 +1,5 @@
 //! `/var/log/emerge.log`: append-only, human-readable record of
-//! merge/unmerge events -- Portage's `emerge.log`, for pacman/AUR/ABS
+//! merge/unmerge events -- Portage's `emerge.log`, for repo/AUR/ABS
 //! atoms instead of ebuilds.
 
 use std::fs::{File, OpenOptions};

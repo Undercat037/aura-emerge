@@ -6,7 +6,7 @@
 //! * **protect** — must not be removed (`-C`, `-c`, `--prune`, conflict
 //!   unmerge). `--deselect` may still drop the name from world.
 //! * **freeze** — must not be upgraded (`-u` / sysupgrade; also
-//!   `EMERGE_FREEZE` in make.conf). Stricter than pacman's `IgnorePkg`.
+//!   `EMERGE_FREEZE` in make.conf). Stricter than `IgnorePkg`.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
