@@ -1,6 +1,6 @@
 [package]
 name = "aura-emerge"
-version = "3.0.21-beta"
+version = "3.0.22-beta"
 edition = "2024"
 rust-version = "1.96"
 license = "GPL-3.0-only"

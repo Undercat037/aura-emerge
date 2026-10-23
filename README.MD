@@ -190,6 +190,8 @@ aur/*-bin                      # never install AUR -bin packages
 extra/nano                     # a specific package from a specific repo
 ```
 
+The repo prefix is honored everywhere the source is known: install plans (`extra/nano` fires only for the `extra` repo, `aur/foo-git` for the AUR), world provisioning, `--select`/`-R`/`-u` hold-backs and `package.protect`/`package.freeze`/profile masks. Version-scoped Portage atoms (`=cat/foo-1.2`, `>=cat/foo`) are not supported - matching is name-level only - and are reported and skipped instead of silently never matching.
+
 Not the same as `--exclude`: a mask is permanent, `--exclude` is for one run.
 
 ### `package.protect`
@@ -482,7 +484,7 @@ emerge --news all    # mark all as read
 Before every AUR install, the raw `PKGBUILD` (and any `.install` hook) is fetched from cgit and scanned in two layers:
 
 1. **AST** (`tree-sitter-bash`): `curl|sh`, `base64`/`xxd | sh`, `source <(curl …)`, `eval "$(curl …)"`, `sudo`/`pkexec`/`doas`, inline exec for python/perl/ruby/node/lua, `sh -c` with a suspicious payload, top-level command substitution, string-concatenation tricks, etc.
-2. **Line heuristics:** `chmod 777`, raw IPv4, foreign package managers (`npm install …`), paste sites, `.onion`, anti-sandbox probes, known campaign IOCs (Atomic Arch, openconnect-sso, 2018 `compromised.txt`, …).
+2. **Line heuristics:** `chmod 777`, raw IPv4, foreign package managers (`npm`/`pnpm`/`bun`/`yarn`/`pip`/`gem install …`, remote-only `cargo install`/`go install`), `bash <(curl …)`, `curl … | python3/perl/node/…`, decompressor-into-shell (`gunzip`/`zstd -d`/`unzip -p`/`tar -xO | sh`), `/dev/tcp`//dev/udp` channels, heredocs fed to a shell (or whose body fetches/decodes content), paste sites, `.onion`, anti-sandbox probes, known campaign IOCs (Atomic Arch, openconnect-sso, 2018 `compromised.txt`, …).
 
 Findings are `Suspicious` or `ConfirmedIoc`. A hit doesn't hard-block: you get the file/line, a cgit link and `Continue anyway? [y/N]`.
 
@@ -507,9 +509,11 @@ Findings are `Suspicious` or `ConfirmedIoc`. A hit doesn't hard-block: you get t
 
 If `bubblewrap` is missing, the build is refused.
 
-**Third gate before install:** the finished `*.pkg.tar.*` is audited with `bsdtar` for setuid/setgid, `.INSTALL` scripts and sensitive paths (alpm hooks, systemd units, sudoers, udev, …). `.INSTALL` is re-scanned with the PKGBUILD scanner. With `-a` you must confirm; with `--noconfirm` it warns and continues.
+**Third gate before install:** the finished `*.pkg.tar.*` is audited with `bsdtar` for setuid/setgid, `.INSTALL` scripts and sensitive paths (alpm hooks, systemd units, sudoers, udev, tmpfiles.d, binfmt.d, pam.d, dbus system.d, NetworkManager dispatcher.d, environment.d, sysusers.d, …). `.INSTALL` is re-scanned with the PKGBUILD scanner. With `-a` you must confirm; with `--noconfirm` it warns and continues; a failed `bsdtar` audit aborts instead of installing unaudited.
 
 Dependency install (`pacman -S`) and the final `pacman -U` run **outside** the sandbox - they don't execute PKGBUILD code.
+
+**The one gated fallback:** a PKGBUILD whose dependencies can't be resolved statically (no `.SRCINFO` and a dynamic `depends=(…)`) is the only build path the package author can steer itself into that ends in plain unsandboxed, unaudited `makepkg -si`. It never runs silently: interactively you get an explicit Yes/No for that package; in a `--noconfirm` run it is refused (fail-closed). Passing `--no-sandbox` skips the gate - that's the whole-run, on-purpose opt-out.
 
 ### Privileges
 
@@ -556,7 +560,7 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `--aur` | Force AUR only (AUR-only dependencies are always built recursively) |
 | `--repos` | Official repos only (never AUR) |
 | `--abs` | Build from ABS (`pkgctl`) in the bwrap sandbox |
-| `--no-sandbox` | Disable bwrap for AUR/ABS; plain unisolated makepkg |
+| `--no-sandbox` | Disable bwrap for AUR/ABS; plain unisolated makepkg (also skips the unaudited-fallback confirmation gate) |
 | `--unshare-net-build` | No network during build()/check()/package() (`prepare()` still has network) |
 | `--skippgp` | Skip PGP checks on ABS builds (`--skippgpcheck`) |
 | `--autopgp` | Auto-import missing PGP keys before `--abs` builds |
@@ -607,7 +611,7 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `--aeclean [new\|old\|park\|all]` | Remove AE Force files after a question (bare = `all`) |
 | `--ignore-default-opts` | Ignore `EMERGE_DEFAULT_OPTS` from make.conf for this run |
 | `--debug` | Show makepkg/compiler output live (also `AE_DEBUG=1`); by default it's hidden to keep the `>>>` lines readable, and a failed build still dumps the captured log |
-| `--log <PATH>` | Write a session log (command, emerge.log lines, full build output) for bug reports - no `| tee` needed |
+| `--log <PATH>` | Write a session log (command, emerge.log lines, full build output) for bug reports - no `| tee` needed; append-only, nothing already in the file is truncated or overwritten |
 | `-N`/`--newuse`, `-e`/`--emptytree`, `-q`, `-O`, `-o`, `-k`, `-K`, `-g`, `-G`, `-b`, `-B`, `-f`, `-F`, `-l`, `-A`, `--nodeps`, `--onlydeps`, `--complete-graph`, `--changed-use`, `--backtrack`, `--columns`, `--newrepo`, `--reinstall`, `--with-bdeps`, `--metadata`, `--clean`, `--config`, `--noconfmem`, `--verbose-conflicts` | Gentoo-compat: accepted, no effect |
 | `-h`, `--help` | Help |
 | `-V`, `--version` | Version |

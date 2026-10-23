@@ -370,6 +370,16 @@ fn expand_with_deps(targets: Vec<PkgInfo>) -> Vec<PkgInfo> {
 
 /// AUR RPC info → (found, missing). Missing is not a hard error.
 
+/// Longest prefix of `s` that is at most `max` bytes and ends on a char
+/// boundary (search terms may contain non-ASCII, byte-slicing panics).
+fn char_safe_prefix(s: &str, max: usize) -> &str {
+    let mut end = max.min(s.len());
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// Suggest close package names when an exact atom is missing (Portage-style).
 pub(crate) fn print_similar_names(term: &str) {
     let bare = term.split('/').next_back().unwrap_or(term);
@@ -381,10 +391,10 @@ pub(crate) fn print_similar_names(term: &str) {
     // Try full term, then progressively shorter prefixes (Portage-ish).
     let mut stems: Vec<&str> = vec![bare];
     if bare.len() > 4 {
-        stems.push(&bare[..bare.len().saturating_sub(2)]);
+        stems.push(char_safe_prefix(bare, bare.len().saturating_sub(2)));
     }
     if bare.len() > 6 {
-        stems.push(&bare[..3]);
+        stems.push(char_safe_prefix(bare, 3));
     }
     let mut hits: Vec<String> = Vec::new();
     for stem in stems {
@@ -1271,6 +1281,13 @@ pub(crate) fn parse_validpgpkeys(pkgbuild_text: &str) -> Vec<String> {
         }
     }
     keys.retain(|k| !k.is_empty());
+    // The list comes from the untrusted PKGBUILD and each entry is
+    // handed to `gpg --recv-keys <id>` on the host: a token like
+    // "--keyserver=evil" would be parsed as an option. Keep hex
+    // fingerprints / long ids only (same shape pacman's makepkg accepts).
+    keys.retain(|k| {
+        (16..=40).contains(&k.len()) && k.chars().all(|c| c.is_ascii_hexdigit())
+    });
     keys
 }
 
@@ -1921,6 +1938,13 @@ fn resolve_and_build_aur(
     }
 
     let build_started = std::time::SystemTime::now();
+    // Names this build should produce, from .SRCINFO/PKGBUILD -- lets
+    // find_built_packages() refuse a concurrent worker's tarball when
+    // PKGDEST is shared (see the mtime caveat there).
+    let expected = expected_pkg_names(
+        &dir,
+        &fs::read_to_string(dir.join("PKGBUILD")).unwrap_or_default(),
+    );
     // Stage 2: deps are in, makepkg starts.
     crate::progress::line(crate::progress::Stage::Installing, stage_n, &stage_atom);
     let result = match isolation {
@@ -1933,7 +1957,7 @@ fn resolve_and_build_aur(
             &aur_dep_tarballs,
             unshare_net_build,
         )
-        .then(|| find_built_packages(&dir, build_started)),
+        .then(|| find_built_packages(&dir, build_started, &expected)),
         BuildIsolation::None => {
             if !install_local_tarballs(&aur_dep_tarballs, ask, true) {
                 eprintln!(
@@ -1944,8 +1968,11 @@ fn resolve_and_build_aur(
                 building.remove(&pkgbase);
                 return None;
             }
+            // The user already accepted the unsandboxed path; the produced
+            // names are unknowable here by definition (that's why this is
+            // the fallback), so no name filter.
             legacy_makepkg_si(&dir, ask, mark_asdeps, skippgp)
-                .then(|| find_built_packages(&dir, build_started))
+                .then(|| find_built_packages(&dir, build_started, &[]))
         }
     };
 
@@ -2509,7 +2536,7 @@ pub(crate) fn aur_upgrade_plan(devel: bool) -> Vec<String> {
             held.push(format!("{} (masked by {})", name, entry.describe()));
             return false;
         }
-        if let Some(entry) = crate::hold::find_freeze(name, None) {
+        if let Some(entry) = crate::hold::find_freeze(name, Some("aur")) {
             held.push(format!("{} (frozen by {})", name, entry.describe()));
             return false;
         }
@@ -2647,6 +2674,82 @@ fn install_local_tarballs(tarballs: &[String], ask: bool, mark_asdeps: bool) -> 
     }
 }
 
+/// `--install-pkgarchive FILE...`: install already-built `*.pkg.tar.*`
+/// archives (makepkg output, or files provided by a repository mirror)
+/// through the same pinned -> audited -> helper `-U` chain a sandboxed
+/// build result goes through. The files are untrusted input: whatever is
+/// inside them ends up installed as root (.INSTALL scriptlets, alpm
+/// hooks, setuid bits), so the archive audit gate is not optional here.
+///
+/// Returns the installed package names on success (the caller records
+/// them in world with the "Err/" prefix, same as --install-pkgbuild),
+/// or `None` on failure.
+pub(crate) fn install_pkgarchives(
+    files: &[String],
+    ask: bool,
+    oneshot: bool,
+) -> Option<Vec<String>> {
+    if files.is_empty() {
+        return None;
+    }
+    // Package names from the archive file names
+    // (`name-ver-rel-arch.pkg.tar.zst` -> `name`), for the world entry
+    // after a successful install. makepkg's own naming scheme, so a miss
+    // means the file was not named by makepkg -- degrade to no world
+    // update rather than guessing.
+    let names: Vec<String> = files.iter().filter_map(|f| pkg_file_name(f)).collect();
+
+    // Pin (path + sha256) what is about to be audited; the root helper
+    // installs only bytes that hash to the same value.
+    let pinned = match crate::rootops::pin(files) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!(
+                "{} cannot read the package archive(s): {}",
+                ">>> Error:".t_red().bold(),
+                e
+            );
+            return None;
+        }
+    };
+    // Audit the archive contents (setuid, .INSTALL, hooks, ...) first.
+    if !crate::security::audit_built_packages(files, ask) {
+        return None;
+    }
+    if !crate::rootops::unchanged(&pinned) {
+        eprintln!(
+            "{} a package archive changed while it was being audited - not installing.",
+            ">>> Error:".t_red().bold()
+        );
+        return None;
+    }
+    println!(
+        "{} Installing {} package archive(s)...",
+        ">>>".t_green().bold(),
+        files.len()
+    );
+    // Honour `-n` / `--noreplace` so re-running with the same archive is
+    // a no-op instead of a forced reinstall; `-1` marks everything asdeps.
+    let opts = crate::helper::validate::FileOpts {
+        needed: crate::runtime::get().noreplace,
+        asdeps: oneshot,
+        replace: false,
+        aeforce: false,
+        aenew: false,
+        aekeep: false,
+    };
+    if !install_files_resolving_conflicts(&pinned, opts, ask) {
+        return None;
+    }
+    for f in files {
+        let name = std::path::Path::new(f)
+            .file_name()
+            .map_or_else(|| f.clone(), |n| n.to_string_lossy().into_owned());
+        println!("{} Installed {}", ">>>".t_green().bold(), name);
+    }
+    Some(names)
+}
+
 /// Runs the untrusted PKGBUILD-defined functions (`pkgver`/`prepare`/
 /// `build`/`check`/`package`) for the package at `build_dir` through
 /// the bwrap sandbox in `sandbox.rs`, then installs the result the
@@ -2749,16 +2852,54 @@ fn build_with_sandbox(
         Some(_) => {} // no declared dependencies, nothing to do
         None => {
             eprintln!(
-                "{} could not statically resolve every dependency for '{}' (no .SRCINFO, and the PKGBUILD has a dynamic array entry or depends/makedepends isn't a plain array) -- building without the sandbox for this package.",
+                "{} could not statically resolve every dependency for '{}' (no .SRCINFO, and the PKGBUILD has a dynamic array entry or depends/makedepends isn't a plain array).",
                 ">>> Warning:".t_yellow().bold(),
                 pkgbase
             );
-            if unshare_net_build {
+            // This branch is the only build path an untrusted PKGBUILD can
+            // steer itself into (a dynamic depends=() it controls), and it
+            // ends in plain `makepkg -si`: no bwrap, no --unshare-net-build,
+            // and no audit of whatever it produces. It must never run
+            // silently: interactively the user confirms, and in a
+            // --noconfirm run there is nobody to confirm, so the package is
+            // refused (fail-closed). `--no-sandbox` skips this gate
+            // entirely -- it is an explicit, whole-run opt-out.
+            if !ask {
                 eprintln!(
-                    "{} this fallback runs plain `makepkg -si` with no bwrap sandbox at all, so --unshare-net-build has no effect here -- '{}' builds with full network access this time.",
-                    ">>> Warning:".t_yellow().bold(),
+                    "{} refusing to build '{}' through the unaudited, unsandboxed `makepkg -si` fallback in a --noconfirm run.",
+                    ">>> Error:".t_red().bold(),
                     pkgbase
                 );
+                eprintln!(
+                    "{} pass --no-sandbox to accept unsandboxed builds explicitly, or add a .SRCINFO so dependencies resolve statically.",
+                    ">>> Hint:".t_yellow().bold()
+                );
+                return false;
+            }
+            eprintln!(
+                "{} the fallback runs plain `makepkg -si` with NO sandbox and NO package audit for '{}' -- the PKGBUILD author can trigger this path on purpose.{}",
+                ">>> Warning:".t_yellow().bold(),
+                pkgbase,
+                if unshare_net_build {
+                    " --unshare-net-build has no effect here."
+                } else {
+                    ""
+                }
+            );
+            print!(
+                "Build '{}' unsandboxed and install whatever it produces, unaudited? [{}/{}] ",
+                pkgbase,
+                "Yes".t_green().bold(),
+                "No".t_red().bold()
+            );
+            let _ = io::stdout().flush();
+            let answer = crate::read_line_raw();
+            if !matches!(
+                answer.trim().to_ascii_lowercase().as_str(),
+                "y" | "yes"
+            ) {
+                println!("{} Quitting.", ">>>".t_yellow().bold());
+                return false;
             }
             return legacy_makepkg_si(build_dir, ask, oneshot, skippgp);
         }
@@ -2963,7 +3104,8 @@ fn build_with_sandbox(
 
     // 3. Install the built package(s), outside the sandbox: another
     //    plain package operation, no PKGBUILD code involved.
-    let pkg_files = find_built_packages(build_dir, build_started);
+    let expected = expected_pkg_names(build_dir, &pkgbuild_src);
+    let pkg_files = find_built_packages(build_dir, build_started, &expected);
     if pkg_files.is_empty() {
         eprintln!(
             "{} sandboxed build for '{}' produced no package file",
@@ -3078,9 +3220,20 @@ pub(crate) fn demote_split_siblings(requested: &[String]) {
 /// already has unrelated files in it. `not_before` (the caller's
 /// timestamp for just before this build started, with slack for coarse
 /// mtime resolution) filters those out.
+///
+/// The mtime cutoff alone is not enough with a shared `PKGDEST` and
+/// parallel builds (`--jobsa > 1`, or a mixed abs+aur pool): another
+/// worker's tarball, written after this build started, passes the
+/// cutoff and would be installed by the wrong worker (or read
+/// half-written). `wanted` -- the package names this build was
+/// supposed to produce, from `expected_pkg_names` -- is an allow-list
+/// on top: only files whose parsed package name is in it are
+/// accepted. Empty `wanted` (names unknown -- e.g. the unsandboxed
+/// fallback) keeps the old mtime-only behavior.
 fn find_built_packages(
     build_dir: &std::path::Path,
     not_before: std::time::SystemTime,
+    wanted: &[String],
 ) -> Vec<String> {
     let search_dir = extra_makepkg_dest_dirs(build_dir)
         .into_iter()
@@ -3106,19 +3259,122 @@ fn find_built_packages(
         if !name.contains(".pkg.tar") {
             continue;
         }
+        // makepkg signature files ride along with the real archive;
+        // feeding one to `-U` is a guaranteed error.
+        if name.ends_with(".sig") {
+            continue;
+        }
         match e.metadata().and_then(|m| m.modified()) {
             Ok(mtime) if mtime >= cutoff => {}
             // Stale or unreadable mtime -- don't guess.
             _ => continue,
+        }
+        if !wanted.is_empty() {
+            let produced = pkg_file_name(name);
+            let Some(produced) = produced else {
+                continue;
+            };
+            if !wanted.iter().any(|w| *w == produced) {
+                // Another worker's package (shared PKGDEST), not ours.
+                continue;
+            }
         }
         out.push(path.to_string_lossy().to_string());
     }
     out
 }
 
+/// Package names this build directory should produce: `pkgname` lines
+/// from .SRCINFO when readable, else the PKGBUILD's `pkgname=(...)`
+/// array. An empty result means "unknown" -- callers then pass no
+/// filter to `find_built_packages` instead of guessing: filtering by
+/// an incomplete name list would discard a real tarball and fail the
+/// build as "produced no package file".
+fn expected_pkg_names(build_dir: &std::path::Path, pkgbuild_src: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Ok(si) = fs::read_to_string(build_dir.join(".SRCINFO")) {
+        for line in si.lines() {
+            // pkgname entries sit at column 0 in .SRCINFO; anything
+            // indented belongs to a subsection and is ignored.
+            if let Some(v) = line.strip_prefix("pkgname = ") {
+                let v = v.trim();
+                if !v.is_empty() {
+                    out.push(v.to_string());
+                }
+            }
+        }
+    }
+    if out.is_empty()
+        && let Some(values) = pkgbuild_array_tokens(pkgbuild_src, "pkgname")
+    {
+        out.extend(values);
+    }
+    out.sort();
+    out.dedup();
+    // Only plain package names survive: anything else (glob leftovers,
+    // quoted junk) would never match a real tarball name anyway.
+    out.retain(|n| {
+        !n.is_empty()
+            && n.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "@._+-".contains(c))
+    });
+    out
+}
+
+/// Values of a plain `name=(a b c)` array assignment (multi-line
+/// arrays included). `None` when the assignment is missing, isn't an
+/// array, or contains a dynamic element (`${...}`, `$var`, backticks,
+/// globs) -- a partially-known name list must not be used to filter
+/// build results.
+fn pkgbuild_array_tokens(src: &str, key: &str) -> Option<Vec<String>> {
+    let mut lines = src.lines();
+    while let Some(line) = lines.next() {
+        let t = line.trim();
+        let Some(rest) = t.strip_prefix(key) else {
+            continue;
+        };
+        let Some(rest) = rest.trim_start().strip_prefix('=') else {
+            continue;
+        };
+        let Some(rest) = rest.trim_start().strip_prefix('(') else {
+            continue; // arrays only; scalars are not what we came for
+        };
+        let mut tokens: Vec<String> = Vec::new();
+        let mut text = rest.to_string();
+        loop {
+            let closed = text.trim_end().ends_with(')');
+            let body = text.trim_end();
+            let body = body.strip_suffix(')').unwrap_or(body);
+            for tok in body.split_whitespace() {
+                if tok.starts_with('#') {
+                    break; // comment: rest of this line is inert
+                }
+                if tok.contains('$')
+                    || tok.contains('`')
+                    || tok.contains('*')
+                    || tok.contains('?')
+                {
+                    return None; // dynamic element: name list unreliable
+                }
+                let tok = tok.trim_matches(|c| c == '"' || c == '\'');
+                if !tok.is_empty() {
+                    tokens.push(tok.to_string());
+                }
+            }
+            if closed {
+                break;
+            }
+            text = lines.next()?.to_string();
+        }
+        return Some(tokens);
+    }
+    None
+}
+
 /// The original, unsandboxed `makepkg -si` path -- used when `--no-sandbox`
-/// is passed, when bwrap isn't installed, or as the fallback for a
-/// PKGBUILD whose dependencies couldn't be statically resolved.
+/// is passed (an explicit, whole-run opt-out), and as the confirmed
+/// last-resort fallback for a PKGBUILD whose dependencies couldn't be
+/// statically resolved (see the gate in `build_with_sandbox`).
 fn legacy_makepkg_si(build_dir: &std::path::Path, ask: bool, oneshot: bool, skippgp: bool) -> bool {
     // Also cleans up the generated makepkg.conf below (same scratch
     // dir; the sandboxed path has its own guard, this one needs its own).
@@ -4520,6 +4776,87 @@ pub(crate) fn preserved_rebuild(pretend: bool, _ask: bool) {
 #[cfg(test)]
 mod plan_tree_tests {
     use super::*;
+
+    #[test]
+    fn char_safe_prefix_never_splits_a_char() {
+        assert_eq!(char_safe_prefix("abcdef", 4), "abcd");
+        // 'é' is 2 bytes: a byte-limit that would split it retreats.
+        assert_eq!(char_safe_prefix("abé", 3), "ab");
+        assert_eq!(char_safe_prefix("abé", 4), "abé");
+        // 'İ' (U+0130, 2 bytes) lowercases to 3 bytes elsewhere; slicing
+        // the original must still be boundary-safe here.
+        assert_eq!(char_safe_prefix("İx", 2), "İ");
+        assert_eq!(char_safe_prefix("abc", 100), "abc");
+        assert_eq!(char_safe_prefix("", 5), "");
+    }
+
+    #[test]
+    fn pkg_file_name_parses_makepkg_names() {
+        assert_eq!(
+            pkg_file_name("/tmp/foo-1.2.3-4-x86_64.pkg.tar.zst").as_deref(),
+            Some("foo")
+        );
+        assert_eq!(
+            pkg_file_name("libfoo-2.0-1-any.pkg.tar.xz").as_deref(),
+            Some("libfoo")
+        );
+        // Not a makepkg name: no world entry is derived from it.
+        assert_eq!(pkg_file_name("junk.pkg"), None);
+        assert_eq!(pkg_file_name("foo.pkg.tar.zst"), None);
+    }
+
+    #[test]
+    fn pkgbuild_array_tokens_parses_plain_arrays() {
+        assert_eq!(
+            pkgbuild_array_tokens("pkgname=(foo)\n", "pkgname").as_deref(),
+            Some(&["foo".to_string()][..])
+        );
+        assert_eq!(
+            pkgbuild_array_tokens("pkgname=(\n  foo\n  bar-baz\n)\n", "pkgname").as_deref(),
+            Some(&["foo".to_string(), "bar-baz".to_string()][..])
+        );
+        // Quoted entries are unquoted.
+        assert_eq!(
+            pkgbuild_array_tokens("pkgname=('foo' \"bar\")\n", "pkgname").as_deref(),
+            Some(&["foo".to_string(), "bar".to_string()][..])
+        );
+        // Dynamic elements make the whole list untrustworthy.
+        assert_eq!(pkgbuild_array_tokens("pkgname=(${_pkg})\n", "pkgname"), None);
+        assert_eq!(pkgbuild_array_tokens("pkgname=(\"$pkg\" foo)\n", "pkgname"), None);
+        assert_eq!(pkgbuild_array_tokens("pkgname=(foo*)\n", "pkgname"), None);
+        // Not an array / not present / not this key.
+        assert_eq!(pkgbuild_array_tokens("pkgname=foo\n", "pkgname"), None);
+        assert_eq!(pkgbuild_array_tokens("pkgver=1\n", "pkgname"), None);
+        // A different pkgname=... prefix doesn't confuse it.
+        assert_eq!(pkgbuild_array_tokens("pkgnames_x=(foo)\n", "pkgname"), None);
+    }
+
+    #[test]
+    fn expected_pkg_names_reads_srcinfo_then_pkgbuild() {
+        let dir = std::env::temp_dir().join(format!("ae-epn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // No .SRCINFO: the PKGBUILD array is used.
+        std::fs::write(dir.join("PKGBUILD"), "pkgname=(foo bar)\n").unwrap();
+        assert_eq!(
+            expected_pkg_names(&dir, "pkgname=(foo bar)\n"),
+            vec!["bar".to_string(), "foo".to_string()]
+        );
+        // .SRCINFO wins when present (split packages included).
+        std::fs::write(
+            dir.join(".SRCINFO"),
+            "pkgbase = foo\npkgname = foo\npkgname = foo-agent\n",
+        )
+        .unwrap();
+        assert_eq!(
+            expected_pkg_names(&dir, "pkgname=(foo bar)\n"),
+            vec!["foo".to_string(), "foo-agent".to_string()]
+        );
+        // Dynamic array and no .SRCINFO: unknown -> empty (no filtering).
+        std::fs::remove_file(dir.join(".SRCINFO")).unwrap();
+        assert!(expected_pkg_names(&dir, "pkgname=(${_x})\n").is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn pkg(name: &str, status: &str) -> PkgInfo {
         PkgInfo {

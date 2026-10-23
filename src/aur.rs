@@ -86,6 +86,23 @@ fn update_existing_clone(target: &Path) -> bool {
 /// Returns `None` on any git failure (network or nonexistent pkgbase --
 /// not distinguished, callers fall back to an RPC lookup either way).
 pub(crate) fn clone_repo(pkgbase: &str, dest_root: &Path) -> Option<PathBuf> {
+    // `pkgbase` can come from the AUR RPC (untrusted, see lookup_pkgbase).
+    // Same guard class as the ABS clone path: path separators or a
+    // leading dot would clone (and `git clean -fdx`) outside the build
+    // cache, and then build_with_sandbox would bind that escaped dir as
+    // its only writable location.
+    if pkgbase.is_empty()
+        || pkgbase.starts_with('.')
+        || pkgbase.contains('/')
+        || pkgbase.contains('\\')
+        || pkgbase.contains("..")
+    {
+        eprintln!(
+            ">>> Warning: suspicious AUR pkgbase '{}', not cloning.",
+            pkgbase
+        );
+        return None;
+    }
     let url = format!("{}/{}.git", AUR_BASE_URL, pkgbase);
     let target = dest_root.join(pkgbase);
 

@@ -150,9 +150,23 @@ fn load_list(root_path: &str, kind: &str) -> MaskList {
             if atom.is_empty() {
                 continue;
             }
-            let (repo, pattern) = match atom.split_once('/') {
-                Some((r, n)) => (Some(r.trim().to_string()), n.trim().to_string()),
-                None => (None, atom.to_string()),
+            // =cat/foo used to parse as repo "=cat" and silently never
+            // match anything; split_repo_atom makes that (and every
+            // version-scoped atom) a loud skip instead.
+            let (repo, pattern) = match split_repo_atom(atom) {
+                Ok(pair) => pair,
+                Err(why) => {
+                    eprintln!(
+                        "{} {}:{}: unusable {} entry '{}' ({} - skipped)",
+                        ">>> Warning:".t_yellow().bold(),
+                        path_s,
+                        i + 1,
+                        kind,
+                        atom,
+                        why
+                    );
+                    continue;
+                }
             };
             if pattern.is_empty() || !valid_pattern(&pattern) {
                 eprintln!(
@@ -181,6 +195,54 @@ fn load_list(root_path: &str, kind: &str) -> MaskList {
 pub(crate) fn valid_pattern(p: &str) -> bool {
     p.chars()
         .all(|c| c.is_alphanumeric() || "@._+-*".contains(c))
+}
+
+const VERSION_OP_ERR: &str = "version-scoped atoms (=, >=, <=, >, ~) are not supported - entries match the package name at every version; drop the operator if that is what you want";
+
+/// Splits a mask/hold atom into its optional repo prefix and name
+/// pattern. Portage-style operators on the repo (`=extra/foo`,
+/// `>=extra/foo`) used to parse into the repo name ("=extra") and then
+/// never match anything -- silently. Such entries are now reported and
+/// skipped, because matching here is name-level only and an entry that
+/// can never match is a hole, not a no-op. `!` (blocker prefix) is
+/// meaningless in these files and dropped.
+pub(crate) fn split_repo_atom(atom: &str) -> Result<(Option<String>, String), &'static str> {
+    let atom = atom.trim();
+    let (repo, pattern) = match atom.split_once('/') {
+        Some((r, n)) => (Some(r.trim()), n.trim()),
+        None => (None, atom),
+    };
+    let repo = repo.map(|r| r.trim_start_matches('!'));
+    let versioned = |s: &str| s.starts_with(['=', '<', '>', '~']);
+    if let Some(r) = repo {
+        if r.is_empty() {
+            return Err("empty repo prefix");
+        }
+        if versioned(r) {
+            return Err(VERSION_OP_ERR);
+        }
+    }
+    if pattern.is_empty() {
+        return Err("empty package pattern");
+    }
+    if versioned(pattern) {
+        return Err(VERSION_OP_ERR);
+    }
+    Ok((repo.map(str::to_string), pattern.to_string()))
+}
+
+/// Splits a user-typed / world-style atom into (bare name, repo).
+/// `aur/`, `abs/` and official repo prefixes are kept; `Err/` (unknown
+/// local source) and `@set` names carry no repo -- only unprefixed
+/// entries can ever match those.
+pub(crate) fn atom_repo(atom: &str) -> (String, Option<String>) {
+    match atom.split_once('/') {
+        Some(("Err", n)) => (n.to_string(), None),
+        Some((r, n)) if !n.is_empty() && !n.contains('/') => {
+            (n.to_string(), Some(r.to_string()))
+        }
+        _ => (atom.to_string(), None),
+    }
 }
 
 /// Wildcard match, `*` = any run of characters. Two-pointer walk.
@@ -286,10 +348,20 @@ where
     false
 }
 
-/// Explicit-request gate: reports and returns false if anything in
-/// `pkgs` is masked (callers should abort, not just filter).
-pub(crate) fn allow_explicit(pkgs: &[String], repo: Option<&str>) -> bool {
-    let (_, blocked) = split_masked(pkgs, repo);
+/// Explicit-request gate for atoms that may carry their own repo
+/// prefix (`aur/foo`, `extra/nano`, bare `nano`): the atom's own prefix
+/// picks the repo the mask lookup runs in, so a repo-prefixed mask
+/// entry fires for exactly the targets it was written for. Reports and
+/// returns false if anything is masked (callers should abort, not just
+/// filter).
+pub(crate) fn allow_explicit_atoms(pkgs: &[String]) -> bool {
+    let mut blocked: Vec<(String, Option<&MaskEntry>)> = Vec::new();
+    for p in pkgs {
+        let (bare, repo) = atom_repo(p);
+        if is_blocked(&bare, repo.as_deref()) {
+            blocked.push((p.clone(), find(&bare, repo.as_deref())));
+        }
+    }
     if blocked.is_empty() {
         return true;
     }
@@ -341,6 +413,48 @@ mod tests {
         assert!(m.find("nano", Some("extra")).is_some());
         assert!(m.find("nano", Some("aur")).is_none());
         assert!(m.find("nano", None).is_none());
+    }
+
+    #[test]
+    fn version_scoped_atoms_are_rejected_loudly() {
+        // These used to parse the operator into the repo name ("=extra")
+        // and then never match anything -- silently.
+        assert!(split_repo_atom("=extra/foo-1.2").is_err());
+        assert!(split_repo_atom(">=extra/foo").is_err());
+        assert!(split_repo_atom("~extra/foo").is_err());
+        assert!(split_repo_atom("=foo-1.2").is_err());
+        assert!(split_repo_atom("<foo").is_err());
+        // Plain atoms, with or without a repo, keep parsing.
+        assert_eq!(
+            split_repo_atom("extra/nano").unwrap(),
+            (Some("extra".to_string()), "nano".to_string())
+        );
+        assert_eq!(
+            split_repo_atom("nano").unwrap(),
+            (None, "nano".to_string())
+        );
+        // The `!` blocker prefix carries no meaning here; drop it.
+        assert_eq!(
+            split_repo_atom("!aur/foo").unwrap(),
+            (Some("aur".to_string()), "foo".to_string())
+        );
+        assert!(split_repo_atom("/foo").is_err());
+    }
+
+    #[test]
+    fn atoms_split_into_bare_and_repo() {
+        assert_eq!(
+            atom_repo("extra/nano"),
+            ("nano".to_string(), Some("extra".to_string()))
+        );
+        assert_eq!(
+            atom_repo("aur/foo"),
+            ("foo".to_string(), Some("aur".to_string()))
+        );
+        // Err/ is an unknown source, not a repo.
+        assert_eq!(atom_repo("Err/x"), ("x".to_string(), None));
+        assert_eq!(atom_repo("nano"), ("nano".to_string(), None));
+        assert_eq!(atom_repo("@world"), ("@world".to_string(), None));
     }
 }
 

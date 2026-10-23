@@ -484,11 +484,13 @@ fn warn(path: &Path, key: &str, msg: &str) {
 // ── generated makepkg.conf override ───────────────────────────────────────────
 
 /// Escapes for a double-quoted bash string, leaving `$` alone so
-/// `-j$(nproc)` still expands.
+/// `-j$(nproc)` still expands. The backslash itself must be escaped
+/// first or a value ending in `\` would eat the closing quote and turn
+/// the rest of the generated line into bare shell.
 fn esc_double(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 8);
     for c in s.chars() {
-        if c == '"' || c == '`' {
+        if c == '\\' || c == '"' || c == '`' {
             out.push('\\');
         }
         out.push(c);

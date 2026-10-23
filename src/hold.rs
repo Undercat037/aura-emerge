@@ -84,9 +84,22 @@ fn push_entry(
     if atom.is_empty() {
         return;
     }
-    let (repo, pattern) = match atom.split_once('/') {
-        Some((r, n)) => (Some(r.trim().to_string()), n.trim().to_string()),
-        None => (None, atom.to_string()),
+    // Same atom rules as package.mask: `=extra/foo` and friends used to
+    // become a repo named "=extra" and silently never match.
+    let (repo, pattern) = match crate::mask::split_repo_atom(atom) {
+        Ok(pair) => pair,
+        Err(why) => {
+            eprintln!(
+                "{} {}:{}: unusable {} entry '{}' ({} - skipped)",
+                ">>> Warning:".t_yellow().bold(),
+                source,
+                line,
+                kind,
+                atom,
+                why
+            );
+            return;
+        }
     };
     if pattern.is_empty() || !valid_pattern(&pattern) {
         eprintln!(
@@ -206,19 +219,23 @@ pub(crate) fn find_protect(name: &str, repo: Option<&str>) -> Option<&'static Ho
 }
 
 pub(crate) fn is_protected(name: &str) -> bool {
-    if find_protect(name, None).is_some() {
+    // The atom may carry its own repo prefix (world entries do); use it
+    // so a repo-prefixed protect entry fires for the package it was
+    // written for instead of only ever matching repo-less lookups.
+    let (bare, repo) = crate::mask::atom_repo(name);
+    if find_protect(&bare, repo.as_deref()).is_some() {
         return true;
     }
     // package.profile entries (incl. @system) are never depcleaned/unmerged by accident.
-    let bare = name.split('/').next_back().unwrap_or(name);
-    crate::profile::package_names().contains(bare)
+    crate::profile::package_names().contains(bare.as_str())
 }
 
 pub(crate) fn split_protected(pkgs: &[String]) -> (Vec<String>, Vec<(String, &'static HoldEntry)>) {
     let mut ok = Vec::new();
     let mut held = Vec::new();
     for p in pkgs {
-        match find_protect(p, None) {
+        let (bare, repo) = crate::mask::atom_repo(p);
+        match find_protect(&bare, repo.as_deref()) {
             Some(e) => held.push((p.clone(), e)),
             None => ok.push(p.clone()),
         }
@@ -277,14 +294,17 @@ pub(crate) fn find_freeze(name: &str, repo: Option<&str>) -> Option<&'static Hol
 }
 
 pub(crate) fn is_frozen(name: &str) -> bool {
-    find_freeze(name, None).is_some()
+    // Repo prefixes in the atom participate (see is_protected).
+    let (bare, repo) = crate::mask::atom_repo(name);
+    find_freeze(&bare, repo.as_deref()).is_some()
 }
 
 pub(crate) fn split_frozen(pkgs: &[String]) -> (Vec<String>, Vec<(String, &'static HoldEntry)>) {
     let mut ok = Vec::new();
     let mut held = Vec::new();
     for p in pkgs {
-        match find_freeze(p, None) {
+        let (bare, repo) = crate::mask::atom_repo(p);
+        match find_freeze(&bare, repo.as_deref()) {
             Some(e) => held.push((p.clone(), e)),
             None => ok.push(p.clone()),
         }

@@ -8,9 +8,11 @@ url="https://undercat037.github.io/aura-emerge/"
 # Github repo: https://github.com/Undercat037/aura-emerge
 # Gitlab repo: https://gitlab.com/Undercat037/aura-emerge
 license=('GPL-3.0-only')
-depends=('git' 'sudo' 'bubblewrap' 'pacman')
-optdepends=('devtools: for --abs support (pkgctl repo clone)'
-            'gnupg: for PGP verification when building from ABS')
+depends=('git' 'sudo' 'bubblewrap' 'pacman' 'gnupg')
+# gnupg is a hard dependency: keyring population (pacman-key equivalent)
+# is handled by the root helper itself (gpg called directly), so every
+# install/signature path needs it present.
+optdepends=('devtools: for --abs support (pkgctl repo clone)')
 makedepends=('rust' 'cargo')
 conflicts=('portage' 'portage-git' 'eselect-git' 'aura-emerge')
 provides=('emerge' 'portageq' 'eselect')

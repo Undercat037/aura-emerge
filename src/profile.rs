@@ -21,7 +21,7 @@ use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use crate::mask::{glob_match, valid_pattern};
+use crate::mask::glob_match;
 use crate::theme::Themed;
 use colored::Colorize;
 
@@ -252,7 +252,7 @@ fn load_mask(dir: &Path, masks: &mut Vec<(String, Option<String>)>) {
     let Ok(text) = crate::read_to_string_nofollow(&path) else {
         return;
     };
-    for line in text.lines() {
+    for (line_no, line) in text.lines().enumerate() {
         let t = line.trim();
         if t.is_empty() || t.starts_with('#') {
             continue;
@@ -273,12 +273,23 @@ fn load_mask(dir: &Path, masks: &mut Vec<(String, Option<String>)>) {
         if atom.is_empty() {
             continue;
         }
-        let (repo, pattern) = match atom.split_once('/') {
-            Some((r, n)) if !n.is_empty() && valid_pattern(n) => {
-                (Some(r.to_string()), n.to_string())
+        // Same atom rules as the user package.mask: `=cat/foo` used to
+        // become repo "=cat" (a silent never-match). Version-scoped
+        // atoms are reported and skipped, matching the user-file
+        // behavior.
+        let (repo, pattern) = match crate::mask::split_repo_atom(atom) {
+            Ok(pair) => pair,
+            Err(why) => {
+                eprintln!(
+                    "{} profile {}:{}: unusable package.mask entry '{}' ({} - skipped)",
+                    ">>> Warning:".t_yellow().bold(),
+                    dir.display(),
+                    line_no + 1,
+                    atom,
+                    why
+                );
+                continue;
             }
-            _ if valid_pattern(atom) => (None, atom.to_string()),
-            _ => continue,
         };
         if remove {
             masks.retain(|(p, r)| p != &pattern || r != &repo);

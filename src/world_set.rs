@@ -11,6 +11,69 @@ use std::process::{Command, Stdio};
 
 use crate::*;
 
+// ── cross-process state lock ────────────────────────────────────────────
+// In-process Mutexes only serialize threads: two parallel `emerge` runs
+// each read world (or resume/lastaction state), modify, and publish
+// through a tmp+rename -- the second publish silently drops the first
+// run's writes. The root helper's DB lock only spans one -S/-U/-R
+// request, not the read-modify-write around it, so it doesn't help.
+//
+// A blocking flock on a dedicated, never-replaced lock file serializes
+// every state read-modify-write; the kernel releases the lock on
+// process exit, so a killed run cannot wedge the next one. The lock is
+// best-effort: if the file can't be ensured/opened, state updates run
+// unlocked (pre-existing behavior) rather than being refused.
+
+const STATE_LOCK_FILE: &str = "/etc/portage/.state.lock";
+
+/// RAII holder: the flock lives on the open fd and is released when
+/// the fd is closed (drop or process exit).
+pub(crate) struct StateLock {
+    _file: std::fs::File,
+}
+
+/// Creates the root-owned lock file once (best-effort), like the state
+/// files it protects. Never replaces or truncates an existing one.
+fn ensure_state_lock_file() {
+    match std::fs::symlink_metadata(STATE_LOCK_FILE) {
+        Ok(md) if md.is_file() => return,
+        // A symlink or dir where the lock should be is a root-owned
+        // anomaly: warn and run without the lock rather than tee'ing
+        // through a symlink.
+        Ok(_) => {
+            eprintln!(
+                "{} {} is not a regular file - running without the cross-process state lock.",
+                ">>> Warning:".t_yellow().bold(),
+                STATE_LOCK_FILE
+            );
+            return;
+        }
+        Err(_) => {}
+    }
+    let _ = Command::new(SUDO_BIN)
+        .args([TEE_BIN, STATE_LOCK_FILE])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+/// Blocking exclusive flock across a state read-modify-write. Hold the
+/// returned guard from the read to the publish; drop releases.
+pub(crate) fn lock_state() -> Option<StateLock> {
+    use std::os::unix::io::AsRawFd;
+    ensure_state_lock_file();
+    let file = match open_nofollow(std::path::Path::new(STATE_LOCK_FILE)) {
+        Ok(f) => f,
+        Err(_) => return None,
+    };
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+    if rc != 0 {
+        return None;
+    }
+    Some(StateLock { _file: file })
+}
+
 // ── batch repo resolution ────────────────────────────────────────────────
 // Resolves a whole package list in at most two spawns total
 // (was one, sometimes two, per package -- see pkg_world_entry_from).
@@ -366,21 +429,44 @@ pub(crate) fn list_custom_sets() -> Vec<String> {
 
 // ── declarative provisioning from world (bare `emerge @world`) ─────────────
 
+/// Splits a world-style atom into (bare name, repo prefix). `Err/` and
+/// `@set` entries carry no usable repo, `aur/`/`abs/`/official repos do.
+fn world_atom_repo(atom: &str) -> (String, Option<String>) {
+    match atom.split_once('/') {
+        Some(("Err", n)) => (n.to_string(), None),
+        Some((r, n)) if !n.is_empty() && !n.contains('/') => {
+            (n.to_string(), Some(r.to_string()))
+        }
+        _ => (atom.to_string(), None),
+    }
+}
+
 /// Drops packages `--exclude`/the mask cover, recording each in `held`.
 /// Provisioning shouldn't abort over one masked entry -- it should
-
+/// skip it and say so.
+///
+/// The repo for mask matching comes from the entry's own prefix when
+/// it has one (`extra/nano`), else from the caller's bucket (`aur`
+/// missing, `abs` missing, ...). Uses [`crate::mask::is_blocked`] so
+/// `package.unmask` exceptions are honored -- a bare `mask::find` here
+/// silently re-masked unmasked packages.
 fn hold_back(list: &mut Vec<String>, repo: Option<&str>, held: &mut Vec<String>) {
-    list.retain(|name| {
-        if crate::runtime::is_excluded(name) {
+    list.retain(|entry| {
+        let (name, entry_repo) = world_atom_repo(entry);
+        let repo = entry_repo.as_deref().or(repo);
+        if crate::runtime::is_excluded(&name) {
             held.push(format!("{} (--exclude)", name));
             return false;
         }
-        if let Some(entry) = crate::mask::find(name, repo) {
-            held.push(format!("{} (masked by {})", name, entry.describe()));
-            return false;
-        }
-        if crate::profile::is_masked(name, repo) {
-            held.push(format!("{} (masked by profile)", name));
+        if crate::mask::is_blocked(&name, repo) {
+            let entry = crate::mask::find(&name, repo);
+            held.push(match entry {
+                Some(e) => format!("{} (masked by {})", name, e.describe()),
+                None if crate::profile::is_masked(&name, repo) => {
+                    format!("{} (masked by profile)", name)
+                }
+                None => format!("{} (masked)", name),
+            });
             return false;
         }
         true
@@ -484,8 +570,11 @@ pub(crate) fn provision_from_world_set(
             Some("aur") => aur_missing.push(bare),
             Some("abs") => abs_missing.push(bare),
             Some("Err") => err_missing.push(bare),
+            // Official entries keep their full "repo/name" form: the
+            // mask check in hold_back wants the repo, and repo_install
+            // prefers the qualified atom.
+            Some(_official_repo) => official_missing.push(entry.clone()),
             None => bare_missing.push(bare),
-            Some(_official_repo) => official_missing.push(bare),
         }
     }
 
@@ -764,6 +853,9 @@ pub(crate) fn provision_from_world_set(
 
 /// Re-resolve repo prefixes for every world entry.
 pub(crate) fn regen_world_set() -> Result<()> {
+    // Read -> re-prefix -> publish must not race another run's world
+    // update: the whole cycle runs under the cross-process lock.
+    let _state_lock = lock_state();
     println!(
         "{} Regenerating world repository prefixes...",
         ">>>".t_green().bold()
@@ -1003,6 +1095,8 @@ pub(crate) fn register_sets_in_world(set_names: &[String]) -> Result<()> {
     if set_names.is_empty() {
         return Ok(());
     }
+    // Read -> insert -> publish under the cross-process lock.
+    let _state_lock = lock_state();
     let mut current: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     match open_nofollow(std::path::Path::new(WORLD_SET_FILE)) {
         Err(e) if is_symlink_open_error(&e) => {
@@ -1058,6 +1152,12 @@ pub(crate) fn add_to_world_groups(groups: &[(&[String], Option<&str>)]) -> Resul
     if groups.iter().all(|(pkgs, _)| pkgs.is_empty()) {
         return Ok(());
     }
+
+    // Read -> merge -> publish under the cross-process lock: without it
+    // two parallel runs each read world, add their own entries, and the
+    // second publish drops the first run's writes (the helper's DB lock
+    // only covers individual -S/-U requests, not this cycle).
+    let _state_lock = lock_state();
 
     // bare name → full "repo/name" entry; `@set` lines keyed by full token
     let mut current_set: std::collections::HashMap<String, String> =
@@ -1177,6 +1277,10 @@ pub(crate) fn reconcile_world_after_install(before: &HashSet<String>) {
 pub(crate) fn remove_from_world_set(packages: &[String]) -> Result<()> {
     println!(">>> Removing from world...");
 
+    // Read -> remove -> publish under the cross-process lock (see
+    // add_to_world_groups).
+    let _state_lock = lock_state();
+
     let mut current_set: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     match open_nofollow(std::path::Path::new(WORLD_SET_FILE)) {
@@ -1220,6 +1324,9 @@ pub(crate) fn remove_from_world_set(packages: &[String]) -> Result<()> {
 
 /// Save resume argv (best-effort; failure must not abort the real op).
 pub(crate) fn save_resume_state(args: &[String]) {
+    // Publishes through tmp+rename; the lock keeps two runs' saves from
+    // interleaving their tmp files and mv steps.
+    let _state_lock = lock_state();
     if !is_safe_path(RESUME_TMP) || !is_safe_path(RESUME_FILE) {
         eprintln!(">>> Warning: refusing to save resume state - symlink detected");
         return;
@@ -1260,6 +1367,7 @@ pub(crate) fn save_resume_state(args: &[String]) {
 
 /// Clear resume state after a fully successful operation.
 pub(crate) fn clear_resume_state() {
+    let _state_lock = lock_state();
     let _ = Command::new(SUDO_BIN)
         .args([RM_BIN, "-f", RESUME_FILE])
         .status();
@@ -1338,6 +1446,8 @@ fn save_state(
     if atoms.is_empty() {
         return;
     }
+    // Same tmp+rename publish as the resume state -- same lock.
+    let _state_lock = lock_state();
     if !is_safe_path(LASTACTION_TMP) || !is_safe_path(LASTACTION_FILE) {
         eprintln!(">>> Warning: refusing to save undo state - symlink detected");
         return;
@@ -1386,6 +1496,7 @@ fn save_state(
 
 /// Clear undo state after --undo acts on it.
 pub(crate) fn clear_last_action() {
+    let _state_lock = lock_state();
     let _ = Command::new(SUDO_BIN)
         .args([RM_BIN, "-f", LASTACTION_FILE])
         .status();
@@ -1570,6 +1681,26 @@ mod tests {
     fn state_without_atoms_is_nothing() {
         assert!(parse_state(lines("depclean\n")).is_none());
         assert!(parse_state(lines("")).is_none());
+    }
+
+    #[test]
+    fn world_atoms_split_into_bare_and_repo() {
+        assert_eq!(
+            world_atom_repo("extra/nano"),
+            ("nano".to_string(), Some("extra".to_string()))
+        );
+        assert_eq!(
+            world_atom_repo("aur/foo-git"),
+            ("foo-git".to_string(), Some("aur".to_string()))
+        );
+        // Err/ is an unknown source, not a repo.
+        assert_eq!(
+            world_atom_repo("Err/local-thing"),
+            ("local-thing".to_string(), None)
+        );
+        assert_eq!(world_atom_repo("nano"), ("nano".to_string(), None));
+        // Set lines and odd atoms carry no repo either.
+        assert_eq!(world_atom_repo("@world"), ("@world".to_string(), None));
     }
 
     #[test]

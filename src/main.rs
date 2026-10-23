@@ -440,7 +440,10 @@ struct Cli {
     #[arg(long = "autopgp")]
     autopgp: bool,
 
-    /// Disable bwrap; plain unisolated makepkg
+    /// Disable bwrap; plain unisolated makepkg. Also the explicit way
+    /// past the confirmed unaudited-makepkg -si fallback (a PKGBUILD
+    /// with unresolvable static dependencies refuses to build without it
+    /// unless confirmed interactively)
     #[arg(long = "no-sandbox")]
     no_sandbox: bool,
 
@@ -463,6 +466,17 @@ struct Cli {
     /// Build+install local PKGBUILD dir (scanner + bwrap); world Err/ unless -1
     #[arg(long = "install-pkgbuild", value_name = "PATH", value_hint = clap::ValueHint::DirPath)]
     install_pkgbuild: Option<String>,
+
+    /// Install local .pkg.tar.* archive(s) (makepkg / repo output) through
+    /// the same audit + helper -U chain a finished build goes through;
+    /// world Err/ unless -1
+    #[arg(
+        long = "install-pkgarchive",
+        value_name = "FILE",
+        value_hint = clap::ValueHint::FilePath,
+        num_args = 1..
+    )]
+    install_pkgarchive: Vec<String>,
 
     /// Verbose / detailed search info (-sv)
     #[arg(short = 'v', long = "verbose")]
@@ -613,7 +627,8 @@ struct Cli {
     #[arg(long = "debug")]
     debug: bool,
     /// Write a session log (command, emerge.log lines, full build output)
-    /// to PATH — useful for bug reports without `| tee`.
+    /// to PATH — append-only: nothing already in the file is ever
+    /// truncated or overwritten
     #[arg(long = "log", value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
     log_path: Option<String>,
     /// Easter egg, hidden from --help and completions.
@@ -766,6 +781,7 @@ fn print_help() {
     println!("          [ --list-sets | --regen-sets @<name>  | --news [N|all]    ]");
     println!("          [ --check-news [N|all]  | --check-devel | --undo          ]");
     println!("          [ --scan <pkg...>       | --install-pkgbuild <PATH>       ]");
+    println!("          [ --install-pkgarchive <FILE...>                           ]");
     println!("          [ --batchinstall <FILE> | --clean-source-cache            ]");
     println!("          [ --revdep-rebuild                                        ]");
     println!("Sets:     [ @world | @preserved-rebuild | @<custom-sets>            ]");
@@ -1575,15 +1591,28 @@ fn upgrade_selected(cli: &Cli, targets: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Packages to hold back during `-u`: `--exclude` plus every installed
-/// package the (unprefixed) mask covers -- prefixed entries are
-/// matched in the AUR half instead, where the source is known.
+/// Packages to hold back during `-u`: `--exclude`, every installed
+/// package a mask covers (bare entries directly, repo-prefixed ones via
+/// the installed package's origin repo), and package.freeze /
+/// EMERGE_FREEZE. aur/abs-prefixed entries are matched in their own
+/// halves, where the source is known.
 fn upgrade_ignores() -> Vec<String> {
     let mut names: Vec<String> = runtime::get().exclude.iter().cloned().collect();
 
     if !mask::masks().is_empty() {
-        for name in alpm_db::installed_names() {
+        let installed: Vec<String> = alpm_db::installed_names().into_iter().collect();
+        // Repo-prefixed mask entries hold back upgrades too, now that
+        // the installed package's origin repo is known (bare entries
+        // always did; aur/abs are held back in their own halves).
+        let repos = world_set::get_pkg_repos_batch(&installed);
+        for name in installed {
             if mask::find(&name, None).is_some() {
+                names.push(name);
+                continue;
+            }
+            if let Some(Some(repo)) = repos.get(&name)
+                && mask::find(&name, Some(repo.as_str())).is_some()
+            {
                 names.push(name);
             }
         }
@@ -1617,6 +1646,7 @@ enum ActionKind {
     CleanSourceCache,
     CheckDevel,
     InstallPkgbuild,
+    InstallPkgarchive,
     RevdepRebuild,
     Scan,
     Search,
@@ -1656,6 +1686,7 @@ impl ActionKind {
             ActionKind::CleanSourceCache => "--clean-source-cache",
             ActionKind::CheckDevel => "--check-devel",
             ActionKind::InstallPkgbuild => "--install-pkgbuild",
+            ActionKind::InstallPkgarchive => "--install-pkgarchive",
             ActionKind::RevdepRebuild => "--revdep-rebuild",
             ActionKind::Scan => "--scan",
             ActionKind::Search => "--search",
@@ -1689,6 +1720,7 @@ fn action_from_long(token: &str) -> Option<ActionKind> {
         "--clean-source-cache" => Some(ActionKind::CleanSourceCache),
         "--check-devel" => Some(ActionKind::CheckDevel),
         "--install-pkgbuild" => Some(ActionKind::InstallPkgbuild),
+        "--install-pkgarchive" => Some(ActionKind::InstallPkgarchive),
         "--revdep-rebuild" => Some(ActionKind::RevdepRebuild),
         "--scan" => Some(ActionKind::Scan),
         "--search" | "--searchdesc" => Some(ActionKind::Search),
@@ -1753,6 +1785,9 @@ fn active_actions(cli: &Cli) -> Vec<ActionKind> {
     }
     if cli.install_pkgbuild.is_some() {
         out.push(ActionKind::InstallPkgbuild);
+    }
+    if !cli.install_pkgarchive.is_empty() {
+        out.push(ActionKind::InstallPkgarchive);
     }
     if cli.revdep_rebuild {
         out.push(ActionKind::RevdepRebuild);
@@ -2021,9 +2056,12 @@ fn build_resume_args(cli: &Cli, target_pkgs: &[String], has_world: bool) -> Vec<
     if cli.keep_going {
         args.push("--keep-going".to_string());
     }
+    // One token per flag=value: a separate `--exclude <value>` pair made
+    // the value look like a package token to any scanner of this file
+    // (see the --skipfirst handling in the --resume path), and the
+    // dangling --exclude then swallowed the next real token.
     for e in &cli.exclude {
-        args.push("--exclude".to_string());
-        args.push(e.clone());
+        args.push(format!("--exclude={}", e));
     }
     if has_world {
         args.push("@world".to_string());
@@ -2452,11 +2490,16 @@ fn become_invoking_user() {
 }
 
 fn main() {
-    if std::env::args().nth(1).as_deref() == Some("--ae-service") {
+    // args() (not _os) panics on non-UTF-8 argv; the lossy conversion
+    // keeps argv[0]/argv[1] dispatch alive for every input.
+    let first = std::env::args_os()
+        .nth(1)
+        .map(|a| a.to_string_lossy().into_owned());
+    if first.as_deref() == Some("--ae-service") {
         // Root helper only. Real/effective uid checked inside guard::harden().
         std::process::exit(helper::run());
     }
-    if std::env::args().nth(1).as_deref() == Some("--ae-ping") {
+    if first.as_deref() == Some("--ae-ping") {
         match helper::client::Client::start().and_then(|mut c| c.ping()) {
             Ok(()) => println!("helper ok"),
             Err(e) => {
@@ -2468,7 +2511,10 @@ fn main() {
     }
     // Optional: `ln -s emerge /usr/bin/eselect` → only `eselect profile …`.
     {
-        let argv0 = std::env::args().next().unwrap_or_default();
+        let argv0 = std::env::args_os()
+            .next()
+            .map(|a| a.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let base = std::path::Path::new(&argv0)
             .file_name()
             .and_then(|s| s.to_str())
@@ -2561,11 +2607,19 @@ fn run() -> anyhow::Result<()> {
     reset_sigpipe();
 
     // If invoked as "portageq" (symlink), act as the shim
-    let argv: Vec<String> = std::env::args().collect();
-    let invoked_as = std::path::Path::new(&argv[0])
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
+    // args_os + lossy: args() panics on non-UTF-8 arguments, and argv[0]
+    // is read unconditionally here (empty argv must not panic either).
+    let argv: Vec<String> = std::env::args_os()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let invoked_as = argv
+        .first()
+        .map_or("", |s| {
+            std::path::Path::new(s)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+        });
     if invoked_as == "portageq" {
         portageq_shim(&argv);
         return Ok(());
@@ -2849,6 +2903,74 @@ fn run() -> anyhow::Result<()> {
         };
     }
 
+    // --install-pkgarchive FILE...: same family as --install-pkgbuild, but
+    // pointed at already-built package archives (makepkg output, or files
+    // provided by a repository mirror) instead of a PKGBUILD checkout.
+    // Same trust model as a finished build: the archive content ends up
+    // installed as root, so pin -> audit -> helper -U is not optional.
+    if !cli.install_pkgarchive.is_empty() {
+        if !cli.packages.is_empty() {
+            eprintln!(">>> Error: --install-pkgarchive does not take package names or @sets.");
+            std::process::exit(1);
+        }
+        if cli.aur || cli.abs {
+            eprintln!(">>> Error: --install-pkgarchive is not compatible with --aur/--abs.");
+            std::process::exit(1);
+        }
+        if cli.scan {
+            eprintln!(
+                ">>> Error: --scan has no PKGBUILD to scan in a package archive; use --install-pkgbuild <PATH> --scan for source."
+            );
+            std::process::exit(1);
+        }
+        // Resolve to absolute paths up front: a missing file is an error
+        // for the whole run (a typo must not turn into a half-install).
+        let mut files = Vec::with_capacity(cli.install_pkgarchive.len());
+        for f in &cli.install_pkgarchive {
+            let p = std::path::Path::new(f.trim_end_matches('/'));
+            let canon = match p.canonicalize() {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!(">>> Error: cannot open {}: {}", f, e);
+                    std::process::exit(1);
+                }
+            };
+            if !canon.is_file() {
+                eprintln!(">>> Error: {} is not a regular file.", canon.display());
+                std::process::exit(1);
+            }
+            files.push(canon.to_string_lossy().into_owned());
+        }
+
+        if cli.pretend {
+            println!(
+                "{} Would audit and install {} (--pretend: not installing).",
+                ">>>".t_green().bold(),
+                files.join(", ")
+            );
+            return Ok(());
+        }
+        return match install_pkgarchives(&files, cli.ask, cli.oneshot) {
+            Some(names) => {
+                if !cli.oneshot && !names.is_empty() {
+                    mark_asexplicit(&names);
+                    // Local archives have no traceable source for world
+                    // (same "Err/" convention as --install-pkgbuild).
+                    if let Err(e) = add_to_world_set(&names, Some("Err")) {
+                        eprintln!(
+                            ">>> Warning: package(s) installed but world was not updated: {:#}",
+                            e
+                        );
+                    }
+                }
+                crate::progress::status_break();
+                println!("{} Installed: {}", ">>>".t_green().bold(), names.join(", "));
+                Ok(())
+            }
+            None => std::process::exit(1),
+        };
+    }
+
     // --aur/--abs/--repos and the other mutually exclusive pairs are
     // rejected up in config::build_argv, before clap ever runs, so the
     // same table covers flags typed here and flags coming from
@@ -2989,7 +3111,7 @@ fn run() -> anyhow::Result<()> {
             || cli.deselect
             || cli.check_world
             || select_installed;
-        if !never_installs && !mask::allow_explicit(&target_pkgs, None) {
+        if !never_installs && !mask::allow_explicit_atoms(&target_pkgs) {
             std::process::exit(1);
         }
     }
@@ -3616,11 +3738,29 @@ fn run() -> anyhow::Result<()> {
                     // Package names can never start with '-' (validate_pkg
                     // rejects that), and "@world" is never a real package,
                     // so the first token matching neither is unambiguously
-                    // the first package in the resumed list.
-                    if let Some(pos) = args
-                        .iter()
-                        .position(|a| !a.starts_with('-') && a != "@world")
-                    {
+                    // the first package in the resumed list. Option *values*
+                    // are neither either: an old-format saved state stores
+                    // `--exclude <value>` as two lines, and dropping the
+                    // value here used to leave a dangling --exclude that
+                    // swallowed the next real token (@world or the first
+                    // package).
+                    let mut pos = None;
+                    let mut skip_value = false;
+                    for (i, a) in args.iter().enumerate() {
+                        if skip_value {
+                            skip_value = false;
+                            continue;
+                        }
+                        if a == "--exclude" {
+                            skip_value = true;
+                            continue;
+                        }
+                        if !a.starts_with('-') && a != "@world" {
+                            pos = Some(i);
+                            break;
+                        }
+                    }
+                    if let Some(pos) = pos {
                         println!(">>> Skipping first package in resume list: {}", args[pos]);
                         args.remove(pos);
                     }
@@ -4730,9 +4870,12 @@ fn run() -> anyhow::Result<()> {
             // Mask lockdown on the full plan (targets + deps), before
             // any ask/confirm and before the helper is started.
             if !mask::allow_plan(all_infos.iter().map(|p| {
+                // aur/abs are real repos in the mask files too; mapping
+                // them to None here made repo-prefixed mask entries
+                // (`aur/foo-git`) dead letters on the plan gate.
                 (
                     p.name.as_str(),
-                    if p.repo.is_empty() || p.repo == "aur" || p.repo == "abs" {
+                    if p.repo.is_empty() {
                         None
                     } else {
                         Some(p.repo.as_str())
@@ -4885,9 +5028,12 @@ fn run() -> anyhow::Result<()> {
             // Mask lockdown on the full plan (targets + deps), before
             // any ask/confirm and before the helper is started.
             if !mask::allow_plan(all_infos.iter().map(|p| {
+                // aur/abs are real repos in the mask files too; mapping
+                // them to None here made repo-prefixed mask entries
+                // (`aur/foo-git`) dead letters on the plan gate.
                 (
                     p.name.as_str(),
-                    if p.repo.is_empty() || p.repo == "aur" || p.repo == "abs" {
+                    if p.repo.is_empty() {
                         None
                     } else {
                         Some(p.repo.as_str())
@@ -5390,6 +5536,35 @@ mod action_priority_tests {
         let active = active_actions(&cli);
         assert!(active.contains(&ActionKind::InstallPkgbuild));
         assert!(!active.contains(&ActionKind::Scan));
+    }
+
+    #[test]
+    fn install_pkgarchive_is_one_action_and_takes_many_files() {
+        let cli = Cli::parse_from([
+            "emerge",
+            "--install-pkgarchive",
+            "/tmp/a.pkg.tar.zst",
+            "/tmp/b.pkg.tar.zst",
+        ]);
+        let active = active_actions(&cli);
+        assert!(active.contains(&ActionKind::InstallPkgarchive));
+        assert_eq!(active.len(), 1);
+        assert_eq!(
+            cli.install_pkgarchive,
+            vec!["/tmp/a.pkg.tar.zst", "/tmp/b.pkg.tar.zst"]
+        );
+        assert!(cli.packages.is_empty());
+
+        // Same action name in argv order + one action only (multiple
+        // actions must still error through the normal path).
+        let argv: Vec<String> = ["emerge", "--install-pkgarchive", "/tmp/a.pkg.tar.zst"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            actions_in_argv_order(&argv, &active_actions(&Cli::parse_from(&argv))),
+            vec![ActionKind::InstallPkgarchive]
+        );
     }
 
     #[test]

