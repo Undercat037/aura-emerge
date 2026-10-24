@@ -53,8 +53,9 @@ sudo install -Dm644 misc/eselect.fish /usr/share/fish/vendor_completions.d/esele
 ```
 </details>
 
-**Зависимости:** `git`, `sudo`, `bubblewrap` (песочница сборки для AUR/ABS), `pacman` (libalpm, makepkg)
-**Опционально:** `devtools` (поддержка `--abs`), `gnupg` (`--autopgp`, автоимпорт PGP-ключей)
+**Зависимости:** `git`, `sudo`, `bubblewrap` (песочница сборки для AUR/ABS), `pacman` (libalpm, makepkg), `gnupg` (обязательная зависимость - импорт ключей для `--autopgp` делает сам emerge)
+
+**Опционально:** `devtools` (поддержка `--abs`)
 
 ## Использование
 

@@ -144,8 +144,25 @@ struct RustEnv {
 
 /// Fixes "rustup could not choose a version of cargo to run" in a
 /// sandboxed `build()`: rustup's `$RUSTUP_HOME` (default
-/// `$HOME/.rustup`) is empty under the fake `$HOME` (and, now that
-
+/// `$HOME/.rustup`) is empty under the fake `$HOME`, so the
+/// `~/.cargo/bin` shims can't find the default toolchain. The real
+/// rustup home is therefore re-exposed read-only (see `ro_binds`):
+/// the build may *run* the host toolchains, never *write* there.
+///
+/// Read-only is what keeps a hostile PKGBUILD from planting a trojaned
+/// `~/.cargo/bin/rustc` that would later run outside the sandbox -- but
+/// it also means rustup cannot install anything inside it. A package
+/// whose `rust-toolchain.toml` pins a channel the host doesn't have
+/// (say `stable` on a nightly-default host) makes every shim attempt
+/// "syncing channel updates" and die on the read-only bind:
+/// `could not create temp file .../.rustup/tmp/...: Read-only file
+/// system (os error 30)`, mid-`prepare()`. Pin `RUSTUP_TOOLCHAIN` to
+/// the host's installed default so the shims skip all override and
+/// channel resolution and go straight to the existing toolchain
+/// (`RUSTUP_TOOLCHAIN` outranks `rust-toolchain.toml` and
+/// `settings.toml`). A `RUSTUP_TOOLCHAIN` already set by the caller is
+/// passed through untouched. CARGO_HOME needs no such pin: it already
+/// points at the writable per-build scratch dir below.
 fn rustup_env(build_dir: &Path) -> RustEnv {
     let mut out = RustEnv {
         env: Vec::new(),
@@ -161,6 +178,11 @@ fn rustup_env(build_dir: &Path) -> RustEnv {
     if let Some(rustup_home) = real_rustup_home
         && rustup_home.is_dir()
     {
+        if std::env::var_os("RUSTUP_TOOLCHAIN").is_none()
+            && let Some(tc) = installed_default_toolchain(&rustup_home)
+        {
+            out.env.push(("RUSTUP_TOOLCHAIN".to_string(), tc));
+        }
         out.env.push((
             "RUSTUP_HOME".to_string(),
             rustup_home.to_string_lossy().to_string(),
@@ -183,6 +205,24 @@ fn rustup_env(build_dir: &Path) -> RustEnv {
     }
 
     out
+}
+
+/// The host rustup's `default_toolchain` from `settings.toml`, but only
+/// when that toolchain is actually installed (its `toolchains/` dir
+/// exists). Any read/parse miss or dangling default returns `None` and
+/// the caller simply doesn't pin -- rustup then behaves exactly as it
+/// did before the pin existed.
+fn installed_default_toolchain(rustup_home: &Path) -> Option<String> {
+    let settings = std::fs::read_to_string(rustup_home.join("settings.toml")).ok()?;
+    let default = settings.lines().find_map(|line| {
+        let v = line.trim().strip_prefix("default_toolchain = \"")?;
+        v.strip_suffix('"').map(str::to_string)
+    })?;
+    if rustup_home.join("toolchains").join(&default).is_dir() {
+        Some(default)
+    } else {
+        None
+    }
 }
 
 // ── per-build scratch dir ─────────────────────────────────────────────────────
@@ -640,6 +680,32 @@ mod tests {
         drop(FakerootShimGuard::new(a));
         drop(FakerootShimGuard::new(b));
         assert!(!da.exists() && !db.exists());
+    }
+
+    #[test]
+    fn rustup_pin_only_fires_for_an_installed_default() {
+        let home = temp("rustup-pin");
+        let toolchains = home.join("toolchains");
+        // No settings.toml at all -> no pin.
+        assert_eq!(installed_default_toolchain(&home), None);
+        // Default declared but its toolchain dir missing -> no pin
+        // (rustup would try to install it either way; don't pretend).
+        std::fs::write(
+            home.join("settings.toml"),
+            "default_toolchain = \"stable-x86_64-unknown-linux-gnu\"\nprofile = \"default\"\nversion = \"12\"\n",
+        )
+        .unwrap();
+        assert_eq!(installed_default_toolchain(&home), None);
+        // Installed default -> pinned by exact name.
+        std::fs::create_dir_all(
+            toolchains.join("stable-x86_64-unknown-linux-gnu"),
+        )
+        .unwrap();
+        assert_eq!(
+            installed_default_toolchain(&home).as_deref(),
+            Some("stable-x86_64-unknown-linux-gnu")
+        );
+        std::fs::remove_dir_all(&home).ok();
     }
 
     #[test]
