@@ -73,6 +73,7 @@
         <a class="nav-link red" href="#scanner"><span class="dot"></span> <span data-i18n="nav_scanner">PKGBUILD scanner</span></a>
         <a class="nav-link blue" href="#sandbox"><span class="dot"></span> <span data-i18n="nav_sandbox">bwrap sandbox</span></a>
         <a class="nav-link" href="#pkgbuild-view"><span class="dot"></span> PKGBUILD review</a>
+        <a class="nav-link" href="#pkgarchive"><span class="dot"></span> --install-pkgarchive</a>
         <a class="nav-link" href="#devel"><span class="dot"></span> --devel</a>
         <a class="nav-link" href="#revdep"><span class="dot"></span> --revdep-rebuild</a>
       </div>
@@ -152,11 +153,11 @@ sudo install -Dm644 misc/eselect.fish /usr/share/fish/vendor_completions.d/esele
           <h3 class="lang-block" data-lang-block="ua" hidden>Залежності</h3>
 <h3 class="lang-block" data-lang-block="ru" hidden>Зависимости</h3>
           <ul>
-            <li><strong data-i18n="deps_req">Required:</strong> <code>git</code>, <code>sudo</code>, <code>bubblewrap</code>, <code>pacman</code> (libalpm)</li>
+            <li><strong data-i18n="deps_req">Required:</strong> <code>git</code>, <code>sudo</code>, <code>bubblewrap</code>, <code>pacman</code> (libalpm), <code>gnupg</code> (keyring, <code>--autopgp</code>)</li>
             <li><strong data-i18n="deps_opt">Optional:</strong>
-              <span class="lang-block" data-lang-block="en"><code>devtools</code> (<code>--abs</code>), <code>gnupg</code> (<code>--autopgp</code>)</span>
-              <span class="lang-block" data-lang-block="ua" hidden><code>devtools</code> (<code>--abs</code>), <code>gnupg</code> (<code>--autopgp</code>)</span>
-<span class="lang-block" data-lang-block="ru" hidden><code>devtools</code> (<code>--abs</code>), <code>gnupg</code> (<code>--autopgp</code>)</span>
+              <span class="lang-block" data-lang-block="en"><code>devtools</code> (<code>--abs</code>)</span>
+              <span class="lang-block" data-lang-block="ua" hidden><code>devtools</code> (<code>--abs</code>)</span>
+<span class="lang-block" data-lang-block="ru" hidden><code>devtools</code> (<code>--abs</code>)</span>
             </li>
           </ul>
           <p class="lang-block" data-lang-block="en"><code>bubblewrap</code> is required for AUR/ABS builds; the only way around it is an explicit <code>--no-sandbox</code>.</p>
@@ -172,7 +173,7 @@ sudo install -Dm644 misc/eselect.fish /usr/share/fish/vendor_completions.d/esele
         <section id="world">
           <h2 data-i18n="section_world">World &amp; sets</h2>
           <div class="lang-block" data-lang-block="en">
-            <p>Path: <code>/etc/portage/world</code>. Every explicitly installed package is added automatically and removed on unmerge. You can edit it by hand: one package per line, optional repo prefix.</p>
+            <p>Path: <code>/etc/portage/world</code>. Every explicitly installed package is added automatically and removed on unmerge. You can edit it by hand: one package per line, optional repo prefix. State writes (world, <code>resume.state</code>, <code>lastaction.state</code>) take a cross-process advisory lock (<code>/etc/portage/.state.lock</code>), so two parallel emerges cannot interleave a read-modify-write.</p>
             <pre><code>cachyos-extra-v3/rust-analyzer
 aur/ayugram-desktop-bin
 abs/nano-custom
@@ -250,7 +251,7 @@ Would you like to merge these packages? [Yes/No] <span class="t-in">y</span>
 
           </div>
           <div class="lang-block" data-lang-block="ua" hidden>
-            <p>Шлях: <code>/etc/portage/world</code>. Кожен явно встановлений пакунок додається автоматично, а при видаленні (unmerge) прибирається. Файл можна редагувати вручну: один пакунок на рядок, префікс репозиторію необов'язковий.</p>
+            <p>Шлях: <code>/etc/portage/world</code>. Кожен явно встановлений пакунок додається автоматично, а при видаленні (unmerge) прибирається. Файл можна редагувати вручну: один пакунок на рядок, префікс репозиторію необов'язковий. Записи стану (world, <code>resume.state</code>, <code>lastaction.state</code>) беруть міжпроцесне advisory-блокування (<code>/etc/portage/.state.lock</code>), тож два паралельні emerge не можуть перемішати read-modify-write.</p>
             <pre><code>cachyos-extra-v3/rust-analyzer
 aur/ayugram-desktop-bin
 abs/nano-custom
@@ -328,7 +329,7 @@ Would you like to merge these packages? [Yes/No] <span class="t-in">y</span>
 
           </div>
 <div class="lang-block" data-lang-block="ru" hidden>
-            <p>Путь: <code>/etc/portage/world</code>. Каждый явно установленный пакет добавляется автоматически и убирается при unmerge. Можно править вручную: один пакет на строку, опциональный префикс репозитория.</p>
+            <p>Путь: <code>/etc/portage/world</code>. Каждый явно установленный пакет добавляется автоматически и убирается при unmerge. Можно править вручную: один пакет на строку, опциональный префикс репозитория. Записи состояния (world, <code>resume.state</code>, <code>lastaction.state</code>) берут межпроцессную advisory-блокировку (<code>/etc/portage/.state.lock</code>), так что два параллельных emerge не могут перемешать read-modify-write.</p>
             <pre><code>cachyos-extra-v3/rust-analyzer
 aur/ayugram-desktop-bin
 abs/nano-custom
@@ -538,7 +539,7 @@ $ emerge emacs
               <li>An optional <code>repo/</code> prefix (<code>aur</code>, <code>abs</code>, or an official repo name) limits the entry to that source. Without it the entry matches everywhere.</li>
               <li><code>*</code> matches any run of characters. Other allowed characters: letters, digits and <code>@ . _ + -</code>.</li>
               <li>A trailing <code># reason</code> is shown when the mask fires.</li>
-              <li>An invalid entry is skipped with a warning that names the file and line.</li>
+              <li>An invalid entry is skipped with a warning that names the file and line. Version-scoped atoms (<code>=cat/foo-1.2</code>, <code>&gt;=…</code>, <code>~…</code>) are rejected loudly: masks work on names, not versions.</li>
             </ul>
             <h3>Safety</h3>
             <p>A mask file that is a symlink is refused with a warning — the file is not read.</p>
@@ -573,7 +574,7 @@ $ emerge emacs
               <li>Необов'язковий префікс <code>repo/</code> (<code>aur</code>, <code>abs</code> або назва офіційного репозиторію) обмежує запис цим джерелом. Без префікса запис діє скрізь.</li>
               <li><code>*</code> збігається з будь-якою послідовністю символів. Дозволені також літери, цифри та <code>@ . _ + -</code>.</li>
               <li>Коментар <code># причина</code> у кінці рядка показується, коли маска спрацьовує.</li>
-              <li>Некоректний запис пропускається з попередженням, у якому вказано файл і рядок.</li>
+              <li>Некоректний запис пропускається з попередженням, у якому вказано файл і рядок. Версійні атоми (<code>=cat/foo-1.2</code>, <code>&gt;=…</code>, <code>~…</code>) відхиляються з явною помилкою: маска діє на назви, а не на версії.</li>
             </ul>
             <h3>Безпека</h3>
             <p>Якщо файл маски є символічним посиланням, його не читають, а видають попередження.</p>
@@ -581,7 +582,7 @@ $ emerge emacs
           </div>
 <div class="lang-block" data-lang-block="ru" hidden>
             <p><code>/etc/portage/package.mask</code> перечисляет пакеты, которые эта машина никогда не ставит. Это постоянное решение, а не вопрос: замаскированный пакет отклоняется даже как транзитивная зависимость AUR и даже при запросе по имени. Подсказки и флага обхода нет.</p>
-            <p>Это файл или каталог файлов (обычные файлы читаются по порядку имён; файлы с точки пропускаются; символические ссылки отклоняются). Одна запись на строку; допускаются <code>*</code>-глобы и префикс репозитория; в конце строки можно <code># комментарий</code>.</p>
+            <p>Это файл или каталог файлов (обычные файлы читаются по порядку имён; файлы с точки пропускаются; символические ссылки отклоняются). Одна запись на строку; допускаются <code>*</code>-глобы и префикс репозитория; в конце строки можно <code># комментарий</code>. Записи с версиями (<code>=cat/foo-1.2</code>, <code>&gt;=…</code>, <code>~…</code>) отвергаются с явной ошибкой (файл:строка) — маска работает по именам, не по версиям.</p>
             <pre><code>ayugram-desktop-bin            # конкретный пакет, любой источник
 aur/*-bin                      # никогда не ставить AUR -bin пакеты
 *-git                          # без devel-пакетов на этой машине
@@ -764,7 +765,7 @@ eselect profile list | show | set 12</code></pre>
             <p><code>--exclude &lt;atom&gt;</code> (repeatable or comma-separated) leaves a package out of the current run: installs, <code>-u</code>, <code>@world</code>, depclean/prune and revdep.</p>
             <pre><code>emerge -u --exclude linux --exclude aur/ayugram-desktop-bin
 emerge --exclude firefox @world</code></pre>
-            <p>Names are compared bare, so <code>--exclude extra/nano</code> and <code>--exclude nano</code> both skip <code>nano</code>. Skipped packages are reported: <code>&gt;&gt;&gt; N package(s) skipped by --exclude: …</code>. Unlike <a href="#mask">package.mask</a>, an exclude is not persistent: it applies to one run only.</p>
+            <p>Names are compared bare, so <code>--exclude extra/nano</code> and <code>--exclude nano</code> both skip <code>nano</code>. Skipped packages are reported: <code>&gt;&gt;&gt; N package(s) skipped by --exclude: …</code>. Unlike <a href="#mask">package.mask</a>, an exclude is not persistent: it applies to one run only. A resume keeps it: <code>--resume</code> / <code>--resume --skipfirst</code> replay the saved <code>--exclude=&lt;value&gt;</code> tokens, so the retry skips the same packages.</p>
             <h3>--keep-going</h3>
             <p>Without it a batch stops at the first failure. With <code>--keep-going</code> every failed atom is recorded together with a short reason (each atom once), the rest of the batch continues, and an end-of-run summary is printed to stderr.</p>
             <pre><code>&gt;&gt;&gt; Warning: the following package(s) were not found anywhere (official repos or AUR) and were skipped:
@@ -785,7 +786,7 @@ emerge --exclude firefox @world</code></pre>
             <p><code>--exclude &lt;atom&gt;</code> (можна повторювати або перелічувати через кому) виключає пакунок із поточного запуску: встановлення, <code>-u</code>, <code>@world</code>, depclean/prune і revdep.</p>
             <pre><code>emerge -u --exclude linux --exclude aur/ayugram-desktop-bin
 emerge --exclude firefox @world</code></pre>
-            <p>Назви порівнюються без префікса репозиторію, тож <code>--exclude extra/nano</code> і <code>--exclude nano</code> обидва пропускають <code>nano</code>. Про пропущені пакунки виводиться повідомлення: <code>&gt;&gt;&gt; N package(s) skipped by --exclude: …</code>. На відміну від <a href="#mask">package.mask</a>, виключення не є постійним: воно діє лише в одному запуску.</p>
+            <p>Назви порівнюються без префікса репозиторію, тож <code>--exclude extra/nano</code> і <code>--exclude nano</code> обидва пропускають <code>nano</code>. Про пропущені пакунки виводиться повідомлення: <code>&gt;&gt;&gt; N package(s) skipped by --exclude: …</code>. На відміну від <a href="#mask">package.mask</a>, виключення не є постійним: воно діє лише в одному запуску. Resume його пам'ятає: <code>--resume</code> / <code>--resume --skipfirst</code> відтворюють збережені токени <code>--exclude=&lt;значення&gt;</code>, тож повтор пропускає ті самі пакунки.</p>
             <h3>--keep-going</h3>
             <p>Без цього прапора пакетна операція зупиняється на першій помилці. З <code>--keep-going</code> кожен невдалий атом записується з короткою причиною (по одному разу), решта пакета продовжується, а наприкінці в stderr виводиться підсумок.</p>
             <pre><code>&gt;&gt;&gt; Warning: the following package(s) were not found anywhere (official repos or AUR) and were skipped:
@@ -803,7 +804,7 @@ emerge --exclude firefox @world</code></pre>
           </div>
 <div class="lang-block" data-lang-block="ru" hidden>
             <h3>--exclude</h3>
-            <p><code>--exclude &lt;atom&gt;</code> (можно повторять или через запятую) исключает пакет из текущего запуска: установки, <code>-u</code>, <code>@world</code>, <code>--depclean</code>/<code>--prune</code> (защищает от удаления) и <code>--revdep-rebuild</code>.</p>
+            <p><code>--exclude &lt;atom&gt;</code> (можно повторять или через запятую) исключает пакет из текущего запуска: установки, <code>-u</code>, <code>@world</code>, <code>--depclean</code>/<code>--prune</code> (защищает от удаления) и <code>--revdep-rebuild</code>. Исключение сохраняется и для <code>--resume</code>: токены <code>--exclude=&lt;значение&gt;</code> воспроизводятся при повторном запуске.</p>
             <h3>--keep-going</h3>
             <p><code>--keep-going</code> не останавливает пакетную операцию (<code>@world</code>, <code>-u</code>, <code>--batchinstall</code>, мультипакетные установки) на первой ошибке. Собирает сбои, печатает сводку и завершается с ненулевым кодом. Позже <code>--resume</code> повторит только неудавшееся.</p>
             <pre><code>emerge -u --exclude linux --exclude aur/ayugram-desktop-bin
@@ -908,7 +909,7 @@ emerge -pt noctalia --aur --deep</code></pre>
             <ul>
               <li><strong>Durations are real.</strong> AUR/ABS packages build one at a time, so each gets its own timer. A <code>pacman -S</code>/<code>-R</code> batch is a single transaction: it is logged as one line with every atom and the batch's total time.</li>
               <li><strong>Time format:</strong> <code>12s</code>, <code>1m5s</code>, <code>1h2m3s</code>.</li>
-              <li><strong>Writing:</strong> the file is root-owned, so lines are appended through <code>sudo tee -a</code>. Logging is best-effort — a failed write is silent and never fails or slows a merge that already happened. A symlinked log path is refused.</li>
+              <li><strong>Writing:</strong> the file is root-owned, so lines are appended through <code>sudo tee -a</code>. Logging is best-effort — a failed write is silent and never fails or slows a merge that already happened. The file is opened for append only — an existing log is never overwritten.</li>
               <li><strong><code>emerge --info</code></strong> reads the log and shows the number of merges and unmerges plus the cumulative build time. If the file is missing or unreadable, that line is simply omitted.</li>
             </ul>
           </div>
@@ -921,7 +922,7 @@ emerge -pt noctalia --aur --deep</code></pre>
             <ul>
               <li><strong>Тривалість завжди справжня.</strong> Пакунки AUR/ABS збираються по одному, тож кожен має власний таймер. Пакет <code>pacman -S</code>/<code>-R</code> — це одна транзакція: він записується одним рядком з усіма атомами та загальним часом.</li>
               <li><strong>Формат часу:</strong> <code>12s</code>, <code>1m5s</code>, <code>1h2m3s</code>.</li>
-              <li><strong>Запис:</strong> файл належить root, тому рядки дописуються через <code>sudo tee -a</code>. Журналювання виконується за можливості: невдалий запис мовчки ігнорується й ніколи не ламає та не сповільнює merge, який уже відбувся. Якщо шлях до журналу — символічне посилання, запис не виконується.</li>
+              <li><strong>Запис:</strong> файл належить root, тому рядки дописуються через <code>sudo tee -a</code>. Журналювання виконується за можливості: невдалий запис мовчки ігнорується й ніколи не ламає та не сповільнює merge, який уже відбувся. Файл відкривається лише на дописування — наявний журнал ніколи не перезаписується.</li>
               <li><strong><code>emerge --info</code></strong> читає журнал і показує кількість merge та unmerge, а також сумарний час збірки. Якщо файлу немає або його не можна прочитати, цей рядок просто пропускається.</li>
             </ul>
           </div>
@@ -996,6 +997,7 @@ emerge -u --exclude linux --keep-going     # upgrade, skip one, don't stop on fa
 emerge -at @fonts --deep                   # sets, tree plan
 emerge --scan neovim-git --aur             # audit only
 emerge --install-pkgbuild ~/src/my-pkg     # local PKGBUILD (scanner + sandbox)
+emerge --install-pkgarchive ./foo-1.0-1-x86_64.pkg.tar.zst  # built archive (pinned + audited)
 emerge -u --devel                          # upgrade + rebuild moved -git
 emerge --revdep-rebuild                    # broken shared-library links
 emerge --batchinstall pkgs.txt             # mass-install from list
@@ -1051,6 +1053,7 @@ emerge -u --exclude linux --keep-going     # оновити, пропустит�
 emerge -at @fonts --deep                   # набори, план деревом
 emerge --scan neovim-git --aur             # лише аудит
 emerge --install-pkgbuild ~/src/my-pkg     # локальний PKGBUILD (сканер + sandbox)
+emerge --install-pkgarchive ./foo-1.0-1-x86_64.pkg.tar.zst  # зібраний архів (pin + аудит)
 emerge -u --devel                          # оновити + перезібрати -git, що пішли вперед
 emerge --revdep-rebuild                    # биті посилання на бібліотеки
 emerge --batchinstall pkgs.txt             # масове встановлення зі списку
@@ -1106,6 +1109,7 @@ emerge -u --exclude linux --keep-going     # обновить, пропусти�
 emerge -at @fonts --deep                   # наборы, план деревом
 emerge --scan neovim-git --aur             # только аудит
 emerge --install-pkgbuild ~/src/my-pkg     # локальный PKGBUILD (сканер + sandbox)
+emerge --install-pkgarchive ./foo-1.0-1-x86_64.pkg.tar.zst  # готовый архив (pin + аудит)
 emerge -u --devel                          # обновить + пересобрать -git, ушедшие вперёд
 emerge --revdep-rebuild                    # битые ссылки на библиотеки
 emerge --batchinstall pkgs.txt             # массовая установка из списка
@@ -1286,7 +1290,7 @@ Total: 2 orphaned package(s) to remove
 <span class="t-ok">&gt;&gt;&gt;</span> core... done
 <span class="t-ok">&gt;&gt;&gt;</span> extra... done</code></pre>
 <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge --info</span>
-aura-emerge 3.0.21-beta (alpm crate v5.0.2 - libalpm v16.0.1, linux 7.2.9-2-cachyos-bore, x86_64)
+aura-emerge 3.0.23-beta (alpm crate v5.0.2 - libalpm v16.0.1, linux 7.2.9-2-cachyos-bore, x86_64)
 ======================================================================
 System uname: Linux 7.2.9-2-cachyos-bore #1 SMP PREEMPT_DYNAMIC x86_64
 profile: none (/etc/portage/make.profile not set)
@@ -1451,7 +1455,7 @@ Total: 2 orphaned package(s) to remove
 <span class="t-ok">&gt;&gt;&gt;</span> core... done
 <span class="t-ok">&gt;&gt;&gt;</span> extra... done</code></pre>
 <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge --info</span>
-aura-emerge 3.0.21-beta (alpm crate v5.0.2 - libalpm v16.0.1, linux 7.2.9-2-cachyos-bore, x86_64)
+aura-emerge 3.0.23-beta (alpm crate v5.0.2 - libalpm v16.0.1, linux 7.2.9-2-cachyos-bore, x86_64)
 ======================================================================
 System uname: Linux 7.2.9-2-cachyos-bore #1 SMP PREEMPT_DYNAMIC x86_64
 profile: none (/etc/portage/make.profile not set)
@@ -1616,7 +1620,7 @@ Total: 2 orphaned package(s) to remove
 <span class="t-ok">&gt;&gt;&gt;</span> core... done
 <span class="t-ok">&gt;&gt;&gt;</span> extra... done</code></pre>
 <pre class="term term-blue"><code><span class="t-ps">$</span> <span class="t-cmd">emerge --info</span>
-aura-emerge 3.0.21-beta (alpm crate v5.0.2 - libalpm v16.0.1, linux 7.2.9-2-cachyos-bore, x86_64)
+aura-emerge 3.0.23-beta (alpm crate v5.0.2 - libalpm v16.0.1, linux 7.2.9-2-cachyos-bore, x86_64)
 ======================================================================
 System uname: Linux 7.2.9-2-cachyos-bore #1 SMP PREEMPT_DYNAMIC x86_64
 profile: none (/etc/portage/make.profile not set)
@@ -1684,8 +1688,8 @@ Total: 1 missing dependency
           <h2>--undo / --batchinstall / --check-world</h2>
           <div class="lang-block" data-lang-block="en">
             <ul>
-              <li><strong><code>--undo</code></strong> reverses the last successful install, unmerge or depclean (one step). After an install it removes only packages that were new in that run and brings back installed packages that were removed as blockers; after an unmerge it reinstalls from the recorded source (<code>Err/</code> and <code>abs/</code> are only listed); after a depclean it reinstalls the removed orphans as dependencies (not added to world) — repo packages from the repos, local builds through the AUR if it still has them; you are told if the repos now carry a different version, and a package that is gone everywhere is listed with the <code>pacman -U</code> line for its cached file. If some packages fail, only those stay in the saved state, so <code>--undo</code> can be run again. <code>-u</code> is not reversible. State: <code>/etc/portage/lastaction.state</code>.</li>
-              <li><strong><code>--batchinstall FILE</code></strong> installs every atom in a plain-text list (one per line, <code>#</code> comments) — the custom-set format, but from any path with no registration. It combines with <code>-p</code>, <code>-a</code>, <code>--aur</code>, <code>--abs</code>, <code>--repos</code>, …</li>
+              <li><strong><code>--undo</code></strong> reverses the last successful install, unmerge or depclean (one step). It asks before doing anything (Enter = No; <code>-p</code> shows the plan without asking). After an install it removes only packages that were new in that run and brings back installed packages that were removed as blockers; after an unmerge it reinstalls from the recorded source (<code>Err/</code> and <code>abs/</code> are only listed); after a depclean it reinstalls the removed orphans as dependencies (not added to world) — repo packages from the repos, local builds through the AUR if it still has them; you are told if the repos now carry a different version, and a package that is gone everywhere is listed with the <code>pacman -U</code> line for its cached file. If some packages fail, only those stay in the saved state, so <code>--undo</code> can be run again. <code>-u</code> is not reversible. State: <code>/etc/portage/lastaction.state</code>.</li>
+              <li><strong><code>--batchinstall FILE</code></strong> installs every atom in a plain-text list (one per line, <code>#</code> comments) — the custom-set format, but from any path with no registration -- <code>@set</code> lines expand exactly as they would in a real set. It combines with <code>-p</code>, <code>-a</code>, <code>--aur</code>, <code>--abs</code>, <code>--repos</code>, …</li>
               <li><strong><code>--check-world</code></strong> lists world entries that are missing or not explicitly installed.</li>
               <li><strong><code>--sync-explicit</code></strong> marks every explicitly installed package that is not in world, a world <code>@set</code> or <code>package.profile</code> as a dependency, so <code>-c</code> can see it. Alone it runs now (<code>-p</code> lists, <code>-a</code> asks); with an install or upgrade it runs after that succeeds.</li>
               <li><strong><code>--resume</code></strong> continues an interrupted run (<code>--skipfirst</code> drops the first package); after <code>--keep-going</code> it retries only what failed. State: <code>/etc/portage/resume.state</code>.</li>
@@ -1698,8 +1702,8 @@ emerge --resume --skipfirst</code></pre>
           </div>
           <div class="lang-block" data-lang-block="ua" hidden>
             <ul>
-              <li><strong><code>--undo</code></strong> скасовує останнє успішне встановлення, unmerge або depclean (один крок). Після встановлення видаляє лише пакунки, які були новими в тому запуску, і повертає встановлені пакунки, видалені як блокери; після unmerge перевстановлює із записаного джерела (<code>Err/</code> і <code>abs/</code> лише перелічуються); після depclean перевстановлює видалені сироти як залежності (не додаючи до world) — пакунки з репозиторіїв повертаються з репозиторіїв, локальні збірки — через AUR, якщо він їх ще має; якщо репозиторії тепер мають іншу версію, вас про це повідомлять, а пакунок, якого більше ніде немає, буде перелічено з рядком <code>pacman -U</code> для його кешованого файлу. Якщо частина пакунків не вдалася, у збереженому стані лишаються тільки вони, тож <code>--undo</code> можна запустити ще раз. <code>-u</code> не скасовується. Стан: <code>/etc/portage/lastaction.state</code>.</li>
-              <li><strong><code>--batchinstall FILE</code></strong> встановлює всі атоми з текстового списку (по одному в рядку, коментарі <code>#</code>) — формат власного набору, але з будь-якого шляху без реєстрації. Поєднується з <code>-p</code>, <code>-a</code>, <code>--aur</code>, <code>--abs</code>, <code>--repos</code>, …</li>
+              <li><strong><code>--undo</code></strong> скасовує останнє успішне встановлення, unmerge або depclean (один крок). Перед будь-якою дією питає (Enter = Ні; <code>-p</code> показує план без запитань). Після встановлення видаляє лише пакунки, які були новими в тому запуску, і повертає встановлені пакунки, видалені як блокери; після unmerge перевстановлює із записаного джерела (<code>Err/</code> і <code>abs/</code> лише перелічуються); після depclean перевстановлює видалені сироти як залежності (не додаючи до world) — пакунки з репозиторіїв повертаються з репозиторіїв, локальні збірки — через AUR, якщо він їх ще має; якщо репозиторії тепер мають іншу версію, вас про це повідомлять, а пакунок, якого більше ніде немає, буде перелічено з рядком <code>pacman -U</code> для його кешованого файлу. Якщо частина пакунків не вдалася, у збереженому стані лишаються тільки вони, тож <code>--undo</code> можна запустити ще раз. <code>-u</code> не скасовується. Стан: <code>/etc/portage/lastaction.state</code>.</li>
+              <li><strong><code>--batchinstall FILE</code></strong> встановлює всі атоми з текстового списку (по одному в рядку, коментарі <code>#</code>) — формат власного набору, але з будь-якого шляху без реєстрації -- рядки <code>@набір</code> розгортаються так само, як у справжньому наборі. Поєднується з <code>-p</code>, <code>-a</code>, <code>--aur</code>, <code>--abs</code>, <code>--repos</code>, …</li>
               <li><strong><code>--check-world</code></strong> показує записи world, яких бракує або які не встановлені явно.</li>
               <li><strong><code>--sync-explicit</code></strong> позначає як залежності всі явно встановлені пакунки, яких немає у world, <code>@set</code> world чи <code>package.profile</code>, щоб <code>-c</code> їх бачив. Окремо виконується одразу (<code>-p</code> показує, <code>-a</code> питає); з встановленням чи оновленням — після його успіху.</li>
               <li><strong><code>--resume</code></strong> продовжує перервений запуск (<code>--skipfirst</code> пропускає перший пакунок); після <code>--keep-going</code> повторює лише невдалі. Стан: <code>/etc/portage/resume.state</code>.</li>
@@ -1712,8 +1716,8 @@ emerge --resume --skipfirst</code></pre>
           </div>
           <div class="lang-block" data-lang-block="ru" hidden>
             <ul>
-              <li><strong><code>--undo</code></strong> отменяет последнюю успешную установку, unmerge или depclean (один шаг). После установки удаляет только пакеты, которые были новыми в том запуске, и возвращает установленные пакеты, удалённые как блокеры; после unmerge переустанавливает из записанного источника (<code>Err/</code> и <code>abs/</code> только перечисляются); после depclean переустанавливает удалённые сироты как зависимости (не добавляя в world) — пакеты из репозиториев возвращаются из репозиториев, локальные сборки — через AUR, если он их ещё имеет; если репозитории теперь имеют другую версию, вам об этом сообщат, а пакет, которого больше нигде нет, будет перечислен со строкой <code>pacman -U</code> для его кэшированного файла. Если часть пакетов не удалась, в сохранённом состоянии остаются только они, так что <code>--undo</code> можно запустить ещё раз. <code>-u</code> не отменяется. Состояние: <code>/etc/portage/lastaction.state</code>.</li>
-              <li><strong><code>--batchinstall FILE</code></strong> устанавливает все атомы из текстового списка (по одному в строке, комментарии <code>#</code>) — формат пользовательского набора, но из любого пути без регистрации. Сочетается с <code>-p</code>, <code>-a</code>, <code>--aur</code>, <code>--abs</code>, <code>--repos</code>, …</li>
+              <li><strong><code>--undo</code></strong> отменяет последнюю успешную установку, unmerge или depclean (один шаг). Перед любым действием спрашивает (Enter = Нет; <code>-p</code> показывает план без вопросов). После установки удаляет только пакеты, которые были новыми в том запуске, и возвращает установленные пакеты, удалённые как блокеры; после unmerge переустанавливает из записанного источника (<code>Err/</code> и <code>abs/</code> только перечисляются); после depclean переустанавливает удалённые сироты как зависимости (не добавляя в world) — пакеты из репозиториев возвращаются из репозиториев, локальные сборки — через AUR, если он их ещё имеет; если репозитории теперь имеют другую версию, вам об этом сообщат, а пакет, которого больше нигде нет, будет перечислен со строкой <code>pacman -U</code> для его кэшированного файла. Если часть пакетов не удалась, в сохранённом состоянии остаются только они, так что <code>--undo</code> можно запустить ещё раз. <code>-u</code> не отменяется. Состояние: <code>/etc/portage/lastaction.state</code>.</li>
+              <li><strong><code>--batchinstall FILE</code></strong> устанавливает все атомы из текстового списка (по одному в строке, комментарии <code>#</code>) — формат пользовательского набора, но из любого пути без регистрации -- строки <code>@набор</code> разворачиваются так же, как в настоящем наборе. Сочетается с <code>-p</code>, <code>-a</code>, <code>--aur</code>, <code>--abs</code>, <code>--repos</code>, …</li>
               <li><strong><code>--check-world</code></strong> показывает записи world, которых не хватает или которые установлены не явно.</li>
               <li><strong><code>--sync-explicit</code></strong> помечает как зависимости все явно установленные пакеты, которых нет в world, <code>@set</code> world или <code>package.profile</code>, чтобы <code>-c</code> их видел. Отдельно выполняется сразу (<code>-p</code> показывает, <code>-a</code> спрашивает); с установкой или обновлением — после её успеха.</li>
               <li><strong><code>--resume</code></strong> продолжает прерванный запуск (<code>--skipfirst</code> пропускает первый пакет); после <code>--keep-going</code> повторяет только упавшие. Состояние: <code>/etc/portage/resume.state</code>.</li>
@@ -1900,12 +1904,18 @@ sudo install -Dm644 misc/_eselect /usr/share/zsh/site-functions/_eselect</code><
                 <tbody>
                   <tr><td><code>curl|sh</code>, <code>wget|sh</code></td><td>Runs a remote script straight in a shell</td></tr>
                   <tr><td><code>eval "$(curl …)"</code>, <code>source &lt;(curl …)</code></td><td>Runs fetched content without a literal pipe</td></tr>
+                  <tr><td><code>bash &lt;(curl …)</code> and friends</td><td>Fed to a shell/interpreter directly -- no pipe, no substitution for the other checks</td></tr>
+                  <tr><td><code>curl | python3</code>/<code>perl</code>/<code>node</code>/…</td><td>Remote code execution with no shell in the pipeline</td></tr>
+                  <tr><td><code>gunzip</code>/<code>zstd -d</code>/<code>unzip -p</code>/<code>tar -xO</code> piped into a shell</td><td>Compressed payload stashed inline instead of fetched (clustered and split tar flags included)</td></tr>
+                  <tr><td><code>/dev/tcp</code> / <code>/dev/udp</code> redirection</td><td>Raw reverse-shell / download channel</td></tr>
+                  <tr><td>heredoc fed to a shell (or a body that fetches/decodes)</td><td>Fetch and execution live on different lines</td></tr>
+                  <tr><td><code>cargo install &lt;crate&gt;</code>, <code>go install module@ver</code></td><td>Builds upstream code outside pacman's view mid-build (local targets stay clean)</td></tr>
                   <tr><td>base64 / hex decode, <code>| sh</code>, <code>\xHH</code> runs, <code>openssl</code> decrypt</td><td>Obfuscated or inline-stashed payloads</td></tr>
                   <tr><td><code>python -c</code> exec/eval, <code>sh -c</code> payloads</td><td>Inline obfuscated execution</td></tr>
                   <tr><td><code>sudo</code> / <code>pkexec</code> / <code>doas</code> in the build script</td><td>makepkg builds unprivileged on purpose; this escalates mid-build</td></tr>
                   <tr><td><code>chmod 777</code></td><td>World-writable / executable permissions</td></tr>
                   <tr><td>raw IPv4, <code>.onion</code>, paste sites</td><td>Hardcoded C2 or second-stage delivery</td></tr>
-                  <tr><td><code>npm</code>/<code>bun</code>/<code>yarn</code>/<code>pip</code>/<code>gem</code> installing a named package mid-build</td><td>How the Atomic Arch payload was smuggled in</td></tr>
+                  <tr><td><code>npm</code>/<code>pnpm</code>/<code>bun</code>/<code>yarn</code>/<code>pip</code>/<code>gem</code> installing a named package mid-build</td><td>How the Atomic Arch payload was smuggled in</td></tr>
                   <tr><td>command substitution outside any function</td><td>Runs whenever anything merely <em>sources</em> the PKGBUILD (<code>--printsrcinfo</code>, an AUR helper's metadata read)</td></tr>
                   <tr><td>executable installed under a generic tool name (linter, hasher, validator, …)</td><td>Payload-disguise technique of the early-August 2026 wave</td></tr>
                   <tr><td><code>TracerPid</code>, <code>LD_PRELOAD</code> probes</td><td>Anti-debugger / anti-sandbox fingerprinting</td></tr>
@@ -1921,8 +1931,8 @@ sudo install -Dm644 misc/_eselect /usr/share/zsh/site-functions/_eselect</code><
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-rule-r">===================================</span>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-h-r">Alert, matched a known-malicious IOC (scaner-test)</span>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-rule-r">===================================</span>
-<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 29:</span> references '<span class="t-hl">atomic-lockfile</span>' - a known-malicious package name from a documented AUR supply-chain campaign (Atomic Arch, June 2026)
-<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 11:</span> sha256 'e73a35b3e75e94746428d1a207703d6335933deadee7d1d9c9d0328df7b9df77' matches a published payload hash from the openconnect-sso-anchored AUR wave (Jul/Aug 2026)
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 34:</span> references '<span class="t-hl">atomic-lockfile</span>' - a known-malicious package name from a documented AUR supply-chain campaign (Atomic Arch, June 2026)
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 11:</span> sha256 '<span class="t-hl">e73a35b3e75e94746428d1a207703d6335933deadee7d1d9c9d0328df7b9df77</span>' matches a published payload hash from the openconnect-sso-anchored AUR wave (Jul/Aug 2026)
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file scaner-test-therandtxt.install line 3:</span> references '<span class="t-hl">compromised.txt</span>' - the exact marker file dropped by the 2018 acroread/balz/minergate AUR takeover
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file scaner-test-therandtxt.install line 2:</span> references '<span class="t-hl">js-digest</span>' - a known-malicious package name from a documented AUR supply-chain campaign (Atomic Arch, June 2026)
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/PKGBUILD</span>
@@ -1935,14 +1945,20 @@ sudo install -Dm644 misc/_eselect /usr/share/zsh/site-functions/_eselect</code><
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 18:</span> decodes a base64 blob (possible obfuscated payload)
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 25:</span> sets world-writable/executable permissions (chmod 777)
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 10:</span> fetches from or references a hardcoded raw IP address instead of a domain
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 34:</span> installs a named external package via npm/pnpm/bun/yarn/pip/gem mid-build - worth a quick check that the package name is one you'd expect; this general technique (not necessarily this specific package) is how the Atomic Arch AUR campaign smuggled in its payload
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 39:</span> installs a named remote crate/module via cargo/go install mid-build - fetches and builds upstream code outside pacman's view; local targets (--path ., ./...) are the normal packaging flow and don't trigger this
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 20:</span> feeds a curl/wget process substitution straight to a shell/interpreter (bash &lt;(curl ...)) - runs fetched remote content with neither a pipe nor a command substitution for the other checks to key on
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 36:</span> downloads and pipes a remote script straight into an interpreter (curl/wget | python3/perl/node/...) - remote code execution with no shell in the pipeline
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 37:</span> decompresses a bundled/compressed blob and pipes it straight into a shell or interpreter (gunzip/zstd -d/unzip -p/tar -xO | sh) - same inline-payload role as base64 -d | sh, just compressed instead of encoded
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 33:</span> opens a raw TCP/UDP channel via bash /dev/tcp//dev/udp redirection (exec 3&lt;&gt;/dev/tcp/host/port) - classic reverse-shell/download primitive; no legit build step needs it
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 43:</span> runs a here-document through a shell, or a heredoc body that fetches/decodes remote content (bash &lt;&lt;EOF ... curl ... EOF) - the fetch and the execution live on different lines, so per-line checks never see them together
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 26:</span> invokes sudo/pkexec/doas from inside the build script - makepkg builds unprivileged on purpose, so this escalates privilege mid-build; the exact mechanism reported in the openconnect-sso-anchored AUR wave (Jul/Aug 2026)
-<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 7:</span> references a .onion address - legitimate PKGBUILDs don't hardcode Tor hidden-service addresses; matches the Tor-backed second-stage delivery reused across the June 2026 and Jul/Aug 2026 AUR campaigns
-<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file Makefile line 6:</span> downloads and pipes a remote script straight into a shell (curl/wget | sh)
-<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file Makefile line 7:</span> decodes a base64/hex-encoded blob and pipes it straight into a shell (base64 -d | sh / xxd -r -p | bash) - same obfuscated-execution role as curl|sh, just an inline-stashed payload instead of a network fetch
-<span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">… 16 more findings …</span>
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file Makefile line 11:</span> decompresses a bundled/compressed blob and pipes it straight into a shell or interpreter (gunzip/zstd -d/unzip -p/tar -xO | sh) - same inline-payload role as base64 -d | sh, just compressed instead of encoded
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">… 29 more findings (scaner-test-therandtxt.install, Makefile, fix.patch) …</span>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/PKGBUILD</span>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/scaner-test-therandtxt.install</span>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/Makefile</span>
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/fix.patch</span>
 
 <span class="t-p">&gt;&gt;&gt;</span> 'scaner-test''s cloned PKGBUILD/.install content (which differs from what was pre-scanned) matches known-suspicious patterns. Review it yourself before proceeding:
     ./scaner-test
@@ -1991,12 +2007,18 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
                 <tbody>
                   <tr><td><code>curl|sh</code>, <code>wget|sh</code></td><td>Виконує віддалений скрипт просто в оболонці</td></tr>
                   <tr><td><code>eval "$(curl …)"</code>, <code>source &lt;(curl …)</code></td><td>Виконує завантажений вміст без явного pipe</td></tr>
+                  <tr><td><code>bash &lt;(curl …)</code> та споріднені</td><td>Вміст одразу шеллу/інтерпретатору -- без pipe і без підстановки, за якою чіпляються інші перевірки</td></tr>
+                  <tr><td><code>curl | python3</code>/<code>perl</code>/<code>node</code>/…</td><td>Віддалене виконання коду без shell у конвеєрі</td></tr>
+                  <tr><td><code>gunzip</code>/<code>zstd -d</code>/<code>unzip -p</code>/<code>tar -xO</code> пайпом у shell</td><td>Стиснуте навантаження, заховане інлайн замість завантаження (включно з кластерами та розділеними прапорцями tar)</td></tr>
+                  <tr><td>перенаправлення <code>/dev/tcp</code> / <code>/dev/udp</code></td><td>Сирий reverse-shell / канал завантаження</td></tr>
+                  <tr><td>heredoc у shell (або тіло, що завантажує/декодує)</td><td>Завантаження й виконання живуть на різних рядках</td></tr>
+                  <tr><td><code>cargo install &lt;crate&gt;</code>, <code>go install module@ver</code></td><td>Збирає upstream-код повз pacman посеред збірки (локальні цілі лишаються чистими)</td></tr>
                   <tr><td>декодування base64 / hex, <code>| sh</code>, послідовності <code>\xHH</code>, розшифрування через <code>openssl</code></td><td>Обфусковане або вбудоване в скрипт корисне навантаження</td></tr>
                   <tr><td><code>python -c</code> з exec/eval, навантаження в <code>sh -c</code></td><td>Обфусковане виконання коду «на місці»</td></tr>
                   <tr><td><code>sudo</code> / <code>pkexec</code> / <code>doas</code> у скрипті збірки</td><td>makepkg навмисно збирає без привілеїв; це підвищує їх посеред збірки</td></tr>
                   <tr><td><code>chmod 777</code></td><td>Права на запис і виконання для всіх</td></tr>
                   <tr><td>«сирі» IPv4, <code>.onion</code>, paste-сайти</td><td>Жорстко прописані C2 або доставка другого етапу</td></tr>
-                  <tr><td><code>npm</code>/<code>bun</code>/<code>yarn</code>/<code>pip</code>/<code>gem</code> ставить іменований пакунок під час збірки</td><td>Так Atomic Arch протягувала своє навантаження</td></tr>
+                  <tr><td><code>npm</code>/<code>pnpm</code>/<code>bun</code>/<code>yarn</code>/<code>pip</code>/<code>gem</code> ставить іменований пакунок під час збірки</td><td>Так Atomic Arch протягувала своє навантаження</td></tr>
                   <tr><td>підстановка команд поза будь-якою функцією</td><td>Виконується, щойно будь-що просто <em>підключає</em> PKGBUILD (<code>--printsrcinfo</code>, читання метаданих AUR-хелпером)</td></tr>
                   <tr><td>виконуваний файл із загальною назвою інструмента (linter, hasher, validator, …)</td><td>Прийом маскування корисного навантаження з хвилі на початку серпня 2026</td></tr>
                   <tr><td>перевірки <code>TracerPid</code>, <code>LD_PRELOAD</code></td><td>Виявлення відладчика чи пісочниці</td></tr>
@@ -2012,8 +2034,8 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-rule-r">===================================</span>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-h-r">Alert, matched a known-malicious IOC (scaner-test)</span>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-rule-r">===================================</span>
-<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 29:</span> references '<span class="t-hl">atomic-lockfile</span>' - a known-malicious package name from a documented AUR supply-chain campaign (Atomic Arch, June 2026)
-<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 11:</span> sha256 'e73a35b3e75e94746428d1a207703d6335933deadee7d1d9c9d0328df7b9df77' matches a published payload hash from the openconnect-sso-anchored AUR wave (Jul/Aug 2026)
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 34:</span> references '<span class="t-hl">atomic-lockfile</span>' - a known-malicious package name from a documented AUR supply-chain campaign (Atomic Arch, June 2026)
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 11:</span> sha256 '<span class="t-hl">e73a35b3e75e94746428d1a207703d6335933deadee7d1d9c9d0328df7b9df77</span>' matches a published payload hash from the openconnect-sso-anchored AUR wave (Jul/Aug 2026)
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file scaner-test-therandtxt.install line 3:</span> references '<span class="t-hl">compromised.txt</span>' - the exact marker file dropped by the 2018 acroread/balz/minergate AUR takeover
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file scaner-test-therandtxt.install line 2:</span> references '<span class="t-hl">js-digest</span>' - a known-malicious package name from a documented AUR supply-chain campaign (Atomic Arch, June 2026)
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/PKGBUILD</span>
@@ -2026,14 +2048,20 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 18:</span> decodes a base64 blob (possible obfuscated payload)
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 25:</span> sets world-writable/executable permissions (chmod 777)
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 10:</span> fetches from or references a hardcoded raw IP address instead of a domain
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 34:</span> installs a named external package via npm/pnpm/bun/yarn/pip/gem mid-build - worth a quick check that the package name is one you'd expect; this general technique (not necessarily this specific package) is how the Atomic Arch AUR campaign smuggled in its payload
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 39:</span> installs a named remote crate/module via cargo/go install mid-build - fetches and builds upstream code outside pacman's view; local targets (--path ., ./...) are the normal packaging flow and don't trigger this
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 20:</span> feeds a curl/wget process substitution straight to a shell/interpreter (bash &lt;(curl ...)) - runs fetched remote content with neither a pipe nor a command substitution for the other checks to key on
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 36:</span> downloads and pipes a remote script straight into an interpreter (curl/wget | python3/perl/node/...) - remote code execution with no shell in the pipeline
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 37:</span> decompresses a bundled/compressed blob and pipes it straight into a shell or interpreter (gunzip/zstd -d/unzip -p/tar -xO | sh) - same inline-payload role as base64 -d | sh, just compressed instead of encoded
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 33:</span> opens a raw TCP/UDP channel via bash /dev/tcp//dev/udp redirection (exec 3&lt;&gt;/dev/tcp/host/port) - classic reverse-shell/download primitive; no legit build step needs it
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 43:</span> runs a here-document through a shell, or a heredoc body that fetches/decodes remote content (bash &lt;&lt;EOF ... curl ... EOF) - the fetch and the execution live on different lines, so per-line checks never see them together
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 26:</span> invokes sudo/pkexec/doas from inside the build script - makepkg builds unprivileged on purpose, so this escalates privilege mid-build; the exact mechanism reported in the openconnect-sso-anchored AUR wave (Jul/Aug 2026)
-<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 7:</span> references a .onion address - legitimate PKGBUILDs don't hardcode Tor hidden-service addresses; matches the Tor-backed second-stage delivery reused across the June 2026 and Jul/Aug 2026 AUR campaigns
-<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file Makefile line 6:</span> downloads and pipes a remote script straight into a shell (curl/wget | sh)
-<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file Makefile line 7:</span> decodes a base64/hex-encoded blob and pipes it straight into a shell (base64 -d | sh / xxd -r -p | bash) - same obfuscated-execution role as curl|sh, just an inline-stashed payload instead of a network fetch
-<span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">… 16 more findings …</span>
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file Makefile line 11:</span> decompresses a bundled/compressed blob and pipes it straight into a shell or interpreter (gunzip/zstd -d/unzip -p/tar -xO | sh) - same inline-payload role as base64 -d | sh, just compressed instead of encoded
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">… 29 more findings (scaner-test-therandtxt.install, Makefile, fix.patch) …</span>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/PKGBUILD</span>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/scaner-test-therandtxt.install</span>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/Makefile</span>
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/fix.patch</span>
 
 <span class="t-p">&gt;&gt;&gt;</span> 'scaner-test''s cloned PKGBUILD/.install content (which differs from what was pre-scanned) matches known-suspicious patterns. Review it yourself before proceeding:
     ./scaner-test
@@ -2082,12 +2110,18 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
                 <tbody>
                   <tr><td><code>curl|sh</code>, <code>wget|sh</code></td><td>Запускает удалённый скрипт прямо в shell</td></tr>
                   <tr><td><code>eval "$(curl …)"</code>, <code>source &lt;(curl …)</code></td><td>Выполняет загруженное содержимое без буквального пайпа</td></tr>
+                  <tr><td><code>bash &lt;(curl …)</code> и родственные</td><td>Содержимое сразу шеллу/интерпретатору -- без пайпа и без подстановки, за которую цепляются остальные проверки</td></tr>
+                  <tr><td><code>curl | python3</code>/<code>perl</code>/<code>node</code>/…</td><td>Удалённое выполнение кода без shell в конвейере</td></tr>
+                  <tr><td><code>gunzip</code>/<code>zstd -d</code>/<code>unzip -p</code>/<code>tar -xO</code> пайпом в shell</td><td>Сжатый payload, спрятанный инлайн вместо загрузки (включая кластеры и раздельные флаги tar)</td></tr>
+                  <tr><td>перенаправление <code>/dev/tcp</code> / <code>/dev/udp</code></td><td>Сырой reverse-shell / канал загрузки</td></tr>
+                  <tr><td>heredoc в shell (или тело, которое скачивает/декодирует)</td><td>Загрузка и исполнение живут на разных строках</td></tr>
+                  <tr><td><code>cargo install &lt;crate&gt;</code>, <code>go install module@ver</code></td><td>Собирает upstream-код мимо pacman посреди сборки (локальные цели остаются чистыми)</td></tr>
                   <tr><td>декодирование base64 / hex, <code>| sh</code>, последовательности <code>\xHH</code>, расшифровка <code>openssl</code></td><td>Обфусцированные или встроенные payload</td></tr>
                   <tr><td><code>python -c</code> exec/eval, payload в <code>sh -c</code></td><td>Встроенное обфусцированное выполнение</td></tr>
                   <tr><td><code>sudo</code> / <code>pkexec</code> / <code>doas</code> в скрипте сборки</td><td>makepkg специально собирает без привилегий; это эскалация mid-build</td></tr>
                   <tr><td><code>chmod 777</code></td><td>Права world-writable / executable</td></tr>
                   <tr><td>«сырой» IPv4, <code>.onion</code>, paste-сайты</td><td>Жёстко прошитый C2 или доставка второго этапа</td></tr>
-                  <tr><td><code>npm</code>/<code>bun</code>/<code>yarn</code>/<code>pip</code>/<code>gem</code> ставит именованный пакет mid-build</td><td>Как протаскивали payload Atomic Arch</td></tr>
+                  <tr><td><code>npm</code>/<code>pnpm</code>/<code>bun</code>/<code>yarn</code>/<code>pip</code>/<code>gem</code> ставит именованный пакет mid-build</td><td>Как протаскивали payload Atomic Arch</td></tr>
                   <tr><td>command substitution вне любой функции</td><td>Выполняется при любом <em>source</em> PKGBUILD (<code>--printsrcinfo</code>, чтение метаданных AUR-хелпером)</td></tr>
                   <tr><td>исполняемый файл под общим именем инструмента (linter, hasher, validator, …)</td><td>Маскировка payload волны начала августа 2026</td></tr>
                   <tr><td>пробы <code>TracerPid</code>, <code>LD_PRELOAD</code></td><td>Anti-debugger / anti-sandbox fingerprinting</td></tr>
@@ -2103,8 +2137,8 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-rule-r">===================================</span>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-h-r">Alert, matched a known-malicious IOC (scaner-test)</span>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-rule-r">===================================</span>
-<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 29:</span> references '<span class="t-hl">atomic-lockfile</span>' - a known-malicious package name from a documented AUR supply-chain campaign (Atomic Arch, June 2026)
-<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 11:</span> sha256 'e73a35b3e75e94746428d1a207703d6335933deadee7d1d9c9d0328df7b9df77' matches a published payload hash from the openconnect-sso-anchored AUR wave (Jul/Aug 2026)
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 34:</span> references '<span class="t-hl">atomic-lockfile</span>' - a known-malicious package name from a documented AUR supply-chain campaign (Atomic Arch, June 2026)
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 11:</span> sha256 '<span class="t-hl">e73a35b3e75e94746428d1a207703d6335933deadee7d1d9c9d0328df7b9df77</span>' matches a published payload hash from the openconnect-sso-anchored AUR wave (Jul/Aug 2026)
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file scaner-test-therandtxt.install line 3:</span> references '<span class="t-hl">compromised.txt</span>' - the exact marker file dropped by the 2018 acroread/balz/minergate AUR takeover
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file scaner-test-therandtxt.install line 2:</span> references '<span class="t-hl">js-digest</span>' - a known-malicious package name from a documented AUR supply-chain campaign (Atomic Arch, June 2026)
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/PKGBUILD</span>
@@ -2117,14 +2151,20 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 18:</span> decodes a base64 blob (possible obfuscated payload)
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 25:</span> sets world-writable/executable permissions (chmod 777)
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 10:</span> fetches from or references a hardcoded raw IP address instead of a domain
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 34:</span> installs a named external package via npm/pnpm/bun/yarn/pip/gem mid-build - worth a quick check that the package name is one you'd expect; this general technique (not necessarily this specific package) is how the Atomic Arch AUR campaign smuggled in its payload
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 39:</span> installs a named remote crate/module via cargo/go install mid-build - fetches and builds upstream code outside pacman's view; local targets (--path ., ./...) are the normal packaging flow and don't trigger this
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 20:</span> feeds a curl/wget process substitution straight to a shell/interpreter (bash &lt;(curl ...)) - runs fetched remote content with neither a pipe nor a command substitution for the other checks to key on
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 36:</span> downloads and pipes a remote script straight into an interpreter (curl/wget | python3/perl/node/...) - remote code execution with no shell in the pipeline
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 37:</span> decompresses a bundled/compressed blob and pipes it straight into a shell or interpreter (gunzip/zstd -d/unzip -p/tar -xO | sh) - same inline-payload role as base64 -d | sh, just compressed instead of encoded
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 33:</span> opens a raw TCP/UDP channel via bash /dev/tcp//dev/udp redirection (exec 3&lt;&gt;/dev/tcp/host/port) - classic reverse-shell/download primitive; no legit build step needs it
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 43:</span> runs a here-document through a shell, or a heredoc body that fetches/decodes remote content (bash &lt;&lt;EOF ... curl ... EOF) - the fetch and the execution live on different lines, so per-line checks never see them together
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 26:</span> invokes sudo/pkexec/doas from inside the build script - makepkg builds unprivileged on purpose, so this escalates privilege mid-build; the exact mechanism reported in the openconnect-sso-anchored AUR wave (Jul/Aug 2026)
-<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file PKGBUILD line 7:</span> references a .onion address - legitimate PKGBUILDs don't hardcode Tor hidden-service addresses; matches the Tor-backed second-stage delivery reused across the June 2026 and Jul/Aug 2026 AUR campaigns
-<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file Makefile line 6:</span> downloads and pipes a remote script straight into a shell (curl/wget | sh)
-<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file Makefile line 7:</span> decodes a base64/hex-encoded blob and pipes it straight into a shell (base64 -d | sh / xxd -r -p | bash) - same obfuscated-execution role as curl|sh, just an inline-stashed payload instead of a network fetch
-<span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">… 16 more findings …</span>
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-loc">file Makefile line 11:</span> decompresses a bundled/compressed blob and pipes it straight into a shell or interpreter (gunzip/zstd -d/unzip -p/tar -xO | sh) - same inline-payload role as base64 -d | sh, just compressed instead of encoded
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">… 29 more findings (scaner-test-therandtxt.install, Makefile, fix.patch) …</span>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/PKGBUILD</span>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/scaner-test-therandtxt.install</span>
 <span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/Makefile</span>
+<span class="t-p">&gt;&gt;&gt;</span> <span class="t-dim">Read full file: ./scaner-test/fix.patch</span>
 
 <span class="t-p">&gt;&gt;&gt;</span> 'scaner-test''s cloned PKGBUILD/.install content (which differs from what was pre-scanned) matches known-suspicious patterns. Review it yourself before proceeding:
     ./scaner-test
@@ -2160,7 +2200,7 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
             <p>Shared by default. With <code>--unshare-net-build</code> the download phase keeps the network (the declared <code>source=()</code> entries), while <code>build()</code>/<code>check()</code>/<code>package()</code> get none — so a stray <code>cargo build</code> reaching crates.io fails loudly. Loopback stays up for tools that need it; there is still no route outside.</p>
             <h3>Toolchain quirks handled for you</h3>
             <ul>
-              <li><strong>rustup:</strong> <code>RUSTUP_HOME</code> is pointed back at the real path so <code>cargo</code> still resolves a toolchain. <code>CARGO_HOME</code> is <em>not</em> restored (it may hold <code>credentials.toml</code>) — a fresh writable directory inside the build dir is used instead, and dependencies are re-fetched.</li>
+              <li><strong>rustup:</strong> <code>RUSTUP_HOME</code> is pointed back at the real path (read-only) so <code>cargo</code> still resolves a toolchain, and <code>RUSTUP_TOOLCHAIN</code> is pinned to your installed host default (unless you set one yourself) — rustup never tries to install or sync a channel into the read-only home, so a package pinning another toolchain via <code>rust-toolchain.toml</code> builds with the host default inside the sandbox. <code>CARGO_HOME</code> is <em>not</em> restored (it may hold <code>credentials.toml</code>) — a fresh writable directory inside the build dir is used instead, and dependencies are re-fetched.</li>
               <li><strong>fakeroot:</strong> <code>package()</code> runs under <code>fakeroot</code>, which fails with “cannot preserve ownership” in a user namespace with no uid 0. A small <code>fakeroot</code> shim re-runs the real one in a nested uid-0-mapped bwrap layer. The shim lives in <code>/var/tmp</code>, read-only inside the jail, so <code>build()</code> cannot replace it, and it is deleted afterwards.</li>
             </ul>
             <div class="callout callout-stripe blue">
@@ -2175,12 +2215,12 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
               <table>
                 <thead><tr><th>Flag</th><th>Effect</th></tr></thead>
                 <tbody>
-                  <tr><td><code>--no-sandbox</code></td><td>Plain makepkg (with a warning)</td></tr>
+                  <tr><td><code>--no-sandbox</code></td><td>Plain makepkg (with a warning); also skips the unsandboxed-fallback confirmation</td></tr>
                   <tr><td><code>--unshare-net-build</code></td><td>No network during build()/check()/package()</td></tr>
                 </tbody>
               </table>
             </div>
-            <p>Without <code>bubblewrap</code> installed, builds fall back to plain makepkg.</p>
+            <p>Without <code>bubblewrap</code> installed, builds fall back to plain makepkg: interactively you confirm that once per package, and a non-interactive run is refused outright — the fallback skips the sandbox <em>and</em> the package audit, so it must never run silently. <code>--no-sandbox</code> is the explicit whole-run opt-out.</p>
           </div>
           <div class="lang-block" data-lang-block="ua" hidden>
             <p>Сканер працює за принципом чорного списку: PKGBUILD, який він пропустить, усе одно виконає довільний shell від імені вашого користувача. Пісочниця — другий рівень захисту. Функції <code>pkgver</code>/<code>prepare</code>/<code>build</code>/<code>check</code>/<code>package</code> виконуються всередині <a href="https://github.com/containers/bubblewrap" target="_blank" rel="noopener">bubblewrap</a> (<code>/usr/bin/bwrap</code>), якщо він установлений.</p>
@@ -2196,7 +2236,7 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
             <p>За замовчуванням спільна. З <code>--unshare-net-build</code> на етапі завантаження мережа лишається (для оголошених у <code>source=()</code> джерел), а <code>build()</code>/<code>check()</code>/<code>package()</code> працюють без неї — тож випадковий <code>cargo build</code>, що потягнеться до crates.io, впаде з явною помилкою. Loopback залишається доступним для інструментів, яким він потрібен, але маршруту назовні немає.</p>
             <h3>Особливості інструментів, які враховано</h3>
             <ul>
-              <li><strong>rustup:</strong> <code>RUSTUP_HOME</code> вказує на справжній шлях, тож <code>cargo</code> знаходить toolchain. <code>CARGO_HOME</code> <em>не</em> відновлюється (там може лежати <code>credentials.toml</code>) — натомість створюється чистий каталог усередині каталогу збірки, а залежності завантажуються заново.</li>
+              <li><strong>rustup:</strong> <code>RUSTUP_HOME</code> вказує на справжній шлях (read-only), тож <code>cargo</code> знаходить toolchain, а <code>RUSTUP_TOOLCHAIN</code> закріплюється за усталеним toolchain'ом хоста (якщо ви не задали свій) — rustup не намагається встановити чи синхронізувати канал у read-only home, тож пакунок із іншим toolchain у <code>rust-toolchain.toml</code> збирається в пісочниці з хостовим усталеним. <code>CARGO_HOME</code> <em>не</em> відновлюється (там може лежати <code>credentials.toml</code>) — натомість створюється чистий каталог усередині каталогу збірки, а залежності завантажуються заново.</li>
               <li><strong>fakeroot:</strong> <code>package()</code> виконується під <code>fakeroot</code>, який у просторі імен користувача без uid 0 падає з помилкою «cannot preserve ownership». Невеличка обгортка <code>fakeroot</code> запускає справжній у вкладеному шарі bwrap з відображенням на uid 0. Обгортка лежить у <code>/var/tmp</code> — усередині пісочниці це лише для читання, тож <code>build()</code> не може її підмінити; після збірки її видаляють.</li>
             </ul>
             <div class="callout callout-stripe blue">
@@ -2211,12 +2251,12 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
               <table>
                 <thead><tr><th>Прапор</th><th>Дія</th></tr></thead>
                 <tbody>
-                  <tr><td><code>--no-sandbox</code></td><td>Звичайний makepkg (з попередженням)</td></tr>
+                  <tr><td><code>--no-sandbox</code></td><td>Звичайний makepkg (з попередженням); також пропускає підтвердження unsandboxed-fallback</td></tr>
                   <tr><td><code>--unshare-net-build</code></td><td>Без мережі під час build()/check()/package()</td></tr>
                 </tbody>
               </table>
             </div>
-            <p>Якщо <code>bubblewrap</code> не встановлено, збірка виконується звичайним makepkg.</p>
+            <p>Якщо <code>bubblewrap</code> не встановлено, збірка виконується звичайним makepkg: інтерактивно ви підтверджуєте це для кожного пакунка, а неінтерактивний запуск відмовляє одразу — fallback минає пісочницю <em>й</em> аудит пакунка, тож не може виконуватися мовчки. <code>--no-sandbox</code> — явна відмова на весь запуск.</p>
           </div>
 <div class="lang-block" data-lang-block="ru" hidden>
             <p>Сканер — это blocklist: PKGBUILD, который он пропустил, всё равно выполнит произвольный shell от вашего пользователя. Песочница — второй слой. <code>pkgver</code>/<code>prepare</code>/<code>build</code>/<code>check</code>/<code>package</code> выполняются внутри <a href="https://github.com/containers/bubblewrap" target="_blank" rel="noopener">bubblewrap</a> (<code>/usr/bin/bwrap</code>), если он установлен.</p>
@@ -2232,7 +2272,7 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
             <p>По умолчанию общая. С <code>--unshare-net-build</code> фаза загрузки сохраняет сеть (объявленные <code>source=()</code>), а <code>build()</code>/<code>check()</code>/<code>package()</code> остаются без неё — случайный <code>cargo build</code> до crates.io падает явно. Loopback остаётся для инструментов, которым он нужен; маршрута наружу нет.</p>
             <h3>Особенности toolchain, обработанные за вас</h3>
             <ul>
-              <li><strong>rustup:</strong> <code>RUSTUP_HOME</code> указывает на реальный путь, чтобы <code>cargo</code> находил toolchain. <code>CARGO_HOME</code> <em>не</em> восстанавливается (там может быть <code>credentials.toml</code>) — вместо этого используется свежий writable каталог внутри build dir, зависимости скачиваются заново.</li>
+              <li><strong>rustup:</strong> <code>RUSTUP_HOME</code> указывает на реальный путь (read-only), чтобы <code>cargo</code> находил toolchain, а <code>RUSTUP_TOOLCHAIN</code> закрепляется за дефолтным установленным toolchain'ом хоста (если вы не задали свой) — rustup не пытается установить/синхронизировать канал в read-only home, поэтому пакет с другим toolchain в <code>rust-toolchain.toml</code> собирается в песочнице с хостовым дефолтом. <code>CARGO_HOME</code> <em>не</em> восстанавливается (там может быть <code>credentials.toml</code>) — вместо этого используется свежий writable каталог внутри build dir, зависимости скачиваются заново.</li>
               <li><strong>fakeroot:</strong> <code>package()</code> идёт под <code>fakeroot</code>, который в user namespace без uid 0 падает с «cannot preserve ownership». Небольшой shim <code>fakeroot</code> перезапускает настоящий в вложенном uid-0-mapped слое bwrap. Shim лежит в <code>/var/tmp</code>, read-only внутри клетки, чтобы <code>build()</code> не мог его подменить, и удаляется после.</li>
             </ul>
             <div class="callout callout-stripe blue">
@@ -2247,12 +2287,12 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
               <table>
                 <thead><tr><th>Флаг</th><th>Эффект</th></tr></thead>
                 <tbody>
-                  <tr><td><code>--no-sandbox</code></td><td>Обычный makepkg (с предупреждением)</td></tr>
+                  <tr><td><code>--no-sandbox</code></td><td>Обычный makepkg (с предупреждением); также пропускает подтверждение unsandboxed-fallback</td></tr>
                   <tr><td><code>--unshare-net-build</code></td><td>Без сети во время build()/check()/package()</td></tr>
                 </tbody>
               </table>
             </div>
-            <p>Без установленного <code>bubblewrap</code> сборка откатывается к обычному makepkg.</p>
+            <p>Без установленного <code>bubblewrap</code> сборка откатывается к обычному makepkg: интерактивно вы подтверждаете это для каждого пакета, а неинтерактивный запуск отклоняется сразу — fallback минует песочницу <em>и</em> аудит пакета, поэтому не может выполняться молча. <code>--no-sandbox</code> — явный отказ на весь запуск.</p>
           </div>
         </section>
 
@@ -2308,6 +2348,22 @@ emerge --install-pkgbuild ~/src/my-pkg --pkgbuild-view</code></pre>
               <li>Последние показанные копии лежат в <code>~/.cache/aura-emerge/pkgbuild-view/&lt;pkgbase&gt;.PKGBUILD</code> (под <code>$XDG_CACHE_HOME</code>, если задан). Они нужны только для diff и не играют роли в безопасности — <a href="#scanner">сканер</a> сам сравнивает полученное с клонированным.</li>
             </ul>
             <p><code>--scan</code> аудитит PKGBUILD (+ <code>.install</code>) без сборки и установки: тянет с cgit для пакета AUR или читает локальный checkout с <code>--install-pkgbuild &lt;PATH&gt; --scan</code>. Тот же отчёт, что у pre-build скана, без вопроса «Continue anyway?». Ненулевой код при любой находке — удобно для скриптов. Для <code>--abs</code> пока недоступно; для ABS используйте <code>--pkgbuild-view</code> при обычной установке.</p>
+          </div>
+        </section>
+
+        <section id="pkgarchive">
+          <h2>--install-pkgarchive</h2>
+          <div class="lang-block" data-lang-block="en">
+            <p><code>emerge --install-pkgarchive ./foo-1.0-1-x86_64.pkg.tar.zst</code> installs ready-built package archives — makepkg output or a file repo's <code>.pkg.tar.zst</code>/<code>.zst</code> — with no PKGBUILD in sight. Every archive goes through the same pipeline a sandboxed build produces: it is pinned by hash, unpacked and audited (sensitive paths — libalpm hooks, systemd units, sudoers, udev, <code>ld.so.preload</code>, … — setuid binaries, <code>.INSTALL</code> scripts, path traversal and symlink member names), re-hashed right before the privileged install, and only then handed to libalpm. A <code>bsdtar</code> failure aborts instead of continuing unaudited.</p>
+            <p>Archives land in world as <code>Err/&lt;name&gt;</code> and are marked explicit, so depclean keeps them; <code>-1</code> installs as dependencies instead. Combine with <code>-p</code>/<code>-a</code>; several archives in one run are a single transaction.</p>
+          </div>
+          <div class="lang-block" data-lang-block="ua" hidden>
+            <p><code>emerge --install-pkgarchive ./foo-1.0-1-x86_64.pkg.tar.zst</code> встановлює готові архіви пакунків — результат makepkg або <code>.pkg.tar.zst</code>/<code>.zst</code> з файлового репозиторію — без жодного PKGBUILD. Кожен архів проходить той самий конвеєр, що й продукт пісочної збірки: фіксується хешем, розпаковується й аудитується (чутливі шляхи — хуки libalpm, systemd-юніти, sudoers, udev, <code>ld.so.preload</code>, … — setuid-бінарники, <code>.INSTALL</code>-скрипти, traversal та symlink-імена членів), повторно хешується безпосередньо перед привілейованим встановленням і лише тоді передається libalpm. Збій <code>bsdtar</code> перериває процес замість продовження без аудиту.</p>
+            <p>Архіви потрапляють у world як <code>Err/&lt;назва&gt;</code> і позначаються явними, тож depclean їх лишає; <code>-1</code> встановлює їх як залежності. Поєднується з <code>-p</code>/<code>-a</code>; кілька архівів за один запуск — одна транзакція.</p>
+          </div>
+          <div class="lang-block" data-lang-block="ru" hidden>
+            <p><code>emerge --install-pkgarchive ./foo-1.0-1-x86_64.pkg.tar.zst</code> устанавливает готовые архивы пакетов — результат makepkg или <code>.pkg.tar.zst</code>/<code>.zst</code> из файлового репозитория — без всякого PKGBUILD. Каждый архив проходит тот же конвейер, что и продукт песочной сборки: фиксируется хешем, распаковывается и аудируется (чувствительные пути — хуки libalpm, systemd-юниты, sudoers, udev, <code>ld.so.preload</code>, … — setuid-бинарники, <code>.INSTALL</code>-скрипты, traversal и symlink-имена членов архива), повторно хешируется непосредственно перед привилегированной установкой и только потом передаётся libalpm. Сбой <code>bsdtar</code> прерывает процесс вместо продолжения без аудита.</p>
+            <p>Архивы попадают в world как <code>Err/&lt;имя&gt;</code> и помечаются явными, так что depclean их держит; <code>-1</code> ставит как зависимости. Сочетается с <code>-p</code>/<code>-a</code>; несколько архивов за один запуск — одна транзакция.</p>
           </div>
         </section>
 

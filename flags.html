@@ -237,9 +237,9 @@
                 </tr>
                 <tr>
                   <td><code>--undo</code></td>
-                  <td class="lang-block" data-lang-block="en">Undo last install/unmerge/depclean (one step; <code>-u</code> not reversible)</td>
-                  <td class="lang-block" data-lang-block="ua" hidden>Скасувати останнє встановлення/видалення/depclean (один крок; <code>-u</code> не скасовується)</td>
-<td class="lang-block" data-lang-block="ru" hidden>Отменить последнюю установку/удаление/depclean (один шаг; <code>-u</code> необратимо)</td>
+                  <td class="lang-block" data-lang-block="en">Undo last install/unmerge/depclean (one step; <code>-u</code> not reversible). Asks first (Enter = No)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Скасувати останнє встановлення/видалення/depclean (один крок; <code>-u</code> не скасовується). Спершу питає (Enter = Ні)</td>
+<td class="lang-block" data-lang-block="ru" hidden>Отменить последнюю установку/удаление/depclean (один шаг; <code>-u</code> необратимо). Сначала спрашивает (Enter = Нет)</td>
                 </tr>
                 <tr>
                   <td><code>--resume</code></td>
@@ -255,15 +255,21 @@
                 </tr>
                 <tr>
                   <td><code>--batchinstall &lt;FILE&gt;</code></td>
-                  <td class="lang-block" data-lang-block="en">Mass-install from a text list (same format as a custom set)</td>
-                  <td class="lang-block" data-lang-block="ua" hidden>Масове встановлення зі списку</td>
-<td class="lang-block" data-lang-block="ru" hidden>Массовая установка из текстового списка (тот же формат, что у набора)</td>
+                  <td class="lang-block" data-lang-block="en">Mass-install from a text list (same format as a custom set; <code>@set</code> lines expand)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Масове встановлення зі списку (рядки <code>@набір</code> розгортаються)</td>
+<td class="lang-block" data-lang-block="ru" hidden>Массовая установка из текстового списка (тот же формат, что у набора; строки <code>@набор</code> разворачиваются)</td>
                 </tr>
                 <tr>
                   <td><code>--install-pkgbuild &lt;PATH&gt;</code></td>
                   <td class="lang-block" data-lang-block="en">Build+install a local PKGBUILD checkout (scanner + bwrap)</td>
                   <td class="lang-block" data-lang-block="ua" hidden>Зібрати+встановити локальний checkout PKGBUILD</td>
 <td class="lang-block" data-lang-block="ru" hidden>Собрать и установить локальный PKGBUILD (сканер + bwrap)</td>
+                </tr>
+                <tr>
+                  <td><code>--install-pkgarchive &lt;FILE&gt;…</code></td>
+                  <td class="lang-block" data-lang-block="en">Install built package archives (<code>.pkg.tar.zst</code>, …): pin → tarball audit → sha256 re-check → install; world <code>Err/</code> + explicit unless <code>-1</code></td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Встановити зібрані архіви пакунків (<code>.pkg.tar.zst</code>, …): pin → аудит архіву → повторна перевірка sha256 → встановлення; world <code>Err/</code> + явний, якщо не <code>-1</code></td>
+<td class="lang-block" data-lang-block="ru" hidden>Установить собранные архивы пакетов (<code>.pkg.tar.zst</code>, …): pin → аудит архива → повторная проверка sha256 → установка; world <code>Err/</code> + явный, если не <code>-1</code></td>
                 </tr>
                 <tr>
                   <td><code>--scan</code></td>
@@ -459,9 +465,9 @@
                 </tr>
                 <tr>
                   <td><code>--no-sandbox</code></td>
-                  <td class="lang-block" data-lang-block="en">Turn off bwrap (warning printed); conflicts with <code>--unshare-net-build</code></td>
-                  <td class="lang-block" data-lang-block="ua" hidden>Вимкнути bwrap (з попередженням)</td>
-<td class="lang-block" data-lang-block="ru" hidden>Отключить bwrap (с предупреждением)</td>
+                  <td class="lang-block" data-lang-block="en">Turn off bwrap (warning printed); conflicts with <code>--unshare-net-build</code>; also skips the unsandboxed-fallback confirmation</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Вимкнути bwrap (з попередженням); також пропускає підтвердження unsandboxed-fallback</td>
+<td class="lang-block" data-lang-block="ru" hidden>Отключить bwrap (с предупреждением); также пропускает подтверждение unsandboxed-fallback</td>
                 </tr>
                 <tr>
                   <td><code>--unshare-net-build</code></td>
@@ -680,9 +686,9 @@
               <tbody>
                 <tr>
                   <td><code>--batchinstall &lt;FILE&gt;</code></td>
-                  <td class="lang-block" data-lang-block="en">Mass-install from list file</td>
-                  <td class="lang-block" data-lang-block="ua" hidden>Масове встановлення зі списку</td>
-<td class="lang-block" data-lang-block="ru" hidden>Массовая установка из файла-списка</td>
+                  <td class="lang-block" data-lang-block="en">Mass-install from list file (<code>@set</code> lines expand)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Масове встановлення зі списку (рядки <code>@набір</code> розгортаються)</td>
+<td class="lang-block" data-lang-block="ru" hidden>Массовая установка из файла-списка (строки <code>@набор</code> разворачиваются)</td>
                 </tr>
                 <tr>
                   <td><code>--keep-going</code></td>
