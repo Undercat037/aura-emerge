@@ -472,10 +472,183 @@ fn seed_from_host_export(real: &Path, dst: &Path) {
     let _ = child.wait();
 }
 
+// ── seccomp (denylist for sandboxed makepkg) ─────────────────────────────────
+
+/// Classic BPF sock_filter word (linux/filter.h).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SockFilter {
+    code: u16,
+    jt: u8,
+    jf: u8,
+    k: u32,
+}
+
+// linux/bpf_common.h + linux/filter.h opcodes we need.
+const BPF_LD: u16 = 0x00;
+const BPF_JMP: u16 = 0x05;
+const BPF_RET: u16 = 0x06;
+const BPF_W: u16 = 0x00;
+const BPF_ABS: u16 = 0x20;
+const BPF_JEQ: u16 = 0x10;
+const BPF_K: u16 = 0x00;
+const BPF_ALU: u16 = 0x04;
+const BPF_AND: u16 = 0x50;
+
+// seccomp_data offsets / return values (linux/seccomp.h).
+const SECCOMP_RET_ALLOW: u32 = 0x7fff0000;
+const SECCOMP_RET_KILL_PROCESS: u32 = 0x80000000;
+const SECCOMP_DATA_NR: u32 = 0;
+const SECCOMP_DATA_ARCH: u32 = 4;
+// AUDIT_ARCH_* — only the host arch is accepted; others kill.
+#[cfg(target_arch = "x86_64")]
+const SECCOMP_AUDIT_ARCH: u32 = 0xc000_003e; // AUDIT_ARCH_X86_64
+#[cfg(target_arch = "aarch64")]
+const SECCOMP_AUDIT_ARCH: u32 = 0xc000_00b7; // AUDIT_ARCH_AARCH64
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+const SECCOMP_AUDIT_ARCH: u32 = 0;
+
+/// Syscalls a PKGBUILD build has no legitimate reason to call. Denylist
+/// (default ALLOW) so normal compilers/linkers keep working; expand as
+/// needed. Numbers from the host arch's syscall table.
+///
+/// Per-arch arrays (no `#[cfg]` inside the slice — that needs
+/// `stmt_expr_attributes`, which is still unstable).
+///
+/// Do NOT denylist `mount` / `umount2` / `pivot_root`: `package()` runs
+/// under a nested bwrap (fakeroot shim, uid 0) that needs those syscalls
+/// to set up its mounts. Blocking them kills makepkg with SIGSYS
+/// (exit 159) right after "Entering fakeroot environment".
+#[cfg(target_arch = "x86_64")]
+fn denied_syscalls() -> &'static [u32] {
+    &[
+        libc::SYS_ptrace as u32,
+        libc::SYS_process_vm_readv as u32,
+        libc::SYS_process_vm_writev as u32,
+        libc::SYS_kexec_load as u32,
+        libc::SYS_kexec_file_load as u32,
+        libc::SYS_init_module as u32,
+        libc::SYS_finit_module as u32,
+        libc::SYS_delete_module as u32,
+        libc::SYS_reboot as u32,
+        libc::SYS_swapon as u32,
+        libc::SYS_swapoff as u32,
+        libc::SYS_open_by_handle_at as u32,
+        libc::SYS_name_to_handle_at as u32,
+        libc::SYS_iopl as u32,
+        libc::SYS_ioperm as u32,
+        libc::SYS_acct as u32,
+        libc::SYS_settimeofday as u32,
+        libc::SYS_clock_settime as u32,
+        libc::SYS_perf_event_open as u32,
+        libc::SYS_userfaultfd as u32,
+        // `bpf` left allowed: nested bwrap / toolchains may probe it;
+        // not worth SIGSYS risk for the current threat model.
+    ]
+}
+
+#[cfg(target_arch = "aarch64")]
+fn denied_syscalls() -> &'static [u32] {
+    &[
+        libc::SYS_ptrace as u32,
+        libc::SYS_process_vm_readv as u32,
+        libc::SYS_process_vm_writev as u32,
+        libc::SYS_kexec_load as u32,
+        libc::SYS_init_module as u32,
+        libc::SYS_finit_module as u32,
+        libc::SYS_delete_module as u32,
+        libc::SYS_reboot as u32,
+        libc::SYS_swapon as u32,
+        libc::SYS_swapoff as u32,
+        libc::SYS_open_by_handle_at as u32,
+        libc::SYS_name_to_handle_at as u32,
+        libc::SYS_acct as u32,
+        libc::SYS_settimeofday as u32,
+        libc::SYS_clock_settime as u32,
+        libc::SYS_perf_event_open as u32,
+        libc::SYS_userfaultfd as u32,
+    ]
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+fn denied_syscalls() -> &'static [u32] {
+    &[]
+}
+
+fn bpf(code: u16, jt: u8, jf: u8, k: u32) -> SockFilter {
+    SockFilter { code, jt, jf, k }
+}
+
+/// Berkeley Packet Filter program for bwrap `--seccomp FD`:
+/// validate arch → kill denied syscalls → ALLOW everything else.
+fn seccomp_filter_bytes() -> Vec<u8> {
+    let denied = denied_syscalls();
+    let mut f: Vec<SockFilter> = Vec::with_capacity(denied.len() + 6);
+    // A = arch
+    f.push(bpf(BPF_LD | BPF_W | BPF_ABS, 0, 0, SECCOMP_DATA_ARCH));
+    // if arch != host → kill
+    f.push(bpf(BPF_JMP | BPF_JEQ | BPF_K, 1, 0, SECCOMP_AUDIT_ARCH));
+    f.push(bpf(BPF_RET | BPF_K, 0, 0, SECCOMP_RET_KILL_PROCESS));
+    // A = nr
+    f.push(bpf(BPF_LD | BPF_W | BPF_ABS, 0, 0, SECCOMP_DATA_NR));
+    // mask out X32 high bit on x86_64 (nr & ~0x40000000) — keep simple: just compare
+    #[cfg(target_arch = "x86_64")]
+    {
+        f.push(bpf(BPF_ALU | BPF_AND | BPF_K, 0, 0, !0x4000_0000u32));
+    }
+    for &nr in denied {
+        // if A == nr → kill (jt=0 jumps over the kill when not equal? JEQ jt jf:
+        // true → jt, false → jf. We want equal → kill.
+        f.push(bpf(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, nr));
+        f.push(bpf(BPF_RET | BPF_K, 0, 0, SECCOMP_RET_KILL_PROCESS));
+    }
+    f.push(bpf(BPF_RET | BPF_K, 0, 0, SECCOMP_RET_ALLOW));
+
+    let mut bytes = Vec::with_capacity(f.len() * 8);
+    for ins in f {
+        bytes.extend_from_slice(&ins.code.to_ne_bytes());
+        bytes.push(ins.jt);
+        bytes.push(ins.jf);
+        bytes.extend_from_slice(&ins.k.to_ne_bytes());
+    }
+    bytes
+}
+
+/// Writes the filter to a pipe and returns the read end with CLOEXEC
+/// cleared so bwrap inherits it via `--seccomp <fd>`. The OwnedFd must
+/// stay alive until after `Command::spawn`/`status`.
+fn seccomp_fd() -> Option<std::os::fd::OwnedFd> {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    let mut fds = [0i32; 2];
+    // SAFETY: pipe2 with a 2-int buffer is well-defined.
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return None;
+    }
+    let (r_raw, w_raw) = (fds[0], fds[1]);
+    let prog = seccomp_filter_bytes();
+    // SAFETY: just-created pipe ends; write then close writer.
+    let n = unsafe { libc::write(w_raw, prog.as_ptr().cast::<libc::c_void>(), prog.len()) };
+    unsafe { libc::close(w_raw) };
+    if n < 0 || n as usize != prog.len() {
+        unsafe { libc::close(r_raw) };
+        return None;
+    }
+    // bwrap needs the fd open without CLOEXEC so it survives exec.
+    if unsafe { libc::fcntl(r_raw, libc::F_SETFD, 0) } != 0 {
+        unsafe { libc::close(r_raw) };
+        return None;
+    }
+    // SAFETY: r_raw is open and unique.
+    Some(unsafe { OwnedFd::from_raw_fd(r_raw) })
+}
+
 // ── the sandbox itself ────────────────────────────────────────────────────────
 
 /// Builds the `bwrap ... -- makepkg ...` command running the build-time
 /// PKGBUILD functions in an isolated namespace.
+///
+/// The returned `Command` may hold a seccomp pipe fd (via
+/// `keepalive`); drop it only after the child has been spawned.
 
 pub(crate) fn sandboxed_makepkg(
     makepkg_bin: &str,
@@ -502,6 +675,17 @@ pub(crate) fn sandboxed_makepkg(
     cmd.args(["--cap-drop", "ALL"]);
     if !net {
         cmd.args(["--cap-add", "CAP_NET_ADMIN"]);
+    }
+    // Seccomp denylist (ptrace, kexec, module load, mount, …). Best-effort:
+    // if the pipe cannot be built the sandbox still runs without it.
+    if let Some(fd) = seccomp_fd() {
+        use std::os::fd::AsRawFd;
+        let raw = fd.as_raw_fd();
+        cmd.args(["--seccomp", &raw.to_string()]);
+        // Keep the read end open until the child is spawned. Leaking is
+        // intentional: Command does not own extra fds, and a short-lived
+        // parent process reclaiming the fd after spawn is enough.
+        std::mem::forget(fd);
     }
     // Start from an empty environment; the allowlist is set further
     // down. Must come before every --setenv (bwrap applies in order).
@@ -697,10 +881,7 @@ mod tests {
         .unwrap();
         assert_eq!(installed_default_toolchain(&home), None);
         // Installed default -> pinned by exact name.
-        std::fs::create_dir_all(
-            toolchains.join("stable-x86_64-unknown-linux-gnu"),
-        )
-        .unwrap();
+        std::fs::create_dir_all(toolchains.join("stable-x86_64-unknown-linux-gnu")).unwrap();
         assert_eq!(
             installed_default_toolchain(&home).as_deref(),
             Some("stable-x86_64-unknown-linux-gnu")

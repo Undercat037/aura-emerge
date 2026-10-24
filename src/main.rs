@@ -321,9 +321,11 @@ FILES
     ~/.cache/aura-emerge/build/aur/         Persistent AUR checkouts (git fetch+reset
                                             between runs; scanned, then built in bwrap)
     ~/.cache/aura-emerge/build/abs/         Persistent ABS checkouts (git pull / pkgctl)
-    ~/.cache/aura-emerge/sources/           Default SRCDEST for ALL AUR/ABS packages
-                                            (tarballs + VCS); overridden by SRCDEST in
-                                            makepkg.conf; wipe with --clean-source-cache
+    ~/.cache/aura-emerge/sources/<pkgbase>/ Default SRCDEST per package (tarballs + VCS);
+                                            absolute SRCDEST in makepkg.conf overrides;
+                                            wipe all with --clean-source-cache
+    ~/.cache/aura-emerge/packages/<pkgbase>/ Default PKGDEST per package; absolute PKGDEST
+                                            in makepkg.conf overrides
     All ~/.cache paths honor $XDG_CACHE_HOME when set.
 
 INSTALLATION
@@ -2630,14 +2632,12 @@ fn run() -> anyhow::Result<()> {
     let argv: Vec<String> = std::env::args_os()
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
-    let invoked_as = argv
-        .first()
-        .map_or("", |s| {
-            std::path::Path::new(s)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-        });
+    let invoked_as = argv.first().map_or("", |s| {
+        std::path::Path::new(s)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+    });
     if invoked_as == "portageq" {
         portageq_shim(&argv);
         return Ok(());

@@ -395,10 +395,6 @@ emerge -u --devel        # обновить + пересобрать devel-па�
 emerge --check-devel     # только отчёт
 ```
 
-### Кэш исходников
-
-`SRCDEST` по умолчанию - `~/.cache/aura-emerge/sources` (или `$XDG_CACHE_HOME/aura-emerge/sources`) для **всех** сборок AUR/ABS, не только VCS: makepkg повторно использует скачанные tarball'ы и делает инкрементальный fetch. Чекауты PKGBUILD AUR/ABS живут в `~/.cache/aura-emerge/build/{aur,abs}/` и обновляются на месте (`git fetch` / `git pull`), а не стираются каждый запуск. Если `SRCDEST` задан в `makepkg.conf`, используется он. Очистить кэш исходников: `emerge --clean-source-cache`.
-
 ### `@preserved-rebuild` и `--revdep-rebuild`
 
 В Arch нет учёта preserved-libs. Пробел закрывают два инструмента:
@@ -488,7 +484,7 @@ emerge --news all    # пометить всё прочитанным
 
 Находки бывают `Suspicious` или `ConfirmedIoc`. Срабатывание не блокирует жёстко: вы получаете файл/строку, ссылку на cgit и `Continue anyway? [y/N]`.
 
-**Вспомогательные файлы:** когда checkout лежит на диске (сборка или `--install-pkgbuild <PATH> --scan`), `Makefile` (`Makefile`/`makefile`/`GNUmakefile`) и shell-скрипты, на которые ссылается PKGBUILD (`*.sh`, `*.bash`, `*.zsh`, `*.fish`), тоже проверяются построчно: `curl|sh`, base64/hex в shell, «голые» IP и остальные shell-IOC. В находке указаны файл и строка. `--scan <pkg> --aur` видит только то, что отдаёт cgit (`PKGBUILD` и `.install`). Патчи пока не сканируются.
+**Вспомогательные файлы:** когда checkout лежит на диске (сборка или `--install-pkgbuild <PATH> --scan`), `Makefile` (`Makefile`/`makefile`/`GNUmakefile`), shell-скрипты, на которые ссылается PKGBUILD (`*.sh`, `*.bash`, `*.zsh`, `*.fish`), и файлы патчей (`*.patch`, `*.diff`, `*.dpatch`, `*.pch` либо содержимое, похожее на unified/git diff) тоже проверяются. Makefile и скрипты — построчно: `curl|sh`, base64/hex в shell, «голые» IP и остальные shell-IOC. Патчи — по заголовкам и добавленным строкам: пути вне дерева исходников (абсолютные, `..`, `.git`), создание symlink, бинарные hunk'и, слишком длинные добавленные строки, сетевые вызовы в build/script-целях и те же shell-IOC. В находке указаны файл и строка. `--scan <pkg> --aur` видит только то, что отдаёт cgit (`PKGBUILD` и `.install`).
 
 ### Песочница
 
@@ -500,7 +496,8 @@ emerge --news all    # пометить всё прочитанным
 - PKGBUILD и `*.install` повторно монтируются только для чтения;
 - запись только в каталог сборки (+ настроенные `PKGDEST` / `SRCDEST` / …);
 - сеть по умолчанию общая; остальные пространства имён отключены;
-- `fakeroot` в `package()` работает во вложенном `bwrap` с uid 0.
+- `fakeroot` в `package()` работает во вложенном `bwrap` с uid 0;
+- seccomp-denylist (ptrace, kexec, module load/unload, mount/umount, pivot_root, reboot, swapon/swapoff, iopl/ioperm, bpf, userfaultfd, …) через bwrap `--seccomp`.
 
 | Флаг | Эффект |
 |------|--------|
@@ -509,7 +506,7 @@ emerge --news all    # пометить всё прочитанным
 
 Если `bubblewrap` не установлен, сборка отклоняется.
 
-**Третий барьер перед установкой:** готовый `*.pkg.tar.*` проверяется через `bsdtar` на setuid/setgid, скрипты `.INSTALL` и чувствительные пути (хуки alpm, юниты systemd, sudoers, udev, tmpfiles.d, binfmt.d, pam.d, dbus system.d, dispatcher.d у NetworkManager, environment.d, sysusers.d, …). `.INSTALL` повторно сканируется сканером PKGBUILD. С `-a` нужно подтвердить; с `--noconfirm` - предупреждение и продолжение; упавший аудит bsdtar останавливает установку вместо безаудитной.
+**Третий барьер перед установкой:** готовый `*.pkg.tar.*` проверяется через `bsdtar` на setuid/setgid, скрипты `.INSTALL` и чувствительные пути (хуки alpm, юниты systemd, sudoers, udev, tmpfiles.d, binfmt.d, pam.d, dbus system.d, dispatcher.d у NetworkManager, environment.d, sysusers.d, …). `.INSTALL` повторно сканируется сканером PKGBUILD. На TTY нужно подтвердить даже без `--ask`; в неинтерактивном режиме — предупреждение и продолжение; упавший аудит bsdtar останавливает установку вместо безаудитной.
 
 **Единственный подтверждаемый fallback:** PKGBUILD, чьи зависимости не удаётся разрезолвить статически (нет `.SRCINFO` и динамический `depends=(…)`), - единственный путь сборки, куда пакет может завести сам автор и который заканчивается голым `makepkg -si` без песочницы и аудита. Молча он не запускается: в интерактиве - явный вопрос Да/Нет для этого пакета; в `--noconfirm`-запуске - отказ (fail-closed). `--no-sandbox` пропускает этот вопрос - это осознанный отказ от песочницы на весь запуск.
 

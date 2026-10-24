@@ -396,10 +396,6 @@ emerge -u --devel        # upgrade + rebuild devel packages whose upstream moved
 emerge --check-devel     # just report
 ```
 
-### Source cache
-
-`SRCDEST` defaults to `~/.cache/aura-emerge/sources` (or `$XDG_CACHE_HOME/aura-emerge/sources`) for **all** AUR/ABS builds — not only VCS packages — so makepkg reuses downloaded tarballs and does incremental VCS fetches. AUR/ABS PKGBUILD checkouts themselves persist under `~/.cache/aura-emerge/build/{aur,abs}/` and are refreshed in place (`git fetch` / `git pull`) instead of being wiped each run. If `makepkg.conf` already sets `SRCDEST`, that wins. Wipe source tarballs with `emerge --clean-source-cache`.
-
 ### `@preserved-rebuild` and `--revdep-rebuild`
 
 Arch has no preserved-libs tracking. Two tools cover the gap:
@@ -489,7 +485,7 @@ Before every AUR install, the raw `PKGBUILD` (and any `.install` hook) is fetche
 
 Findings are `Suspicious` or `ConfirmedIoc`. A hit doesn't hard-block: you get the file/line, a cgit link and `Continue anyway? [y/N]`.
 
-**Support files:** when the checkout is on disk (a build, or `--install-pkgbuild <PATH> --scan`), a `Makefile` (`Makefile`/`makefile`/`GNUmakefile`) and the shell scripts the PKGBUILD references (`*.sh`, `*.bash`, `*.zsh`, `*.fish`) get a line-based scan too: `curl|sh`, base64/hex into a shell, raw IPs and the rest of the shell-level IOCs. Findings name the file and line. `--scan <pkg> --aur` only sees what cgit serves (`PKGBUILD` and `.install`). Patch files are not scanned yet.
+**Support files:** when the checkout is on disk (a build, or `--install-pkgbuild <PATH> --scan`), a `Makefile` (`Makefile`/`makefile`/`GNUmakefile`), the shell scripts the PKGBUILD references (`*.sh`, `*.bash`, `*.zsh`, `*.fish`), and patch/diff files (`*.patch`, `*.diff`, `*.dpatch`, `*.pch`, or content that looks like a unified/git diff) are scanned too. Makefiles and scripts get a line-based scan: `curl|sh`, base64/hex into a shell, raw IPs and the rest of the shell-level IOCs. Patches are checked on headers and added lines: paths outside the source tree (absolute, `..`, `.git`), symlink creation, binary hunks, overlong added lines, network calls into build/script targets, and the same shell IOCs. Findings name the file and line. `--scan <pkg> --aur` only sees what cgit serves (`PKGBUILD` and `.install`).
 
 ### Sandbox
 
@@ -501,16 +497,17 @@ Findings are `Suspicious` or `ConfirmedIoc`. A hit doesn't hard-block: you get t
 - PKGBUILD and `*.install` re-mounted read-only;
 - writes only to the build dir (+ configured `PKGDEST` / `SRCDEST` / …);
 - network shared by default; other namespaces torn down;
-- `fakeroot` in `package()` runs in a nested uid-0 `bwrap`.
+- `fakeroot` in `package()` runs in a nested uid-0 `bwrap`;
+- seccomp denylist (ptrace, kexec, module load/unload, mount/umount, pivot_root, reboot, swapon/swapoff, iopl/ioperm, bpf, userfaultfd, …) via bwrap `--seccomp`.
 
 | Flag | Effect |
 |------|--------|
-| `--no-sandbox` | Disable bwrap; plain `makepkg -si` |
+| `--no-sandbox` | Disable bwrap; plain `makepkg -si` (also skips the unaudited-fallback confirmation) |
 | `--unshare-net-build` | Network only for download/`prepare()`; `build()`/`check()`/`package()` run offline |
 
 If `bubblewrap` is missing, the build is refused.
 
-**Third gate before install:** the finished `*.pkg.tar.*` is audited with `bsdtar` for setuid/setgid, `.INSTALL` scripts and sensitive paths (alpm hooks, systemd units, sudoers, udev, tmpfiles.d, binfmt.d, pam.d, dbus system.d, NetworkManager dispatcher.d, environment.d, sysusers.d, …). `.INSTALL` is re-scanned with the PKGBUILD scanner. With `-a` you must confirm; with `--noconfirm` it warns and continues; a failed `bsdtar` audit aborts instead of installing unaudited.
+**Third gate before install:** the finished `*.pkg.tar.*` is audited with `bsdtar` for setuid/setgid, `.INSTALL` scripts and sensitive paths (alpm hooks, systemd units, sudoers, udev, tmpfiles.d, binfmt.d, pam.d, dbus system.d, NetworkManager dispatcher.d, environment.d, sysusers.d, …). `.INSTALL` is re-scanned with the PKGBUILD scanner. On a TTY you must confirm even without `--ask`; non-interactive runs warn and continue; a failed `bsdtar` audit aborts instead of installing unaudited.
 
 Dependency install (`pacman -S`) and the final `pacman -U` run **outside** the sandbox - they don't execute PKGBUILD code.
 

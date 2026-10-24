@@ -395,10 +395,6 @@ emerge -u --devel        # оновити + перезібрати devel-пак�
 emerge --check-devel     # лише звіт
 ```
 
-### Кеш джерел
-
-`SRCDEST` за замовчуванням - `~/.cache/aura-emerge/sources` (або `$XDG_CACHE_HOME/aura-emerge/sources`) для **усіх** збірок AUR/ABS, не лише VCS: makepkg повторно використовує завантажені tarball'и і робить інкрементальний fetch. Чекаути PKGBUILD AUR/ABS живуть у `~/.cache/aura-emerge/build/{aur,abs}/` і оновлюються на місці (`git fetch` / `git pull`), а не стираються кожен запуск. Якщо `SRCDEST` задано в `makepkg.conf`, використовується він. Очистити кеш джерел: `emerge --clean-source-cache`.
-
 ### `@preserved-rebuild` і `--revdep-rebuild`
 
 В Arch немає обліку preserved-libs. Прогалину закривають два інструменти:
@@ -488,7 +484,7 @@ emerge --news all    # позначити все прочитаним
 
 Знахідки бувають `Suspicious` або `ConfirmedIoc`. Спрацювання не блокує жорстко: ви отримуєте файл/рядок, посилання на cgit і `Continue anyway? [y/N]`.
 
-**Допоміжні файли:** коли checkout лежить на диску (збірка або `--install-pkgbuild <PATH> --scan`), `Makefile` (`Makefile`/`makefile`/`GNUmakefile`) та shell-скрипти, на які посилається PKGBUILD (`*.sh`, `*.bash`, `*.zsh`, `*.fish`), теж перевіряються построково: `curl|sh`, base64/hex у shell, «голі» IP та решта shell-IOC. У знахідці вказано файл і рядок. `--scan <pkg> --aur` бачить лише те, що віддає cgit (`PKGBUILD` і `.install`). Патчі поки не скануються.
+**Допоміжні файли:** коли checkout лежить на диску (збірка або `--install-pkgbuild <PATH> --scan`), `Makefile` (`Makefile`/`makefile`/`GNUmakefile`), shell-скрипти, на які посилається PKGBUILD (`*.sh`, `*.bash`, `*.zsh`, `*.fish`), і файли патчів (`*.patch`, `*.diff`, `*.dpatch`, `*.pch` або вміст, схожий на unified/git diff) теж перевіряються. Makefile і скрипти — построково: `curl|sh`, base64/hex у shell, «голі» IP та решта shell-IOC. Патчі — за заголовками й доданими рядками: шляхи поза деревом джерел (абсолютні, `..`, `.git`), створення symlink, бінарні hunk'и, надто довгі додані рядки, мережеві виклики в build/script-цілі та ті самі shell-IOC. У знахідці вказано файл і рядок. `--scan <pkg> --aur` бачить лише те, що віддає cgit (`PKGBUILD` і `.install`).
 
 ### Пісочниця
 
@@ -500,7 +496,8 @@ emerge --news all    # позначити все прочитаним
 - PKGBUILD і `*.install` повторно монтуються лише для читання;
 - запис лише в каталог збірки (+ налаштовані `PKGDEST` / `SRCDEST` / …);
 - мережа за замовчуванням спільна; інші простори імен вимкнено;
-- `fakeroot` у `package()` працює у вкладеному `bwrap` з uid 0.
+- `fakeroot` у `package()` працює у вкладеному `bwrap` з uid 0;
+- seccomp-denylist (ptrace, kexec, module load/unload, mount/umount, pivot_root, reboot, swapon/swapoff, iopl/ioperm, bpf, userfaultfd, …) через bwrap `--seccomp`.
 
 | Прапор | Ефект |
 |--------|-------|
@@ -509,7 +506,7 @@ emerge --news all    # позначити все прочитаним
 
 Якщо `bubblewrap` не встановлено, збірка відхиляється.
 
-**Третій бар'єр перед встановленням:** готовий `*.pkg.tar.*` перевіряється через `bsdtar` на setuid/setgid, скрипти `.INSTALL` і чутливі шляхи (хуки alpm, юніти systemd, sudoers, udev, tmpfiles.d, binfmt.d, pam.d, dbus system.d, dispatcher.d у NetworkManager, environment.d, sysusers.d, …). `.INSTALL` повторно сканується сканером PKGBUILD. З `-a` потрібно підтвердити; з `--noconfirm` - попередження і продовження; невдалий аудит bsdtar зупиняє встановлення замість безаудитного.
+**Третій бар'єр перед встановленням:** готовий `*.pkg.tar.*` перевіряється через `bsdtar` на setuid/setgid, скрипти `.INSTALL` і чутливі шляхи (хуки alpm, юніти systemd, sudoers, udev, tmpfiles.d, binfmt.d, pam.d, dbus system.d, dispatcher.d у NetworkManager, environment.d, sysusers.d, …). `.INSTALL` повторно сканується сканером PKGBUILD. На TTY потрібно підтвердити навіть без `--ask`; у неінтерактивному режимі — попередження і продовження; невдалий аудит bsdtar зупиняє встановлення замість безаудитного.
 
 **Єдиний fallback, що підтверджується:** PKGBUILD, чиї залежності неможливо розв'язати статично (немає `.SRCINFO` і динамічний `depends=(…)`), - єдиний шлях збірки, куди пакунок може завести сам автор і який закінчується голим `makepkg -si` без пісочниці й аудиту. Мовчки він не запускається: в інтерактиві - явне питання Так/Ні для цього пакунка; у `--noconfirm`-запуску - відмова (fail-closed). `--no-sandbox` пропускає це питання - це усвідмана відмова від пісочниці на весь запуск.
 

@@ -1285,9 +1285,7 @@ pub(crate) fn parse_validpgpkeys(pkgbuild_text: &str) -> Vec<String> {
     // handed to `gpg --recv-keys <id>` on the host: a token like
     // "--keyserver=evil" would be parsed as an option. Keep hex
     // fingerprints / long ids only (same shape pacman's makepkg accepts).
-    keys.retain(|k| {
-        (16..=40).contains(&k.len()) && k.chars().all(|c| c.is_ascii_hexdigit())
-    });
+    keys.retain(|k| (16..=40).contains(&k.len()) && k.chars().all(|c| c.is_ascii_hexdigit()));
     keys
 }
 
@@ -2894,10 +2892,7 @@ fn build_with_sandbox(
             );
             let _ = io::stdout().flush();
             let answer = crate::read_line_raw();
-            if !matches!(
-                answer.trim().to_ascii_lowercase().as_str(),
-                "y" | "yes"
-            ) {
+            if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
                 println!("{} Quitting.", ">>>".t_yellow().bold());
                 return false;
             }
@@ -2950,22 +2945,17 @@ fn build_with_sandbox(
     let real_gnupg = std::env::var("HOME")
         .ok()
         .map(|h| std::path::PathBuf::from(h).join(".gnupg"));
-    let (extra_dest_dirs, default_source_cache) = resolve_dest_dirs(build_dir);
-    let user_configured: Vec<&str> = extra_dest_dirs
+    let (extra_dest_dirs, _default_source_cache) = resolve_dest_dirs(build_dir);
+    // Only dirs the user set in makepkg.conf (not our default SRCDEST/PKGDEST).
+    let from_conf: Vec<&str> = extra_makepkg_dest_dirs(build_dir)
         .iter()
-        .filter(|(name, _)| !(*name == "SRCDEST" && default_source_cache.is_some()))
         .map(|(v, _)| *v)
         .collect();
-    if !user_configured.is_empty() {
+    if !from_conf.is_empty() {
         println!(
-            "{} makepkg.conf sets {} outside the build directory -- binding {} into the sandbox so this build can still write there.",
+            "{} binding {} from makepkg.conf into the sandbox",
             ">>>".t_green().bold(),
-            user_configured.join(", "),
-            if user_configured.len() == 1 {
-                "it"
-            } else {
-                "them"
-            }
+            from_conf.join(", "),
         );
     }
 
@@ -3235,7 +3225,12 @@ fn find_built_packages(
     not_before: std::time::SystemTime,
     wanted: &[String],
 ) -> Vec<String> {
-    let search_dir = extra_makepkg_dest_dirs(build_dir)
+    // Same resolution as the sandbox bind: makepkg.conf PKGDEST, else our
+    // default `~/.cache/aura-emerge/packages/<pkgbase>/`, else build_dir.
+    // Searching only `extra_makepkg_dest_dirs` missed the default and
+    // reported "produced no package file" after a successful build.
+    let search_dir = resolve_dest_dirs(build_dir)
+        .0
         .into_iter()
         .find(|(name, _)| *name == "PKGDEST")
         .map(|(_, path)| path)
@@ -3349,10 +3344,7 @@ fn pkgbuild_array_tokens(src: &str, key: &str) -> Option<Vec<String>> {
                 if tok.starts_with('#') {
                     break; // comment: rest of this line is inert
                 }
-                if tok.contains('$')
-                    || tok.contains('`')
-                    || tok.contains('*')
-                    || tok.contains('?')
+                if tok.contains('$') || tok.contains('`') || tok.contains('*') || tok.contains('?')
                 {
                     return None; // dynamic element: name list unreliable
                 }
@@ -4291,18 +4283,44 @@ pub(crate) fn extra_makepkg_dest_dirs(
         .collect()
 }
 
-/// Default SRCDEST under ~/.cache/aura-emerge/sources (survives build-dir wipes).
-pub(crate) fn source_cache_dir() -> Option<std::path::PathBuf> {
+/// Cache root under `$XDG_CACHE_HOME/aura-emerge` or `~/.cache/aura-emerge`.
+fn aura_cache_root() -> Option<std::path::PathBuf> {
     if let Ok(xdg) = std::env::var("XDG_CACHE_HOME")
         && !xdg.is_empty()
     {
-        return Some(std::path::PathBuf::from(xdg).join("aura-emerge/sources"));
+        return Some(std::path::PathBuf::from(xdg).join("aura-emerge"));
     }
     let home = std::env::var("HOME").ok()?;
-    Some(std::path::PathBuf::from(home).join(".cache/aura-emerge/sources"))
+    Some(std::path::PathBuf::from(home).join(".cache/aura-emerge"))
 }
 
-/// Dest dirs for sandbox: user config + default source cache if no SRCDEST.
+/// Default SRCDEST root under ~/.cache/aura-emerge/sources.
+/// `--clean-source-cache` wipes this whole tree; each build uses
+/// `sources/<pkgbase>/` (see `resolve_dest_dirs`).
+pub(crate) fn source_cache_dir() -> Option<std::path::PathBuf> {
+    Some(aura_cache_root()?.join("sources"))
+}
+
+/// Default PKGDEST root under ~/.cache/aura-emerge/packages.
+/// Kept separate from SRCDEST so tarballs and built packages never share
+/// a directory. Each build gets `packages/<pkgbase>/`.
+pub(crate) fn package_cache_dir() -> Option<std::path::PathBuf> {
+    Some(aura_cache_root()?.join("packages"))
+}
+
+/// Leaf name for per-pkgbase cache dirs (`sources/<leaf>/`, `packages/<leaf>/`).
+fn cache_leaf(build_dir: &std::path::Path) -> &str {
+    build_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|s| !s.is_empty() && *s != "." && *s != "..")
+        .unwrap_or("_pkg")
+}
+
+/// Dest dirs for sandbox: absolute paths from makepkg.conf (if any), else
+/// our fixed defaults under `~/.cache/aura-emerge/{sources,packages}/<pkgbase>/`.
+/// Relative makepkg.conf values are ignored (they resolve inside build_dir
+/// anyway). Override only with an absolute path in makepkg.conf / make.conf.
 pub(crate) fn resolve_dest_dirs(
     build_dir: &std::path::Path,
 ) -> (
@@ -4310,12 +4328,19 @@ pub(crate) fn resolve_dest_dirs(
     Option<std::path::PathBuf>,
 ) {
     let mut dirs = extra_makepkg_dest_dirs(build_dir);
+    let leaf = cache_leaf(build_dir);
     let mut default_cache = None;
     if !dirs.iter().any(|(name, _)| *name == "SRCDEST")
-        && let Some(cache) = source_cache_dir()
+        && let Some(root) = source_cache_dir()
     {
-        dirs.push(("SRCDEST", cache.clone()));
-        default_cache = Some(cache);
+        let path = root.join(leaf);
+        dirs.push(("SRCDEST", path.clone()));
+        default_cache = Some(path);
+    }
+    if !dirs.iter().any(|(name, _)| *name == "PKGDEST")
+        && let Some(root) = package_cache_dir()
+    {
+        dirs.push(("PKGDEST", root.join(leaf)));
     }
     (dirs, default_cache)
 }
@@ -4821,8 +4846,14 @@ mod plan_tree_tests {
             Some(&["foo".to_string(), "bar".to_string()][..])
         );
         // Dynamic elements make the whole list untrustworthy.
-        assert_eq!(pkgbuild_array_tokens("pkgname=(${_pkg})\n", "pkgname"), None);
-        assert_eq!(pkgbuild_array_tokens("pkgname=(\"$pkg\" foo)\n", "pkgname"), None);
+        assert_eq!(
+            pkgbuild_array_tokens("pkgname=(${_pkg})\n", "pkgname"),
+            None
+        );
+        assert_eq!(
+            pkgbuild_array_tokens("pkgname=(\"$pkg\" foo)\n", "pkgname"),
+            None
+        );
         assert_eq!(pkgbuild_array_tokens("pkgname=(foo*)\n", "pkgname"), None);
         // Not an array / not present / not this key.
         assert_eq!(pkgbuild_array_tokens("pkgname=foo\n", "pkgname"), None);
