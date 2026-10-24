@@ -2438,6 +2438,24 @@ pub(crate) fn read_line_raw() -> String {
     line.trim_end().to_string()
 }
 
+/// `--undo` is destructive either way (it removes or reinstalls real
+/// packages), so it always confirms -- Enter stays No, unlike the merge
+/// prompt. `--pretend` never reaches this (it does nothing at all).
+fn confirm_undo() -> bool {
+    print!(
+        "Proceed with the undo? [{}/{}] ",
+        "Yes".t_green().bold(),
+        "No".t_red().bold()
+    );
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    let answer = read_line_raw();
+    let ok = matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes");
+    if !ok {
+        println!("{} Quitting.", ">>>".t_yellow().bold());
+    }
+    ok
+}
+
 /// Reset SIGPIPE to its default disposition (terminate, not panic).
 #[cfg(unix)]
 fn reset_sigpipe() {
@@ -3840,6 +3858,9 @@ fn run() -> anyhow::Result<()> {
                 if cli.pretend {
                     return Ok(());
                 }
+                if !confirm_undo() {
+                    return Ok(());
+                }
                 let success =
                     match rootops::remove(helper::validate::RemoveMode::Plain, &bare, &mut |ev| {
                         progress::on_hook_event(ev)
@@ -3880,6 +3901,9 @@ fn run() -> anyhow::Result<()> {
                     atoms.join(", ")
                 );
                 if cli.pretend {
+                    return Ok(());
+                }
+                if !confirm_undo() {
                     return Ok(());
                 }
                 let mut all_ok = true;
@@ -3978,6 +4002,9 @@ fn run() -> anyhow::Result<()> {
                     atoms.join(", ")
                 );
                 if cli.pretend {
+                    return Ok(());
+                }
+                if !confirm_undo() {
                     return Ok(());
                 }
                 let saved_ver: HashMap<String, String> = load_last_versions().into_iter().collect();

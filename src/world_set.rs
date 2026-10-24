@@ -375,6 +375,10 @@ pub(crate) fn origins_of(name: &str) -> Vec<String> {
 }
 
 /// Read a --batchinstall list (same format as a custom set, any path).
+/// `@set` lines expand exactly like they do inside a set file --
+/// recursive, cycle-safe -- so a batch file really is just a set on
+/// disk: previously `@name` passed name validation and reached the
+/// plan as a literal (never-existing) package name.
 pub(crate) fn read_batch_file(path: &str) -> Result<Vec<String>> {
     let file = match open_nofollow(std::path::Path::new(path)) {
         Ok(f) => f,
@@ -386,20 +390,36 @@ pub(crate) fn read_batch_file(path: &str) -> Result<Vec<String>> {
         }
     };
 
-    let pkgs: Vec<String> = io::BufReader::new(file)
-        .lines()
-        .map_while(io::Result::ok)
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .filter(|l| {
-            if validate_pkg(l) {
-                true
-            } else {
-                eprintln!(">>> Warning: invalid entry in {} (skipped): {}", path, l);
-                false
+    // One `seen` across the whole file: a set named twice in the list
+    // expands once, and cycles through nested sets stay impossible.
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut pkgs = Vec::new();
+    for line in io::BufReader::new(file).lines().map_while(io::Result::ok) {
+        let l = line.trim().to_string();
+        if l.is_empty() || l.starts_with('#') {
+            continue;
+        }
+        if let Some(nested) = l.strip_prefix('@') {
+            let nested = nested.trim();
+            if nested.is_empty() || !valid_set_name(nested) {
+                eprintln!(
+                    ">>> Warning: invalid nested set in {} (skipped): {}",
+                    path, l
+                );
+                continue;
             }
-        })
-        .collect();
+            match read_custom_set_rec(nested, &mut seen) {
+                Ok(mut inner) => pkgs.append(&mut inner),
+                Err(e) => eprintln!(">>> Warning: nested @{} in {}: {:#}", nested, path, e),
+            }
+            continue;
+        }
+        if validate_pkg(&l) {
+            pkgs.push(l);
+        } else {
+            eprintln!(">>> Warning: invalid entry in {} (skipped): {}", path, l);
+        }
+    }
 
     Ok(pkgs)
 }
@@ -1667,6 +1687,21 @@ mod tests {
             resolve_set_path_in(d, "nope").unwrap(),
             format!("{}/nope.set", d)
         );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn batch_file_expands_set_lines_instead_of_leaking_them() {
+        let dir = temp("batch");
+        let f = dir.join("list.txt");
+        fs::write(
+            &f,
+            "nano\n@ae-no-such-set-xyz\n# comment\n  vim  \nbad name!\n@bad name!\n",
+        )
+        .unwrap();
+        let pkgs = read_batch_file(f.to_str().unwrap()).unwrap();
+        // '@whatever' must never reach the plan as a literal package name.
+        assert_eq!(pkgs, vec!["nano".to_string(), "vim".to_string()]);
         let _ = fs::remove_dir_all(dir);
     }
 

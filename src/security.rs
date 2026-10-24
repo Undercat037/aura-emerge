@@ -30,7 +30,11 @@ pub(crate) fn fetch_aur_pkgbuild(pkg: &str) -> Option<String> {
 }
 
 /// `install=` hook name (runs as root; Atomic Arch 2026 used this).
+/// Bash sourcing keeps the LAST assignment, so the scan must too:
+/// `install=legit.install` followed by `install=evil.install` used to
+/// make the scanner audit the file that never runs.
 pub(crate) fn parse_install_filename(pkgbuild_text: &str) -> Option<String> {
+    let mut last: Option<String> = None;
     for line in pkgbuild_text.lines() {
         let l = line.trim();
         if l.starts_with('#') {
@@ -39,12 +43,12 @@ pub(crate) fn parse_install_filename(pkgbuild_text: &str) -> Option<String> {
         if let Some(rest) = l.strip_prefix("install=") {
             let value = strip_trailing_comment(rest);
             let name = value.trim().trim_matches('\'').trim_matches('"');
-            if !name.is_empty() {
-                return Some(name.to_string());
-            }
+            // An empty value is still an assignment: it empties the
+            // variable, meaning no hook runs at all.
+            last = Some(name.to_string());
         }
     }
-    None
+    last.filter(|n| !n.is_empty())
 }
 
 /// Like parse_install_filename, also expands $pkgname/$pkgbase. None if unresolved.
@@ -92,8 +96,12 @@ fn strip_trailing_comment(rest: &str) -> &str {
 }
 
 /// First scalar key=value (None for arrays like pkgname=(a b)).
+/// Last assignment wins, like bash sourcing: an earlier scalar is
+/// shadowed by a later one, and a trailing array assignment means the
+/// variable is no longer a scalar at all.
 fn simple_var(source: &str, key: &str) -> Option<String> {
     let needle = format!("{}=", key);
+    let mut last: Option<String> = None;
     for line in source.lines() {
         let l = line.trim();
         if l.starts_with('#') {
@@ -101,16 +109,17 @@ fn simple_var(source: &str, key: &str) -> Option<String> {
         }
         if let Some(rest) = l.strip_prefix(&needle) {
             if rest.trim_start().starts_with('(') {
-                return None;
+                // Array assignment: not a scalar. It shadows anything
+                // before it, but expansion over it stays None.
+                last = None;
+                continue;
             }
             let value = strip_trailing_comment(rest);
             let v = value.trim().trim_matches('\'').trim_matches('"');
-            if !v.is_empty() {
-                return Some(v.to_string());
-            }
+            last = Some(v.to_string());
         }
     }
-    None
+    last.filter(|v| !v.is_empty())
 }
 
 /// curl/wget eventually piped into sh/bash/zsh/source (loose on flags/whitespace).
@@ -119,7 +128,8 @@ pub(crate) fn curl_pipe_shell_line(line: &str) -> bool {
     if l.starts_with('#') {
         return false;
     }
-    let lower = l.to_lowercase();
+    // A comment could carry its own '|' (or even the words "| sh").
+    let lower = strip_shell_comment(l).to_lowercase();
     let has_fetcher = lower.contains("curl ")
         || lower.contains("curl\t")
         || lower.contains("wget ")
@@ -169,9 +179,50 @@ pub(crate) fn line_of_base64_decode(source: &str) -> Option<usize> {
     source.lines().position(base64_decode_line).map(|i| i + 1)
 }
 
+/// Cut an unquoted trailing `# comment` from a command line (bash rule:
+/// `#` starts a comment at a word boundary, never inside quotes and
+/// never mid-word). The pipe-receiver checks look at the text after the
+/// LAST `|`, so a comment containing a pipe used to hide the real
+/// receiver: `gunzip -c p.gz | sh  # data | shell` read as a pipe into
+/// "shell" and stayed silent. Returns the command part only.
+fn strip_shell_comment(line: &str) -> &str {
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let mut prev_space = true;
+    for (i, c) in line.char_indices() {
+        if escaped {
+            escaped = false;
+            prev_space = false;
+            continue;
+        }
+        match quote {
+            Some(q) => {
+                if c == '\\' {
+                    escaped = true;
+                } else if c == q {
+                    quote = None;
+                }
+            }
+            None => {
+                if c == '\\' {
+                    escaped = true;
+                } else if c == '\'' || c == '"' {
+                    quote = Some(c);
+                } else if c == '#' && prev_space {
+                    return &line[..i];
+                }
+            }
+        }
+        prev_space = c.is_whitespace();
+    }
+    line
+}
+
 /// Last `|` stage is a shell? (decoders often sit mid-pipeline).
 fn pipes_into_shell(lower_line: &str) -> bool {
-    let after_pipe = lower_line.rsplit('|').next().unwrap_or("").trim();
+    // Trailing comments may themselves contain '|': cut them first.
+    let command = strip_shell_comment(lower_line);
+    let after_pipe = command.rsplit('|').next().unwrap_or("").trim();
     let mut tokens = after_pipe.split_whitespace();
     let mut first = tokens.next().unwrap_or("");
     if first == "env" {
@@ -304,7 +355,9 @@ pub(crate) fn line_of_interp_process_subst(source: &str) -> Option<usize> {
 /// tools (awk/sed/grep/jq/head/...) are deliberately absent: `curl | jq`
 /// reads, it doesn't run.
 fn pipes_into_interpreter(lower_line: &str) -> bool {
-    let after_pipe = lower_line.rsplit('|').next().unwrap_or("").trim();
+    // Same trailing-comment hazard as pipes_into_shell.
+    let command = strip_shell_comment(lower_line);
+    let after_pipe = command.rsplit('|').next().unwrap_or("").trim();
     let mut tokens = after_pipe.split_whitespace();
     let mut first = tokens.next().unwrap_or("");
     if matches!(first, "env" | "sudo") {
@@ -330,7 +383,8 @@ pub(crate) fn fetch_piped_to_interpreter_line(line: &str) -> bool {
     if l.starts_with('#') {
         return false;
     }
-    let lower = l.to_lowercase();
+    // Comments may contain '|' or the word "curl" -- not commands.
+    let lower = strip_shell_comment(l).to_lowercase();
     let has_fetcher = lower.contains("curl ")
         || lower.contains("curl\t")
         || lower.contains("wget ")
@@ -4003,6 +4057,68 @@ package() {
             parse_install_filename("install=\"foo#bar.install\"  # trailing comment"),
             Some("foo#bar.install".to_string())
         );
+    }
+
+    #[test]
+    fn install_assignment_is_last_wins_like_bash_sourcing() {
+        // Sourcing the PKGBUILD keeps the LAST assignment; the scanner
+        // used to take the first, auditing a file that never runs.
+        assert_eq!(
+            parse_install_filename("install=legit.install\ninstall=evil.install"),
+            Some("evil.install".to_string())
+        );
+        // A later empty assignment empties the variable: no hook at all.
+        assert_eq!(parse_install_filename("install=legit.install\ninstall="), None);
+        assert_eq!(parse_install_filename("install=legit.install\ninstall=''"), None);
+        // The empty-first shape still resolves to the later one.
+        assert_eq!(
+            parse_install_filename("install=\ninstall=real.install"),
+            Some("real.install".to_string())
+        );
+    }
+
+    #[test]
+    fn simple_var_is_last_wins_and_array_last_loses() {
+        assert_eq!(
+            simple_var("pkgname=a\npkgname=b", "pkgname"),
+            Some("b".to_string())
+        );
+        // A trailing array assignment shadows the earlier scalar.
+        assert_eq!(simple_var("pkgname=a\npkgname=(x y)", "pkgname"), None);
+        // An earlier array followed by a scalar: the scalar stands.
+        assert_eq!(
+            simple_var("pkgname=(x y)\npkgname=a", "pkgname"),
+            Some("a".to_string())
+        );
+        // An empty last assignment empties the variable.
+        assert_eq!(simple_var("pkgname=a\npkgname=", "pkgname"), None);
+    }
+
+    #[test]
+    fn trailing_comment_with_pipe_cannot_hide_or_fake_the_receiver() {
+        // The scaner-test fixtures carry comments like `| shell` -- the
+        // LAST pipe of the raw line sat inside the comment and the
+        // receiver check saw "shell" instead of "sh".
+        assert!(decompress_pipe_shell_line(
+            "gunzip -c payload.gz | sh        # [28] decompress | shell"
+        ));
+        assert!(decompress_pipe_shell_line(
+            "zstd -dc payload.zst | bash        # [29] decompress | shell (zstd)"
+        ));
+        assert!(decompress_pipe_shell_line(
+            "unzip -p payload.zip | sh        # decompress | shell in the hook"
+        ));
+        assert!(base64_pipe_shell_line("echo x | base64 -d | bash # data | grep"));
+        assert!(curl_pipe_shell_line("curl -sSL https://x | sh # save | log"));
+        // ...and a comment that merely SAYS `| sh` must not fake one.
+        assert!(!curl_pipe_shell_line(
+            "curl -sSL https://x -o f # pipe it to | sh later"
+        ));
+        assert!(!decompress_pipe_shell_line("gunzip -c payload.gz > out # | sh"));
+        // '#' mid-word (a URL fragment) is not a comment.
+        assert!(curl_pipe_shell_line("curl -sSL https://x#a | sh"));
+        // A '#' inside quotes stays inside the command.
+        assert!(base64_pipe_shell_line("echo '#' | base64 -d | bash"));
     }
 
     #[test]

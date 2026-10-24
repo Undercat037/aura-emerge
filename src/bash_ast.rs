@@ -4,6 +4,13 @@
 
 use tree_sitter::Node;
 
+/// Recursion guard for AST walks: a hostile PKGBUILD of deeply nested
+/// constructs (`$($($(...)))`, thousands deep) must not be able to
+/// overflow the scanner's stack. Real files never come close; nodes
+/// below the cap are simply not visited, and the line heuristics still
+/// see that text (or the check reports nothing -- either way, no crash).
+const MAX_AST_DEPTH: usize = 100;
+
 fn parse(source: &str) -> Option<tree_sitter::Tree> {
     let mut parser = tree_sitter::Parser::new();
     let language: tree_sitter::Language = tree_sitter_bash::LANGUAGE.into();
@@ -12,17 +19,32 @@ fn parse(source: &str) -> Option<tree_sitter::Tree> {
 }
 
 fn find_descendants<'a>(node: Node<'a>, kind: &str, out: &mut Vec<Node<'a>>) {
+    find_descendants_at(node, kind, out, 0);
+}
+
+fn find_descendants_at<'a>(node: Node<'a>, kind: &str, out: &mut Vec<Node<'a>>, depth: usize) {
+    if depth > MAX_AST_DEPTH {
+        return;
+    }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == kind {
             out.push(child);
         }
-        find_descendants(child, kind, out);
+        find_descendants_at(child, kind, out, depth + 1);
     }
 }
 
 /// Resolve word/string/concatenation to a literal. `None` if dynamic.
 fn resolve_word(node: Node, src: &[u8]) -> Option<String> {
+    resolve_word_at(node, src, 0)
+}
+
+fn resolve_word_at(node: Node, src: &[u8], depth: usize) -> Option<String> {
+    if depth > MAX_AST_DEPTH {
+        // Deeper than anything real: treat as dynamic (callers fail safe).
+        return None;
+    }
     match node.kind() {
         "word" => Some(node.utf8_text(src).ok()?.to_string()),
         "raw_string" => Some(node.utf8_text(src).ok()?.trim_matches('\'').to_string()),
@@ -42,7 +64,7 @@ fn resolve_word(node: Node, src: &[u8]) -> Option<String> {
             let mut out = String::new();
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                out.push_str(&resolve_word(child, src)?);
+                out.push_str(&resolve_word_at(child, src, depth + 1)?);
             }
             Some(out)
         }
@@ -723,6 +745,18 @@ pub(crate) fn top_level_command_substitution(source: &str) -> Option<usize> {
 
 /// Like find_descendants, but skips function_definition bodies.
 fn find_descendants_skip_functions<'a>(node: Node<'a>, kind: &str, out: &mut Vec<Node<'a>>) {
+    find_descendants_skip_functions_at(node, kind, out, 0);
+}
+
+fn find_descendants_skip_functions_at<'a>(
+    node: Node<'a>,
+    kind: &str,
+    out: &mut Vec<Node<'a>>,
+    depth: usize,
+) {
+    if depth > MAX_AST_DEPTH {
+        return;
+    }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "function_definition" {
@@ -731,7 +765,7 @@ fn find_descendants_skip_functions<'a>(node: Node<'a>, kind: &str, out: &mut Vec
         if child.kind() == kind {
             out.push(child);
         }
-        find_descendants_skip_functions(child, kind, out);
+        find_descendants_skip_functions_at(child, kind, out, depth + 1);
     }
 }
 
@@ -755,6 +789,28 @@ mod ast_tests {
         assert_eq!(curl_pipe_shell("curl -sSL https://x -o file.tar.gz"), None);
         assert_eq!(curl_pipe_shell("curl -sSL https://x | tee log.txt"), None);
         assert_eq!(curl_pipe_shell("# curl -sSL https://x | sh"), None);
+    }
+
+    #[test]
+    fn deep_nesting_is_capped_not_overflowed() {
+        // Thousands of nested command substitutions: unbounded recursion
+        // in the AST walk would overflow the scanner's stack -- the cap
+        // makes the walk stop instead. Whatever the checks decide here,
+        // they must come back, not crash.
+        let deep = format!("{}x{}", "$( ".repeat(50_000), ")".repeat(50_000));
+        let _ = curl_pipe_shell(&deep);
+        let _ = eval_remote_exec(&deep);
+        let _ = sudo_escalation(&deep);
+        let _ = top_level_command_substitution(&deep);
+        let _ = pkgbuild_dependencies(&deep, "x86_64");
+
+        // Nesting under the cap is still walked normally.
+        let mid = format!(
+            "{}curl -sSL https://x | sh{}",
+            "( ".repeat(60),
+            " )".repeat(60)
+        );
+        assert_eq!(curl_pipe_shell(&mid), Some(1));
     }
 
     #[test]
