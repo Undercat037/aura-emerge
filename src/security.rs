@@ -2777,6 +2777,9 @@ pub(crate) fn verify_local_clone_or_rescan(
         .filter(|(_, f)| f.severity == Severity::Suspicious)
         .collect();
 
+    // Pause Jobs ticker so concurrent installs cannot overwrite the prompt.
+    crate::progress::status_break();
+
     if !atomic.is_empty() {
         print_finding_block(
             pkgbase,
@@ -2812,6 +2815,7 @@ pub(crate) fn verify_local_clone_or_rescan(
         eprintln!("{} Aborted.", ">>>".t_red().bold());
         std::process::exit(1);
     }
+    crate::progress::status_resume();
 }
 
 /// Source location for the "read the full file" footer.
@@ -2848,7 +2852,7 @@ fn scan_report(
     }
 
     // Same name-based check as scan_aur_pkgbuilds_or_abort - `--scan`/
-    // `--install-pkgbuild --scan` are separate entry points from the
+    // `--usepkgbuild --scan` are separate entry points from the
     // install-time path, so this needs its own copy rather than relying
     // on the caller to have gone through that function first. `label` is
     // the pkgbase for `scan_report_aur` and the local directory's name
@@ -4029,7 +4033,7 @@ package() {
 
     #[test]
     fn known_compromised_package_name_flagged_via_scan_report() {
-        // `--scan`/`--install-pkgbuild --scan` go through `scan_report`,
+        // `--scan`/`--usepkgbuild --scan` go through `scan_report`,
         // a separate entry point from the install-time
         // `scan_aur_pkgbuilds_or_abort` - make sure the name check fires
         // there too, on a totally clean PKGBUILD body.

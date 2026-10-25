@@ -1789,8 +1789,13 @@ fn resolve_and_build_aur(
     // FEATURES=localrepo: if ae-aur already has the same version the AUR
     // reports, install from the local binary repo and skip clone/build.
     // --edit / --pkgbuild-view force a real rebuild (user is changing sources).
+    // localrepo only for bare installs when FEATURES=localrepo is on;
+    // -F / --buildpkgonly never consume local binaries; explicit ae-aur/
+    // targets go through repo_install, not this path.
     if !edit
         && !pkgbuild_view
+        && !crate::runtime::get().fetch_all
+        && !crate::runtime::get().buildpkgonly
         && crate::runtime::config().has_feature("localrepo")
         && let Some(files) = try_install_from_localrepo(pkg, "aur", mark_asdeps, ask)
     {
@@ -1850,6 +1855,32 @@ fn resolve_and_build_aur(
         &crate::aur::srcinfo_version(&dir.join(".SRCINFO")).unwrap_or_default(),
     );
     crate::progress::line(crate::progress::Stage::Emerging, stage_n, &stage_atom);
+
+    // `-F`: sources are on disk; no scan gate / build / install.
+    if crate::runtime::get().fetch_all {
+        let dest_note = if let Some(out) = crate::runtime::get().outdistfiles.clone() {
+            let _ = std::fs::create_dir_all(&out);
+            let target = out.join(&pkgbase);
+            // best-effort: symlink or copy path notice
+            if !target.exists() {
+                let _ = std::os::unix::fs::symlink(&dir, &target);
+            }
+            format!(" → {}", target.display())
+        } else {
+            String::new()
+        };
+        println!(
+            "{} fetched (clone only) {}{}",
+            ">>>".t_green().bold(),
+            dir.display(),
+            dest_note
+        );
+        crate::progress::line(crate::progress::Stage::Completed, stage_n, &stage_atom);
+        building.remove(&pkgbase);
+        let names = vec![pkgbase.clone()];
+        built.insert(pkgbase.clone(), names.clone());
+        return Some(names);
+    }
 
     let fetched = crate::security::scan_aur_pkgbuilds_or_abort(std::slice::from_ref(&pkgbase));
     crate::security::verify_local_clone_or_rescan(&pkgbase, &dir, fetched.get(&pkgbase));
@@ -2685,7 +2716,7 @@ fn install_local_tarballs(tarballs: &[String], ask: bool, mark_asdeps: bool) -> 
     }
 }
 
-/// `--install-pkgarchive FILE...`: install already-built `*.pkg.tar.*`
+/// `--usepkg FILE...`: install already-built `*.pkg.tar.*`
 /// archives (makepkg output, or files provided by a repository mirror)
 /// through the same pinned -> audited -> helper `-U` chain a sandboxed
 /// build result goes through. The files are untrusted input: whatever is
@@ -2693,7 +2724,7 @@ fn install_local_tarballs(tarballs: &[String], ask: bool, mark_asdeps: bool) -> 
 /// hooks, setuid bits), so the archive audit gate is not optional here.
 ///
 /// Returns the installed package names on success (the caller records
-/// them in world with the "Err/" prefix, same as --install-pkgbuild),
+/// them in world with the "Err/" prefix, same as --usepkgbuild),
 /// or `None` on failure.
 pub(crate) fn install_pkgarchives(
     files: &[String],
@@ -3145,13 +3176,13 @@ fn build_with_sandbox(
         );
         return false;
     }
-    // `-w` / `--getpkg`: stop after the audited archives exist (no install).
-    // Optionally copy them to `--pkgoutdir`.
-    if crate::runtime::get().getpkg {
-        if let Some(dir) = crate::runtime::get().pkgoutdir.clone() {
+    // `-B` / `--buildpkgonly`: stop after the audited archives exist (no install).
+    // Optionally copy them to `--outdistfiles`.
+    if crate::runtime::get().buildpkgonly {
+        if let Some(dir) = crate::runtime::get().outdistfiles.clone() {
             if let Err(e) = fs::create_dir_all(&dir) {
                 eprintln!(
-                    "{} could not create --pkgoutdir {}: {}",
+                    "{} could not create --outdistfiles {}: {}",
                     ">>> Error:".t_red().bold(),
                     dir.display(),
                     e
@@ -3183,7 +3214,7 @@ fn build_with_sandbox(
                 println!("{} package ready: {}", ">>>".t_green().bold(), f);
             }
             println!(
-                "{} pass --pkgoutdir DIR to collect archives in one place",
+                "{} pass --outdistfiles DIR to collect archives in one place",
                 ">>>".t_yellow().bold()
             );
         }
@@ -3983,6 +4014,28 @@ fn abs_build_one(
         return false;
     }
 
+    // `-F`: checkout only, no build/install.
+    if crate::runtime::get().fetch_all {
+        let dest_note = if let Some(out) = crate::runtime::get().outdistfiles.clone() {
+            let _ = std::fs::create_dir_all(&out);
+            let target = out.join(&info.name);
+            if !target.exists() {
+                let _ = std::os::unix::fs::symlink(&pkg_dir, &target);
+            }
+            format!(" → {}", target.display())
+        } else {
+            String::new()
+        };
+        println!(
+            "{} fetched (clone only) {}{}",
+            ">>>".t_green().bold(),
+            pkg_dir.display(),
+            dest_note
+        );
+        crate::progress::line(crate::progress::Stage::Completed, stage_n, &stage_atom);
+        return true;
+    }
+
     let build_dir = pkg_dir.clone();
 
     if edit {
@@ -4397,9 +4450,9 @@ pub(crate) fn source_builds_parallel(
     all_ok.load(AtomicOrdering::Relaxed)
 }
 
-// ── --install-pkgbuild: install an arbitrary local PKGBUILD checkout ──────────
+// ── --usepkgbuild: install an arbitrary local PKGBUILD checkout ──────────
 
-/// `--install-pkgbuild <PATH>`: build and install a local PKGBUILD
+/// `--usepkgbuild <PATH>`: build and install a local PKGBUILD
 /// checkout through the normal emerge pipeline (scanner + bwrap
 /// sandbox) instead of a bare, unaudited `makepkg -si` -- same trust
 /// model as an AUR clone, just pointed at a directory already on disk.
@@ -4435,8 +4488,13 @@ fn stage_local_pkgbuild(src: &std::path::Path, label: &str) -> Result<std::path:
 
 fn copy_pkgbuild_tree(src: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
     fn skip_name(name: &str) -> bool {
-        name == "src"
+        // VCS / build litter only. Do NOT skip "src": Rust/C packages keep
+        // real sources there. makepkg's own src/pkg dirs are wiped on the
+        // dest side before copy (see stage_local_pkgbuild).
+        name == ".git"
+            || name == "target"
             || name == "pkg"
+            || name == "scaner-test" // intentional IOC fixtures — not shipped
             || name.ends_with(".pkg.tar")
             || name.ends_with(".pkg.tar.zst")
             || name.ends_with(".pkg.tar.xz")
@@ -4473,11 +4531,29 @@ fn copy_pkgbuild_tree(src: &std::path::Path, dest: &std::path::Path) -> Result<(
                 // Prefer copy over rename so the user's tree stays intact.
                 if ft.is_symlink() {
                     let _ = fs::remove_file(&to);
-                    let target = fs::read_link(&from).map_err(|e| e.to_string())?;
-                    std::os::unix::fs::symlink(&target, &to)
-                        .map_err(|e| format!("symlink {}: {}", to.display(), e))?;
+                    // Outside-tree symlinks are noise for packaging; skip quietly.
+                    let target = match fs::read_link(&from) {
+                        Ok(t) => t,
+                        Err(_) => continue,
+                    };
+                    let _ = std::os::unix::fs::symlink(&target, &to);
                 } else {
-                    fs::copy(&from, &to).map_err(|e| format!("copy {}: {}", from.display(), e))?;
+                    // Unreadable objects (rare host fs quirks) should not abort
+                    // the whole stage — skip with a note.
+                    match fs::copy(&from, &to) {
+                        Ok(_) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                            eprintln!(
+                                "{} skip {}: {}",
+                                ">>> Warning:".t_yellow().bold(),
+                                from.display(),
+                                e
+                            );
+                        }
+                        Err(e) => {
+                            return Err(format!("copy {}: {}", from.display(), e));
+                        }
+                    }
                 }
             }
         }
@@ -4720,6 +4796,56 @@ pub(crate) fn source_cache_dir() -> Option<std::path::PathBuf> {
 /// a directory. Each build gets `packages/<pkgbase>/`.
 pub(crate) fn package_cache_dir() -> Option<std::path::PathBuf> {
     Some(aura_cache_root()?.join("packages"))
+}
+
+/// pacman `CacheDir` from `/etc/pacman.conf` (first entry), else None.
+pub(crate) fn pacman_cache_dir() -> Option<std::path::PathBuf> {
+    let text = std::fs::read_to_string(crate::PACMAN_CONF).ok()?;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let lower = line.to_ascii_lowercase();
+        if let Some(rest) = lower.strip_prefix("cachedir") {
+            let rest = line[line.len() - rest.len()..].trim();
+            let rest = rest.trim_start_matches(|c: char| c == '=' || c.is_whitespace());
+            let first = rest.split_whitespace().next().unwrap_or("");
+            if !first.is_empty() {
+                return Some(std::path::PathBuf::from(first));
+            }
+        }
+    }
+    None
+}
+
+/// Archives for `name` currently sitting in pacman CacheDir (exact paths).
+pub(crate) fn cache_pkg_files_for(name: &str, cache: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let bare = name.split('/').next_back().unwrap_or(name);
+    let ver = crate::alpm_db::find_sync_many(&[bare.to_string()])
+        .get(bare)
+        .map(|p| p.version.clone())
+        .or_else(|| crate::alpm_db::installed_version(bare));
+    let Some(ver) = ver else {
+        return Vec::new();
+    };
+    let prefix = format!("{}-{}-", bare, ver);
+    let Ok(rd) = std::fs::read_dir(cache) else {
+        return Vec::new();
+    };
+    let mut out: Vec<std::path::PathBuf> = rd
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with(&prefix) && n.contains(".pkg.tar."))
+                .unwrap_or(false)
+        })
+        .collect();
+    // Prefer the longest match (full arch+ext); stable order for logs.
+    out.sort();
+    out
 }
 
 /// Leaf name for per-pkgbase cache dirs (`sources/<leaf>/`, `packages/<leaf>/`).
@@ -5067,18 +5193,18 @@ pub(crate) fn print_system_info() {
                 .unwrap_or_else(|| "?".to_string());
             println!("    {}=\"{}\"  (overrides makepkg.conf)", key, shown);
         }
-        // BUILDENV/OPTIONS that only FEATURES touched.
-        let mut seen: Vec<&str> = cfg.build_vars.iter().map(|(k, _)| k.as_str()).collect();
-        for (arr, _) in crate::config::feature_edits(cfg) {
-            if seen.contains(&arr) {
-                continue;
+        if !cfg.features.is_empty() {
+            let mut on: Vec<&str> = Vec::new();
+            for tok in &cfg.features {
+                if let Some(name) = tok.strip_prefix('-') {
+                    on.retain(|x| *x != name);
+                } else if !on.contains(&tok.as_str()) {
+                    on.push(tok.as_str());
+                }
             }
-            seen.push(arr);
-            let shown = resolved
-                .get(arr)
-                .cloned()
-                .unwrap_or_else(|| "?".to_string());
-            println!("    {}=\"{}\"  (from FEATURES)", arr, shown);
+            if !on.is_empty() {
+                println!("    FEATURES=\"{}\"", on.join(" "));
+            }
         }
     }
 
@@ -5121,6 +5247,132 @@ pub(crate) fn print_system_info() {
 // @preserved-rebuild: installed deps → unsatisfied check → offer reinstall.
 
 /// "glibc>=2.38" → "glibc".
+
+/// `--pkginfo PKG…` — short installed package sheet; `-v` dumps files too.
+pub(crate) fn print_pkginfo(names: &[String], verbose: bool) {
+    use colored::Colorize;
+
+    fn fmt_ts(ts: i64) -> String {
+        if ts <= 0 {
+            return "unknown".to_string();
+        }
+        // Civil UTC date from unix seconds (Howard Hinnant algorithm).
+        let secs = ts as u64;
+        let days = (secs / 86400) as i64;
+        let rem = secs % 86400;
+        let hours = rem / 3600;
+        let mins = (rem % 3600) / 60;
+        let s = rem % 60;
+        let z = days + 719468;
+        let era = if z >= 0 { z } else { z - 146096 } / 146097;
+        let doe = (z - era * 146097) as u64;
+        let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+        let y = yoe as i64 + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = doy - (153 * mp + 2) / 5 + 1;
+        let m = mp as i64 + if mp < 10 { 3 } else { -9 };
+        let y = y + if m <= 2 { 1 } else { 0 };
+        format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+            y, m, day, hours, mins, s
+        )
+    }
+
+    fn fmt_size(n: i64) -> String {
+        if n < 1024 {
+            return format!("{} B", n);
+        }
+        let mut v = n as f64;
+        for unit in ["KiB", "MiB", "GiB", "TiB"] {
+            v /= 1024.0;
+            if v < 1024.0 {
+                return format!("{:.2} {}", v, unit);
+            }
+        }
+        format!("{:.2} PiB", v / 1024.0)
+    }
+
+    fn line(label: &str, value: &str) {
+        if value.is_empty() || value == "None" {
+            println!("{:<16}: None", label);
+        } else {
+            println!("{:<16}: {}", label, value);
+        }
+    }
+
+    fn list_line(label: &str, items: &[String]) {
+        if items.is_empty() {
+            line(label, "None");
+        } else {
+            line(label, &items.join("  "));
+        }
+    }
+
+    let mut missing = Vec::new();
+    for name in names {
+        let bare = name.split('/').next_back().unwrap_or(name);
+        let Some(p) = crate::alpm_db::local_pkg_detail(bare) else {
+            missing.push(bare.to_string());
+            continue;
+        };
+        println!("{}", "=".repeat(60));
+        line("Name", &p.name);
+        line("Version", &p.version);
+        line("Description", &p.description);
+        line("Architecture", &p.arch);
+        line("URL", &p.url);
+        line("Licenses", &p.licenses);
+        line(
+            "Groups",
+            &if p.groups.is_empty() {
+                "None".to_string()
+            } else {
+                p.groups.join("  ")
+            },
+        );
+        list_line("Provides", &p.provides);
+        list_line("Depends On", &p.depends);
+        list_line("Optional Deps", &p.optdepends);
+        list_line("Required By", &p.required_by);
+        list_line("Optional For", &p.optional_for);
+        list_line("Conflicts With", &p.conflicts);
+        list_line("Replaces", &p.replaces);
+        line("Installed Size", &fmt_size(p.size));
+        line("Packager", &p.packager);
+        line("Build Date", &fmt_ts(p.build_date));
+        line("Install Date", &fmt_ts(p.install_date));
+        line("Install Reason", &p.install_reason);
+        line("Install Script", "Unknown"); // libalpm does not expose this cheaply
+        line(
+            "Validated By",
+            if p.validation.is_empty() {
+                "None"
+            } else {
+                &p.validation
+            },
+        );
+        if verbose {
+            println!("{:<16}:", "Files");
+            for f in &p.files {
+                println!("  {}", f);
+            }
+            if p.files.is_empty() {
+                println!("  (none)");
+            }
+        }
+        println!("{}", "=".repeat(60));
+    }
+    if !missing.is_empty() {
+        eprintln!(
+            "{} package(s) not installed: {}",
+            ">>> Error:".red().bold(),
+            missing.join(", ")
+        );
+        std::process::exit(1);
+    }
+}
+
 pub(crate) fn strip_version_operator(atom: &str) -> String {
     match atom.find(['<', '>', '=']) {
         Some(i) => atom[..i].to_string(),

@@ -267,6 +267,114 @@ pub(crate) fn installed_version(name: &str) -> Option<String> {
         .map(|p| p.version().to_string())
 }
 
+/// Full local-db row for `--pkginfo` (installed packages only).
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) struct LocalPkgDetail {
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub url: String,
+    pub licenses: String,
+    pub arch: String,
+    pub base: String,
+    pub packager: String,
+    pub build_date: i64,
+    pub install_date: i64,
+    pub install_reason: String,
+    pub validation: String,
+    pub size: i64, // installed size
+    pub depends: Vec<String>,
+    pub optdepends: Vec<String>,
+    pub makedepends: Vec<String>,
+    pub checkdepends: Vec<String>,
+    pub provides: Vec<String>,
+    pub conflicts: Vec<String>,
+    pub replaces: Vec<String>,
+    pub groups: Vec<String>,
+    pub required_by: Vec<String>,
+    pub optional_for: Vec<String>,
+    pub files: Vec<String>,
+}
+
+fn join_list<'a, I>(iter: I) -> Vec<String>
+where
+    I: IntoIterator,
+    I::Item: std::fmt::Display,
+{
+    iter.into_iter().map(|d| d.to_string()).collect()
+}
+
+pub(crate) fn local_pkg_detail(name: &str) -> Option<LocalPkgDetail> {
+    let alpm = open()?;
+    let pkg = alpm.localdb().pkg(bare(name)).ok()?;
+    let reason = match pkg.reason() {
+        PackageReason::Explicit => "Explicitly installed",
+        PackageReason::Depend => "Installed as a dependency",
+    };
+    // required_by / optional_for via compute
+    let mut required_by = Vec::new();
+    let mut optional_for = Vec::new();
+    for other in alpm.localdb().pkgs() {
+        if other.name() == pkg.name() {
+            continue;
+        }
+        if other.depends().iter().any(|d| d.name() == pkg.name()) {
+            required_by.push(other.name().to_string());
+        }
+        if other.optdepends().iter().any(|d| d.name() == pkg.name()) {
+            optional_for.push(other.name().to_string());
+        }
+    }
+    required_by.sort();
+    optional_for.sort();
+    let files: Vec<String> = {
+        let list = pkg.files();
+        list.files()
+            .iter()
+            .filter_map(|f| {
+                let name = f.name();
+                if name.last() == Some(&b'/') {
+                    return None;
+                }
+                Some(format!("/{}", String::from_utf8_lossy(name)))
+            })
+            .collect()
+    };
+    let licenses = pkg
+        .licenses()
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(LocalPkgDetail {
+        name: pkg.name().to_string(),
+        version: pkg.version().to_string(),
+        description: pkg.desc().unwrap_or("").to_string(),
+        url: pkg.url().unwrap_or("").to_string(),
+        licenses,
+        arch: pkg.arch().unwrap_or("").to_string(),
+        base: pkg.base().unwrap_or_else(|| pkg.name()).to_string(),
+        packager: pkg.packager().unwrap_or("").to_string(),
+        build_date: pkg.build_date(),
+        install_date: pkg.install_date().unwrap_or(0),
+        install_reason: reason.to_string(),
+        validation: String::new(),
+        size: pkg.isize(),
+        depends: join_list(pkg.depends()),
+        optdepends: join_list(pkg.optdepends()),
+        makedepends: join_list(pkg.makedepends()),
+        checkdepends: join_list(pkg.checkdepends()),
+        provides: join_list(pkg.provides()),
+        conflicts: join_list(pkg.conflicts()),
+        replaces: join_list(pkg.replaces()),
+        groups: join_list(pkg.groups()),
+        required_by,
+        optional_for,
+        files,
+    })
+}
+
 /// Lookup sync packages. `repo/name` pins the repo; a miss in that repo
 /// is a miss (no fallback to other dbs). Bare names take the first db
 /// that has them (pacman.conf order).

@@ -37,11 +37,12 @@ pub(crate) struct Runtime {
     /// `--sync-explicit`: demote explicit packages outside world/profile
     /// after a successful merge.
     pub(crate) sync_explicit: bool,
-    /// `-w` / `--getpkg`: produce package archive(s) without installing
+    /// `-B` / `--buildpkgonly`: produce package archive(s) without installing
     /// (build for AUR/ABS/local, download for official — once wired).
-    pub(crate) getpkg: bool,
-    /// `--pkgoutdir PATH`: where `-w` writes archives.
-    pub(crate) pkgoutdir: Option<std::path::PathBuf>,
+    pub(crate) buildpkgonly: bool,
+    pub(crate) fetch_all: bool,
+    /// `--outdistfiles DIR`: where `-w` writes archives.
+    pub(crate) outdistfiles: Option<std::path::PathBuf>,
 }
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();

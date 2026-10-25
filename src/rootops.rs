@@ -219,6 +219,21 @@ pub(crate) fn set_reason(explicit: bool, names: &[String]) -> Result<(), String>
     with_helper(|c| c.set_reason(explicit, names)).map_err(|e| e.to_string())
 }
 
+/// Copy root-owned CacheDir archives into `dest` as the calling user.
+pub(crate) fn copy_out(dest: &std::path::Path, files: &[std::path::PathBuf]) -> Result<(), String> {
+    if files.is_empty() {
+        return Ok(());
+    }
+    let uid = unsafe { libc::getuid() };
+    let gid = unsafe { libc::getgid() };
+    let dest_s = dest.to_string_lossy().into_owned();
+    let specs: Vec<String> = files
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    with_helper(|c| c.copy_out(uid, gid, &dest_s, &specs)).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

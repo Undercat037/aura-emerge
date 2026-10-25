@@ -518,56 +518,13 @@ fn valid_array_token(t: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || "!_-+.".contains(c))
 }
 
-/// Portage `FEATURES` that have a makepkg twin:
-/// (feature, makepkg array, token, inverted). Anything else (candy, ...) is
-/// not a makepkg matter and is skipped here.
-const FEATURE_MAP: &[(&str, &str, &str, bool)] = &[
-    ("ccache", "BUILDENV", "ccache", false),
-    ("distcc", "BUILDENV", "distcc", false),
-    ("test", "BUILDENV", "check", false),
-    ("nostrip", "OPTIONS", "strip", true),
-    ("splitdebug", "OPTIONS", "debug", false),
-];
-
-/// `FEATURES` -> `(array, token)` edits; token may start with `!`. Only
-/// features named in FEATURES (on, or `-off`) give an edit. A token the
-/// user wrote in an explicit BUILDENV/OPTIONS wins over FEATURES.
-pub(crate) fn feature_edits(cfg: &Config) -> Vec<(&'static str, String)> {
-    let mut out = Vec::new();
-    for (feat, arr, tok, inv) in FEATURE_MAP {
-        let mut state: Option<bool> = None;
-        for t in &cfg.features {
-            if t.as_str() == *feat {
-                state = Some(true);
-            } else if t.strip_prefix('-') == Some(*feat) {
-                state = Some(false);
-            }
-        }
-        let Some(on) = state else { continue };
-        let explicit = cfg.build_vars.iter().any(|(k, v)| {
-            k.as_str() == *arr && v.tokens().iter().any(|x| x.trim_start_matches('!') == *tok)
-        });
-        if explicit {
-            continue;
-        }
-        let enable = on != *inv;
-        out.push((
-            *arr,
-            if enable {
-                tok.to_string()
-            } else {
-                format!("!{}", tok)
-            },
-        ));
-    }
-    out
-}
+/// FEATURES is AE-only (localrepo, candy, …). Makepkg knobs live in
+/// explicit BUILDENV/OPTIONS in make.conf — no FEATURES→array mapping.
 
 /// makepkg.conf that sources the system one then overrides it with
 /// this config's build vars. `None` if none are set (the common case).
 pub(crate) fn makepkg_override_conf(cfg: &Config) -> Option<String> {
-    let edits = feature_edits(cfg);
-    if cfg.build_vars.is_empty() && edits.is_empty() {
+    if cfg.build_vars.is_empty() {
         return None;
     }
 
@@ -610,18 +567,6 @@ pub(crate) fn makepkg_override_conf(cfg: &Config) -> Option<String> {
     }
     if !exports.is_empty() {
         out.push_str(&format!("export {}\n", exports.join(" ")));
-    }
-    if !edits.is_empty() {
-        // Edit the system arrays in place: drop `tok`/`!tok`, add ours.
-        out.push_str("\n# FEATURES -> makepkg arrays\n");
-        out.push_str(
-            "_ae_set() { local -n _a=\"$1\"; local _t=\"${2#!}\" _i; \
-for _i in \"${!_a[@]}\"; do [[ \"${_a[_i]#!}\" == \"$_t\" ]] && unset \"_a[_i]\"; done; \
-_a+=(\"$2\"); }\n",
-        );
-        for (arr, tok) in &edits {
-            out.push_str(&format!("_ae_set {} '{}'\n", arr, tok));
-        }
     }
     Some(out)
 }
@@ -1215,25 +1160,19 @@ mod config_tests {
     }
 
     #[test]
-    fn features_map_to_makepkg_arrays() {
+    fn features_do_not_map_to_makepkg_arrays() {
         let c = parse("FEATURES=\"ccache -test nostrip candy\"\n");
-        assert_eq!(
-            feature_edits(&c),
-            vec![
-                ("BUILDENV", "ccache".to_string()),
-                ("BUILDENV", "!check".to_string()),
-                ("OPTIONS", "!strip".to_string()),
-            ]
-        );
-        let conf = makepkg_override_conf(&c).unwrap();
-        assert!(conf.contains("_ae_set BUILDENV 'ccache'"));
-        assert!(conf.contains("_ae_set OPTIONS '!strip'"));
+        assert!(c.has_feature("ccache"));
+        assert!(c.has_feature("candy"));
+        // FEATURES no longer rewrites BUILDENV/OPTIONS
+        assert!(makepkg_override_conf(&c).is_none());
     }
 
     #[test]
-    fn explicit_buildenv_beats_features() {
-        let c = parse("FEATURES=ccache\nBUILDENV=(!ccache color)\n");
-        assert!(feature_edits(&c).is_empty());
+    fn explicit_buildenv_still_emitted() {
+        let c = parse("BUILDENV=(!ccache color)\n");
+        let conf = makepkg_override_conf(&c).unwrap();
+        assert!(conf.contains("BUILDENV="));
     }
 
     #[test]

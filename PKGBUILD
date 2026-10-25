@@ -18,18 +18,23 @@ conflicts=('portage' 'portage-git' 'eselect-git' 'aura-emerge')
 provides=('emerge' 'portageq' 'eselect')
 install=aura-emerge.install
 backup=('etc/portage/world' 'etc/pacman.d/aura-emerge-repos.conf')
-source=("$pkgname::git+https://github.com/Undercat037/aura-emerge.git")
-sha256sums=('SKIP')
+source=()
+sha256sums=()
 
 pkgver() {
-  cd "$pkgname"
-  local ver
+  cd "$startdir" || return 1
+  local ver rev short
   ver=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/; s/-/_/g')
-  printf '%s.r%s.g%s' "$ver" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+  [[ -n $ver ]] || return 1
+  if rev=$(git rev-list --count HEAD 2>/dev/null) && short=$(git rev-parse --short HEAD 2>/dev/null); then
+    printf '%s.r%s.g%s' "$ver" "$rev" "$short"
+  else
+    printf '%s' "$ver"
+  fi
 }
 
 build() {
-  cd "$pkgname"
+  cd "$startdir" || return 1
   cargo build --release --locked
 
   local bin="$PWD/target/release/aura-emerge"
@@ -46,7 +51,7 @@ build() {
 }
 
 package() {
-  cd "$pkgname"
+  cd "$startdir" || return 1
 
   install -Dm755 target/release/aura-emerge "$pkgdir/usr/bin/emerge"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"

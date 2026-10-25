@@ -37,7 +37,7 @@ jobs:
           useradd -m ci || true
           set +e
           out=$(runuser -u ci -- ./target/release/aura-emerge \
-            --install-pkgbuild ./scaner-test --scan 2>&1)
+            --usepkgbuild ./scaner-test --scan 2>&1)
           code=$?
           echo "$out"
           [ "$code" -eq 1 ] || { echo "::error::expected exit 1, got $code"; exit 1; }

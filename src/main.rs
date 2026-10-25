@@ -246,7 +246,7 @@ EXAMPLES
     emerge ayugram-desktop-bin --scan  Audit the PKGBUILD/.install only -
                                      no build, no install, exits non-zero
                                      on any finding
-    emerge --install-pkgbuild ./pkg  Build+install a local PKGBUILD checkout
+    emerge --usepkgbuild ./pkg  Build+install a local PKGBUILD checkout
                                      through the normal scanner+sandbox path
     emerge --batchinstall list.txt  Install every package atom listed in
                                      list.txt, one per line
@@ -465,20 +465,19 @@ struct Cli {
     #[arg(long = "pkgbuild-view")]
     pkgbuild_view: bool,
 
-    /// Build+install local PKGBUILD dir (scanner + bwrap); world Err/ unless -1
-    #[arg(long = "install-pkgbuild", value_name = "PATH", value_hint = clap::ValueHint::DirPath)]
-    install_pkgbuild: Option<String>,
+    /// Build+install local PKGBUILD dir (scanner + bwrap); world local/ unless -1
+    #[arg(long = "usepkgbuild", value_name = "PATH", value_hint = clap::ValueHint::DirPath)]
+    usepkgbuild: Option<String>,
 
-    /// Install local .pkg.tar.* archive(s) (makepkg / repo output) through
-    /// the same audit + helper -U chain a finished build goes through;
+    /// Install local .pkg.tar.* archive(s) through audit + helper -U;
     /// world Err/ unless -1
     #[arg(
-        long = "install-pkgarchive",
+        long = "usepkg",
         value_name = "FILE",
         value_hint = clap::ValueHint::FilePath,
         num_args = 1..
     )]
-    install_pkgarchive: Vec<String>,
+    usepkg: Vec<String>,
 
     /// Verbose / detailed search info (-sv)
     #[arg(short = 'v', long = "verbose")]
@@ -693,35 +692,26 @@ struct Cli {
     #[arg(long = "revdep-rebuild")]
     revdep_rebuild: bool,
 
-    // Binary pkg flags (emerge -k/-K/-g/-G/-b/-B)
-    #[arg(short = 'k', long = "usepkg")]
-    usepkg: bool,
-    #[arg(short = 'K', long = "usepkgonly")]
-    usepkgonly: bool,
-    #[arg(short = 'g', long = "getbinpkg")]
-    getbinpkg: bool,
-    #[arg(short = 'G', long = "getbinpkgonly")]
-    getbinpkgonly: bool,
-    #[arg(short = 'b', long = "buildpkg")]
-    buildpkg: bool,
-    /// Produce package archive(s) without installing (AUR/ABS/local: build;
-    /// official: download — same idea as pacman `-w`).
+    /// Archives only, no install (Portage `-B`): AUR/ABS/local → build;
+    /// official → download into CacheDir. Alias: `-w` / `--getpkg`.
     #[arg(
-        short = 'w',
-        long = "getpkg",
-        visible_alias = "buildpkgonly",
-        short_aliases = ['B']
+        short = 'B',
+        long = "buildpkgonly",
+        visible_alias = "getpkg",
+        short_aliases = ['w']
     )]
-    getpkg: bool,
-    /// Directory for package archives produced by `-w` / `--getpkg`.
-    #[arg(long = "pkgoutdir", value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
-    pkgoutdir: Option<String>,
+    buildpkgonly: bool,
+    /// Collect archives (`-B`) / clones (`-F`) into DIR.
+    #[arg(long = "outdistfiles", value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
+    outdistfiles: Option<String>,
 
-    // Fetch flags
-    #[arg(short = 'f', long = "fetchonly")]
-    fetchonly: bool,
+    /// Fetch only: official → archive to CacheDir; AUR/ABS → clone sources.
+    /// No build/install. Optional `--outdistfiles` copies results.
     #[arg(short = 'F', long = "fetch-all-uri")]
     fetch_all_uri: bool,
+    /// Gentoo `-f` (same as `-F` for us).
+    #[arg(short = 'f', long = "fetchonly", hide = true)]
+    fetchonly: bool,
 
     // Misc compat
     #[arg(short = 'l', long = "changelog")]
@@ -748,6 +738,10 @@ struct Cli {
     /// Display system info, like `emerge --info`.
     #[arg(long = "info")]
     info: bool,
+
+    /// Installed package details (`-v` for the full dump).
+    #[arg(long = "pkginfo", value_name = "PKG", num_args = 1..)]
+    pkginfo: Vec<String>,
 
     /// Show Arch news; bare `--news` lists items, `--news N` reads one.
     #[arg(long = "news", value_name = "N|all", num_args = 0..=1, default_missing_value = "")]
@@ -793,11 +787,13 @@ fn print_help() {
     println!("Actions:  [ --depclean  | --deselect | --prune      | --check-world ]");
     println!("          [ --regen     | --resume   | --search     | --searchdesc  ]");
     println!("          [ --select    | --sync     | --unmerge    | --update      ]");
-    println!("          [ --regen-world | --version | --info | --regen-world-from-explicit ]");
+    println!(
+        "          [ --regen-world | --version | --info | --pkginfo | --regen-world-from-explicit ]"
+    );
     println!("          [ --list-sets | --regen-sets @<name>  | --news [N|all]    ]");
     println!("          [ --check-news [N|all]  | --check-devel | --undo          ]");
-    println!("          [ --scan <pkg...>       | --install-pkgbuild <PATH>       ]");
-    println!("          [ --install-pkgarchive <FILE...>                           ]");
+    println!("          [ --scan <pkg...>       | --usepkgbuild <PATH>       ]");
+    println!("          [ --usepkg <FILE...>                           ]");
     println!("          [ --batchinstall <FILE> | --clean-source-cache            ]");
     println!("          [ --localrepo-clean     | --revdep-rebuild                ]");
     println!("Sets:     [ @world | @preserved-rebuild | @<custom-sets>            ]");
@@ -1188,7 +1184,7 @@ pub(crate) fn alpm_install_quiet(
 /// `asdeps` = `--oneshot`. Targets may be bare or `repo/name`.
 pub(crate) fn repo_install_landed(names: &[String], asdeps: bool) -> (bool, Vec<String>) {
     let needed = runtime::get().noreplace;
-    let getpkg = runtime::get().getpkg;
+    let buildpkgonly = runtime::get().buildpkgonly || runtime::get().fetch_all;
     let jobsr = runtime::get().jobsr.max(1) as usize;
     let total = names.len();
     if total == 0 {
@@ -1264,18 +1260,13 @@ pub(crate) fn repo_install_landed(names: &[String], asdeps: bool) -> (bool, Vec<
             }
         };
 
-        if getpkg {
+        if buildpkgonly {
             println!(
-                "{} download only (-w): archives go to CacheDir{}",
-                ">>>".t_green().bold(),
-                runtime::get()
-                    .pkgoutdir
-                    .as_ref()
-                    .map(|d| format!(" (copy to {})", d.display()))
-                    .unwrap_or_default()
+                "{} download only (-B/-F): writing archives under CacheDir…",
+                ">>>".t_green().bold()
             );
         }
-        let mut res = rootops::install_ex(&targets, needed, getpkg, &mut on_event);
+        let mut res = rootops::install_ex(&targets, needed, buildpkgonly, &mut on_event);
         // An installed package blocks the new one (`quickshell` vs
         // `noctalia-qs`): list it like Portage does, ask once, then run the
         // same transaction again with the installed side unmerged. Retrying
@@ -1294,7 +1285,7 @@ pub(crate) fn repo_install_landed(names: &[String], asdeps: bool) -> (bool, Vec<
                 retried = true;
                 res = match packages::unmerge_blockers(&gone) {
                     Ok(()) => {
-                        let r = rootops::install_ex(&targets, needed, getpkg, &mut on_event);
+                        let r = rootops::install_ex(&targets, needed, buildpkgonly, &mut on_event);
                         if r.is_err() {
                             eprintln!(
                                 "{} already unmerged: {}",
@@ -1311,6 +1302,63 @@ pub(crate) fn repo_install_landed(names: &[String], asdeps: bool) -> (bool, Vec<
         progress::fetch_clear();
         match res {
             Ok(()) => {
+                if buildpkgonly {
+                    // DOWNLOAD_ONLY: report exact paths; copy via root helper
+                    // (CacheDir is not user-readable).
+                    let cache = crate::packages::pacman_cache_dir()
+                        .unwrap_or_else(|| std::path::PathBuf::from("/var/cache/pacman/pkg"));
+                    let mut all_paths: Vec<std::path::PathBuf> = Vec::new();
+                    for b in chunk {
+                        let paths = crate::packages::cache_pkg_files_for(b, &cache);
+                        if paths.is_empty() {
+                            eprintln!(
+                                "{} no archive found for {} under {}",
+                                ">>> Warning:".t_yellow().bold(),
+                                b,
+                                cache.display()
+                            );
+                            runtime::record_failure(b, "download-only: archive missing");
+                        } else {
+                            for path in &paths {
+                                // Prefer the .pkg.tar.* over .sig for the summary.
+                                println!("{} {}", ">>>".t_green().bold(), path.display());
+                            }
+                            all_paths.extend(paths);
+                            // Count as completed work, not an install.
+                            if let Some(&n) = nums.get(b) {
+                                let atom = atoms.get(b).cloned().unwrap_or_else(|| b.clone());
+                                progress::line(progress::Stage::Completed, n, &atom);
+                            } else {
+                                let atom = atoms.get(b).cloned().unwrap_or_else(|| b.clone());
+                                let n = progress::take();
+                                progress::line(progress::Stage::Completed, n, &atom);
+                            }
+                        }
+                    }
+                    if let Some(ref d) = runtime::get().outdistfiles {
+                        // Only copy the real archives (+ their .sig if present).
+                        match rootops::copy_out(d, &all_paths) {
+                            Ok(()) => {
+                                for path in &all_paths {
+                                    let name = path.file_name().unwrap_or_default();
+                                    println!(
+                                        "{} wrote {}",
+                                        ">>>".t_green().bold(),
+                                        d.join(name).display()
+                                    );
+                                }
+                            }
+                            Err(e) => eprintln!(
+                                "{} --outdistfiles {}: {}",
+                                ">>> Error:".t_red().bold(),
+                                d.display(),
+                                e
+                            ),
+                        }
+                    }
+                    // Not installed — do not push to `landed` / world.
+                    continue;
+                }
                 for b in chunk {
                     if *wave_ok.get(b).unwrap_or(&false) || alpm_db::is_installed(b) {
                         landed.push(orig_of.get(b).cloned().unwrap_or_else(|| b.clone()));
@@ -1390,8 +1438,14 @@ pub(crate) fn repo_install_landed(names: &[String], asdeps: bool) -> (bool, Vec<
             }
         }
     }
-    let ok = landed.len() == total;
-    if ok && runtime::get().with_optdeps {
+    let fetch_only = runtime::get().buildpkgonly || runtime::get().fetch_all;
+    let ok = if fetch_only {
+        // No packages land in the system; success = no recorded failures.
+        !runtime::any_failures()
+    } else {
+        landed.len() == total
+    };
+    if ok && !fetch_only && runtime::get().with_optdeps {
         install_optdeps(&landed);
     }
     (ok, landed)
@@ -1661,21 +1715,22 @@ fn upgrade_ignores() -> Vec<String> {
 
 // ── Action priority: first exclusive action on the command line wins ─────
 // Options may mix freely. --sync is not exclusive (can fall through).
-// --scan with --install-pkgbuild is one action + modifier.
+// --scan with --usepkgbuild is one action + modifier.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ActionKind {
     Help,
     Version,
     Info,
+    PkgInfo,
     News,
     ListSets,
     ListProfiles,
     SetProfile,
     CleanSourceCache,
     CheckDevel,
-    InstallPkgbuild,
-    InstallPkgarchive,
+    UsePkgbuild,
+    UsePkg,
     RevdepRebuild,
     Scan,
     Search,
@@ -1708,14 +1763,15 @@ impl ActionKind {
             ActionKind::Help => "--help",
             ActionKind::Version => "--version",
             ActionKind::Info => "--info",
+            ActionKind::PkgInfo => "--pkginfo",
             ActionKind::News => "--news",
             ActionKind::ListSets => "--list-sets",
             ActionKind::ListProfiles => "--list-profiles",
             ActionKind::SetProfile => "--set-profile",
             ActionKind::CleanSourceCache => "--clean-source-cache",
             ActionKind::CheckDevel => "--check-devel",
-            ActionKind::InstallPkgbuild => "--install-pkgbuild",
-            ActionKind::InstallPkgarchive => "--install-pkgarchive",
+            ActionKind::UsePkgbuild => "--usepkgbuild",
+            ActionKind::UsePkg => "--usepkg",
             ActionKind::RevdepRebuild => "--revdep-rebuild",
             ActionKind::Scan => "--scan",
             ActionKind::Search => "--search",
@@ -1742,14 +1798,15 @@ fn action_from_long(token: &str) -> Option<ActionKind> {
         "--help" => Some(ActionKind::Help),
         "--version" => Some(ActionKind::Version),
         "--info" => Some(ActionKind::Info),
+        "--pkginfo" => Some(ActionKind::PkgInfo),
         "--news" | "--check-news" => Some(ActionKind::News),
         "--list-sets" => Some(ActionKind::ListSets),
         "--list-profiles" => Some(ActionKind::ListProfiles),
         "--set-profile" => Some(ActionKind::SetProfile),
         "--clean-source-cache" => Some(ActionKind::CleanSourceCache),
         "--check-devel" => Some(ActionKind::CheckDevel),
-        "--install-pkgbuild" => Some(ActionKind::InstallPkgbuild),
-        "--install-pkgarchive" => Some(ActionKind::InstallPkgarchive),
+        "--usepkgbuild" => Some(ActionKind::UsePkgbuild),
+        "--usepkg" => Some(ActionKind::UsePkg),
         "--revdep-rebuild" => Some(ActionKind::RevdepRebuild),
         "--scan" => Some(ActionKind::Scan),
         "--search" | "--searchdesc" => Some(ActionKind::Search),
@@ -1794,6 +1851,9 @@ fn active_actions(cli: &Cli) -> Vec<ActionKind> {
     if cli.info {
         out.push(ActionKind::Info);
     }
+    if !cli.pkginfo.is_empty() {
+        out.push(ActionKind::PkgInfo);
+    }
     if cli.news.is_some() || cli.check_news.is_some() {
         out.push(ActionKind::News);
     }
@@ -1812,17 +1872,17 @@ fn active_actions(cli: &Cli) -> Vec<ActionKind> {
     if cli.check_devel {
         out.push(ActionKind::CheckDevel);
     }
-    if cli.install_pkgbuild.is_some() {
-        out.push(ActionKind::InstallPkgbuild);
+    if cli.usepkgbuild.is_some() {
+        out.push(ActionKind::UsePkgbuild);
     }
-    if !cli.install_pkgarchive.is_empty() {
-        out.push(ActionKind::InstallPkgarchive);
+    if !cli.usepkg.is_empty() {
+        out.push(ActionKind::UsePkg);
     }
     if cli.revdep_rebuild {
         out.push(ActionKind::RevdepRebuild);
     }
-    // standalone --scan only; with --install-pkgbuild it is a modifier
-    if cli.scan && cli.install_pkgbuild.is_none() {
+    // standalone --scan only; with --usepkgbuild it is a modifier
+    if cli.scan && cli.usepkgbuild.is_none() {
         out.push(ActionKind::Scan);
     }
     if cli.search || cli.searchdesc {
@@ -2732,9 +2792,10 @@ fn run() -> anyhow::Result<()> {
         jobsr,
         jobsa,
         sync_explicit: cli.sync_explicit,
-        getpkg: cli.getpkg,
-        pkgoutdir: cli
-            .pkgoutdir
+        buildpkgonly: cli.buildpkgonly,
+        fetch_all: cli.fetch_all_uri || cli.fetchonly,
+        outdistfiles: cli
+            .outdistfiles
             .as_ref()
             .map(|s| std::path::PathBuf::from(s.trim_end_matches('/'))),
     });
@@ -2777,6 +2838,11 @@ fn run() -> anyhow::Result<()> {
 
     if cli.info {
         print_system_info();
+        return Ok(());
+    }
+
+    if !cli.pkginfo.is_empty() {
+        packages::print_pkginfo(&cli.pkginfo, cli.verbose);
         return Ok(());
     }
 
@@ -2873,18 +2939,18 @@ fn run() -> anyhow::Result<()> {
         eprintln!(">>> Warning: sudo -v failed; continuing without --sudoloop.");
     }
 
-    // --install-pkgbuild <PATH>: a standalone action, same spirit as --news/
+    // --usepkgbuild <PATH>: a standalone action, same spirit as --news/
     // --list-sets above but *after* check_binaries()/--sudoloop since it
     // ends in `-U` through the root helper (libalpm). Doesn't mix with named
     // packages/@sets or --aur/--abs (those name something to *resolve*
     // elsewhere; this already points straight at a checkout on disk).
-    if let Some(path_str) = &cli.install_pkgbuild {
+    if let Some(path_str) = &cli.usepkgbuild {
         if !cli.packages.is_empty() {
-            eprintln!(">>> Error: --install-pkgbuild does not take package names or @sets.");
+            eprintln!(">>> Error: --usepkgbuild does not take package names or @sets.");
             std::process::exit(1);
         }
         if cli.aur || cli.abs {
-            eprintln!(">>> Error: --install-pkgbuild is not compatible with --aur/--abs.");
+            eprintln!(">>> Error: --usepkgbuild is not compatible with --aur/--abs.");
             std::process::exit(1);
         }
         // Absolute, no trailing slash: bwrap binds this path, and a
@@ -2899,7 +2965,7 @@ fn run() -> anyhow::Result<()> {
         };
 
         // --scan: report-only, no build. Checked first since it's a
-        // strict subset of the normal --install-pkgbuild flow below (both
+        // strict subset of the normal --usepkgbuild flow below (both
         // start with the same scanner).
         if cli.scan {
             return if crate::security::scan_report_local(
@@ -2933,7 +2999,7 @@ fn run() -> anyhow::Result<()> {
             cli.pkgbuild_view,
         ) {
             Some(names) => {
-                if cli.getpkg {
+                if cli.buildpkgonly {
                     crate::progress::status_break();
                     println!(
                         "{} Built (not installed): {}",
@@ -2960,30 +3026,30 @@ fn run() -> anyhow::Result<()> {
         };
     }
 
-    // --install-pkgarchive FILE...: same family as --install-pkgbuild, but
+    // --usepkg FILE...: same family as --usepkgbuild, but
     // pointed at already-built package archives (makepkg output, or files
     // provided by a repository mirror) instead of a PKGBUILD checkout.
     // Same trust model as a finished build: the archive content ends up
     // installed as root, so pin -> audit -> helper -U is not optional.
-    if !cli.install_pkgarchive.is_empty() {
+    if !cli.usepkg.is_empty() {
         if !cli.packages.is_empty() {
-            eprintln!(">>> Error: --install-pkgarchive does not take package names or @sets.");
+            eprintln!(">>> Error: --usepkg does not take package names or @sets.");
             std::process::exit(1);
         }
         if cli.aur || cli.abs {
-            eprintln!(">>> Error: --install-pkgarchive is not compatible with --aur/--abs.");
+            eprintln!(">>> Error: --usepkg is not compatible with --aur/--abs.");
             std::process::exit(1);
         }
         if cli.scan {
             eprintln!(
-                ">>> Error: --scan has no PKGBUILD to scan in a package archive; use --install-pkgbuild <PATH> --scan for source."
+                ">>> Error: --scan has no PKGBUILD to scan in a package archive; use --usepkgbuild <PATH> --scan for source."
             );
             std::process::exit(1);
         }
         // Resolve to absolute paths up front: a missing file is an error
         // for the whole run (a typo must not turn into a half-install).
-        let mut files = Vec::with_capacity(cli.install_pkgarchive.len());
-        for f in &cli.install_pkgarchive {
+        let mut files = Vec::with_capacity(cli.usepkg.len());
+        for f in &cli.usepkg {
             let p = std::path::Path::new(f.trim_end_matches('/'));
             let canon = match p.canonicalize() {
                 Ok(c) => c,
@@ -3012,7 +3078,7 @@ fn run() -> anyhow::Result<()> {
                 if !cli.oneshot && !names.is_empty() {
                     mark_asexplicit(&names);
                     // Local archives have no traceable source for world
-                    // (same "Err/" convention as --install-pkgbuild).
+                    // (same "Err/" convention as --usepkgbuild).
                     if let Err(e) = add_to_world_set(&names, Some("Err")) {
                         eprintln!(
                             ">>> Warning: package(s) installed but world was not updated: {:#}",
@@ -3208,7 +3274,7 @@ fn run() -> anyhow::Result<()> {
         }
         if target_pkgs.is_empty() {
             eprintln!(
-                ">>> Error: --scan needs at least one package name (or use --install-pkgbuild <PATH> --scan for a local checkout)."
+                ">>> Error: --scan needs at least one package name (or use --usepkgbuild <PATH> --scan for a local checkout)."
             );
             std::process::exit(1);
         }
@@ -5450,7 +5516,8 @@ fn run() -> anyhow::Result<()> {
                 print_emerge_completed(&installed_infos);
             }
 
-            if !cli.oneshot {
+            // -F / -B: no install → no world / auto-clean.
+            if !cli.oneshot && !runtime::get().fetch_all && !runtime::get().buildpkgonly {
                 if cli.abs || pure_abs {
                     if success {
                         println!("{} Auto-cleaning packages...", ">>>".t_green().bold());
@@ -5608,39 +5675,36 @@ mod action_priority_tests {
     }
 
     #[test]
-    fn scan_not_listed_beside_install_pkgbuild() {
-        let cli = Cli::parse_from(["emerge", "--install-pkgbuild", "/tmp/pkg", "--scan"]);
+    fn scan_not_listed_beside_usepkgbuild() {
+        let cli = Cli::parse_from(["emerge", "--usepkgbuild", "/tmp/pkg", "--scan"]);
         let active = active_actions(&cli);
-        assert!(active.contains(&ActionKind::InstallPkgbuild));
+        assert!(active.contains(&ActionKind::UsePkgbuild));
         assert!(!active.contains(&ActionKind::Scan));
     }
 
     #[test]
-    fn install_pkgarchive_is_one_action_and_takes_many_files() {
+    fn usepkg_is_one_action_and_takes_many_files() {
         let cli = Cli::parse_from([
             "emerge",
-            "--install-pkgarchive",
+            "--usepkg",
             "/tmp/a.pkg.tar.zst",
             "/tmp/b.pkg.tar.zst",
         ]);
         let active = active_actions(&cli);
-        assert!(active.contains(&ActionKind::InstallPkgarchive));
+        assert!(active.contains(&ActionKind::UsePkg));
         assert_eq!(active.len(), 1);
-        assert_eq!(
-            cli.install_pkgarchive,
-            vec!["/tmp/a.pkg.tar.zst", "/tmp/b.pkg.tar.zst"]
-        );
+        assert_eq!(cli.usepkg, vec!["/tmp/a.pkg.tar.zst", "/tmp/b.pkg.tar.zst"]);
         assert!(cli.packages.is_empty());
 
         // Same action name in argv order + one action only (multiple
         // actions must still error through the normal path).
-        let argv: Vec<String> = ["emerge", "--install-pkgarchive", "/tmp/a.pkg.tar.zst"]
+        let argv: Vec<String> = ["emerge", "--usepkg", "/tmp/a.pkg.tar.zst"]
             .iter()
             .map(|s| s.to_string())
             .collect();
         assert_eq!(
             actions_in_argv_order(&argv, &active_actions(&Cli::parse_from(&argv))),
-            vec![ActionKind::InstallPkgarchive]
+            vec![ActionKind::UsePkg]
         );
     }
 

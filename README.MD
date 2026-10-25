@@ -103,7 +103,7 @@ emerge --news                       # Arch Linux news
 emerge neovim-git --aur --pkgbuild-view      # view/diff the PKGBUILD before building
 emerge neovim-git --aur --edit               # edit the PKGBUILD first
 emerge --scan neovim-git --aur               # audit only, no build
-emerge --install-pkgbuild ~/src/my-pkg       # build a local PKGBUILD through scanner + sandbox
+emerge --usepkgbuild ~/src/my-pkg       # build a local PKGBUILD through scanner + sandbox
 
 # Recovery
 emerge --resume                     # resume an interrupted transaction
@@ -128,7 +128,7 @@ Arch has no USE flags, but compilation can be tuned much like [Gentoo](https://w
 | `RUSTFLAGS="-C opt-level=3"` | `RUSTFLAGS="-C opt-level=3"`  | Rust compiler flags         |
 | `MAKEOPTS="-j$(nproc)"`      | `MAKEFLAGS="-j$(nproc)"`      | Parallel build jobs         |
 | `USE="lto"`                  | `OPTIONS+=(lto)`              | Link-time optimisation      |
-| `FEATURES="ccache"`          | `BUILDENV+=(ccache)`          | Build cache                 |
+| `FEATURES="localrepo candy"` | AE options only               | localrepo publish, candy UI |
 | `PORTDIR` / `PKGDIR`         | `PKGDEST`, `SRCDEST`          | Build artefact directories  |
 
 See [GCC optimization flags](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html), [rustc codegen options](https://doc.rust-lang.org/rustc/codegen-options/index.html) and the [**example makepkg.conf**](misc/makepkg.conf).
@@ -156,7 +156,8 @@ OPTIONS=(strip docs !debug lto)
 BUILDENV=(!distcc color check !sign)
 
 # Portage-style switches, mapped to makepkg
-FEATURES="ccache -test"
+FEATURES="localrepo"
+BUILDENV=(ccache color check !sign)
 ```
 
 **Keys:** `EMERGE_DEFAULT_OPTS`, `COLORS`, `FEATURES`, `CFLAGS`, `CXXFLAGS`, `CPPFLAGS`, `LDFLAGS`, `RUSTFLAGS`, `MAKEFLAGS`, `NINJAFLAGS`, `BUILDENV`, `OPTIONS`.
@@ -164,15 +165,9 @@ FEATURES="ccache -test"
 
 `COLORS` sets the palette for status output: `role=colour` tokens. Roles are `ok`, `warn`, `error`, `info`, `special`. Colours are `#RRGGBB` or a name (`red`, `bright-cyan`, …). Unknown roles or colours are warned and skipped.
 
-`FEATURES` tokens (`-name` turns one off) are mapped to their makepkg twins. Anything you set yourself in `BUILDENV`/`OPTIONS` wins.
+`FEATURES` is **AE-only** (no auto-map into makepkg arrays). Put ccache/check/strip in explicit `BUILDENV`/`OPTIONS`. Known AE tokens: `localrepo`, `candy`, and anything you gate with `has_feature` in code. `-name` turns a token off (last mention wins).
 
-| `FEATURES`   | makepkg             |
-|--------------|---------------------|
-| `ccache`     | `BUILDENV` `ccache` |
-| `distcc`     | `BUILDENV` `distcc` |
-| `test`       | `BUILDENV` `check`  |
-| `nostrip`    | `OPTIONS` `!strip`  |
-| `splitdebug` | `OPTIONS` `debug`   |
+`emerge --info` prints the effective `FEATURES` list next to make.conf overrides.
 
 `EMERGE_DEFAULT_OPTS` accepts modifier flags only (`--ask`, `--verbose`, `--devel`, `--tree`, `--deep`, `--jobsr=N`, `--jobsa=N`, `--searchdesc`, `--exclude=<atom>`, ...), so it can't turn every run into `--unmerge`. Conflicting pairs are rejected if both are set: `--aur`/`--abs`, `--aur`/`--repos`, `--no-sandbox`/`--unshare-net-build`, `--skippgp`/`--autopgp`, `--select`/`--deselect`. If a config default conflicts with the command line, the config default is dropped. `--abs` and `--repos` do **not** conflict.
 
@@ -349,7 +344,11 @@ When an install would overwrite a file that no package owns, aura-emerge asks `A
 
 ### `--info`
 
-`emerge --info` prints the version (with the libalpm it was built against), kernel, CPU/memory/swap, the effective `--jobsr`/`--jobsa`, every repository in `pacman.conf` order with its mirror, the `makepkg.conf` and `make.conf` values (and which overrides won), the profile, mask/world sizes, and merge-log totals.
+`emerge --info` prints the version (with the libalpm it was built against), kernel, CPU/memory/swap, the effective `--jobsr`/`--jobsa`, every repository in `pacman.conf` order with its mirror, the `makepkg.conf` and `make.conf` values (including `FEATURES`), the profile, mask/world sizes, and merge-log totals.
+
+### `--pkginfo`
+
+`emerge --pkginfo nano` — installed package sheet (like a short `pacman -Qi`). `emerge -v --pkginfo nano` also lists owned files.
 
 ### Merge log
 
@@ -375,13 +374,13 @@ emerge --batchinstall pkgs.txt
 
 **`--pkgbuild-view`** shows the PKGBUILD right before the build and asks for confirmation: a diff against the last copy you saw (cached in `~/.cache/aura-emerge/pkgbuild-view/`), or the whole file the first time. If you decline, it offers to open `$EDITOR` instead of just skipping. Works after `--edit`, so you see your own changes. Applies only to directly requested AUR/ABS packages - not to recursive AUR dependencies or batch paths (`@world`, `-u`, `--undo`).
 
-**`--install-pkgbuild <PATH>`** builds and installs a local PKGBUILD checkout through the same pipeline as AUR/ABS (scanner → sandbox) instead of a bare `makepkg -si`. `PATH` must contain a `PKGBUILD`; a missing `.SRCINFO` is generated. It combines with `--pkgbuild-view`, `-a`, `-1`, `--skippgp`, `--no-sandbox`, `--unshare-net-build` and `--skip-srcinfo-regen`, but not with package/`@set` arguments or `--aur`/`--abs`. The package is recorded in `world` as `Err/` (source unknown) unless `-1` is given.
+**`--usepkgbuild <PATH>`** builds and installs a local PKGBUILD checkout through the same pipeline as AUR/ABS (scanner → sandbox) instead of a bare `makepkg -si`. `PATH` must contain a `PKGBUILD`; a missing `.SRCINFO` is generated. It combines with `--pkgbuild-view`, `-a`, `-1`, `--skippgp`, `--no-sandbox`, `--unshare-net-build` and `--skip-srcinfo-regen`, but not with package/`@set` arguments or `--aur`/`--abs`. The package is recorded in `world` as `Err/` (source unknown) unless `-1` is given.
 
-**`--scan`** audits a PKGBUILD (+ `.install`) without building or installing: it fetches from cgit for an AUR package, or reads a local checkout with `--install-pkgbuild <PATH> --scan`. Same report as the pre-build scan, minus the "Continue anyway?" prompt. Exits non-zero on any finding, so it works in scripts. Not available for `--abs` yet.
+**`--scan`** audits a PKGBUILD (+ `.install`) without building or installing: it fetches from cgit for an AUR package, or reads a local checkout with `--usepkgbuild <PATH> --scan`. Same report as the pre-build scan, minus the "Continue anyway?" prompt. Exits non-zero on any finding, so it works in scripts. Not available for `--abs` yet.
 
 ```bash
 emerge neovim-git --aur --pkgbuild-view
-emerge --install-pkgbuild ~/src/my-pkg --pkgbuild-view --skippgp
+emerge --usepkgbuild ~/src/my-pkg --pkgbuild-view --skippgp
 emerge --scan neovim-git --aur
 ```
 
@@ -485,7 +484,7 @@ Before every AUR install, the raw `PKGBUILD` (and any `.install` hook) is fetche
 
 Findings are `Suspicious` or `ConfirmedIoc`. A hit doesn't hard-block: you get the file/line, a cgit link and `Continue anyway? [y/N]`.
 
-**Support files:** when the checkout is on disk (a build, or `--install-pkgbuild <PATH> --scan`), a `Makefile` (`Makefile`/`makefile`/`GNUmakefile`), the shell scripts the PKGBUILD references (`*.sh`, `*.bash`, `*.zsh`, `*.fish`), and patch/diff files (`*.patch`, `*.diff`, `*.dpatch`, `*.pch`, or content that looks like a unified/git diff) are scanned too. Makefiles and scripts get a line-based scan: `curl|sh`, base64/hex into a shell, raw IPs and the rest of the shell-level IOCs. Patches are checked on headers and added lines: paths outside the source tree (absolute, `..`, `.git`), symlink creation, binary hunks, overlong added lines, network calls into build/script targets, and the same shell IOCs. Findings name the file and line. `--scan <pkg> --aur` only sees what cgit serves (`PKGBUILD` and `.install`).
+**Support files:** when the checkout is on disk (a build, or `--usepkgbuild <PATH> --scan`), a `Makefile` (`Makefile`/`makefile`/`GNUmakefile`), the shell scripts the PKGBUILD references (`*.sh`, `*.bash`, `*.zsh`, `*.fish`), and patch/diff files (`*.patch`, `*.diff`, `*.dpatch`, `*.pch`, or content that looks like a unified/git diff) are scanned too. Makefiles and scripts get a line-based scan: `curl|sh`, base64/hex into a shell, raw IPs and the rest of the shell-level IOCs. Patches are checked on headers and added lines: paths outside the source tree (absolute, `..`, `.git`), symlink creation, binary hunks, overlong added lines, network calls into build/script targets, and the same shell IOCs. Findings name the file and line. `--scan <pkg> --aur` only sees what cgit serves (`PKGBUILD` and `.install`).
 
 ### Sandbox
 
@@ -529,7 +528,7 @@ The frontend never works as root. Started as root (`sudo emerge …`, `doas`, `p
 ```bash
 git clone https://github.com/Undercat037/aura-emerge.git
 cd aura-emerge
-emerge --install-pkgbuild ./scaner-test --ask
+emerge --usepkgbuild ./scaner-test --ask
 ```
 </details>
 
@@ -565,11 +564,12 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `--edit` | Edit PKGBUILD in `$EDITOR` before building (top-level package only); regenerates `.SRCINFO` after save |
 | `--skip-srcinfo-regen` | With `--edit`: don't regenerate `.SRCINFO` |
 | `--pkgbuild-view` | Show/diff PKGBUILD and confirm before building (top-level package only; offers `$EDITOR` on decline) |
-| `--install-pkgbuild <PATH>` | Build and install a local PKGBUILD checkout (scanner + bwrap); recorded in world as `Err/` unless `-1` |
-| `--scan` | Audit PKGBUILD/.install only, no build/install; non-zero exit on findings (AUR or `--install-pkgbuild`) |
+| `--usepkgbuild <PATH>` | Build and install a local PKGBUILD checkout (scanner + bwrap); recorded in world as `Err/` unless `-1` |
+| `--scan` | Audit PKGBUILD/.install only, no build/install; non-zero exit on findings (AUR or `--usepkgbuild`) |
 | `--sync` | Sync package databases |
 | `--refresh` | Force `-Syy` (with `--sync` or `-u`) |
 | `--info` | System info, like Gentoo's `emerge --info` |
+| `--pkginfo <pkg…>` | Installed package details (`-v` lists files) |
 | `--news [N\|all]` | Arch Linux news: bare lists items, `N` reads one, `all` marks all as read |
 | `--check-news [N\|all]` | Alias for `--news` |
 | `--select` | Add to world without installing |
@@ -610,7 +610,10 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `--ignore-default-opts` | Ignore `EMERGE_DEFAULT_OPTS` from make.conf for this run |
 | `--debug` | Show makepkg/compiler output live (also `AE_DEBUG=1`); by default it's hidden to keep the `>>>` lines readable, and a failed build still dumps the captured log |
 | `--log <PATH>` | Write a session log (command, emerge.log lines, full build output) for bug reports - no `| tee` needed; append-only, nothing already in the file is truncated or overwritten |
-| `-N`/`--newuse`, `-e`/`--emptytree`, `-q`, `-O`, `-o`, `-k`, `-K`, `-g`, `-G`, `-b`, `-B`, `-f`, `-F`, `-l`, `-A`, `--nodeps`, `--onlydeps`, `--complete-graph`, `--changed-use`, `--backtrack`, `--columns`, `--newrepo`, `--reinstall`, `--with-bdeps`, `--metadata`, `--clean`, `--config`, `--noconfmem`, `--verbose-conflicts` | Gentoo-compat: accepted, no effect |
+| `-B` / `--buildpkgonly` (`-w` / `--getpkg`) | Archives only, no install (official → CacheDir; AUR/ABS/local → build) |
+| `-F` / `--fetch-all-uri` | Fetch only: official → archive; AUR/ABS → clone (no build/install) |
+| `--outdistfiles <DIR>` | With `-B`/`-F`: copy archives into DIR |
+| `-N`/`--newuse`, `-e`/`--emptytree`, `-q`, `-O`, `-o`, `-f`, `-F`, `-l`, `-A`, `--nodeps`, `--onlydeps`, `--complete-graph`, `--changed-use`, `--backtrack`, `--columns`, `--newrepo`, `--reinstall`, `--with-bdeps`, `--metadata`, `--clean`, `--config`, `--noconfmem`, `--verbose-conflicts` | Gentoo-compat: accepted, no effect |
 | `-h`, `--help` | Help |
 | `-V`, `--version` | Version |
 

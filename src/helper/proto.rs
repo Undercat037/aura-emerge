@@ -129,6 +129,14 @@ pub(crate) enum Request {
         target: Target,
         line: String,
     },
+    /// Root-side copy of CacheDir archives into a user-owned directory
+    /// (`--outdistfiles`). Args: uid, gid, dest_dir, then absolute sources.
+    CopyOut {
+        uid: u32,
+        gid: u32,
+        dest: String,
+        files: Vec<String>,
+    },
 }
 
 impl Request {
@@ -171,6 +179,16 @@ impl Request {
                 if *explicit { "asexplicit" } else { "asdeps" },
                 names.clone(),
             ),
+            Request::CopyOut {
+                uid,
+                gid,
+                dest,
+                files,
+            } => {
+                let mut a = vec![uid.to_string(), gid.to_string(), dest.clone()];
+                a.extend(files.iter().cloned());
+                ("copyout", a)
+            }
             Request::Append { target, line } => {
                 ("append", vec![target.id().to_string(), line.clone()])
             }
@@ -259,6 +277,33 @@ impl Request {
                 Ok(Request::SetReason {
                     explicit: verb == "asexplicit",
                     names: args,
+                })
+            }
+            "copyout" => {
+                if args.len() < 4 {
+                    return Err(ProtoError::Syntax("copyout: uid gid dest src…"));
+                }
+                let uid: u32 = args[0]
+                    .parse()
+                    .map_err(|_| ProtoError::Syntax("copyout: bad uid"))?;
+                let gid: u32 = args[1]
+                    .parse()
+                    .map_err(|_| ProtoError::Syntax("copyout: bad gid"))?;
+                let dest = args[2].clone();
+                if !dest.starts_with('/') || dest.contains('\0') {
+                    return Err(ProtoError::Syntax("copyout: dest must be absolute"));
+                }
+                let files: Vec<String> = args[3..].to_vec();
+                for f in &files {
+                    if !f.starts_with('/') {
+                        return Err(ProtoError::Syntax("copyout: src must be absolute"));
+                    }
+                }
+                Ok(Request::CopyOut {
+                    uid,
+                    gid,
+                    dest,
+                    files,
                 })
             }
             "append" => {

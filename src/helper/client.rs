@@ -217,6 +217,23 @@ impl Client {
         self.request(&req, on_event)
     }
 
+    /// Root-side copy of archives into a user directory (`--outdistfiles`).
+    pub(crate) fn copy_out(
+        &mut self,
+        uid: u32,
+        gid: u32,
+        dest: &str,
+        files: &[String],
+    ) -> Result<(), ClientError> {
+        let req = Request::CopyOut {
+            uid,
+            gid,
+            dest: dest.to_string(),
+            files: files.to_vec(),
+        };
+        self.request(&req, &mut |_| {})
+    }
+
     /// Publish packages into a local repo: `specs` are `validate::spec`
     /// lines (sha256 + abs path). `on_event` gets `repo …` lines live.
     pub(crate) fn repo_add(

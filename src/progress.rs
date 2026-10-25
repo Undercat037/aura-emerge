@@ -18,6 +18,8 @@ static DONE: AtomicUsize = AtomicUsize::new(0);
 static RUNNING: AtomicUsize = AtomicUsize::new(0);
 /// Live `>>> Jobs:` line occupies the current TTY row (no trailing newline).
 static SHOWN: AtomicBool = AtomicBool::new(false);
+/// Interactive prompt is on screen: suppress Jobs redraw until resume.
+static HELD: AtomicBool = AtomicBool::new(false);
 /// Rows the live area occupies (fetch rows + Jobs row).
 static ROWS: AtomicUsize = AtomicUsize::new(1);
 /// Background Load-avg ticker is running.
@@ -146,15 +148,17 @@ fn stage_line(stage: Stage, n: usize, atom: &str, dl_pct: Option<u8>) {
     status_draw();
 }
 
-/// Remove the live Jobs line so other output can print cleanly.
-/// Call `status_resume()` afterwards (or the next `line`/`finish`).
+/// Remove the live Jobs line so other output (scanner prompt, ask) can print.
+/// Holds the ticker until `status_resume`.
 pub(crate) fn status_break() {
+    HELD.store(true, Ordering::Relaxed);
     let _g = OUT.lock().unwrap_or_else(|e| e.into_inner());
     status_erase();
 }
 
-/// Put the Jobs line back at the bottom after `status_break` + other output.
+/// Put the Jobs line back after `status_break` + interactive output.
 pub(crate) fn status_resume() {
+    HELD.store(false, Ordering::Relaxed);
     let _g = OUT.lock().unwrap_or_else(|e| e.into_inner());
     status_draw();
 }
@@ -250,7 +254,8 @@ fn status_erase() {
 /// Draw one row per active fetch, then Jobs; no trailing newline so Jobs
 /// stays the last line.
 fn status_draw() {
-    if !std::io::stdout().is_terminal()
+    if HELD.load(Ordering::Relaxed)
+        || !std::io::stdout().is_terminal()
         || crate::runtime::get().debug
         || crate::runtime::get().nospinner
     {

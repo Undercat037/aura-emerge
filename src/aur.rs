@@ -284,7 +284,7 @@ pub(crate) fn srcinfo_version(path: &Path) -> Option<String> {
 }
 
 /// Every `pkgname = ...` value in a `.SRCINFO` file - usually one, but
-/// several for a split package. Used by `--install-pkgbuild` to record
+/// several for a split package. Used by `--usepkgbuild` to record
 /// world entries after a local build (no AUR/ABS resolution step
 
 pub(crate) fn srcinfo_pkgnames(path: &Path) -> Option<Vec<String>> {

@@ -5,6 +5,7 @@
 //! `Backend`, so it can be tested with a mock.
 
 use std::io::{self, BufRead, ErrorKind, Write};
+use std::os::unix::io::AsRawFd;
 
 use super::fsio;
 use super::localrepo;
@@ -179,6 +180,12 @@ fn dispatch<B: Backend, W: Write>(be: &mut B, req: &Request, out: &mut W) -> io:
             let _ = proto::write_response(out, &Response::Event(t.to_string()));
         }),
         Request::SetReason { explicit, names } => be.set_reason(*explicit, names),
+        Request::CopyOut {
+            uid,
+            gid,
+            dest,
+            files,
+        } => copy_out(*uid, *gid, dest, files),
         Request::Append { target, line } => be.append(*target, line),
     }
 }
@@ -229,6 +236,60 @@ pub(crate) fn serve<R: BufRead, W: Write, B: Backend>(
     }
 }
 
+/// Root-side copy for `--outdistfiles`: CacheDir is root-owned, so the
+/// user frontend cannot read the archives itself.
+fn copy_out(uid: u32, gid: u32, dest: &str, files: &[String]) -> io::Result<()> {
+    use std::fs;
+    use std::io::{Read, Write};
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::path::Path;
+
+    let dest = Path::new(dest);
+    fs::create_dir_all(dest)?;
+    // Own the directory as the calling user so later copies / cleanup work.
+    // SAFETY: chown on a path we just created.
+    let cdest = std::ffi::CString::new(dest.to_string_lossy().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "dest NUL"))?;
+    if unsafe { libc::chown(cdest.as_ptr(), uid, gid) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    for src in files {
+        let sp = Path::new(src);
+        let name = sp.file_name().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, format!("bad src {}", src))
+        })?;
+        let dp = dest.join(name);
+        let mut in_f = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(sp)?;
+        let mut out_f = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o644)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&dp)?;
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let n = in_f.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            out_f.write_all(&buf[..n])?;
+        }
+        out_f.sync_all()?;
+        // SAFETY: fchown on the dest fd.
+        if unsafe { libc::fchown(out_f.as_raw_fd(), uid, gid) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        drop(out_f);
+        // Tell the frontend the final path via an event? optional.
+        let _ = src;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,6 +327,7 @@ mod tests {
             &mut self,
             names: &[String],
             _needed: bool,
+            _download_only: bool,
             _emit: &mut dyn FnMut(&str),
         ) -> io::Result<()> {
             if self.fail {
