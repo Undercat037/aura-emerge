@@ -441,7 +441,6 @@ pub(crate) fn load_env_file(path: &Path) -> Option<Vec<(String, BuildValue)>> {
 
 impl Config {
     /// Is `name` on in `FEATURES`? Last mention wins, `-name` is off.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn has_feature(&self, name: &str) -> bool {
         let mut on = false;
         for t in &self.features {

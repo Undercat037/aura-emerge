@@ -7,9 +7,10 @@
 use std::io::{self, BufRead, ErrorKind, Write};
 
 use super::fsio;
+use super::localrepo;
 use super::pkgdb;
 use super::proto::{self, ProtoError, Request, Response};
-use super::validate::{self, FileOpts, RemoveMode, Target};
+use super::validate::{self, FileOpts, LocalRepo, RemoveMode, Target};
 
 fn unsupported<T>() -> io::Result<T> {
     Err(io::Error::new(ErrorKind::Unsupported, "not implemented"))
@@ -33,6 +34,7 @@ pub(crate) trait Backend {
         &mut self,
         _names: &[String],
         _needed: bool,
+        _download_only: bool,
         _emit: &mut dyn FnMut(&str),
     ) -> io::Result<()> {
         unsupported()
@@ -43,6 +45,20 @@ pub(crate) trait Backend {
         _specs: &[String],
         _emit: &mut dyn FnMut(&str),
     ) -> io::Result<()> {
+        unsupported()
+    }
+    fn repo_add(
+        &mut self,
+        _repo: LocalRepo,
+        _specs: &[String],
+        _emit: &mut dyn FnMut(&str),
+    ) -> io::Result<()> {
+        unsupported()
+    }
+    fn repo_ensure(&mut self, _emit: &mut dyn FnMut(&str)) -> io::Result<()> {
+        unsupported()
+    }
+    fn repo_remove(&mut self, _names: &[String], _emit: &mut dyn FnMut(&str)) -> io::Result<()> {
         unsupported()
     }
     fn remove(
@@ -83,9 +99,10 @@ impl Backend for Real {
         &mut self,
         names: &[String],
         needed: bool,
+        download_only: bool,
         emit: &mut dyn FnMut(&str),
     ) -> io::Result<()> {
-        pkgdb::retry_after_keyring(|| pkgdb::install(names, needed, &mut *emit))
+        pkgdb::retry_after_keyring(|| pkgdb::install(names, needed, download_only, &mut *emit))
     }
 
     fn install_files(
@@ -95,6 +112,23 @@ impl Backend for Real {
         emit: &mut dyn FnMut(&str),
     ) -> io::Result<()> {
         pkgdb::retry_after_keyring(|| pkgdb::install_files(opts, specs, &mut *emit))
+    }
+
+    fn repo_add(
+        &mut self,
+        repo: LocalRepo,
+        specs: &[String],
+        emit: &mut dyn FnMut(&str),
+    ) -> io::Result<()> {
+        localrepo::add(repo, specs, emit)
+    }
+
+    fn repo_ensure(&mut self, emit: &mut dyn FnMut(&str)) -> io::Result<()> {
+        localrepo::ensure_all(emit)
+    }
+
+    fn repo_remove(&mut self, names: &[String], emit: &mut dyn FnMut(&str)) -> io::Result<()> {
+        localrepo::remove_pkgs(names, emit)
     }
 
     fn set_reason(&mut self, explicit: bool, names: &[String]) -> io::Result<()> {
@@ -122,10 +156,23 @@ fn dispatch<B: Backend, W: Write>(be: &mut B, req: &Request, out: &mut W) -> io:
         Request::Sysupgrade { ignore } => be.sysupgrade(ignore, &mut |t| {
             let _ = proto::write_response(out, &Response::Event(t.to_string()));
         }),
-        Request::Install { names, needed } => be.install(names, *needed, &mut |t| {
+        Request::Install {
+            names,
+            needed,
+            download_only,
+        } => be.install(names, *needed, *download_only, &mut |t| {
             let _ = proto::write_response(out, &Response::Event(t.to_string()));
         }),
         Request::InstallFiles { opts, files } => be.install_files(*opts, files, &mut |t| {
+            let _ = proto::write_response(out, &Response::Event(t.to_string()));
+        }),
+        Request::RepoAdd { repo, files } => be.repo_add(*repo, files, &mut |t| {
+            let _ = proto::write_response(out, &Response::Event(t.to_string()));
+        }),
+        Request::RepoEnsure => be.repo_ensure(&mut |t| {
+            let _ = proto::write_response(out, &Response::Event(t.to_string()));
+        }),
+        Request::RepoRemove { names } => be.repo_remove(names, &mut |t| {
             let _ = proto::write_response(out, &Response::Event(t.to_string()));
         }),
         Request::Remove { mode, names } => be.remove(*mode, names, &mut |t| {
@@ -194,6 +241,7 @@ mod tests {
         synced: Vec<bool>,
         installed: Vec<Vec<String>>,
         files: Vec<(FileOpts, Vec<String>)>,
+        repos: Vec<(LocalRepo, Vec<String>)>,
         fail: bool,
     }
 
@@ -237,6 +285,19 @@ mod tests {
                 return Err(io::Error::new(ErrorKind::Other, "boom"));
             }
             self.files.push((opts, specs.to_vec()));
+            Ok(())
+        }
+
+        fn repo_add(
+            &mut self,
+            repo: LocalRepo,
+            specs: &[String],
+            _emit: &mut dyn FnMut(&str),
+        ) -> io::Result<()> {
+            if self.fail {
+                return Err(io::Error::new(ErrorKind::Other, "boom"));
+            }
+            self.repos.push((repo, specs.to_vec()));
             Ok(())
         }
 
@@ -444,5 +505,22 @@ mod tests {
         assert_eq!(clean("a\nb\x1b[2J"), "a b [2J");
         assert_eq!(clean("\n\n"), "error");
         assert_eq!(clean(&"x".repeat(900)).len(), MAX_ERR_CHARS);
+    }
+
+    #[test]
+    fn repoadd_reaches_the_backend() {
+        let h = "c".repeat(64);
+        let input = format!(
+            "CMD repoadd\nARG ae-abs\nARG {} /tmp/x.pkg.tar.zst\nEND\nCMD quit\nEND\n",
+            h
+        );
+        let mut be = Mock::default();
+        let (res, out) = run(&input, &mut be);
+        assert!(res.is_ok());
+        assert_eq!(out, "OK\nOK\n");
+        assert_eq!(
+            be.repos,
+            vec![(LocalRepo::Abs, vec![format!("{} /tmp/x.pkg.tar.zst", h)])]
+        );
     }
 }

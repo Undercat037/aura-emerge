@@ -118,6 +118,36 @@ pub(crate) fn install_files(
     with_helper(|c| c.install_files(opts, &lines, on_event)).map_err(|e| e.to_string())
 }
 
+/// Publish already-installed, audited packages into a local repo
+/// (aurutils style) through the root helper.
+/// `on_event` gets live `repo <name> add|drop|db …` lines.
+pub(crate) fn repo_add(
+    pins: &[Pinned],
+    repo: crate::helper::validate::LocalRepo,
+    on_event: &mut dyn FnMut(&str),
+) -> Result<(), String> {
+    if pins.is_empty() {
+        return Ok(());
+    }
+    let lines = specs(pins)?;
+    with_helper(|c| c.repo_add(repo, &lines, on_event)).map_err(|e| e.to_string())
+}
+
+/// Ensure empty local-repo databases exist (idempotent). Safe to call
+/// before the user includes `ae-repos.conf` in pacman.conf.
+pub(crate) fn repo_ensure(on_event: &mut dyn FnMut(&str)) -> Result<(), String> {
+    with_helper(|c| c.repo_ensure(on_event)).map_err(|e| e.to_string())
+}
+
+/// Drop packages from `ae-aur` / `ae-abs` / `ae-local` after unmerge or
+/// `--localrepo-clean`.
+pub(crate) fn repo_remove(names: &[String], on_event: &mut dyn FnMut(&str)) -> Result<(), String> {
+    if names.is_empty() {
+        return Ok(());
+    }
+    with_helper(|c| c.repo_remove(names, on_event)).map_err(|e| e.to_string())
+}
+
 /// `--jobsr` > 1 = that many parallel downloads; default keeps pacman.conf.
 fn set_dl_jobs(c: &mut Client) -> Result<(), ClientError> {
     let j = crate::runtime::get().jobsr;
@@ -134,12 +164,22 @@ pub(crate) fn install(
     needed: bool,
     on_event: &mut dyn FnMut(&str),
 ) -> Result<(), String> {
+    install_ex(names, needed, false, on_event)
+}
+
+/// Like `install`, with pacman `-w` style download-only.
+pub(crate) fn install_ex(
+    names: &[String],
+    needed: bool,
+    download_only: bool,
+    on_event: &mut dyn FnMut(&str),
+) -> Result<(), String> {
     if names.is_empty() {
         return Ok(());
     }
     with_helper(|c| {
         set_dl_jobs(c)?;
-        c.install(names, needed, on_event)
+        c.install(names, needed, download_only, on_event)
     })
     .map_err(|e| e.to_string())
 }

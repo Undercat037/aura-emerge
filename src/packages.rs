@@ -1786,6 +1786,18 @@ fn resolve_and_build_aur(
         return Some(cached.clone());
     }
 
+    // FEATURES=localrepo: if ae-aur already has the same version the AUR
+    // reports, install from the local binary repo and skip clone/build.
+    // --edit / --pkgbuild-view force a real rebuild (user is changing sources).
+    if !edit
+        && !pkgbuild_view
+        && crate::runtime::config().has_feature("localrepo")
+        && let Some(files) = try_install_from_localrepo(pkg, "aur", mark_asdeps, ask)
+    {
+        built.insert(pkg.to_string(), files.clone());
+        return Some(files);
+    }
+
     // Checked here, not just at the command line, so recursive AUR
     // deps can't smuggle a masked package in either.
     if let Some(entry) = crate::mask::find(pkg, Some("aur")) {
@@ -1954,6 +1966,7 @@ fn resolve_and_build_aur(
             skippgp,
             &aur_dep_tarballs,
             unshare_net_build,
+            crate::helper::validate::LocalRepo::Aur,
         )
         .then(|| find_built_packages(&dir, build_started, &expected)),
         BuildIsolation::None => {
@@ -2739,6 +2752,7 @@ pub(crate) fn install_pkgarchives(
     if !install_files_resolving_conflicts(&pinned, opts, ask) {
         return None;
     }
+    publish_local_repo(crate::helper::validate::LocalRepo::Local, &pinned);
     for f in files {
         let name = std::path::Path::new(f)
             .file_name()
@@ -2762,6 +2776,10 @@ pub(crate) fn install_pkgarchives(
 /// into two bwrap invocations instead of one -- see the comment before
 /// step 2.
 ///
+/// `repo`: the local repo (`ae-aur` / `ae-abs` / `ae-local`) the audited
+/// result is filed under after a successful install, when
+/// `FEATURES="localrepo"` is on (see `publish_local_repo`).
+///
 /// Returns `false` on failure. Dependency resolution prefers `.SRCINFO`
 /// when present; only when that's absent and the PKGBUILD's dependency
 /// arrays can't be statically resolved either does this fall back to
@@ -2775,6 +2793,7 @@ fn build_with_sandbox(
     skippgp: bool,
     aur_dep_tarballs: &[String],
     unshare_net_build: bool,
+    repo: crate::helper::validate::LocalRepo,
 ) -> bool {
     // Cleans up the fakeroot shim's scratch dir (now outside build_dir,
     // see sandbox::shim_root / FakerootShimGuard) on every exit path below.
@@ -3126,6 +3145,51 @@ fn build_with_sandbox(
         );
         return false;
     }
+    // `-w` / `--getpkg`: stop after the audited archives exist (no install).
+    // Optionally copy them to `--pkgoutdir`.
+    if crate::runtime::get().getpkg {
+        if let Some(dir) = crate::runtime::get().pkgoutdir.clone() {
+            if let Err(e) = fs::create_dir_all(&dir) {
+                eprintln!(
+                    "{} could not create --pkgoutdir {}: {}",
+                    ">>> Error:".t_red().bold(),
+                    dir.display(),
+                    e
+                );
+                return false;
+            }
+            for f in &pkg_files {
+                let name = std::path::Path::new(f)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| f.clone());
+                let dest = dir.join(&name);
+                match fs::copy(f, &dest) {
+                    Ok(_) => println!("{} wrote {}", ">>>".t_green().bold(), dest.display()),
+                    Err(e) => {
+                        eprintln!(
+                            "{} copy {} → {}: {}",
+                            ">>> Error:".t_red().bold(),
+                            f,
+                            dest.display(),
+                            e
+                        );
+                        return false;
+                    }
+                }
+            }
+        } else {
+            for f in &pkg_files {
+                println!("{} package ready: {}", ">>>".t_green().bold(), f);
+            }
+            println!(
+                "{} pass --pkgoutdir DIR to collect archives in one place",
+                ">>>".t_yellow().bold()
+            );
+        }
+        return true;
+    }
+
     // -U through the root helper (libalpm), not sudo.
     // Honour `-n` / `--noreplace` so a rebuild that produced the same
     // version is a no-op instead of a forced reinstall.
@@ -3141,7 +3205,260 @@ fn build_with_sandbox(
     if ok && !oneshot {
         note_built(&pkg_files);
     }
+    if ok {
+        publish_local_repo(repo, &pinned);
+    }
     ok
+}
+
+/// If `FEATURES=localrepo` and the matching `ae-*` db already has
+/// `pkg` at the upstream version, install via `-S ae-*/name` (so
+/// "Installed From" is set) and skip a rebuild.
+///
+/// Before `-S`, the helper refreshes `/var/cache/pacman/pkg/` from the
+/// archive under `/var/lib/aura-emerge/repos/…` so a stale cache copy
+/// cannot fail checksum (libalpm prefers CacheDir over file://).
+fn try_install_from_localrepo(
+    pkg: &str,
+    source: &str,
+    asdeps: bool,
+    ask: bool,
+) -> Option<Vec<String>> {
+    let repo = match source {
+        "aur" => crate::helper::validate::LocalRepo::Aur,
+        "abs" => crate::helper::validate::LocalRepo::Abs,
+        "local" => crate::helper::validate::LocalRepo::Local,
+        _ => return None,
+    };
+    let bare = pkg.split('/').next_back().unwrap_or(pkg);
+
+    let want = match source {
+        "aur" => {
+            let info = crate::aur::rpc_info(std::slice::from_ref(&bare.to_string()));
+            info.into_iter().next().map(|i| i.version)?
+        }
+        "abs" | "local" => crate::alpm_db::installed_version(bare)?,
+        _ => return None,
+    };
+
+    let have = crate::alpm_db::localrepo_version(repo.name(), bare)?;
+    if alpm::vercmp(have.as_str(), want.as_str()) != std::cmp::Ordering::Equal {
+        return None;
+    }
+
+    if crate::runtime::get().noreplace
+        && crate::alpm_db::installed_version(bare).as_deref() == Some(have.as_str())
+    {
+        println!(
+            "{} {}-{} already installed (localrepo {}, skipped)",
+            ">>>".t_green().bold(),
+            bare,
+            have,
+            repo.name()
+        );
+        return Some(vec![bare.to_string()]);
+    }
+
+    println!(
+        "{} {}-{} from {} (upstream unchanged, skip rebuild)",
+        ">>>".t_green().bold(),
+        bare,
+        have,
+        repo.name()
+    );
+
+    let target = format!("{}/{}", repo.name(), bare);
+    let needed = crate::runtime::get().noreplace;
+    let _ = ask;
+    match crate::rootops::install(std::slice::from_ref(&target), needed, &mut |ev| {
+        crate::progress::on_hook_event(ev)
+    }) {
+        Ok(()) => {
+            if asdeps {
+                let _ = crate::rootops::set_reason(false, &[bare.to_string()]);
+            }
+            crate::progress::line(
+                crate::progress::Stage::Completed,
+                crate::progress::take(),
+                &crate::progress::atom(repo.source_prefix(), bare, &have),
+            );
+            Some(vec![bare.to_string()])
+        }
+        Err(e) => {
+            eprintln!(
+                "{} localrepo install of {} failed ({}), falling back to build",
+                ">>> Warning:".t_yellow().bold(),
+                bare,
+                e
+            );
+            None
+        }
+    }
+}
+
+/// Opt-in (`FEATURES="localrepo"` in make.conf) and best effort: a
+/// failure here is a warning, never a failed merge.
+/// aurutils-style local repositories: after a package was audited and
+/// installed, file it under `/var/lib/aura-emerge/repos/<repo>/` and
+/// regenerate that repo's sync db (root helper, `repoadd`). With a
+/// `[ae-aur]` / `[ae-abs]` / `[ae-local]` section in pacman.conf
+/// libalpm then knows these packages by origin: `pacman -Qm` stops
+/// listing them, `-Si ae-aur/foo` works and `-Su` can reinstall from
+/// the audited copy.
+///
+/// Opt-in (`FEATURES="localrepo"` in make.conf) and best effort: a
+/// failure here is a warning, never a failed merge.
+fn publish_local_repo(repo: crate::helper::validate::LocalRepo, pinned: &[crate::rootops::Pinned]) {
+    if pinned.is_empty() || !crate::runtime::config().has_feature("localrepo") {
+        return;
+    }
+    // Sibling empty dbs first (idempotent).
+    let _ = crate::rootops::repo_ensure(&mut |_| {});
+    let mut added = 0usize;
+    let res = crate::rootops::repo_add(pinned, repo, &mut |ev| {
+        if ev.starts_with("repo ") && ev.contains(" add ") {
+            added += 1;
+        }
+    });
+    match res {
+        Ok(()) => {
+            println!(
+                "{} Published {} package(s) to {}",
+                ">>>".t_green().bold(),
+                added,
+                repo.name()
+            );
+            hint_pacman_conf_once(repo);
+        }
+        Err(e) => {
+            let m = e.strip_prefix("helper refused: ").unwrap_or(e.as_str());
+            eprintln!(
+                "{} could not publish to {}: {}",
+                ">>> Warning:".t_yellow().bold(),
+                repo.name(),
+                m
+            );
+        }
+    }
+}
+
+/// After unmerge: drop the package from localrepos if still present.
+/// Best-effort; never fails the unmerge.
+pub(crate) fn localrepo_drop_after_unmerge(names: &[String]) {
+    if names.is_empty() || !crate::runtime::config().has_feature("localrepo") {
+        return;
+    }
+    let bares: Vec<String> = names
+        .iter()
+        .map(|n| n.split('/').next_back().unwrap_or(n).to_string())
+        .collect();
+    let mut dropped = 0usize;
+    match crate::rootops::repo_remove(&bares, &mut |ev| {
+        if ev.contains(" drop-pkg ") {
+            dropped += 1;
+        }
+    }) {
+        Ok(()) if dropped > 0 => {
+            println!(
+                "{} Dropped {} package(s) from localrepos",
+                ">>>".t_green().bold(),
+                dropped
+            );
+        }
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!(
+                "{} localrepo cleanup after unmerge: {}",
+                ">>> Warning:".t_yellow().bold(),
+                e
+            );
+        }
+    }
+}
+
+/// Remove packages from `ae-*` that are no longer installed (`-Q` miss).
+/// `pretend` only lists; `ask` confirms when not pretend.
+pub(crate) fn localrepo_clean(pretend: bool, ask: bool) -> bool {
+    if !crate::runtime::config().has_feature("localrepo") {
+        println!(
+            "{} FEATURES=localrepo is off - nothing to clean.",
+            ">>>".t_yellow().bold()
+        );
+        return true;
+    }
+    let in_repo = crate::alpm_db::localrepo_package_names();
+    let stale: Vec<String> = in_repo
+        .into_iter()
+        .filter(|n| !crate::alpm_db::is_installed(n))
+        .collect();
+    if stale.is_empty() {
+        println!(">>> Localrepos are clean (no orphan packages).");
+        return true;
+    }
+    println!();
+    for n in &stale {
+        println!("[{}] {}", "drop".t_red().bold(), n);
+    }
+    println!();
+    println!("Total: {} package(s) to drop from localrepos", stale.len());
+    if pretend {
+        return true;
+    }
+    if ask {
+        print!(">>> Proceed with localrepo clean? [Yes/No] ");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line).is_err() {
+            return false;
+        }
+        let t = line.trim().to_ascii_lowercase();
+        if t != "y" && t != "yes" {
+            println!(">>> Aborted.");
+            return false;
+        }
+    }
+    match crate::rootops::repo_remove(&stale, &mut |ev| {
+        if ev.contains(" drop-pkg ") || ev.contains(" drop ") {
+            println!(">>> {}", ev);
+        }
+    }) {
+        Ok(()) => {
+            println!(
+                "{} Cleaned {} package(s) from localrepos",
+                ">>>".t_green().bold(),
+                stale.len()
+            );
+            true
+        }
+        Err(e) => {
+            eprintln!("{} {}", ">>> Error:".t_red().bold(), e);
+            false
+        }
+    }
+}
+
+/// One-time note per process: the repo exists on disk but pacman.conf
+/// does not mention it, so only emerge sees it.
+fn hint_pacman_conf_once(repo: crate::helper::validate::LocalRepo) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static HINTED: AtomicBool = AtomicBool::new(false);
+    if HINTED.load(Ordering::Relaxed) {
+        return;
+    }
+    if crate::alpm_db::sync_db_names()
+        .iter()
+        .any(|n| n == repo.name())
+    {
+        return;
+    }
+    HINTED.store(true, Ordering::Relaxed);
+    println!(
+        "{} {} is not in pacman.conf yet. To let pacman see the local repos (-Qm, -Si, -Su), add:",
+        ">>> Note:".t_yellow().bold(),
+        repo.name()
+    );
+    println!("      Include = /etc/portage/ae-repos.conf");
+    println!("    (template: misc/ae-repos.conf; empty dbs on install/sync/publish)");
 }
 
 // Every package a source build `-U`'d as explicit this run, split-package
@@ -3714,6 +4031,7 @@ fn abs_build_one(
             skippgp,
             &[],
             unshare_net_build,
+            crate::helper::validate::LocalRepo::Abs,
         ),
         BuildIsolation::None => legacy_makepkg_si(&build_dir, ask, oneshot, skippgp),
     };
@@ -4094,6 +4412,79 @@ pub(crate) fn source_builds_parallel(
 /// Returns the `.SRCINFO`-declared `pkgname`(s) built on success (for
 /// the caller to record in world with the "Err/" prefix -- see
 /// `world_set::pkg_world_entry`), or `None` on failure.
+/// Copy a local PKGBUILD tree into `~/.cache/aura-emerge/build/local/<label>/`
+/// so makepkg never writes `src/` / `pkg/` next to the user's sources
+/// (common pain with `-git` checkouts checked into git archives).
+fn stage_local_pkgbuild(src: &std::path::Path, label: &str) -> Result<std::path::PathBuf, String> {
+    let root = aura_cache_root().ok_or_else(|| "cannot resolve cache root".to_string())?;
+    let dest = root.join("build/local").join(label);
+    if dest.exists() {
+        let _ = fs::remove_dir_all(dest.join("src"));
+        let _ = fs::remove_dir_all(dest.join("pkg"));
+    }
+    fs::create_dir_all(&dest).map_err(|e| format!("mkdir {}: {}", dest.display(), e))?;
+    copy_pkgbuild_tree(src, &dest)?;
+    println!(
+        "{} Staged {} → {}",
+        ">>>".t_green().bold(),
+        src.display(),
+        dest.display()
+    );
+    Ok(dest)
+}
+
+fn copy_pkgbuild_tree(src: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
+    fn skip_name(name: &str) -> bool {
+        name == "src"
+            || name == "pkg"
+            || name.ends_with(".pkg.tar")
+            || name.ends_with(".pkg.tar.zst")
+            || name.ends_with(".pkg.tar.xz")
+            || name.ends_with(".pkg.tar.gz")
+            || name.ends_with(".pkg.tar.bz2")
+            || name.ends_with(".pkg.tar.lzo")
+            || name.ends_with(".pkg.tar.lrz")
+            || name.ends_with(".pkg.tar.lz4")
+            || name.ends_with(".pkg.tar.lz")
+            || name.ends_with(".pkg.tar.Z")
+    }
+    let mut stack = vec![src.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let rd = fs::read_dir(&dir).map_err(|e| format!("read {}: {}", dir.display(), e))?;
+        for e in rd {
+            let e = e.map_err(|e| e.to_string())?;
+            let name = e.file_name();
+            let name_s = name.to_string_lossy();
+            if name_s == "." || name_s == ".." || skip_name(&name_s) {
+                continue;
+            }
+            let from = e.path();
+            let rel = from.strip_prefix(src).map_err(|e| e.to_string())?;
+            let to = dest.join(rel);
+            let ft = e.file_type().map_err(|e| e.to_string())?;
+            if ft.is_dir() {
+                fs::create_dir_all(&to).map_err(|e| format!("mkdir {}: {}", to.display(), e))?;
+                stack.push(from);
+            } else if ft.is_file() || ft.is_symlink() {
+                if let Some(parent) = to.parent() {
+                    fs::create_dir_all(parent)
+                        .map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
+                }
+                // Prefer copy over rename so the user's tree stays intact.
+                if ft.is_symlink() {
+                    let _ = fs::remove_file(&to);
+                    let target = fs::read_link(&from).map_err(|e| e.to_string())?;
+                    std::os::unix::fs::symlink(&target, &to)
+                        .map_err(|e| format!("symlink {}: {}", to.display(), e))?;
+                } else {
+                    fs::copy(&from, &to).map_err(|e| format!("copy {}: {}", from.display(), e))?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn pkgbuild_local_install(
     path: &std::path::Path,
     ask: bool,
@@ -4148,38 +4539,61 @@ pub(crate) fn pkgbuild_local_install(
         ensure_pgp_keys(&pkgbuild_path, false);
     }
 
+    // Build in AE cache, not next to the user's PKGBUILD (avoids src/pkg
+    // litter in git checkouts and accidental packaging of build junk).
+    let build_dir = match stage_local_pkgbuild(path, &label) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!(
+                "{} could not stage PKGBUILD into cache: {}",
+                ">>> Error:".t_red().bold(),
+                e
+            );
+            return None;
+        }
+    };
+
     crate::progress::reserve(1);
     let stage_n = crate::progress::take();
     let stage_atom = crate::progress::atom(
         "local",
         &label,
-        &crate::aur::srcinfo_version(&path.join(".SRCINFO")).unwrap_or_default(),
+        &crate::aur::srcinfo_version(&build_dir.join(".SRCINFO")).unwrap_or_default(),
     );
     crate::progress::line(crate::progress::Stage::Emerging, stage_n, &stage_atom);
     crate::progress::line(crate::progress::Stage::Installing, stage_n, &stage_atom);
 
     let isolation = choose_build_isolation(no_sandbox);
     let build_ok = match isolation {
-        BuildIsolation::Bwrap => {
-            build_with_sandbox(path, &label, ask, oneshot, skippgp, &[], unshare_net_build)
-        }
-        BuildIsolation::None => legacy_makepkg_si(path, ask, oneshot, skippgp),
+        BuildIsolation::Bwrap => build_with_sandbox(
+            &build_dir,
+            &label,
+            ask,
+            oneshot,
+            skippgp,
+            &[],
+            unshare_net_build,
+            crate::helper::validate::LocalRepo::Local,
+        ),
+        BuildIsolation::None => legacy_makepkg_si(&build_dir, ask, oneshot, skippgp),
     };
     if build_ok {
         crate::progress::line(crate::progress::Stage::Completed, stage_n, &stage_atom);
     }
     if !build_ok {
         eprintln!(
-            "{} build failed for {}",
+            "{} build failed for {} (staged at {})",
             ">>> Error:".t_red().bold(),
-            path.display()
+            path.display(),
+            build_dir.display()
         );
         return None;
     }
 
     // Prefer .SRCINFO pkgnames (handles split packages).
     Some(
-        crate::aur::srcinfo_pkgnames(&path.join(".SRCINFO")).unwrap_or_else(|| vec![label.clone()]),
+        crate::aur::srcinfo_pkgnames(&build_dir.join(".SRCINFO"))
+            .unwrap_or_else(|| vec![label.clone()]),
     )
 }
 

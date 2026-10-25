@@ -17,7 +17,7 @@ makedepends=('rust' 'cargo')
 conflicts=('portage' 'portage-git' 'eselect-git' 'aura-emerge')
 provides=('emerge' 'portageq' 'eselect')
 install=aura-emerge.install
-backup=('etc/portage/world')
+backup=('etc/portage/world' 'etc/pacman.d/aura-emerge-repos.conf')
 source=("$pkgname::git+https://github.com/Undercat037/aura-emerge.git")
 sha256sums=('SKIP')
 
@@ -59,6 +59,10 @@ package() {
   install -Dm644 misc/makepkg.conf "$pkgdir/usr/share/doc/$pkgname/examples/makepkg.conf"
   install -Dm644 misc/package.mask "$pkgdir/usr/share/doc/$pkgname/examples/package.mask"
 
+  # local repos (FEATURES="localrepo")
+  install -Dm644 misc/ae-repos.conf "$pkgdir/etc/portage/ae-repos.conf"
+
+  # install manpage
   install -Dm644 man.1 "$pkgdir/usr/share/man/man1/emerge.1"
 
   # /etc/portage: world is tracked, sets/ and hooks/ are user dirs

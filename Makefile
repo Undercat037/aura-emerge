@@ -39,6 +39,7 @@ man:
 
 install: build completions man
 	sudo install -m755 -o root -g root $(BIN) /usr/bin/emerge
+	sudo install -Dm644 misc/ae-repos.conf /etc/portage/ae-repos.conf
 	make link
 
 deltainst:

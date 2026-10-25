@@ -8,7 +8,7 @@ use std::process::{Child, Command, Stdio};
 
 use super::guard::EXPECTED_EXE;
 use super::proto::{self, ProtoError, Request, Response};
-use super::validate::{FileOpts, RemoveMode, Target};
+use super::validate::{FileOpts, LocalRepo, RemoveMode, Target};
 
 const SUDO_BIN: &str = "/usr/bin/sudo";
 
@@ -168,10 +168,12 @@ impl Client {
         &mut self,
         names: &[String],
         needed: bool,
+        download_only: bool,
         on_event: &mut dyn FnMut(&str),
     ) -> Result<(), ClientError> {
         let req = Request::Install {
             needed,
+            download_only,
             names: names.to_vec(),
         };
         self.request(&req, on_event)
@@ -213,6 +215,44 @@ impl Client {
             files: specs.to_vec(),
         };
         self.request(&req, on_event)
+    }
+
+    /// Publish packages into a local repo: `specs` are `validate::spec`
+    /// lines (sha256 + abs path). `on_event` gets `repo …` lines live.
+    pub(crate) fn repo_add(
+        &mut self,
+        repo: LocalRepo,
+        specs: &[String],
+        on_event: &mut dyn FnMut(&str),
+    ) -> Result<(), ClientError> {
+        let req = Request::RepoAdd {
+            repo,
+            files: specs.to_vec(),
+        };
+        self.request(&req, on_event)
+    }
+
+    /// Materialise empty `ae-aur` / `ae-abs` / `ae-local` dbs if missing.
+    /// `on_event` gets `repo <name> empty` for each newly created db.
+    pub(crate) fn repo_ensure(
+        &mut self,
+        on_event: &mut dyn FnMut(&str),
+    ) -> Result<(), ClientError> {
+        self.request(&Request::RepoEnsure, on_event)
+    }
+
+    /// Drop packages from every local repo still carrying them.
+    pub(crate) fn repo_remove(
+        &mut self,
+        names: &[String],
+        on_event: &mut dyn FnMut(&str),
+    ) -> Result<(), ClientError> {
+        self.request(
+            &Request::RepoRemove {
+                names: names.to_vec(),
+            },
+            on_event,
+        )
     }
 
     /// `-D --asexplicit` (true) / `--asdeps` (false).

@@ -93,6 +93,67 @@ impl RemoveMode {
     }
 }
 
+/// Root of the local package repositories (aurutils-style), one
+/// sub-directory per `LocalRepo`. Root-owned, never user-writable.
+pub(crate) const LOCAL_REPO_ROOT: &str = "/var/lib/aura-emerge/repos";
+
+/// The local repositories the helper maintains. The client picks one by
+/// id, never a path. Names carry an `ae-` prefix so they can never
+/// collide with a repo the user already has in pacman.conf (aurutils'
+/// own `[aur]` / `[custom]`, say); a bare `local` is reserved by libalpm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocalRepo {
+    /// Packages built from the AUR.
+    Aur,
+    /// Packages built from ABS (Arch build system) trees.
+    Abs,
+    /// Packages built from a local PKGBUILD or installed from archives.
+    Local,
+}
+
+impl LocalRepo {
+    pub(crate) const ALL: [LocalRepo; 3] = [LocalRepo::Aur, LocalRepo::Abs, LocalRepo::Local];
+
+    /// libalpm db name / pacman.conf section / wire id.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            LocalRepo::Aur => "ae-aur",
+            LocalRepo::Abs => "ae-abs",
+            LocalRepo::Local => "ae-local",
+        }
+    }
+
+    /// World / user-facing source prefix. The alpm db stays `ae-*`
+    /// (no clash with user repos); world keeps `aur/` / `abs/` / `local/`
+    /// so a rebuild still means the original origin, not "install from
+    /// the local binary repo".
+    pub(crate) fn source_prefix(self) -> &'static str {
+        match self {
+            LocalRepo::Aur => "aur",
+            LocalRepo::Abs => "abs",
+            LocalRepo::Local => "local",
+        }
+    }
+
+    /// Wire id, inverse of `from_id`.
+    pub(crate) fn id(self) -> &'static str {
+        self.name()
+    }
+
+    pub(crate) fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.name() == id)
+    }
+
+    /// Directory that holds the packages and the db (`<name>.db`).
+    pub(crate) fn dir(self) -> &'static str {
+        match self {
+            LocalRepo::Aur => "/var/lib/aura-emerge/repos/ae-aur",
+            LocalRepo::Abs => "/var/lib/aura-emerge/repos/ae-abs",
+            LocalRepo::Local => "/var/lib/aura-emerge/repos/ae-local",
+        }
+    }
+}
+
 // ASCII only, stricter than mask.rs on purpose (homoglyphs).
 fn name_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || "@._+-".contains(c)
@@ -470,6 +531,26 @@ mod tests {
             Target::EmergeLog,
         ] {
             assert_eq!(Target::from_id(t.id()), Some(t));
+        }
+    }
+
+    #[test]
+    fn local_repo_ids_roundtrip_and_stay_under_the_root() {
+        for r in LocalRepo::ALL {
+            assert_eq!(LocalRepo::from_id(r.id()), Some(r));
+            assert_eq!(r.dir(), format!("{}/{}", LOCAL_REPO_ROOT, r.name()));
+            assert!(atom(r.name()).is_ok());
+        }
+        for bad in [
+            "",
+            "local",
+            "aur",
+            "ae-aur/",
+            "../ae-aur",
+            "ae-AUR",
+            "ae-aur ",
+        ] {
+            assert_eq!(LocalRepo::from_id(bad), None, "{:?}", bad);
         }
     }
 }

@@ -152,7 +152,59 @@ pub(crate) fn installed_versions() -> HashMap<String, String> {
         .collect()
 }
 
+/// One of the local repos aura-emerge publishes into (`ae-aur`,
+/// `ae-abs`, `ae-local`). They hold packages that came from the AUR /
+/// ABS / a local PKGBUILD, so they never make a package "official".
+fn is_ae_repo(db_name: &str) -> bool {
+    crate::helper::validate::LocalRepo::from_id(db_name).is_some()
+}
+
+/// Map an alpm db name to the world/source prefix. `ae-aur` → `aur`,
+/// etc.; anything else is returned unchanged. World must not record
+/// `ae-*` — that is storage, not origin.
+pub(crate) fn world_repo_name(db_name: &str) -> &str {
+    crate::helper::validate::LocalRepo::from_id(db_name)
+        .map(|r| r.source_prefix())
+        .unwrap_or(db_name)
+}
+
+/// Version of `name` in a local-repo sync db (`ae-aur` / …), if present.
+pub(crate) fn localrepo_version(repo: &str, name: &str) -> Option<String> {
+    let alpm = open()?;
+    let bare = bare(name);
+    for db in alpm.syncdbs() {
+        if db.name() == repo
+            && let Ok(p) = db.pkg(bare)
+        {
+            return Some(p.version().to_string());
+        }
+    }
+    None
+}
+
+/// Every package name present in any `ae-*` local-repo sync db.
+pub(crate) fn localrepo_package_names() -> Vec<String> {
+    let Some(alpm) = open() else {
+        return Vec::new();
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for db in alpm.syncdbs() {
+        if !is_ae_repo(db.name()) {
+            continue;
+        }
+        for p in db.pkgs() {
+            if seen.insert(p.name().to_string()) {
+                out.push(p.name().to_string());
+            }
+        }
+    }
+    out
+}
+
 /// Local packages not in any sync db (`-Qm`): name + version.
+/// A package that is only in an `ae-*` local repo is still foreign:
+/// the AUR upgrade path keys off this list.
 pub(crate) fn foreign_packages() -> Vec<(String, String)> {
     let Some(alpm) = open() else {
         return Vec::new();
@@ -162,6 +214,9 @@ pub(crate) fn foreign_packages() -> Vec<(String, String)> {
         let name = pkg.name();
         let mut in_sync = false;
         for db in alpm.syncdbs() {
+            if is_ae_repo(db.name()) {
+                continue;
+            }
             if db.pkg(name).is_ok() {
                 in_sync = true;
                 break;
@@ -184,6 +239,10 @@ pub(crate) fn upgradeable_detail() -> Vec<(String, String, String, String)> {
         let name = pkg.name();
         let local_ver = pkg.version().to_string();
         for db in alpm.syncdbs() {
+            // AUR/ABS/local builds are upgraded by their own path.
+            if is_ae_repo(db.name()) {
+                continue;
+            }
             if let Ok(sp) = db.pkg(name) {
                 // libalpm (sync_sysupgrade) looks only at the FIRST sync db
                 // that carries the name; a newer copy in a later repo is
@@ -567,6 +626,11 @@ pub(crate) fn pkg_status(name: &str, new_ver: &str) -> String {
 }
 
 /// bare → Some(repo) | Some("None") for local builds | key absent.
+///
+/// Local-repo dbs (`ae-aur` / …) are reported as their *source* prefix
+/// (`aur` / `abs` / `local`) so world entries stay `aur/foo`, not
+/// `ae-aur/foo`. Installing via `emerge ae-aur/foo` still works through
+/// find_sync_many; only the world origin is rewritten.
 pub(crate) fn repos_batch(names: &[String]) -> HashMap<String, Option<String>> {
     let Some(alpm) = open() else {
         return HashMap::new();
@@ -582,7 +646,10 @@ pub(crate) fn repos_batch(names: &[String]) -> HashMap<String, Option<String>> {
                 if let Ok(sp) = db.pkg(bare.as_str())
                     && sp.version().as_str() == ver
                 {
-                    hits.push(db.name().to_string());
+                    let n = world_repo_name(db.name()).to_string();
+                    if !hits.iter().any(|h| h == &n) {
+                        hits.push(n);
+                    }
                 }
             }
             let repo = match hits.len() {
@@ -593,7 +660,7 @@ pub(crate) fn repos_batch(names: &[String]) -> HashMap<String, Option<String>> {
         } else {
             for db in alpm.syncdbs() {
                 if db.pkg(bare.as_str()).is_ok() {
-                    result.insert(bare.clone(), Some(db.name().to_string()));
+                    result.insert(bare.clone(), Some(world_repo_name(db.name()).to_string()));
                     break;
                 }
             }
@@ -949,6 +1016,26 @@ mod tests {
     #[test]
     fn bare_strips() {
         assert_eq!(bare("extra/nano"), "nano");
+    }
+
+    #[test]
+    fn only_our_local_repos_are_ae_repos() {
+        for r in ["ae-aur", "ae-abs", "ae-local"] {
+            assert!(is_ae_repo(r), "{}", r);
+        }
+        for r in [
+            "core", "extra", "multilib", "aur", "custom", "local", "ae-aur2",
+        ] {
+            assert!(!is_ae_repo(r), "{}", r);
+        }
+    }
+
+    #[test]
+    fn world_repo_name_maps_ae_to_source() {
+        assert_eq!(world_repo_name("ae-aur"), "aur");
+        assert_eq!(world_repo_name("ae-abs"), "abs");
+        assert_eq!(world_repo_name("ae-local"), "local");
+        assert_eq!(world_repo_name("extra"), "extra");
     }
 
     fn inc(name: &str, ver: &str, provides: &[&str], conflicts: &[&str]) -> Incoming {

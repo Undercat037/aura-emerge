@@ -1,6 +1,36 @@
+_ae_empty_db() {
+  local name="$1"
+  local dir="/var/lib/aura-emerge/repos/${name}"
+  local tar="${dir}/${name}.db.tar"
+  local link="${dir}/${name}.db"
+  local sync="/var/lib/pacman/sync/${name}.db"
+
+  install -d -m755 -o root -g root "$dir"
+  if [[ ! -e $tar ]]; then
+    # 1024 zero bytes = valid empty ustar end marker
+    dd if=/dev/zero of="$tar" bs=512 count=2 status=none 2>/dev/null \
+      || printf '\0%.0s' {1..1024} >"$tar"
+    chmod 644 "$tar"
+  fi
+  if [[ ! -e $link ]]; then
+    ln -sfn "${name}.db.tar" "$link"
+  fi
+  if [[ -d /var/lib/pacman/sync && ! -e $sync ]]; then
+    install -m644 -o root -g root "$tar" "$sync"
+  fi
+}
+
+_ae_init_localrepos() {
+  install -d -m755 -o root -g root /var/lib/aura-emerge/repos
+  for name in ae-aur ae-abs ae-local; do
+    _ae_empty_db "$name"
+  done
+}
+
 post_install() {
   ln -sf /usr/bin/emerge /usr/bin/portageq
   ln -sf /usr/bin/emerge /usr/bin/eselect
+  _ae_init_localrepos || true
 }
 
 post_upgrade() {

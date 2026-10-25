@@ -8,6 +8,7 @@ pub(crate) mod client;
 pub(crate) mod fsio;
 pub(crate) mod guard;
 pub(crate) mod keyring;
+pub(crate) mod localrepo;
 pub(crate) mod pkgdb;
 pub(crate) mod pkgmask;
 pub(crate) mod proto;

@@ -9,7 +9,9 @@
 use std::fmt;
 use std::io::{self, BufRead, Write};
 
-use super::validate::{self, FileOpts, Reject, RemoveMode, Target, MAX_BATCH, MAX_LINE_LEN};
+use super::validate::{
+    self, FileOpts, LocalRepo, MAX_BATCH, MAX_LINE_LEN, Reject, RemoveMode, Target,
+};
 
 /// "ARG " / "ERR " prefix + longest legal value.
 const MAX_WIRE_LINE: usize = MAX_LINE_LEN + 8;
@@ -89,6 +91,8 @@ pub(crate) enum Request {
     },
     Install {
         needed: bool,
+        /// pacman `-w`: download into CacheDir, do not install.
+        download_only: bool,
         names: Vec<String>,
     },
     /// `-U`: `<sha256> <abs path>` per file (see `validate::file_spec`).
@@ -96,6 +100,20 @@ pub(crate) enum Request {
     InstallFiles {
         opts: FileOpts,
         files: Vec<String>,
+    },
+    /// Publish already-installed, audited packages into a local repo
+    /// (aurutils-style). `<sha256> <abs path>` per file; on the wire the
+    /// first ARG is the repo id, then the files.
+    RepoAdd {
+        repo: LocalRepo,
+        files: Vec<String>,
+    },
+    /// Create empty `ae-aur` / `ae-abs` / `ae-local` dbs if missing so
+    /// `pacman -Sy` never fails on a listed file:// server with no packages.
+    RepoEnsure,
+    /// Drop packages (bare names) from every local repo that still has them.
+    RepoRemove {
+        names: Vec<String>,
     },
     Remove {
         mode: RemoveMode,
@@ -121,10 +139,17 @@ impl Request {
             Request::Sysupgrade { ignore } => ("sysupgrade", ignore.clone()),
             Request::Quit => ("quit", vec![]),
             Request::Jobs { n } => ("jobs", vec![n.to_string()]),
-            Request::Install { needed, names } => {
+            Request::Install {
+                needed,
+                download_only,
+                names,
+            } => {
                 let mut a = Vec::new();
                 if *needed {
                     a.push("--needed".into());
+                }
+                if *download_only {
+                    a.push("--downloadonly".into());
                 }
                 a.extend(names.iter().cloned());
                 ("install", a)
@@ -134,6 +159,13 @@ impl Request {
                 a.extend(files.iter().cloned());
                 ("installfile", a)
             }
+            Request::RepoAdd { repo, files } => {
+                let mut a = vec![repo.id().to_string()];
+                a.extend(files.iter().cloned());
+                ("repoadd", a)
+            }
+            Request::RepoEnsure => ("repoensure", vec![]),
+            Request::RepoRemove { names } => ("reporemove", names.clone()),
             Request::Remove { mode, names } => (mode.id(), names.clone()),
             Request::SetReason { explicit, names } => (
                 if *explicit { "asexplicit" } else { "asdeps" },
@@ -173,14 +205,20 @@ impl Request {
                 _ => Err(ProtoError::Syntax("jobs wants one number")),
             },
             "install" => {
-                let (needed, rest) = if args.first().map(String::as_str) == Some("--needed") {
-                    (true, args[1..].to_vec())
-                } else {
-                    (false, args)
-                };
+                let mut needed = false;
+                let mut download_only = false;
+                let mut rest = Vec::new();
+                for a in args {
+                    match a.as_str() {
+                        "--needed" => needed = true,
+                        "--downloadonly" => download_only = true,
+                        _ => rest.push(a),
+                    }
+                }
                 validate::atoms(&rest)?;
                 Ok(Request::Install {
                     needed,
+                    download_only,
                     names: rest,
                 })
             }
@@ -194,6 +232,22 @@ impl Request {
                     opts,
                     files: rest.to_vec(),
                 })
+            }
+            "repoadd" => {
+                let (first, rest) = args
+                    .split_first()
+                    .ok_or(ProtoError::Syntax("repoadd wants a repo"))?;
+                let repo = LocalRepo::from_id(first).ok_or(ProtoError::Syntax("unknown repo"))?;
+                validate::file_specs(rest)?;
+                Ok(Request::RepoAdd {
+                    repo,
+                    files: rest.to_vec(),
+                })
+            }
+            "repoensure" => none(Request::RepoEnsure, &args),
+            "reporemove" => {
+                validate::atoms(&args)?;
+                Ok(Request::RepoRemove { names: args })
             }
             "remove" | "unmerge" | "prune" => {
                 validate::atoms(&args)?;
@@ -355,6 +409,7 @@ mod tests {
         roundtrip(Request::Quit);
         roundtrip(Request::Jobs { n: 7 });
         roundtrip(Request::Install {
+            download_only: false,
             needed: false,
             names: vec!["extra/nano".into(), "vim".into()],
         });
@@ -484,6 +539,7 @@ mod tests {
     fn write_refuses_frame_forging() {
         let mut buf = Vec::new();
         let evil = Request::Install {
+            download_only: false,
             needed: false,
             names: vec!["nano\nEND\nCMD sync".into()],
         };
@@ -566,6 +622,34 @@ mod tests {
         let raw = format!("CMD installfile\nARG --needed\nARG {} /tmp/a\nEND\n", h);
         let mut r = raw.as_bytes();
         let e = read_request(&mut r).unwrap_err();
+        assert!(!e.is_fatal());
+    }
+
+    #[test]
+    fn repoadd_roundtrip_and_rejects() {
+        let h = "b".repeat(64);
+        let req = Request::RepoAdd {
+            repo: LocalRepo::Aur,
+            files: vec![format!("{} /tmp/a b.pkg.tar.zst", h)],
+        };
+        let mut buf = Vec::new();
+        write_request(&mut buf, &req).unwrap();
+        let mut r = &buf[..];
+        assert_eq!(read_request(&mut r).unwrap(), Some(req));
+
+        let none = Request::RepoAdd {
+            repo: LocalRepo::Abs,
+            files: vec![],
+        };
+        assert!(write_request(&mut Vec::new(), &none).is_err());
+        let rel = Request::RepoAdd {
+            repo: LocalRepo::Local,
+            files: vec![format!("{} a.pkg", h)],
+        };
+        assert!(write_request(&mut Vec::new(), &rel).is_err());
+        // Unknown repo on the wire is a recoverable syntax error.
+        let raw = format!("CMD repoadd\nARG ../etc\nARG {} /tmp/a\nEND\n", h);
+        let e = read_request(&mut raw.as_bytes()).unwrap_err();
         assert!(!e.is_fatal());
     }
 }

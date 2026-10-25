@@ -409,11 +409,22 @@ fn run_remove(alpm: &mut Alpm, names: &[&str]) -> io::Result<()> {
 /// `emit` gets `sync <repo> <updated|uptodate|failed>` per db, live, in
 /// completion order (libalpm downloads in parallel).
 ///
+/// Before touching the network, empty local-repo dbs (`ae-aur` / `ae-abs`
+/// / `ae-local`) are materialised so a pacman.conf that already lists
+/// them never fails `file://` with a missing `*.db`.
+///
 /// libalpm blocks in `update()`, so it runs on a worker thread (the
 /// handle is created there: Alpm is !Send) and events cross a channel
 /// to the caller's thread, which owns `emit`.
 pub(crate) fn sync(force: bool, emit: &mut dyn FnMut(&str)) -> io::Result<()> {
     use std::sync::mpsc;
+
+    // Best effort: a missing / unwritable root is reported, but we still
+    // attempt the rest of the sync (official repos may be fine).
+    match super::localrepo::ensure_all(&mut |ev| emit(ev)) {
+        Ok(()) => {}
+        Err(e) => emit(&format!("repo ensure: {}", e)),
+    }
 
     std::thread::scope(|s| {
         let (tx, rx) = mpsc::channel::<String>();
@@ -543,12 +554,13 @@ fn sysupgrade_in_with(
 pub(crate) fn install(
     names: &[String],
     needed: bool,
+    download_only: bool,
     emit: &mut dyn FnMut(&str),
 ) -> io::Result<()> {
     let names = names.to_vec();
     with_live_events(emit, move |tx| {
         let mut alpm = open()?;
-        install_in_with(&mut alpm, &names, needed, tx)
+        install_in_with(&mut alpm, &names, needed, download_only, tx)
     })
 }
 
@@ -560,10 +572,11 @@ pub(crate) fn install_in(
     alpm: &mut Alpm,
     names: &[String],
     needed: bool,
+    download_only: bool,
     emit: &mut dyn FnMut(&str),
 ) -> io::Result<()> {
     let (tx, rx) = mpsc::channel::<String>();
-    let res = install_in_with(alpm, names, needed, tx);
+    let res = install_in_with(alpm, names, needed, download_only, tx);
     for ev in rx.try_iter() {
         emit(&ev);
     }
@@ -574,6 +587,7 @@ fn install_in_with(
     alpm: &mut Alpm,
     names: &[String],
     needed: bool,
+    download_only: bool,
     tx: mpsc::Sender<String>,
 ) -> io::Result<()> {
     let mut targets = Vec::with_capacity(names.len());
@@ -593,6 +607,10 @@ fn install_in_with(
     let mut flags = TransFlag::NONE;
     if needed {
         flags |= TransFlag::NEEDED;
+    }
+    if download_only {
+        // Same as pacman `-w`: fetch into CacheDir, do not commit install.
+        flags |= TransFlag::DOWNLOAD_ONLY;
     }
     wire_events(alpm, tx);
     alpm.trans_init(flags)
@@ -622,6 +640,24 @@ fn run_install(alpm: &mut Alpm, targets: &[(Option<&str>, &str)]) -> io::Result<
         .collect();
     if !missing.is_empty() {
         return Err(fail(format!("target not found: {}", missing.join(" "))));
+    }
+    // Stale CacheDir entries with the same filename but a different
+    // SHA256 beat file:// and yield "invalid or corrupted package
+    // (checksum)". Refresh from the local-repo archive first.
+    for &(repo, name) in targets {
+        let Some(rname) = repo else { continue };
+        let Some(lr) = super::validate::LocalRepo::from_id(rname) else {
+            continue;
+        };
+        let Some(pkg) = find_sync(alpm, repo, name) else {
+            continue;
+        };
+        let ver = pkg.version().to_string();
+        if let Err(e) = super::localrepo::ensure_pkg_cache(lr, name, &ver) {
+            // Best effort: still try the install; alpm may succeed if
+            // cache was simply missing.
+            let _ = e;
+        }
     }
     for &(repo, name) in targets {
         let pkg = find_sync(alpm, repo, name).ok_or_else(|| fail(format!("{}: gone", name)))?;
@@ -1432,9 +1468,15 @@ mod tests {
     #[test]
     fn install_unknown_target_aborts_and_unlocks() {
         let fx = Fixture::new("inmiss", &[]);
-        let err = install_in(&mut fx.handle(), &names(&["nope"]), false, &mut |_| {})
-            .unwrap_err()
-            .to_string();
+        let err = install_in(
+            &mut fx.handle(),
+            &names(&["nope"]),
+            false,
+            false,
+            &mut |_| {},
+        )
+        .unwrap_err()
+        .to_string();
         assert_eq!(err, "target not found: nope");
         assert!(!fx.root.join("db/db.lck").exists());
     }
@@ -1447,11 +1489,12 @@ mod tests {
                 &mut fx.handle(),
                 &names(&["--noconfirm"]),
                 false,
+                false,
                 &mut |_| {}
             )
             .is_err()
         );
-        assert!(install_in(&mut fx.handle(), &[], false, &mut |_| {}).is_err());
+        assert!(install_in(&mut fx.handle(), &[], false, false, &mut |_| {}).is_err());
         assert!(!fx.root.join("db/db.lck").exists());
     }
 
@@ -1459,7 +1502,14 @@ mod tests {
     fn install_with_held_lock_is_an_error() {
         let fx = Fixture::new("inlock", &[]);
         fs::write(fx.root.join("db/db.lck"), "").unwrap();
-        let err = install_in(&mut fx.handle(), &names(&["foo"]), false, &mut |_| {}).unwrap_err();
+        let err = install_in(
+            &mut fx.handle(),
+            &names(&["foo"]),
+            false,
+            false,
+            &mut |_| {},
+        )
+        .unwrap_err();
         assert!(err.to_string().starts_with("db lock:"));
     }
 
@@ -1471,6 +1521,7 @@ mod tests {
         let err = install_in(
             &mut repo_handle(&fx, &url),
             &names(&["other/foo"]),
+            false,
             false,
             &mut |_| {},
         )
@@ -1489,6 +1540,7 @@ mod tests {
         install_in(
             &mut repo_handle(&fx, &url),
             &names(&["test/foo"]),
+            false,
             false,
             &mut |_| {},
         )

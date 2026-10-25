@@ -93,6 +93,9 @@ pub(crate) fn get_pkg_repos_batch(
 
 /// world entry ("repo/name", "Err/name" local, or bare "name") from an
 /// already-resolved get_pkg_repos_batch lookup.
+///
+/// `repos` already maps `ae-aur` → `aur` (see `alpm_db::world_repo_name`),
+/// so entries stay source-oriented: `aur/foo`, not `ae-aur/foo`.
 pub(crate) fn pkg_world_entry_from(
     bare: &str,
     forced_prefix: Option<&str>,
@@ -454,9 +457,7 @@ pub(crate) fn list_custom_sets() -> Vec<String> {
 fn world_atom_repo(atom: &str) -> (String, Option<String>) {
     match atom.split_once('/') {
         Some(("Err", n)) => (n.to_string(), None),
-        Some((r, n)) if !n.is_empty() && !n.contains('/') => {
-            (n.to_string(), Some(r.to_string()))
-        }
+        Some((r, n)) if !n.is_empty() && !n.contains('/') => (n.to_string(), Some(r.to_string())),
         _ => (atom.to_string(), None),
     }
 }

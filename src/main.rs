@@ -532,6 +532,10 @@ struct Cli {
     #[arg(long = "prune")]
     prune: bool,
 
+    /// Drop packages from ae-aur/ae-abs/ae-local that are no longer installed
+    #[arg(long = "localrepo-clean")]
+    localrepo_clean: bool,
+
     /// Regenerate package metadata cache
     #[arg(long = "regen")]
     regen: bool,
@@ -700,8 +704,18 @@ struct Cli {
     getbinpkgonly: bool,
     #[arg(short = 'b', long = "buildpkg")]
     buildpkg: bool,
-    #[arg(short = 'B', long = "buildpkgonly")]
-    buildpkgonly: bool,
+    /// Produce package archive(s) without installing (AUR/ABS/local: build;
+    /// official: download — same idea as pacman `-w`).
+    #[arg(
+        short = 'w',
+        long = "getpkg",
+        visible_alias = "buildpkgonly",
+        short_aliases = ['B']
+    )]
+    getpkg: bool,
+    /// Directory for package archives produced by `-w` / `--getpkg`.
+    #[arg(long = "pkgoutdir", value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
+    pkgoutdir: Option<String>,
 
     // Fetch flags
     #[arg(short = 'f', long = "fetchonly")]
@@ -785,7 +799,7 @@ fn print_help() {
     println!("          [ --scan <pkg...>       | --install-pkgbuild <PATH>       ]");
     println!("          [ --install-pkgarchive <FILE...>                           ]");
     println!("          [ --batchinstall <FILE> | --clean-source-cache            ]");
-    println!("          [ --revdep-rebuild                                        ]");
+    println!("          [ --localrepo-clean     | --revdep-rebuild                ]");
     println!("Sets:     [ @world | @preserved-rebuild | @<custom-sets>            ]");
     println!();
     println!("Hooks:    /usr/share/libalpm/hooks/  /etc/pacman.d/hooks/  /etc/portage/hooks/");
@@ -1137,6 +1151,7 @@ fn unmerge_loop(names: &[String]) -> (bool, Vec<String>) {
             }
         }
     }
+    packages::localrepo_drop_after_unmerge(&removed);
     (ok, removed)
 }
 
@@ -1173,6 +1188,7 @@ pub(crate) fn alpm_install_quiet(
 /// `asdeps` = `--oneshot`. Targets may be bare or `repo/name`.
 pub(crate) fn repo_install_landed(names: &[String], asdeps: bool) -> (bool, Vec<String>) {
     let needed = runtime::get().noreplace;
+    let getpkg = runtime::get().getpkg;
     let jobsr = runtime::get().jobsr.max(1) as usize;
     let total = names.len();
     if total == 0 {
@@ -1248,7 +1264,18 @@ pub(crate) fn repo_install_landed(names: &[String], asdeps: bool) -> (bool, Vec<
             }
         };
 
-        let mut res = rootops::install(&targets, needed, &mut on_event);
+        if getpkg {
+            println!(
+                "{} download only (-w): archives go to CacheDir{}",
+                ">>>".t_green().bold(),
+                runtime::get()
+                    .pkgoutdir
+                    .as_ref()
+                    .map(|d| format!(" (copy to {})", d.display()))
+                    .unwrap_or_default()
+            );
+        }
+        let mut res = rootops::install_ex(&targets, needed, getpkg, &mut on_event);
         // An installed package blocks the new one (`quickshell` vs
         // `noctalia-qs`): list it like Portage does, ask once, then run the
         // same transaction again with the installed side unmerged. Retrying
@@ -1267,7 +1294,7 @@ pub(crate) fn repo_install_landed(names: &[String], asdeps: bool) -> (bool, Vec<
                 retried = true;
                 res = match packages::unmerge_blockers(&gone) {
                     Ok(()) => {
-                        let r = rootops::install(&targets, needed, &mut on_event);
+                        let r = rootops::install_ex(&targets, needed, getpkg, &mut on_event);
                         if r.is_err() {
                             eprintln!(
                                 "{} already unmerged: {}",
@@ -2705,6 +2732,11 @@ fn run() -> anyhow::Result<()> {
         jobsr,
         jobsa,
         sync_explicit: cli.sync_explicit,
+        getpkg: cli.getpkg,
+        pkgoutdir: cli
+            .pkgoutdir
+            .as_ref()
+            .map(|s| std::path::PathBuf::from(s.trim_end_matches('/'))),
     });
 
     if cli.moo {
@@ -2901,12 +2933,19 @@ fn run() -> anyhow::Result<()> {
             cli.pkgbuild_view,
         ) {
             Some(names) => {
+                if cli.getpkg {
+                    crate::progress::status_break();
+                    println!(
+                        "{} Built (not installed): {}",
+                        ">>>".t_green().bold(),
+                        names.join(", ")
+                    );
+                    return Ok(());
+                }
                 if !cli.oneshot {
                     mark_asexplicit(&names);
-                    // "Err/" - a genuinely local build with no traceable
-                    // origin (see world's own doc comment on that
-                    // prefix); there's no AUR/ABS source to record here.
-                    if let Err(e) = add_to_world_set(&names, Some("Err")) {
+                    // "local/" - local PKGBUILD origin (not ae-local storage).
+                    if let Err(e) = add_to_world_set(&names, Some("local")) {
                         eprintln!(
                             ">>> Warning: package(s) installed but world was not updated: {:#}",
                             e
@@ -3684,6 +3723,14 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // --localrepo-clean: drop ae-* packages that are no longer installed
+    if cli.localrepo_clean {
+        if !packages::localrepo_clean(cli.pretend, cli.ask) {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
     // --prune: remove installed packages not in world
     if cli.prune {
         println!(
@@ -3738,7 +3785,10 @@ fn run() -> anyhow::Result<()> {
         match rootops::remove(helper::validate::RemoveMode::Prune, &to_remove, &mut |ev| {
             progress::on_hook_event(ev)
         }) {
-            Ok(()) => logbook::log_unmerge(&to_remove),
+            Ok(()) => {
+                logbook::log_unmerge(&to_remove);
+                packages::localrepo_drop_after_unmerge(&to_remove);
+            }
             Err(e) => eprintln!("{} {}", ">>> Error:".t_red().bold(), e),
         }
         return Ok(());
