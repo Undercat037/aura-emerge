@@ -108,8 +108,8 @@
       ua: "Усе, що ставите, потрапляє у файл world — один раз встановив, далі відстежується. Офіційні пакунки через pacman; AUR і ABS збирає сам emerge.",
       ru: "Всё, что вы ставите, попадает в файл world — установил один раз, дальше отслеживается. Официальные пакеты идут через pacman; AUR и ABS собирает сам emerge."
     },
-    footer_source: { en: "Source", ua: "Код", ru: "Исходники" },
-    footer_pages: { en: "GitHub Pages", ua: "GitHub Pages", ru: "GitHub Pages" },
+    footer_link_repo: { en: "Source Project", ua: "Код проєкту", ru: "Исходники проекта" },
+    footer_link_pages: { en: "Source Pages", ua: "Сторінки проєкту", ru: "Страницы проекта" },
     not_aura: {
       en: "fosskers/aura? No — after v2.1, Aura is no longer part of this project. Aura-Emerge is a separate, security-first reimplementation.",
       ua: "fosskers/aura? Ні — після v2.1 Aura більше не є частиною цього проєкту. Aura-Emerge — окрема реалізація з пріоритетом безпеки.",

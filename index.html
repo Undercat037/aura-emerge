@@ -127,8 +127,7 @@
               <p class="lang-block" data-lang-block="en">
                 Before every AUR build: AST + heuristics for <code>curl|sh</code>,
                 interpreter <code>-e</code>/<code>-c</code> (python/perl/ruby/node/lua),
-                decompressor pipes, heredocs, <code>/dev/tcp</code>, paste sites,
-                known IOCs, and more. You still choose whether to continue.
+                paste sites, known IOCs, and more. You still choose whether to continue.
               </p>
               <p class="lang-block" data-lang-block="ua" hidden>
                 Перед кожною збіркою AUR: AST і евристики на <code>curl|sh</code>,
@@ -668,6 +667,13 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
           </div>
           <pre class="blue"><code>emerge pkg --aur --unshare-net-build   # no net during build()
 emerge pkg --aur --no-sandbox          # plain makepkg (with warning)</code></pre>
+
+          <div class="callout callout-stripe purple note-helper">
+            <div class="callout-title">Helper — special conditions</div>
+            <span class="lang-block" data-lang-block="en">Root helper (<code>--ae-service</code>) requires <code>/usr/bin/emerge</code> owned <code>root:root</code> mode <code>755</code>, uid 0, pipe stdin/stdout (no TTY), and a live parent. Signatures/keyring only in the helper. File conflicts on <code>-Su</code>/<code>-U</code> use AE Force instead of aborting the whole upgrade pool.</span>
+            <span class="lang-block" data-lang-block="ua" hidden>Root-хелпер (<code>--ae-service</code>): бінарник <code>/usr/bin/emerge</code> як <code>root:root</code> <code>755</code>, uid 0, stdin/stdout — пайпи (не TTY), живий parent. Підписи/keyring лише в хелпері. Конфлікти файлів на <code>-Su</code>/<code>-U</code> — AE Force, без зриву всього пулу.</span>
+            <span class="lang-block" data-lang-block="ru" hidden>Root-хелпер (<code>--ae-service</code>): бинарник <code>/usr/bin/emerge</code> как <code>root:root</code> <code>755</code>, uid 0, stdin/stdout — пайпы (не TTY), живой parent. Подписи/keyring только в хелпере. Конфликты файлов на <code>-Su</code>/<code>-U</code> — AE Force, без срыва всего пула.</span>
+          </div>
         </section>
 
         <section id="mask">
@@ -743,15 +749,15 @@ extra/nano                     # конкретный репозиторий/и�
           </ul>
         </section>
 
-        <footer class="site-footer">
+                                <footer class="site-footer">
           <span>
             © <span id="year">2026</span>
             <strong>Undercat037</strong> · GPL-3.0
           </span>
           <span>
-            <a href="https://github.com/Undercat037/aura-emerge" data-i18n="footer_source">Source</a>
+            <a href="https://github.com/Undercat037/aura-emerge" data-i18n="footer_link_repo">Source Project</a>
             ·
-            <a href="https://undercat037.github.io/aura-emerge/" data-i18n="footer_pages">GitHub Pages</a>
+            <a href="https://undercat037.github.io/aura-emerge/" data-i18n="footer_link_pages">Source Pages</a>
           </span>
         </footer>
       </div>

@@ -149,6 +149,13 @@ sudo install -Dm644 misc/eselect.fish /usr/share/fish/vendor_completions.d/esele
             </div>
           </div>
 
+            <div class="callout callout-stripe purple note-helper">
+              <div class="callout-title">Helper — special conditions</div>
+              <span class="lang-block" data-lang-block="en">The root helper (<code>--ae-service</code>) only starts when <strong>all</strong> of these hold: binary is exactly <code>/usr/bin/emerge</code>, owned <code>root:root</code>, mode not group/world-writable (install with <code>755</code>); real and effective uid are 0; stdin/stdout are pipes (never a TTY — interactive “run helper by hand” is refused); parent is still alive after <code>PDEATHSIG</code> is armed. Signature checks and keyring work run only inside the helper so user-side gpg never hits “unsafe ownership” on <code>/etc/pacman.d/gnupg</code>. Unowned file conflicts on <code>-Su</code> and <code>-U</code> are resolved with AE Force (<code>--aeforce</code> / interactive <code>.aenew</code>) instead of aborting the whole upgrade pool.</span>
+              <span class="lang-block" data-lang-block="ua" hidden>Root-хелпер (<code>--ae-service</code>) стартує лише коли <strong>усе</strong> з цього виконується: бінарник саме <code>/usr/bin/emerge</code>, власник <code>root:root</code>, без group/world write (ставити з <code>755</code>); real і effective uid = 0; stdin/stdout — пайпи (не TTY — ручний запуск відхиляється); батьківський процес живий після <code>PDEATHSIG</code>. Підписи та keyring лише в хелпері, щоб user-side gpg не ловив “unsafe ownership”. Конфлікти неналежних файлів на <code>-Su</code>/<code>-U</code> знімаються AE Force (<code>--aeforce</code> / інтерактивне <code>.aenew</code>), не зриваючи весь пул оновлення.</span>
+              <span class="lang-block" data-lang-block="ru" hidden>Root-хелпер (<code>--ae-service</code>) стартует только если <strong>всё</strong> из этого выполняется: бинарник именно <code>/usr/bin/emerge</code>, владелец <code>root:root</code>, без group/world write (ставить с <code>755</code>); real и effective uid = 0; stdin/stdout — пайпы (не TTY — ручной запуск отклоняется); родительский процесс жив после <code>PDEATHSIG</code>. Подписи и keyring только в хелпере, чтобы user-side gpg не ловил “unsafe ownership”. Конфликты чужих файлов на <code>-Su</code>/<code>-U</code> снимаются AE Force (<code>--aeforce</code> / интерактивное <code>.aenew</code>), не срывая весь пул обновления.</span>
+            </div>
+
           <h3 class="lang-block" data-lang-block="en">Dependencies</h3>
           <h3 class="lang-block" data-lang-block="ua" hidden>Залежності</h3>
 <h3 class="lang-block" data-lang-block="ru" hidden>Зависимости</h3>
@@ -2494,15 +2501,15 @@ emerge --revdep-rebuild -p</code></pre>
           <span data-i18n="not_aura">fosskers/aura? No — after v2.1, Aura is no longer part of this project. Aura-Emerge is a separate, security-first reimplementation.</span>
         </div>
 
-        <footer class="site-footer">
+                                <footer class="site-footer">
           <span>
             © <span id="year">2026</span>
             <strong>Undercat037</strong> · GPL-3.0
           </span>
           <span>
-            <a href="https://github.com/Undercat037/aura-emerge" data-i18n="footer_source">Source</a>
+            <a href="https://github.com/Undercat037/aura-emerge" data-i18n="footer_link_repo">Source Project</a>
             ·
-            <a href="flags.html" data-i18n="nav_flags">Flags</a>
+            <a href="https://undercat037.github.io/aura-emerge/" data-i18n="footer_link_pages">Source Pages</a>
           </span>
         </footer>
       </div>
