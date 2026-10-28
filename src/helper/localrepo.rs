@@ -1,16 +1,11 @@
-//! Local package repositories, aurutils style. Std + libc only (plus
-//! `/usr/bin/bsdtar` to read `.PKGINFO`), no `crate::` imports.
-//!
 //! Every package aura-emerge builds (AUR / ABS / local PKGBUILD) or takes
 //! from an archive is, after its audit and install, *published* into a
 //! root-owned repository under `/var/lib/aura-emerge/repos/<repo>/`:
-//!
-//! ```text
+//! ---
 //!   ae-aur/   foo-1.0-1-x86_64.pkg.tar.zst, ae-aur.db -> ae-aur.db.tar
 //!   ae-abs/   ...
 //!   ae-local/ ...
-//! ```
-//!
+//! ---
 //! The db is a plain (uncompressed) tar of `<name>-<ver>/desc` entries,
 //! which is what `repo-add` writes minus the compression; libarchive,
 //! hence libalpm, detects the filter by itself. That keeps this module

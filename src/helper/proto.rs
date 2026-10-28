@@ -80,8 +80,10 @@ pub(crate) enum Request {
     Sync {
         force: bool,
     },
-    /// `-Su`: upgrade installed packages; args are `--ignore` names.
+    /// `-Su`: upgrade installed packages. Optional leading AE Force opts
+    /// id (same tokens as `FileOpts::id`), then `--ignore` names.
     Sysupgrade {
+        opts: FileOpts,
         ignore: Vec<String>,
     },
     Quit,
@@ -144,7 +146,14 @@ impl Request {
         match self {
             Request::Ping => ("ping", vec![]),
             Request::Sync { force } => (if *force { "refresh" } else { "sync" }, vec![]),
-            Request::Sysupgrade { ignore } => ("sysupgrade", ignore.clone()),
+            Request::Sysupgrade { opts, ignore } => {
+                let mut a = Vec::new();
+                if opts.aeforce || opts.aenew || opts.aekeep {
+                    a.push(opts.id().to_string());
+                }
+                a.extend(ignore.iter().cloned());
+                ("sysupgrade", a)
+            }
             Request::Quit => ("quit", vec![]),
             Request::Jobs { n } => ("jobs", vec![n.to_string()]),
             Request::Install {
@@ -209,10 +218,22 @@ impl Request {
             "sync" => none(Request::Sync { force: false }, &args),
             "refresh" => none(Request::Sync { force: true }, &args),
             "sysupgrade" => {
+                let mut args = args;
+                // Optional leading FileOpts id (aeforce / aenew / aekeep / …).
+                let opts = if let Some(first) = args.first() {
+                    if let Some(o) = FileOpts::from_id(first) {
+                        args.remove(0);
+                        o
+                    } else {
+                        FileOpts::default()
+                    }
+                } else {
+                    FileOpts::default()
+                };
                 if !args.is_empty() {
                     validate::atoms(&args)?;
                 }
-                Ok(Request::Sysupgrade { ignore: args })
+                Ok(Request::Sysupgrade { opts, ignore: args })
             }
             "quit" => none(Request::Quit, &args),
             "jobs" => match args.as_slice() {

@@ -23,7 +23,11 @@ pub(crate) fn with_helper<T>(
 ) -> Result<T, ClientError> {
     let mut slot = HELPER.lock().unwrap_or_else(|e| e.into_inner());
     if slot.is_none() {
-        *slot = Some(Client::start()?);
+        // Jobs footer redraw would stomp the sudo password prompt.
+        crate::progress::status_break();
+        let started = Client::start();
+        crate::progress::status_resume();
+        *slot = Some(started?);
     }
     let r = match slot.as_mut() {
         Some(c) => f(c),
@@ -190,10 +194,15 @@ pub(crate) fn sync(force: bool, on_event: &mut dyn FnMut(&str)) -> Result<(), St
 }
 
 /// Official sysupgrade (`-Su`); `ignore` is holdback list.
-pub(crate) fn sysupgrade(ignore: &[String], on_event: &mut dyn FnMut(&str)) -> Result<(), String> {
+/// `opts` carries AE Force flags for unowned file conflicts (same as `-U`).
+pub(crate) fn sysupgrade(
+    ignore: &[String],
+    opts: crate::helper::validate::FileOpts,
+    on_event: &mut dyn FnMut(&str),
+) -> Result<(), String> {
     with_helper(|c| {
         set_dl_jobs(c)?;
-        c.sysupgrade(ignore, on_event)
+        c.sysupgrade(ignore, opts, on_event)
     })
     .map_err(|e| e.to_string())
 }

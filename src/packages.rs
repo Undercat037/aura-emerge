@@ -929,11 +929,22 @@ pub(crate) fn confirm_merge(ask: bool) -> bool {
 /// Conflict question during an install: skipped if these very packages
 /// were already approved for unmerge in the plan's pre-flight question.
 pub(crate) fn confirm_conflict_unmerge_for(names: &[String]) -> bool {
+    if names.is_empty() {
+        return confirm_conflict_unmerge(true);
+    }
+    // Always spell out what goes away before the Yes/No — the [conflict]
+    // tag alone is easy to miss when the list is long.
+    println!(
+        "{} Packages that will be unmerged first:",
+        ">>>".t_yellow().bold()
+    );
+    for n in names {
+        println!("    {} {}", "-".t_red().bold(), n.t_red().bold());
+    }
     if crate::conflict::is_approved(names) {
         println!(
-            "{} Unmerging the conflicting packages approved in the plan: {}",
-            ">>>".t_yellow().bold(),
-            names.join(", ")
+            "{} Unmerging the conflicting packages approved in the plan.",
+            ">>>".t_yellow().bold()
         );
         return true;
     }
@@ -4606,11 +4617,6 @@ pub(crate) fn pkgbuild_local_install(
         }
     }
 
-    // Generate .SRCINFO if missing (local PKGBUILD often lacks one).
-    if !path.join(".SRCINFO").exists() {
-        maybe_regen_srcinfo(path, skip_srcinfo_regen);
-    }
-
     if !skippgp {
         ensure_pgp_keys(&pkgbuild_path, false);
     }
@@ -4628,6 +4634,12 @@ pub(crate) fn pkgbuild_local_install(
             return None;
         }
     };
+
+    // Always refresh .SRCINFO after staging: a leftover file (or one
+    // copied from the checkout) often still has the previous pkgver()
+    // result, so Emerging shows e.g. 3.0.19 while the built package is
+    // 3.0.28. makepkg --printsrcinfo runs pkgver() itself.
+    maybe_regen_srcinfo(&build_dir, skip_srcinfo_regen);
 
     crate::progress::reserve(1);
     let stage_n = crate::progress::take();
@@ -5319,6 +5331,7 @@ pub(crate) fn print_pkginfo(names: &[String], verbose: bool) {
         println!("{}", "=".repeat(60));
         line("Name", &p.name);
         line("Version", &p.version);
+        line("Installed From", &p.installed_from);
         line("Description", &p.description);
         line("Architecture", &p.arch);
         line("URL", &p.url);

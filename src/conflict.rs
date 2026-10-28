@@ -1,13 +1,9 @@
 //! Package conflicts, shown like Portage blockers:
 //!
-//! ```text
+//! ---
 //! [ebuild  N    ] pipewire-jack-1:1.4.2-1
 //! [conflict     ] jack2-1.9.22-1 ("jack2" is blocking pipewire-jack-1:1.4.2-1)
-//! ```
-//!
-//! Parses the helper's line `conflicting dependencies: new [ver] vs
-//! installed [ver]; ...` and prints the plan. The question is in
-//! packages.rs. Removed packages are remembered for `--undo`.
+//! ---
 //!
 //! Blockers are also looked for *before* anything is installed, for every
 //! source of a run (repo plan, AUR, ABS): each source registers what it
@@ -287,7 +283,9 @@ pub(crate) fn preflight_confirm() -> bool {
     if plan.unmerge.is_empty() {
         return true;
     }
-    if !crate::packages::confirm_conflict_unmerge(true) {
+    // Spell out the remove list before the Yes/No (same as the mid-run path).
+    let gone: Vec<String> = plan.unmerge.iter().map(|u| u.name.clone()).collect();
+    if !crate::packages::confirm_conflict_unmerge_for(&gone) {
         return false;
     }
     if let Ok(mut a) = APPROVED.lock() {

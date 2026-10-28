@@ -190,13 +190,16 @@ impl Client {
     }
 
     /// Full official upgrade (`-Su`); `ignore` is `--ignore` names.
+    /// `opts` carries AE Force flags for unowned file conflicts.
     /// `on_event` gets `pkg start|done <name>` per package.
     pub(crate) fn sysupgrade(
         &mut self,
         ignore: &[String],
+        opts: FileOpts,
         on_event: &mut dyn FnMut(&str),
     ) -> Result<(), ClientError> {
         let req = Request::Sysupgrade {
+            opts,
             ignore: ignore.to_vec(),
         };
         self.request(&req, on_event)

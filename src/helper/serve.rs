@@ -28,7 +28,12 @@ pub(crate) trait Backend {
     fn set_jobs(&mut self, _n: u32) -> io::Result<()> {
         Ok(())
     }
-    fn sysupgrade(&mut self, _ignore: &[String], _emit: &mut dyn FnMut(&str)) -> io::Result<()> {
+    fn sysupgrade(
+        &mut self,
+        _ignore: &[String],
+        _opts: FileOpts,
+        _emit: &mut dyn FnMut(&str),
+    ) -> io::Result<()> {
         unsupported()
     }
     fn install(
@@ -92,8 +97,13 @@ impl Backend for Real {
         Ok(())
     }
 
-    fn sysupgrade(&mut self, ignore: &[String], emit: &mut dyn FnMut(&str)) -> io::Result<()> {
-        pkgdb::retry_after_keyring(|| pkgdb::sysupgrade(ignore, &mut *emit))
+    fn sysupgrade(
+        &mut self,
+        ignore: &[String],
+        opts: FileOpts,
+        emit: &mut dyn FnMut(&str),
+    ) -> io::Result<()> {
+        pkgdb::retry_after_keyring(|| pkgdb::sysupgrade(ignore, opts, &mut *emit))
     }
 
     fn install(
@@ -154,7 +164,7 @@ fn dispatch<B: Backend, W: Write>(be: &mut B, req: &Request, out: &mut W) -> io:
             // Best effort: a dead peer shows up on the final write.
             let _ = proto::write_response(out, &Response::Event(t.to_string()));
         }),
-        Request::Sysupgrade { ignore } => be.sysupgrade(ignore, &mut |t| {
+        Request::Sysupgrade { opts, ignore } => be.sysupgrade(ignore, *opts, &mut |t| {
             let _ = proto::write_response(out, &Response::Event(t.to_string()));
         }),
         Request::Install {

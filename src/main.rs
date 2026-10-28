@@ -1551,7 +1551,8 @@ fn upgrade_selected(cli: &Cli, targets: &[String]) -> anyhow::Result<()> {
         abs = ok;
     }
 
-    let upgradeable = crate::alpm_db::upgradeable_detail();
+    let pins = world_set::world_origin_pins();
+    let upgradeable = crate::alpm_db::upgradeable_detail(&pins);
     let mut plan_count = 0usize;
     // Only packages with a real upgrade are installed; up-to-date ones are
     // listed and skipped (emerge -u does not reinstall for fun).
@@ -1571,7 +1572,12 @@ fn upgrade_selected(cli: &Cli, targets: &[String]) -> anyhow::Result<()> {
                 old,
                 newv
             );
-            official_todo.push(name.clone());
+            // Prefer repo/name so the pin survives into the install txn.
+            official_todo.push(if repo.is_empty() {
+                name.clone()
+            } else {
+                format!("{}/{}", repo, name)
+            });
             plan_count += 1;
         } else if crate::alpm_db::is_installed(name) {
             println!(
@@ -1679,24 +1685,117 @@ fn upgrade_selected(cli: &Cli, targets: &[String]) -> anyhow::Result<()> {
 /// the installed package's origin repo), and package.freeze /
 /// EMERGE_FREEZE. aur/abs-prefixed entries are matched in their own
 /// halves, where the source is known.
+
+/// Install packages named next to `-u @world` (repo / AUR / ABS).
+fn install_targets_after_upgrade(cli: &Cli, targets: &[String]) -> bool {
+    let mut abs_pkgs: Vec<String> = Vec::new();
+    let mut aur_pkgs: Vec<String> = Vec::new();
+    let mut rest: Vec<String> = Vec::new();
+    for p in targets {
+        if let Some(n) = p.strip_prefix("abs/") {
+            abs_pkgs.push(n.to_string());
+        } else if let Some(n) = p.strip_prefix("aur/") {
+            aur_pkgs.push(n.to_string());
+        } else if p.contains('/') {
+            rest.push(p.clone());
+        } else if cli.abs {
+            abs_pkgs.push(p.clone());
+        } else if cli.aur {
+            aur_pkgs.push(p.clone());
+        } else {
+            rest.push(p.clone());
+        }
+    }
+    let mut ok = true;
+    if !rest.is_empty() {
+        let mut show = |_ev: &str| {};
+        if let Err(e) = rootops::install(&rest, false, &mut show) {
+            eprintln!("{} {}", ">>> Error:".t_red().bold(), e);
+            ok = false;
+        } else {
+            let _ = world_set::add_to_world_set(&rest, None);
+        }
+    }
+    if !aur_pkgs.is_empty() {
+        // ask=false: the -u plan prompt already covered this run.
+        if !packages::aur_install(
+            &aur_pkgs,
+            false,
+            false,
+            cli.oneshot,
+            cli.skippgp,
+            cli.edit,
+            cli.no_sandbox,
+            cli.skip_srcinfo_regen,
+            cli.unshare_net_build,
+            cli.pkgbuild_view,
+        ) {
+            ok = false;
+        }
+    }
+    if !abs_pkgs.is_empty() {
+        if !packages::abs_install(
+            &abs_pkgs,
+            false,
+            false,
+            cli.oneshot,
+            cli.skippgp,
+            cli.edit,
+            cli.autopgp,
+            cli.no_sandbox,
+            cli.skip_srcinfo_regen,
+            cli.unshare_net_build,
+            cli.pkgbuild_view,
+            false,
+        ) {
+            ok = false;
+        }
+    }
+    ok
+}
+
 fn upgrade_ignores() -> Vec<String> {
     let mut names: Vec<String> = runtime::get().exclude.iter().cloned().collect();
 
     if !mask::masks().is_empty() {
         let installed: Vec<String> = alpm_db::installed_names().into_iter().collect();
-        // Repo-prefixed mask entries hold back upgrades too, now that
-        // the installed package's origin repo is known (bare entries
-        // always did; aur/abs are held back in their own halves).
+        // Prefer world/set origin pins over "first sync db with same
+        // version". A local mirror repo named `world`/`system` that
+        // copies official packages would otherwise make every mirrored
+        // package look like `world/*` and get held by package.mask
+        // `world/*` / `system/*`.
+        let pins = world_set::world_origin_pins();
         let repos = world_set::get_pkg_repos_batch(&installed);
         for name in installed {
             if mask::find(&name, None).is_some() {
                 names.push(name);
                 continue;
             }
-            if let Some(Some(repo)) = repos.get(&name)
-                && mask::find(&name, Some(repo.as_str())).is_some()
-            {
-                names.push(name);
+            // Pin from world file, else resolved origin. Meta mirror pins
+            // (world/system) are demoted when repos_batch already found a
+            // real origin — otherwise package.mask world/* holds every
+            // mirrored extra package.
+            let resolved = repos
+                .get(&name)
+                .and_then(|r| r.clone())
+                .filter(|r| r != "None");
+            let pin = pins.get(&name).cloned();
+            let origin = match (pin, resolved) {
+                (Some(p), Some(r))
+                    if alpm_db::is_meta_mirror_repo(&p) && !alpm_db::is_meta_mirror_repo(&r) =>
+                {
+                    Some(r)
+                }
+                (Some(p), _) => Some(p),
+                (None, r) => r,
+            };
+            if let Some(repo) = origin {
+                if repo == "aur" || repo == "abs" || repo == "local" {
+                    continue;
+                }
+                if mask::find(&name, Some(repo.as_str())).is_some() {
+                    names.push(name);
+                }
             }
         }
     }
@@ -2232,25 +2331,6 @@ pub(crate) fn open_nofollow(path: &std::path::Path) -> std::io::Result<std::fs::
 #[cfg(not(unix))]
 pub(crate) fn open_nofollow(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     std::fs::File::open(path)
-}
-
-/// Like `open_nofollow`, but read+write for in-place edits of existing files.
-#[cfg(unix)]
-pub(crate) fn open_nofollow_rw(path: &std::path::Path) -> std::io::Result<std::fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-}
-
-#[cfg(not(unix))]
-pub(crate) fn open_nofollow_rw(path: &std::path::Path) -> std::io::Result<std::fs::File> {
-    std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(path)
 }
 
 /// Read the whole file via `open_nofollow`.
@@ -3931,7 +4011,9 @@ fn run() -> anyhow::Result<()> {
                 if !sync_dbs(false) {
                     std::process::exit(1);
                 }
-                if let Err(e) = rootops::sysupgrade(&[], &mut |_| {}) {
+                if let Err(e) =
+                    rootops::sysupgrade(&[], helper::validate::FileOpts::default(), &mut |_| {})
+                {
                     eprintln!("{} {}", ">>> Error:".t_red().bold(), e);
                     std::process::exit(1);
                 }
@@ -4388,16 +4470,48 @@ fn run() -> anyhow::Result<()> {
         crate::candy::calculating_deps_line();
         println!();
         println!(">>> Upgrading system (official repos)...");
+        // `-u @world aur/foo` used to silently drop `aur/foo` (full -u
+        // ignores target_pkgs). Tell the user they will be installed after
+        // the upgrade, and actually install them once the -u half is done.
+        if has_world && !target_pkgs.is_empty() {
+            println!(
+                "{} after the upgrade, also install: {}",
+                ">>>".t_cyan().bold(),
+                target_pkgs.join(", ")
+            );
+        }
         // --exclude and the mask both become `--ignore`.
         let ignores = upgrade_ignores();
         if !ignores.is_empty() {
-            println!(
-                "{} holding back {} package(s) (--exclude / {}): {}",
-                ">>>".t_yellow().bold(),
-                ignores.len(),
-                MASK_FILE,
-                ignores.join(", ")
-            );
+            // Classify so world/* false-positives / freeze are not all
+            // blamed on package.mask.
+            let frozen: Vec<&str> = ignores
+                .iter()
+                .filter(|n| hold::is_frozen(n))
+                .map(String::as_str)
+                .collect();
+            let masked: Vec<&str> = ignores
+                .iter()
+                .filter(|n| !hold::is_frozen(n))
+                .map(String::as_str)
+                .collect();
+            if !masked.is_empty() {
+                println!(
+                    "{} holding back {} package(s) (--exclude / {}): {}",
+                    ">>>".t_yellow().bold(),
+                    masked.len(),
+                    MASK_FILE,
+                    masked.join(", ")
+                );
+            }
+            if !frozen.is_empty() {
+                println!(
+                    "{} holding back {} frozen package(s) (package.freeze / EMERGE_FREEZE): {}",
+                    ">>>".t_yellow().bold(),
+                    frozen.len(),
+                    frozen.join(", ")
+                );
+            }
         }
         // `-Sy` (refresh) writes to the local sync db and needs root
         // regardless of `--print`. `-Su --print` (upgrade-only, no
@@ -4407,11 +4521,17 @@ fn run() -> anyhow::Result<()> {
         // still refresh via `-Syu` as before; if the synced db is stale,
         // run `--sync` first for an accurate preview.
         let ignored: HashSet<&str> = ignores.iter().map(String::as_str).collect();
+        let pins = world_set::world_origin_pins();
         let official_upgrades: Vec<(String, String, String, String)> =
-            crate::alpm_db::upgradeable_detail()
+            crate::alpm_db::upgradeable_detail(&pins)
                 .into_iter()
                 .filter(|(n, _, _, _)| !ignored.contains(n.as_str()))
                 .collect();
+        // Do NOT split pinned packages out of -Su into a second install:
+        // versioned dep stacks (pipewire=1.6.10 with pipewire-audio) must
+        // stay one libalpm transaction. World pins still drive the *plan*
+        // (which repo/version is shown) and mask/origin; the commit is a
+        // single sysupgrade. Selective `emerge -u repo/pkg` still pins.
 
         // Always show the ebuild-style plan (pretend and real).
         if official_upgrades.is_empty() {
@@ -4467,10 +4587,14 @@ fn run() -> anyhow::Result<()> {
                 .iter()
                 .map(|(n, _, v, r)| (n.clone(), progress::atom(r, n, v)))
                 .collect();
-            let mut nums: HashMap<String, usize> = HashMap::new();
+            // Interior mutability: the event closure lives across an optional
+            // AE Force retry of the same -Su, so counters must be resettable
+            // without fighting the borrow checker.
+            let nums: std::cell::RefCell<HashMap<String, usize>> =
+                std::cell::RefCell::new(HashMap::new());
             // `plan <n>` from the helper: how many packages libalpm queued.
-            let mut tx_size: Option<usize> = None;
-            let mut done_pkgs = 0usize;
+            let tx_size: std::cell::Cell<Option<usize>> = std::cell::Cell::new(None);
+            let done_pkgs: std::cell::Cell<usize> = std::cell::Cell::new(0);
             // Helper: `pkg start|done <name>` and `hook …`, live.
             // Hooks go through progress::note so the Jobs footer stays pinned.
             let mut show = |ev: &str| {
@@ -4479,7 +4603,7 @@ fn run() -> anyhow::Result<()> {
                     return;
                 };
                 if head == "plan" {
-                    tx_size = kind.parse().ok();
+                    tx_size.set(kind.parse().ok());
                     return;
                 }
                 if head == "hook" {
@@ -4487,7 +4611,7 @@ fn run() -> anyhow::Result<()> {
                     return;
                 }
                 if head == "dl" {
-                    progress::on_dl_event(ev, &mut nums, &atoms);
+                    progress::on_dl_event(ev, &mut nums.borrow_mut(), &atoms);
                     return;
                 }
                 let (true, Some(name)) = (head == "pkg", it.next()) else {
@@ -4496,11 +4620,11 @@ fn run() -> anyhow::Result<()> {
                 let atom = atoms.get(name).cloned().unwrap_or_else(|| name.to_string());
                 match kind {
                     "start" => {
-                        progress::on_pkg_start(name, &mut nums, &atoms);
+                        progress::on_pkg_start(name, &mut nums.borrow_mut(), &atoms);
                     }
                     "done" => {
-                        if let Some(&n) = nums.get(name) {
-                            done_pkgs += 1;
+                        if let Some(&n) = nums.borrow().get(name) {
+                            done_pkgs.set(done_pkgs.get() + 1);
                             progress::line(progress::Stage::Completed, n, &atom);
                         }
                     }
@@ -4508,15 +4632,100 @@ fn run() -> anyhow::Result<()> {
                 }
             };
             let timer = logbook::Timer::start();
-            let res = rootops::sysupgrade(&ignores, &mut show);
+            let mut ae_opts = helper::validate::FileOpts::default();
+            let mut res = rootops::sysupgrade(&ignores, ae_opts, &mut show);
+            // Unowned file conflicts: offer AE Force (same path as `-U`),
+            // then retry the whole -Su transaction once with the chosen mode.
+            if let Err(ref e) = res {
+                let msg = e.strip_prefix("helper refused: ").unwrap_or(e.as_str());
+                if let Some(list) = msg.strip_prefix("conflicting files:") {
+                    progress::status_break();
+                    progress::fetch_clear();
+                    let files: Vec<&str> = list
+                        .split(';')
+                        .map(str::trim)
+                        .filter(|f| !f.is_empty() && *f != "...")
+                        .collect();
+                    for f in files.iter().take(12) {
+                        eprintln!("{} AE Force:  {}", ">>>".t_yellow().bold(), f);
+                    }
+                    if files.len() > 12 {
+                        eprintln!("{} AE Force:  ... and more", ">>>".t_yellow().bold());
+                    }
+                    let rt = runtime::get();
+                    let mode = if rt.aeforce || rt.noaefile {
+                        if rt.aeforce {
+                            ae_opts.aeforce = true;
+                        }
+                        if rt.noaefile {
+                            ae_opts.aekeep = true;
+                        }
+                        if !rt.aeforce {
+                            ae_opts.aenew = true;
+                        }
+                        true
+                    } else {
+                        eprint!(
+                            "{} AE Force: Create .aenew for conflict files? Old files will stay in place [{}/{}] ",
+                            ">>>".t_yellow().bold(),
+                            "Y".bold(),
+                            "n".bold()
+                        );
+                        use std::io::{self, Write};
+                        let _ = io::stdout().flush();
+                        let mut line = String::new();
+                        let ok = io::stdin().read_line(&mut line).is_ok()
+                            && matches!(
+                                line.trim().to_ascii_lowercase().as_str(),
+                                "" | "y" | "yes"
+                            );
+                        if ok {
+                            ae_opts.aenew = true;
+                        }
+                        ok
+                    };
+                    progress::status_resume();
+                    if mode {
+                        // Reset progress counters for the retry so Jobs stays coherent.
+                        done_pkgs.set(0);
+                        nums.borrow_mut().clear();
+                        tx_size.set(None);
+                        res = rootops::sysupgrade(&ignores, ae_opts, &mut show);
+                    }
+                } else if msg.contains("conflicting dependencies") {
+                    // Same path as -S: list [conflict], ask, unmerge installed
+                    // blockers, retry the whole -Su once.
+                    if let Some(gone) = repo_conflict_unmerge_list(msg) {
+                        match packages::unmerge_blockers(&gone) {
+                            Ok(()) => {
+                                done_pkgs.set(0);
+                                nums.borrow_mut().clear();
+                                tx_size.set(None);
+                                res = rootops::sysupgrade(&ignores, ae_opts, &mut show);
+                                if res.is_err() {
+                                    eprintln!(
+                                        "{} already unmerged: {}",
+                                        ">>> Warning:".t_yellow().bold(),
+                                        gone.join(", ")
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                progress::status_break();
+                                let m = e.strip_prefix("helper refused: ").unwrap_or(e.as_str());
+                                eprintln!("{} {}", ">>> Error:".t_red().bold(), m);
+                                progress::status_resume();
+                                res = Err(e);
+                            }
+                        }
+                    }
+                }
+            }
             progress::fetch_clear();
             let res = match res {
-                // The plan promised upgrades but nothing was installed:
-                // never report that as success.
-                Ok(()) if !official_upgrades.is_empty() && done_pkgs == 0 => Err(format!(
-                    "libalpm queued {} package(s) and installed none, but the plan lists {} \
-                     (first sync repo for those names is not the newer one?)",
-                    tx_size.unwrap_or(0),
+                Ok(()) if !official_upgrades.is_empty() && done_pkgs.get() == 0 => Err(format!(
+                    "libalpm queued {} package(s) and installed none, but the plan lists {}                      (first sync repo for those names is not the newer one?)",
+                    tx_size.get().unwrap_or(0),
                     official_upgrades.len()
                 )),
                 other => other,
@@ -4566,11 +4775,38 @@ fn run() -> anyhow::Result<()> {
         };
         progress::finish();
 
+        // Named packages alongside `-u @world` (e.g. `emerge -u @world aur/foo`):
+        // install them after the system upgrade. Without @world, -u pkg… is
+        // selective upgrade (handled above); with @world they were dropped.
+        let ok3 = if target_pkgs.is_empty() {
+            true
+        } else if cli.pretend {
+            println!(
+                "{} would also install: {}",
+                ">>>".t_green().bold(),
+                target_pkgs.join(", ")
+            );
+            true
+        } else if !ok1 && !cli.keep_going {
+            eprintln!(
+                "{} skipping additionally requested packages because the upgrade failed.",
+                ">>>".t_yellow().bold()
+            );
+            false
+        } else {
+            println!();
+            println!(
+                "{} Installing additionally requested packages...",
+                ">>>".t_green().bold()
+            );
+            install_targets_after_upgrade(&cli, &target_pkgs)
+        };
+
         println!();
         println!("{} Auto-cleaning packages...", ">>>".t_green().bold());
 
         if !cli.pretend {
-            if ok1 && ok2 && !runtime::any_failures() {
+            if ok1 && ok2 && ok3 && !runtime::any_failures() {
                 clear_resume_state();
             } else if !save_failed_resume(&cli) {
                 eprintln!(

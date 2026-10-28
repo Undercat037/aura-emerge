@@ -1,6 +1,6 @@
 # Maintainer: Undercat037 <deltacatdeveloper@gmail.com>
 pkgname=aura-emerge-git
-pkgver=3.0.19_beta.r204.ged96d98
+pkgver=0.0.0
 pkgrel=1
 pkgdesc="A standalone Gentoo-style emerge for Arch Linux - installs from official repos, the AUR, and ABS, scans PKGBUILDs for supply-chain red flags before building, and runs untrusted build steps inside a bwrap sandbox. (git version)"
 arch=('x86_64')
@@ -9,9 +9,6 @@ url="https://undercat037.github.io/aura-emerge/"
 # Gitlab repo: https://gitlab.com/Undercat037/aura-emerge
 license=('GPL-3.0-only')
 depends=('git' 'sudo' 'bubblewrap' 'pacman' 'gnupg')
-# gnupg is a hard dependency: keyring population (pacman-key equivalent)
-# is handled by the root helper itself (gpg called directly), so every
-# install/signature path needs it present.
 optdepends=('devtools: for --abs support (pkgctl repo clone)')
 makedepends=('rust' 'cargo')
 conflicts=('portage' 'portage-git' 'eselect-git' 'aura-emerge')
@@ -22,10 +19,42 @@ source=()
 sha256sums=()
 
 pkgver() {
-  cd "$startdir" || return 1
-  local ver rev short
-  ver=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/; s/-/_/g')
+  cd "${startdir:-${PWD}}" || return 1
+  local ver rev short pkgid
+
+  # path+file:///…/crate#3.0.28-beta
+  # path+file:///…/crate#name@3.0.28-beta
+  if command -v cargo >/dev/null 2>&1; then
+    pkgid=$(cargo pkgid 2>/dev/null) || pkgid=
+    if [[ -n $pkgid && $pkgid == *#* ]]; then
+      if [[ $pkgid == *#*@* ]]; then
+        ver=${pkgid##*@}
+      else
+        ver=${pkgid##*#}
+      fi
+      ver=${ver%%[[:space:]]*}
+    fi
+  fi
+
+  if [[ -z $ver && -f Cargo.toml ]]; then
+    ver=$(awk '
+      /^\[package\]/ { in_pkg = 1; next }
+      /^\[/ { in_pkg = 0 }
+      in_pkg && $0 ~ /^[[:space:]]*version[[:space:]]*=/ {
+        line = $0
+        sub(/^[^=]*=[[:space:]]*/, "", line)
+        gsub(/["\047]/, "", line)
+        sub(/[[:space:]].*/, "", line)
+        sub(/,.*/, "", line)
+        print line
+        exit
+      }
+    ' Cargo.toml)
+  fi
+
+  ver=${ver//-/_}
   [[ -n $ver ]] || return 1
+
   if rev=$(git rev-list --count HEAD 2>/dev/null) && short=$(git rev-parse --short HEAD 2>/dev/null); then
     printf '%s.r%s.g%s' "$ver" "$rev" "$short"
   else

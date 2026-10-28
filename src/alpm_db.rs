@@ -159,6 +159,14 @@ fn is_ae_repo(db_name: &str) -> bool {
     crate::helper::validate::LocalRepo::from_id(db_name).is_some()
 }
 
+/// Local meta/mirror repos that often copy official packages. Prefer a
+/// real origin (`extra`, `cachyos-…`) over these when both carry the same
+/// version — otherwise world entries become `world/foo` and `world/*` in
+/// package.mask holds every mirrored package on upgrade.
+pub(crate) fn is_meta_mirror_repo(db_name: &str) -> bool {
+    matches!(db_name, "world" | "system")
+}
+
 /// Map an alpm db name to the world/source prefix. `ae-aur` → `aur`,
 /// etc.; anything else is returned unchanged. World must not record
 /// `ae-*` — that is storage, not origin.
@@ -166,6 +174,21 @@ pub(crate) fn world_repo_name(db_name: &str) -> &str {
     crate::helper::validate::LocalRepo::from_id(db_name)
         .map(|r| r.source_prefix())
         .unwrap_or(db_name)
+}
+
+/// True if a named sync db still lists `name` (for keeping world pins).
+pub(crate) fn sync_repo_has(repo: &str, name: &str) -> bool {
+    let Some(alpm) = open() else {
+        return false;
+    };
+    let bare = bare(name);
+    for db in alpm.syncdbs() {
+        let dn = db.name();
+        if dn == repo || world_repo_name(dn) == repo {
+            return db.pkg(bare).is_ok();
+        }
+    }
+    false
 }
 
 /// Version of `name` in a local-repo sync db (`ae-aur` / …), if present.
@@ -230,7 +253,14 @@ pub(crate) fn foreign_packages() -> Vec<(String, String)> {
 }
 
 /// Official upgrades: (name, installed, available, repo).
-pub(crate) fn upgradeable_detail() -> Vec<(String, String, String, String)> {
+///
+/// `pins` maps bare name → world/set origin (`extra`, `cachyos-extra-v3`,
+/// `aur`, …). When the pin is an official sync repo, that db is preferred
+/// over pacman.conf order (world origin wins). `aur`/`abs` pins are skipped
+/// here — those upgrade via the AUR/ABS path.
+pub(crate) fn upgradeable_detail(
+    pins: &std::collections::HashMap<String, String>,
+) -> Vec<(String, String, String, String)> {
     let Some(alpm) = open() else {
         return Vec::new();
     };
@@ -238,16 +268,43 @@ pub(crate) fn upgradeable_detail() -> Vec<(String, String, String, String)> {
     for pkg in alpm.localdb().pkgs() {
         let name = pkg.name();
         let local_ver = pkg.version().to_string();
+        if let Some(pin) = pins.get(name) {
+            if pin == "aur" || pin == "abs" || pin == "local" {
+                // Not an official-repo upgrade.
+                continue;
+            }
+            // World/set pin: only this repo.
+            let mut found = false;
+            for db in alpm.syncdbs() {
+                if is_ae_repo(db.name()) {
+                    continue;
+                }
+                let dn = db.name();
+                if dn != pin.as_str() && world_repo_name(dn) != pin.as_str() {
+                    continue;
+                }
+                found = true;
+                if let Ok(sp) = db.pkg(name) {
+                    let new_ver = sp.version().to_string();
+                    if alpm::vercmp(local_ver.as_str(), new_ver.as_str())
+                        == std::cmp::Ordering::Less
+                    {
+                        out.push((name.to_string(), local_ver.clone(), new_ver, dn.to_string()));
+                    }
+                }
+                break;
+            }
+            if found {
+                continue;
+            }
+            // Pin repo missing from conf — fall through to first-conf.
+        }
         for db in alpm.syncdbs() {
-            // AUR/ABS/local builds are upgraded by their own path.
             if is_ae_repo(db.name()) {
                 continue;
             }
             if let Ok(sp) = db.pkg(name) {
-                // libalpm (sync_sysupgrade) looks only at the FIRST sync db
-                // that carries the name; a newer copy in a later repo is
-                // never used. Mirror that, or the plan shows upgrades the
-
+                // Default: first sync db in conf order (libalpm -Su).
                 let new_ver = sp.version().to_string();
                 if alpm::vercmp(local_ver.as_str(), new_ver.as_str()) == std::cmp::Ordering::Less {
                     out.push((name.to_string(), local_ver, new_ver, db.name().to_string()));
@@ -282,6 +339,8 @@ pub(crate) struct LocalPkgDetail {
     pub build_date: i64,
     pub install_date: i64,
     pub install_reason: String,
+    /// Sync-db origin if still present there (pacman "Installed From").
+    pub installed_from: String,
     pub validation: String,
     pub size: i64, // installed size
     pub depends: Vec<String>,
@@ -312,6 +371,65 @@ pub(crate) fn local_pkg_detail(name: &str) -> Option<LocalPkgDetail> {
         PackageReason::Explicit => "Explicitly installed",
         PackageReason::Depend => "Installed as a dependency",
     };
+    // pacman -Qi "Installed From": prefer non-meta exact match, then any
+    // non-meta, then meta mirrors (world/system), then ae-*, else None.
+    // Meta mirrors that copy official packages must not steal the label
+    // (would show world while pacman correctly says extra).
+    let ver = pkg.version().to_string();
+    let mut exact = String::new();
+    let mut exact_meta = String::new();
+    let mut any = String::new();
+    let mut any_meta = String::new();
+    for db in alpm.syncdbs() {
+        let dn = db.name();
+        if is_ae_repo(dn) {
+            continue;
+        }
+        let Ok(sp) = db.pkg(pkg.name()) else {
+            continue;
+        };
+        let meta = is_meta_mirror_repo(dn);
+        if meta {
+            if any_meta.is_empty() {
+                any_meta = dn.to_string();
+            }
+        } else if any.is_empty() {
+            any = dn.to_string();
+        }
+        if sp.version().as_str() == ver {
+            if meta {
+                if exact_meta.is_empty() {
+                    exact_meta = dn.to_string();
+                }
+            } else if exact.is_empty() {
+                exact = dn.to_string();
+            }
+        }
+    }
+    let mut installed_from = if !exact.is_empty() {
+        exact
+    } else if !any.is_empty() {
+        any
+    } else if !exact_meta.is_empty() {
+        exact_meta
+    } else {
+        any_meta
+    };
+    if installed_from.is_empty() {
+        for db in alpm.syncdbs() {
+            let dn = db.name();
+            if !is_ae_repo(dn) {
+                continue;
+            }
+            if db.pkg(pkg.name()).is_ok() {
+                installed_from = world_repo_name(dn).to_string();
+                break;
+            }
+        }
+    }
+    if installed_from.is_empty() {
+        installed_from = "None".to_string();
+    }
     // required_by / optional_for via compute
     let mut required_by = Vec::new();
     let mut optional_for = Vec::new();
@@ -359,6 +477,7 @@ pub(crate) fn local_pkg_detail(name: &str) -> Option<LocalPkgDetail> {
         build_date: pkg.build_date(),
         install_date: pkg.install_date().unwrap_or(0),
         install_reason: reason.to_string(),
+        installed_from,
         validation: String::new(),
         size: pkg.isize(),
         depends: join_list(pkg.depends()),
@@ -733,12 +852,20 @@ pub(crate) fn pkg_status(name: &str, new_ver: &str) -> String {
     }
 }
 
-/// bare → Some(repo) | Some("None") for local builds | key absent.
+/// bare → Some(repo) | Some("None") for true foreign/local builds | key absent.
 ///
 /// Local-repo dbs (`ae-aur` / …) are reported as their *source* prefix
 /// (`aur` / `abs` / `local`) so world entries stay `aur/foo`, not
 /// `ae-aur/foo`. Installing via `emerge ae-aur/foo` still works through
 /// find_sync_many; only the world origin is rewritten.
+///
+/// Resolution for an *installed* package (pacman.conf order):
+///   1. first sync db whose version equals the installed one;
+///   2. else first sync db that still carries the name at any version;
+///   3. else `"None"` (foreign / local-only) → world writes `Err/name`.
+/// Multiple dbs with the same version used to collapse to `"None"`/`Err/`,
+/// which flipped correct `extra/` / `cachyos-…` prefixes to `Err/` or to a
+/// lower-priority mirror repo (e.g. a file:// `world` db) on `--regen-world`.
 pub(crate) fn repos_batch(names: &[String]) -> HashMap<String, Option<String>> {
     let Some(alpm) = open() else {
         return HashMap::new();
@@ -749,21 +876,45 @@ pub(crate) fn repos_batch(names: &[String]) -> HashMap<String, Option<String>> {
         let bare = bare(name).to_string();
         if let Ok(pkg) = local.pkg(bare.as_str()) {
             let ver = pkg.version().to_string();
-            let mut hits = Vec::new();
+            let mut exact: Option<String> = None;
+            let mut exact_meta: Option<String> = None;
+            let mut any: Option<String> = None;
+            let mut any_meta: Option<String> = None;
             for db in alpm.syncdbs() {
-                if let Ok(sp) = db.pkg(bare.as_str())
-                    && sp.version().as_str() == ver
-                {
-                    let n = world_repo_name(db.name()).to_string();
-                    if !hits.iter().any(|h| h == &n) {
-                        hits.push(n);
+                let Ok(sp) = db.pkg(bare.as_str()) else {
+                    continue;
+                };
+                let n = world_repo_name(db.name()).to_string();
+                let meta = is_meta_mirror_repo(db.name()) || is_meta_mirror_repo(&n);
+                if meta {
+                    if any_meta.is_none() {
+                        any_meta = Some(n.clone());
+                    }
+                } else if any.is_none() {
+                    any = Some(n.clone());
+                }
+                if sp.version().as_str() == ver {
+                    if meta {
+                        if exact_meta.is_none() {
+                            exact_meta = Some(n);
+                        }
+                    } else if exact.is_none() {
+                        exact = Some(n);
+                        // First non-meta exact match wins.
+                        break;
                     }
                 }
             }
-            let repo = match hits.len() {
-                1 => Some(hits.remove(0)),
-                _ => Some("None".to_string()),
-            };
+            // Prefer real origin over world/system mirrors.
+            // Order matters: a meta db can still carry the *installed*
+            // version after extra has moved on (pipewire 1.6.9 only in
+            // world, 1.6.10 in extra) — exact_meta must not beat any
+            // non-meta, or package.mask world/* holds the upgrade forever.
+            let repo = exact
+                .or(any)
+                .or(exact_meta)
+                .or(any_meta)
+                .or_else(|| Some("None".to_string()));
             result.insert(bare, repo);
         } else {
             for db in alpm.syncdbs() {

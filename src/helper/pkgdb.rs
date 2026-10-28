@@ -501,14 +501,20 @@ pub(crate) fn sync_in_with(
 /// (bare names). Empty transaction is success (nothing to do).
 /// `emit` gets `pkg start <name>` / `pkg done <name>` per installed or
 /// upgraded package, live (worker thread + channel, as in `sync`).
-pub(crate) fn sysupgrade(ignore: &[String], emit: &mut dyn FnMut(&str)) -> io::Result<()> {
+/// `opts` carries AE Force flags: on unowned file conflicts the helper
+/// parks/moves the files and retries once (same path as `-U`).
+pub(crate) fn sysupgrade(
+    ignore: &[String],
+    opts: validate::FileOpts,
+    emit: &mut dyn FnMut(&str),
+) -> io::Result<()> {
     use std::sync::mpsc;
 
     std::thread::scope(|s| {
         let (tx, rx) = mpsc::channel::<String>();
         let worker = s.spawn(move || {
             let mut alpm = open()?;
-            sysupgrade_in_with(&mut alpm, ignore, &tx)
+            sysupgrade_in_with(&mut alpm, ignore, opts, &tx)
         });
         for ev in rx {
             emit(&ev);
@@ -521,32 +527,79 @@ pub(crate) fn sysupgrade(ignore: &[String], emit: &mut dyn FnMut(&str)) -> io::R
 
 pub(crate) fn sysupgrade_in(alpm: &mut Alpm, ignore: &[String]) -> io::Result<()> {
     let (tx, _rx) = std::sync::mpsc::channel();
-    sysupgrade_in_with(alpm, ignore, &tx)
+    sysupgrade_in_with(alpm, ignore, validate::FileOpts::default(), &tx)
 }
 
 fn sysupgrade_in_with(
     alpm: &mut Alpm,
     ignore: &[String],
+    opts: validate::FileOpts,
     tx: &mpsc::Sender<String>,
 ) -> io::Result<()> {
-    wire_events(alpm, tx.clone());
     for n in ignore {
         let a = validate::atom(n).map_err(|r| fail(format!("bad ignore: {:?}", r)))?;
         let _ = alpm.add_ignorepkg(a.name);
     }
-    alpm.trans_init(TransFlag::NONE)
-        .map_err(|e| fail(format!("db lock: {}", e)))?;
-    let res = (|| {
-        // false = no downgrade (same as -Su without -d).
-        alpm.sync_sysupgrade(false)
-            .map_err(|e| fail(format!("sysupgrade: {}", e)))?;
-        // Real transaction size, so the client can tell "nothing to do"
-        // from "plan and libalpm disagree".
-        let _ = tx.send(format!("plan {}", alpm.trans_add().iter().count()));
-        prepare_and_commit(alpm, false, &mut Vec::new())
-    })();
-    let _ = alpm.trans_release();
-    res
+    let mut tried = false;
+    let mut moved: Vec<(String, String)> = Vec::new();
+    let res = loop {
+        wire_events(alpm, tx.clone());
+        if let Err(e) = alpm.trans_init(TransFlag::NONE) {
+            break Err(fail(format!("db lock: {}", e)));
+        }
+        let mut movable = Vec::new();
+        let res = (|| {
+            // false = no downgrade (same as -Su without -d).
+            alpm.sync_sysupgrade(false)
+                .map_err(|e| fail(format!("sysupgrade: {}", e)))?;
+            // Real transaction size, so the client can tell "nothing to do"
+            // from "plan and libalpm disagree".
+            let _ = tx.send(format!("plan {}", alpm.trans_add().iter().count()));
+            prepare_and_commit(alpm, false, &mut movable)
+        })();
+        let _ = alpm.trans_release();
+        if (opts.aeforce || opts.aenew || opts.aekeep)
+            && !tried
+            && res.is_err()
+            && !movable.is_empty()
+        {
+            tried = true;
+            let ext = if opts.aeforce {
+                validate::AE_FORCE_EXT
+            } else {
+                validate::AE_PARK_EXT
+            };
+            let mut r = Ok(());
+            for f in &movable {
+                match move_aside(f, ext) {
+                    Ok(dst) => moved.push((f.clone(), dst)),
+                    Err(e) => {
+                        r = Err(e);
+                        break;
+                    }
+                }
+            }
+            match r {
+                Ok(()) => continue,
+                Err(e) => break Err(e),
+            }
+        }
+        // Surface movable conflicts so the frontend can offer AE Force.
+        if res.is_err() && !movable.is_empty() && !opts.aeforce && !opts.aenew && !opts.aekeep {
+            break Err(fail(format!(
+                "conflicting files: {}",
+                movable
+                    .iter()
+                    .take(8)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("; ")
+                    + if movable.len() > 8 { "; ..." } else { "" }
+            )));
+        }
+        break res;
+    };
+    finish_moves(opts, res, &moved, tx)
 }
 
 /// `-S`: install from the sync dbs by `[repo/]name`.

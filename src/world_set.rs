@@ -101,13 +101,90 @@ pub(crate) fn pkg_world_entry_from(
     forced_prefix: Option<&str>,
     repos: &std::collections::HashMap<String, Option<String>>,
 ) -> String {
+    // Intentional source pins (aur/abs from world or sets) always win over
+    // whatever sync db currently carries the same version (e.g. chaotic-aur
+    // mirroring an AUR package must not rewrite `aur/figcraft` → chaotic-…).
+    if let Some(p) = forced_prefix {
+        if p == "aur" || p == "abs" {
+            return format!("{}/{}", p, bare);
+        }
+    }
     match repos.get(bare) {
-        Some(Some(repo)) if repo != "None" => format!("{}/{}", repo, bare),
+        Some(Some(repo)) if repo != "None" => {
+            // Keep an existing official pin when that repo still has the pkg;
+            // only rewrite when the old prefix is gone / was Err/bare.
+            if let Some(p) = forced_prefix {
+                if p != "Err" && p == repo.as_str() {
+                    return format!("{}/{}", p, bare);
+                }
+                // Keep an intentional official pin unless it is a meta
+                // mirror (world/system) that would collide with package.mask
+                // world/* — those re-resolve to the real origin in `repo`.
+                if p != "Err"
+                    && !crate::alpm_db::is_meta_mirror_repo(p)
+                    && crate::alpm_db::sync_repo_has(p, bare)
+                {
+                    return format!("{}/{}", p, bare);
+                }
+            }
+            format!("{}/{}", repo, bare)
+        }
         Some(Some(_)) /* "None" = local build */ => {
             format!("{}/{}", forced_prefix.unwrap_or("Err"), bare)
         }
-        _ => bare.to_string(),
+        _ => match forced_prefix {
+            Some(p) if p != "Err" => format!("{}/{}", p, bare),
+            _ => bare.to_string(),
+        },
     }
+}
+
+/// Bare name → repo/source prefix from world + expanded `@sets` in world.
+/// First win: explicit world line, then set membership (aur/abs preferred
+/// over a later official pin so design.set `aur/figcraft` sticks).
+pub(crate) fn world_origin_pins() -> std::collections::HashMap<String, String> {
+    use std::collections::HashMap;
+    let mut pins: HashMap<String, String> = HashMap::new();
+    let mut prefer_aur_abs = |bare: String, repo: String| match pins.get(&bare) {
+        Some(have) if have == "aur" || have == "abs" => {}
+        _ if repo == "aur" || repo == "abs" => {
+            pins.insert(bare, repo);
+        }
+        None => {
+            pins.insert(bare, repo);
+        }
+        Some(_) => {}
+    };
+    let Ok(file) = open_nofollow(std::path::Path::new(WORLD_SET_FILE)) else {
+        return pins;
+    };
+    let lines: Vec<String> = io::BufReader::new(file)
+        .lines()
+        .map_while(io::Result::ok)
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+    for t in &lines {
+        if let Some(set) = t.strip_prefix('@') {
+            if !valid_set_name(set) {
+                continue;
+            }
+            if let Ok(pkgs) = read_custom_set(set) {
+                for p in pkgs {
+                    let (bare, repo) = world_atom_repo(&p);
+                    if let Some(r) = repo {
+                        prefer_aur_abs(bare, r);
+                    }
+                }
+            }
+            continue;
+        }
+        let (bare, repo) = world_atom_repo(t);
+        if let Some(r) = repo {
+            prefer_aur_abs(bare, r);
+        }
+    }
+    pins
 }
 
 // ── custom sets (/etc/portage/sets/<name>[.set], invoked as @<name>) ──────────
@@ -882,7 +959,7 @@ pub(crate) fn regen_world_set() -> Result<()> {
         ">>>".t_green().bold()
     );
 
-    let file = match open_nofollow_rw(std::path::Path::new(WORLD_SET_FILE)) {
+    let file = match open_nofollow(std::path::Path::new(WORLD_SET_FILE)) {
         Ok(f) => f,
         Err(e) if is_symlink_open_error(&e) => {
             bail!("{} is a symlink - refusing to modify", WORLD_SET_FILE);
@@ -908,14 +985,18 @@ pub(crate) fn regen_world_set() -> Result<()> {
     let mut updated: Vec<String> = Vec::new();
     let mut changed = 0usize;
 
+    // Pins from @sets in world (e.g. design.set `aur/figcraft`) override a
+    // bare/Err world line so regen cannot "promote" an AUR atom into a
+    // binary repo that happens to ship the same version.
+    let set_pins = world_origin_pins();
     for entry in &entries {
         let bare = entry.split('/').next_back().unwrap_or(entry);
-        // Keep abs/aur prefix if re-resolution can't find a live repo.
         let old_prefix = entry
-            .split('/')
-            .next()
-            .filter(|p| *p == "abs" || *p == "aur");
-        let new_entry = pkg_world_entry_from(bare, old_prefix, &repos);
+            .split_once('/')
+            .map(|(r, _)| r)
+            .filter(|r| *r != "Err" && !r.is_empty());
+        let forced = set_pins.get(bare).map(|s| s.as_str()).or(old_prefix);
+        let new_entry = pkg_world_entry_from(bare, forced, &repos);
         if &new_entry != entry {
             println!("  {} -> {}", entry, new_entry);
             changed += 1;
@@ -948,7 +1029,7 @@ pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
     );
 
     let path = resolve_set_path(name)?;
-    let file = match open_nofollow_rw(std::path::Path::new(&path)) {
+    let file = match open_nofollow(std::path::Path::new(&path)) {
         Ok(f) => f,
         Err(e) if is_symlink_open_error(&e) => {
             bail!("{} is a symlink - refusing to modify", path);
@@ -1008,11 +1089,11 @@ pub(crate) fn regen_set(name: &str, sort: bool) -> Result<()> {
         }
 
         let bare = trimmed.split('/').next_back().unwrap_or(trimmed);
-        // Keep abs/aur if re-resolution misses (same as regen_world_set).
+        // Preserve intentional pins (aur/abs/official); same as regen_world_set.
         let old_prefix = trimmed
-            .split('/')
-            .next()
-            .filter(|p| *p == "abs" || *p == "aur");
+            .split_once('/')
+            .map(|(r, _)| r)
+            .filter(|r| *r != "Err" && !r.is_empty());
         let new_entry = pkg_world_entry_from(bare, old_prefix, &repos);
         if new_entry != trimmed {
             println!("  {} -> {}", trimmed, new_entry);
