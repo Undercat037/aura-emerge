@@ -516,6 +516,8 @@ Dependency install (`pacman -S`) and the final `pacman -U` run **outside** the s
 
 The frontend never works as root. Started as root (`sudo emerge …`, `doas`, `pkexec`, `su -`), it first starts the root helper, then drops for good to the invoking user (taken from `AE_USER`, `SUDO_UID`, `DOAS_USER`, `PKEXEC_UID` or the audit login uid; if none is known it stops). Started as a normal user, the helper is launched through `sudo` on first need. The resolver, AUR/ABS builds, the sandbox and all caches run unprivileged; libalpm work (install/remove/sync/upgrade/`-U`, signature checks) goes through the helper (`--ae-service`), which validates every request and enforces `package.mask` itself (`helper refused: … masked by …`).
 
+**Helper special conditions.** The privileged process only runs as `/usr/bin/emerge --ae-service` when the binary is root-owned and not group/world-writable (`install -m755 -o root -g root`), both real and effective uid are 0, stdin/stdout are pipes (a TTY is refused), and the parent is still alive after `PDEATHSIG` is armed. Unowned file conflicts during `-Su` and `-U` are offered AE Force (`--aeforce` / interactive `.aenew`) so a single stray file does not abort the whole shared upgrade pool.
+
 ### Other hardening
 
 - Arch news text is sanitized (no ANSI/bidi injection into the terminal or `news.state`).
