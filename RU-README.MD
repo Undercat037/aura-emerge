@@ -103,7 +103,8 @@ emerge --news                       # новости Arch Linux
 emerge neovim-git --aur --pkgbuild-view      # показать/сравнить PKGBUILD перед сборкой
 emerge neovim-git --aur --edit               # сначала отредактировать PKGBUILD
 emerge --scan neovim-git --aur               # только аудит, без сборки
-emerge --install-pkgbuild ~/src/my-pkg       # собрать локальный PKGBUILD через сканер и песочницу
+emerge --usepkgbuild ~/src/my-pkg       # собрать локальный PKGBUILD через сканер и песочницу
+emerge --usepkg ./foo-1.0-1-x86_64.pkg.tar.zst   # установить готовый архив (pin + аудит)
 
 # Восстановление
 emerge --resume                     # продолжить прерванную транзакцию
@@ -111,6 +112,10 @@ emerge --undo                       # отменить последнюю уст
 emerge --revdep-rebuild             # починить бинарники с битыми ссылками на библиотеки
 emerge --list-profiles             # профили (также: eselect profile list)
 emerge --aelist                     # файлы, оставленные AE Force (.aenew / .aeforce / .aepark)
+
+# Локальные репозитории (FEATURES="localrepo")
+emerge --localrepo-clean -p         # показать записи ae-*, чьи пакеты уже не установлены
+emerge --localrepo-clean            # ...и убрать их
 ```
 
 Полная таблица флагов - в конце страницы.
@@ -128,7 +133,7 @@ emerge --aelist                     # файлы, оставленные AE Forc
 | `RUSTFLAGS="-C opt-level=3"` | `RUSTFLAGS="-C opt-level=3"`  | Флаги компилятора Rust          |
 | `MAKEOPTS="-j$(nproc)"`      | `MAKEFLAGS="-j$(nproc)"`      | Параллельные задачи сборки      |
 | `USE="lto"`                  | `OPTIONS+=(lto)`              | Оптимизация на этапе компоновки |
-| `FEATURES="ccache"`          | `BUILDENV+=(ccache)`          | Кэш сборки                      |
+| `FEATURES="localrepo"`       | только опции AE               | локальные репозитории `ae-*`    |
 | `PORTDIR` / `PKGDIR`         | `PKGDEST`, `SRCDEST`          | Каталоги артефактов сборки      |
 
 См. [флаги оптимизации GCC](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html), [параметры кодогенерации rustc](https://doc.rust-lang.org/rustc/codegen-options/index.html) и [**пример makepkg.conf**](misc/makepkg.conf).
@@ -155,8 +160,8 @@ NINJAFLAGS="-j$(nproc)"
 OPTIONS=(strip docs !debug lto)
 BUILDENV=(!distcc color check !sign)
 
-# Переключатели в стиле Portage, переводятся в makepkg
-FEATURES="ccache -test"
+# Переключатели только для AE (в makepkg не переводятся)
+FEATURES="localrepo"
 ```
 
 **Ключи:** `EMERGE_DEFAULT_OPTS`, `COLORS`, `FEATURES`, `CFLAGS`, `CXXFLAGS`, `CPPFLAGS`, `LDFLAGS`, `RUSTFLAGS`, `MAKEFLAGS`, `NINJAFLAGS`, `BUILDENV`, `OPTIONS`.
@@ -164,15 +169,11 @@ FEATURES="ccache -test"
 
 `COLORS` задаёт палитру для статусного вывода: токены `role=colour`. Роли: `ok`, `warn`, `error`, `info`, `special`. Цвет — `#RRGGBB` или имя (`red`, `bright-cyan`, …). Неизвестные роли и цвета пропускаются с предупреждением.
 
-Токены `FEATURES` (`-name` выключает токен) переводятся в аналоги makepkg. То, что вы сами указали в `BUILDENV`/`OPTIONS`, главнее.
+`FEATURES` - **только для AE**: переключает собственные функции aura-emerge и никогда не переводится в makepkg. ccache, check, strip и подобное задавайте явно в `BUILDENV` / `OPTIONS`. `-name` выключает токен (побеждает последнее упоминание). Сейчас токен один - `localrepo` ([локальные репозитории](#локальные-репозитории-featureslocalrepo)); любой другой токен читается и показывается в `--info`, но ничего не делает.
 
-| `FEATURES`   | makepkg             |
-|--------------|---------------------|
-| `ccache`     | `BUILDENV` `ccache` |
-| `distcc`     | `BUILDENV` `distcc` |
-| `test`       | `BUILDENV` `check`  |
-| `nostrip`    | `OPTIONS` `!strip`  |
-| `splitdebug` | `OPTIONS` `debug`   |
+`emerge --info` печатает действующий список `FEATURES` рядом с переопределениями make.conf.
+
+Читается только `/etc/portage/make.conf` - пользовательского make.conf нет.
 
 `EMERGE_DEFAULT_OPTS` принимает только флаги-модификаторы (`--ask`, `--verbose`, `--devel`, `--tree`, `--deep`, `--jobsr=N`, `--jobsa=N`, `--searchdesc`, `--exclude=<atom>`, ...), так что превратить каждый запуск в `--unmerge` нельзя. Конфликтующие пары отклоняются, если заданы обе: `--aur`/`--abs`, `--aur`/`--repos`, `--no-sandbox`/`--unshare-net-build`, `--skippgp`/`--autopgp`, `--select`/`--deselect`. Если значение из конфига конфликтует с командной строкой, оно отбрасывается. `--abs` и `--repos` **не** конфликтуют.
 
@@ -180,7 +181,7 @@ FEATURES="ccache -test"
 
 ### `package.mask`
 
-Пакеты, которые эта машина не должна ставить никогда: проверка срабатывает даже для транзитивных зависимостей из AUR и даже при запросе по имени. Замаскированный пакет жёстко останавливает запрос - без вопросов и без флага для обхода.
+Пакеты, которые эта машина не должна ставить никогда: проверка срабатывает даже для транзитивных зависимостей из AUR и даже при запросе по имени. Замаскированный пакет жёстко останавливает запрос - без вопросов и без флага для обхода - обойти маску можно только записью в `package.unmask`.
 
 `/etc/portage/package.mask` - файл или каталог (читается каждый обычный файл по порядку имён; файлы с точки пропускаются; символьные ссылки отклоняются). Одна запись на строку, допускаются `*` и префикс репозитория, в конце можно добавить `# комментарий`.
 
@@ -195,6 +196,14 @@ extra/nano                     # конкретный пакет из конкр
 
 Это не то же самое, что `--exclude`: маска действует постоянно, `--exclude` - на один запуск.
 
+### `package.unmask`
+
+`/etc/portage/package.unmask` (файл или каталог, синтаксис как у `package.mask`) перечисляет исключения: пакет, подходящий под запись, проходит, даже если его блокирует `package.mask` или `package.mask` активного профиля. Root-helper это тоже учитывает.
+
+```
+aur/some-git                   # разрешён, хотя *-git замаскированы выше
+```
+
 ### `package.protect`
 
 `/etc/portage/package.protect` (файл или каталог файлов) перечисляет пакеты, которые нельзя удалять. Синтаксис как у `package.mask` (необязательный префикс `repo/`, глобы `*`, комментарии `#`). Действует на `-C`/`--unmerge`, `-c`/`--depclean`, `--prune` и удаления из-за конфликтов. `--deselect` по-прежнему может убрать имя из world, но пакет останется установленным, и depclean его не тронет. Пакеты `@system` из профиля защищены так же.
@@ -205,7 +214,7 @@ extra/nano                     # конкретный пакет из конкр
 
 ### Профили
 
-`/etc/portage/make.profile` - символьная ссылка на каталог профиля (раскладка Portage). `--list-profiles` показывает дерево из `/var/db/repos/portage/profiles`; `parent` вида `repo:path` ищется в `/var/db/repos/<repo>/profiles/`. Профиль может задавать `parent`, `package.profile` (`*` = стартовый набор `@system`; старое имя `packages` тоже читается), `package.mask`, `package.protect` и `make.defaults`. Цепочки `parent` раскрываются в глубину. `emerge @system` ставит системный набор профиля; все записи `package.profile` защищены от depclean так же, как записи world. Список и переключение:
+`/etc/portage/make.profile` - символьная ссылка на каталог профиля (раскладка Portage). `--list-profiles` показывает дерево из `/var/db/repos/portage/profiles`; `parent` вида `repo:path` ищется в `/var/db/repos/<repo>/profiles/`. Профиль может задавать `parent`, `package.profile` (`*` = стартовый набор `@system`; старое имя `packages` тоже читается), `package.mask` (`-atom` или `!atom` снимает маску, унаследованную от родителя), `package.protect` и `make.defaults`. Цепочки `parent` раскрываются в глубину. `emerge @system` ставит системный набор профиля; все записи `package.profile` защищены от depclean так же, как записи world. Список и переключение:
 
 ```
 emerge --list-profiles
@@ -350,6 +359,10 @@ libalpm выполняет каждый `*.hook` при установке, уд
 
 `emerge --info` печатает версию (и версию libalpm, с которой собрано), ядро, CPU/память/swap, действующие `--jobsr`/`--jobsa`, каждый репозиторий в порядке `pacman.conf` с зеркалом, значения из `makepkg.conf` и `make.conf` (и какие переопределения победили), профиль, размеры mask/world и итоги журнала merge.
 
+### `--pkginfo`
+
+`emerge --pkginfo nano` - карточка установленного пакета (как краткий `pacman -Qi`). `emerge -v --pkginfo nano` дополнительно перечисляет принадлежащие ему файлы.
+
 ### Журнал merge
 
 `/var/log/emerge.log` - только дозапись, одна строка на событие. Неудачная запись в журнал никогда не ломает сам merge.
@@ -361,6 +374,53 @@ libalpm выполняет каждый `*.hook` при установке, уд
 ```
 
 Пакеты AUR/ABS собираются по одному, поэтому у каждого свой таймер. `pacman -S`/`-Syu` - одна транзакция, так что её строка содержит все атомы и общее время. `--info` показывает итоги (число merge/unmerge, суммарное время сборки).
+
+### Локальные репозитории (`FEATURES="localrepo"`)
+
+В стиле aurutils: каждый пакет, который aura-emerge собрал из AUR, ABS или локального PKGBUILD (или взял из архива `--usepkg`), после аудита и установки раскладывается в `/var/lib/aura-emerge/repos/<repo>/`, и база этого репозитория обновляется. Каталоги принадлежат root (`0755`).
+
+| Репозиторий | Что хранит |
+|-------------|------------|
+| `ae-aur` | сборки из AUR |
+| `ae-abs` | сборки из ABS (`--abs`) |
+| `ae-local` | `--usepkgbuild` и `--usepkg` |
+
+Включается в `/etc/portage/make.conf`:
+
+```bash
+FEATURES="localrepo"
+```
+
+Репозитории наполняются в любом случае, но pacman их **видит**, только если они указаны в `/etc/pacman.conf` после официальных репозиториев (`core` / `extra` / `multilib`). Два способа:
+
+```ini
+# 1) подключить готовый файл (misc/ae-repos.conf -> /etc/portage/ae-repos.conf)
+Include = /etc/portage/ae-repos.conf
+```
+
+```ini
+# 2) или записать три секции самому
+[ae-aur]
+SigLevel = Never
+Server = file:///var/lib/aura-emerge/repos/ae-aur
+
+[ae-abs]
+SigLevel = Never
+Server = file:///var/lib/aura-emerge/repos/ae-abs
+
+[ae-local]
+SigLevel = Never
+Server = file:///var/lib/aura-emerge/repos/ae-local
+```
+
+Что это даёт: `pacman -Qm` больше не показывает эти пакеты, работает `pacman -Si ae-aur/<pkg>`, а `pacman -S` / `-Su` могут переустановить их из проверенной копии. При совпадении имён побеждает первый репозиторий, где оно есть, поэтому держите секции `ae-*` последними - официальные репозитории сохраняют приоритет. `SigLevel = Never` сделан намеренно: ничего здесь не подписано, пакеты проверены и закреплены sha256 самим emerge, а каталоги принадлежат root, так что подменить файл некому.
+
+Что emerge делает дальше:
+
+- **Повторное использование:** обычная установка пакета из AUR, версия которого уже лежит в `ae-aur` и совпадает с текущей в AUR, ставится из локального репозитория - без clone и сборки. `--edit` и `--pkgbuild-view` принудительно пересобирают; `-B` / `-F` локальные бинарники не используют; явный `ae-aur/<name>` идёт обычной установкой из репозитория.
+- **Уборка:** `-C`, `-c` и `--prune` заодно убирают удалённое из `ae-*`. `emerge --localrepo-clean` убирает все записи, пакет которых уже не установлен (`-p` только показывает, `-a` спрашивает). При выключенном `localrepo` сообщает, что чистить нечего.
+- **Пустые базы:** создаются хуком `post_install` / `post_upgrade` пакета, командой `emerge --sync` и первой публикацией, так что `pacman -Sy` не спотыкается о перечисленный `file://`-сервер без пакетов.
+- **По возможности:** сбой публикации - предупреждение, а не провал merge. Если секций `[ae-*]` нет, emerge один раз выводит подсказку со строкой `Include`.
 
 ### Пакетная установка
 
@@ -374,13 +434,15 @@ emerge --batchinstall pkgs.txt
 
 **`--pkgbuild-view`** показывает PKGBUILD прямо перед сборкой и просит подтверждения: diff с последней показанной копией (кэш в `~/.cache/aura-emerge/pkgbuild-view/`) или весь файл в первый раз. При отказе предлагает открыть `$EDITOR`, а не просто пропускает пакет. Работает после `--edit`, так что вы видите свои правки. Применяется только к напрямую запрошенным пакетам AUR/ABS - не к рекурсивным зависимостям из AUR и не к пакетным путям (`@world`, `-u`, `--undo`).
 
-**`--install-pkgbuild <PATH>`** собирает и ставит локальный каталог с PKGBUILD через тот же конвейер, что AUR/ABS (сканер → песочница), а не голым `makepkg -si`. В `PATH` должен лежать `PKGBUILD`; отсутствующий `.SRCINFO` создаётся. Сочетается с `--pkgbuild-view`, `-a`, `-1`, `--skippgp`, `--no-sandbox`, `--unshare-net-build` и `--skip-srcinfo-regen`, но не с пакетами/`@наборами` и `--aur`/`--abs`. В `world` пакет записывается как `Err/` (источник неизвестен), если не указан `-1`.
+**`--usepkgbuild <PATH>`** собирает и ставит локальный каталог с PKGBUILD через тот же конвейер, что AUR/ABS (сканер → песочница), а не голым `makepkg -si`. В `PATH` должен лежать `PKGBUILD`; отсутствующий `.SRCINFO` создаётся. Сочетается с `--pkgbuild-view`, `-a`, `-1`, `--skippgp`, `--no-sandbox`, `--unshare-net-build` и `--skip-srcinfo-regen`, но не с пакетами/`@наборами` и `--aur`/`--abs`. В `world` пакет записывается как `Err/` (источник неизвестен), если не указан `-1`.
 
-**`--scan`** проверяет PKGBUILD (+ `.install`), ничего не собирая и не ставя: для пакета из AUR берёт файлы из cgit, для локального каталога - `--install-pkgbuild <PATH> --scan`. Отчёт тот же, что при обычном сканировании перед сборкой, только без вопроса «Continue anyway?». Завершается с ненулевым кодом при любой находке, так что годится для скриптов. Для `--abs` пока недоступен.
+**`--usepkg <FILE>…`** ставит готовые архивы `.pkg.tar.*` (результат makepkg, пакет из файлового репозитория) без всякого PKGBUILD. Каждый архив фиксируется хешем, распаковывается и аудируется (чувствительные пути - хуки libalpm, systemd-юниты, sudoers, udev, `ld.so.preload`; setuid-бинарники; `.INSTALL`-скрипты; path traversal и symlink-имена членов архива), повторно хешируется прямо перед привилегированной установкой и только потом передаётся libalpm; сбой аудита `bsdtar` прерывает установку вместо продолжения без аудита. Архивы записываются в `world` как `Err/<имя>` и помечаются явными (`-1` ставит их как зависимости). Сочетается с `-p` / `-a`; несколько архивов за один запуск - одна транзакция.
+
+**`--scan`** проверяет PKGBUILD (+ `.install`), ничего не собирая и не ставя: для пакета из AUR берёт файлы из cgit, для локального каталога - `--usepkgbuild <PATH> --scan`. Отчёт тот же, что при обычном сканировании перед сборкой, только без вопроса «Continue anyway?». Завершается с ненулевым кодом при любой находке, так что годится для скриптов. Для `--abs` пока недоступен.
 
 ```bash
 emerge neovim-git --aur --pkgbuild-view
-emerge --install-pkgbuild ~/src/my-pkg --pkgbuild-view --skippgp
+emerge --usepkgbuild ~/src/my-pkg --pkgbuild-view --skippgp
 emerge neovim-git --aur --scan
 ```
 
@@ -484,7 +546,7 @@ emerge --news all    # пометить всё прочитанным
 
 Находки бывают `Suspicious` или `ConfirmedIoc`. Срабатывание не блокирует жёстко: вы получаете файл/строку, ссылку на cgit и `Continue anyway? [y/N]`.
 
-**Вспомогательные файлы:** когда checkout лежит на диске (сборка или `--install-pkgbuild <PATH> --scan`), `Makefile` (`Makefile`/`makefile`/`GNUmakefile`), shell-скрипты, на которые ссылается PKGBUILD (`*.sh`, `*.bash`, `*.zsh`, `*.fish`), и файлы патчей (`*.patch`, `*.diff`, `*.dpatch`, `*.pch` либо содержимое, похожее на unified/git diff) тоже проверяются. Makefile и скрипты — построчно: `curl|sh`, base64/hex в shell, «голые» IP и остальные shell-IOC. Патчи — по заголовкам и добавленным строкам: пути вне дерева исходников (абсолютные, `..`, `.git`), создание symlink, бинарные hunk'и, слишком длинные добавленные строки, сетевые вызовы в build/script-целях и те же shell-IOC. В находке указаны файл и строка. `--scan <pkg> --aur` видит только то, что отдаёт cgit (`PKGBUILD` и `.install`).
+**Вспомогательные файлы:** когда checkout лежит на диске (сборка или `--usepkgbuild <PATH> --scan`), `Makefile` (`Makefile`/`makefile`/`GNUmakefile`), shell-скрипты, на которые ссылается PKGBUILD (`*.sh`, `*.bash`, `*.zsh`, `*.fish`), и файлы патчей (`*.patch`, `*.diff`, `*.dpatch`, `*.pch` либо содержимое, похожее на unified/git diff) тоже проверяются. Makefile и скрипты — построчно: `curl|sh`, base64/hex в shell, «голые» IP и остальные shell-IOC. Патчи — по заголовкам и добавленным строкам: пути вне дерева исходников (абсолютные, `..`, `.git`), создание symlink, бинарные hunk'и, слишком длинные добавленные строки, сетевые вызовы в build/script-целях и те же shell-IOC. В находке указаны файл и строка. `--scan <pkg> --aur` видит только то, что отдаёт cgit (`PKGBUILD` и `.install`).
 
 ### Песочница
 
@@ -516,7 +578,7 @@ emerge --news all    # пометить всё прочитанным
 
 Фронтенд никогда не работает от root. Если запуск от root (`sudo emerge …`, `doas`, `pkexec`, `su -`), он сначала стартует root-helper, затем навсегда понижает права до вызвавшего пользователя (берётся из `AE_USER`, `SUDO_UID`, `DOAS_USER`, `PKEXEC_UID` или audit login uid; если ничего не найдено - остановка). При запуске от обычного пользователя helper стартует через `sudo` при первой необходимости. Резолвер, сборки AUR/ABS, песочница и все кэши работают без привилегий; работа через libalpm (install/remove/sync/upgrade/`-U`, проверка подписей) идёт через helper (`--ae-service`), который проверяет каждый запрос и сам применяет `package.mask` (`helper refused: … masked by …`).
 
-**Особые условия хелпера.** Привилегированный процесс стартует только как `/usr/bin/emerge --ae-service`, когда бинарник принадлежит root и не group/world-writable (`install -m755 -o root -g root`), real и effective uid = 0, stdin/stdout — пайпы (TTY отклоняется), родитель жив после `PDEATHSIG`. Конфликты чужих файлов на `-Su` и `-U` предлагают AE Force (`--aeforce` / интерактивное `.aenew`), чтобы один лишний файл не срывал весь общий пул обновления.
+**Условия хелпера.** Root-helper (`/usr/bin/emerge --ae-service`) стартует, только если бинарник принадлежит root и не group/world-writable (`install -m755 -o root -g root`), uid = 0, stdin/stdout - пайпы (не TTY), а родитель жив. Конфликты чужих файлов на `-Su` / `-U` решаются через AE Force, а не срывают всё обновление.
 
 ### Прочее усиление
 
@@ -530,7 +592,7 @@ emerge --news all    # пометить всё прочитанным
 ```bash
 git clone https://github.com/Undercat037/aura-emerge.git
 cd aura-emerge
-emerge --install-pkgbuild ./scaner-test --ask
+emerge --usepkgbuild ./scaner-test --ask
 ```
 </details>
 
@@ -566,11 +628,13 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `--edit` | Править PKGBUILD в `$EDITOR` перед сборкой (только для запрошенного пакета); после сохранения перегенерирует `.SRCINFO` |
 | `--skip-srcinfo-regen` | С `--edit`: не перегенерировать `.SRCINFO` |
 | `--pkgbuild-view` | Показать/сравнить PKGBUILD и подтвердить перед сборкой (только для запрошенного пакета; при отказе предлагает `$EDITOR`) |
-| `--install-pkgbuild <PATH>` | Собрать и установить локальный каталог с PKGBUILD (сканер + bwrap); в world записывается как `Err/`, если нет `-1` |
-| `--scan` | Только аудит PKGBUILD/.install, без сборки/установки; ненулевой код при находках (AUR или `--install-pkgbuild`) |
+| `--usepkgbuild <PATH>` | Собрать и установить локальный каталог с PKGBUILD (сканер + bwrap); в world записывается как `Err/`, если нет `-1` |
+| `--usepkg <FILE…>` | Установить локальные архивы `.pkg.tar.*` через аудит + helper `-U`; в world записываются как `Err/`, если нет `-1` |
+| `--scan` | Только аудит PKGBUILD/.install, без сборки/установки; ненулевой код при находках (AUR или `--usepkgbuild`) |
 | `--sync` | Синхронизировать базы пакетов |
 | `--refresh` | Принудительный `-Syy` (с `--sync` или `-u`) |
 | `--info` | Информация о системе, как `emerge --info` в Gentoo |
+| `--pkginfo <pkg…>` | Сведения об установленном пакете (`-v` перечисляет файлы) |
 | `--news [N\|all]` | Новости Arch Linux: без аргумента - список, `N` - прочитать запись, `all` - пометить всё прочитанным |
 | `--check-news [N\|all]` | Псевдоним `--news` |
 | `--select` | Добавить в world без установки |
@@ -578,6 +642,7 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `--check-world` | Показать записи world, которых нет в системе или которые установлены не явно |
 | `--sync-explicit` | Пометить как зависимости явно установленные пакеты, которых нет в world, в `@set` из world и в `package.profile` (чтобы `-c` их видел). Отдельно: выполняется сразу (`-p` показывает список, `-a` спрашивает). С установкой/обновлением: после успешного завершения. Можно в `EMERGE_DEFAULT_OPTS` |
 | `--prune` | Удалить пакеты, которых нет в world |
+| `--localrepo-clean` | Убрать из `ae-aur` / `ae-abs` / `ae-local` пакеты, которых уже нет в системе (`FEATURES="localrepo"`; `-p` показывает, `-a` спрашивает) |
 | `--regen` | Пересоздать кэш метаданных пакетов |
 | `--regen-world` | Заново определить префиксы репозиториев в world |
 | `--regen-sets <SET>` | Заново определить префиксы в пользовательском наборе (`@game-kit` или `game-kit`) |
@@ -611,7 +676,10 @@ emerge --install-pkgbuild ./scaner-test --ask
 | `--ignore-default-opts` | Игнорировать `EMERGE_DEFAULT_OPTS` из make.conf на этот запуск |
 | `--debug` | Показывать вывод makepkg/компилятора вживую (также `AE_DEBUG=1`); по умолчанию он скрыт ради читаемости строк `>>>`, а при падении сборки сохранённый лог всё равно выводится |
 | `--log <PATH>` | Записать лог сессии (команда, строки emerge.log, полный вывод сборки) для баг-репортов - `| tee` не нужен; только дозапись: существующее содержимое не обрезается и не перезаписывается |
-| `-N`/`--newuse`, `-e`/`--emptytree`, `-q`, `-O`, `-o`, `-k`, `-K`, `-g`, `-G`, `-b`, `-B`, `-f`, `-F`, `-l`, `-A`, `--nodeps`, `--onlydeps`, `--complete-graph`, `--changed-use`, `--backtrack`, `--columns`, `--newrepo`, `--reinstall`, `--with-bdeps`, `--metadata`, `--clean`, `--config`, `--noconfmem`, `--verbose-conflicts` | Совместимость с Gentoo: принимаются, ничего не делают |
+| `-B` / `--buildpkgonly` (`-w` / `--getpkg`) | Только архивы, без установки (официальные → CacheDir; AUR/ABS/локальные → сборка) |
+| `-F` / `--fetch-all-uri` (`-f`) | Только загрузка: официальные → архив; AUR/ABS → clone (без сборки и установки) |
+| `--outdistfiles <DIR>` | С `-B`/`-F`: скопировать архивы в DIR |
+| `-N`/`--newuse`, `-e`/`--emptytree`, `-q`, `-O`, `-o`, `-l`, `-A`, `--nodeps`, `--onlydeps`, `--complete-graph`, `--changed-use`, `--backtrack`, `--columns`, `--newrepo`, `--reinstall`, `--with-bdeps`, `--metadata`, `--clean`, `--config`, `--noconfmem`, `--verbose-conflicts` | Совместимость с Gentoo: принимаются, ничего не делают |
 | `-h`, `--help` | Справка |
 | `-V`, `--version` | Версия |
 

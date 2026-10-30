@@ -14,7 +14,7 @@ makedepends=('rust' 'cargo')
 conflicts=('portage' 'portage-git' 'eselect-git' 'aura-emerge')
 provides=('emerge' 'portageq' 'eselect')
 install=aura-emerge.install
-backup=('etc/portage/world' 'etc/pacman.d/aura-emerge-repos.conf')
+backup=('etc/portage/world' 'etc/portage/ae-repos.conf')
 source=()
 sha256sums=()
 

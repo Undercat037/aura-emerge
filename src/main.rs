@@ -215,6 +215,24 @@ AE FORCE
     no .ae* files. <file>.aepark is left by an interrupted install.
     --aelist lists these files, --aeclean [new|old|park|all] removes them.
 
+LOCAL REPOS
+    With FEATURES=localrepo in make.conf, every package built from the AUR,
+    ABS or a local PKGBUILD (or taken from a --usepkg archive) is, after
+    the audit and install, filed under /var/lib/aura-emerge/repos/ and that
+    repo's database is refreshed: ae-aur (AUR), ae-abs (--abs), ae-local
+    (--usepkgbuild, --usepkg). The directories are root-owned. A bare AUR
+    install whose version is already in ae-aur is installed from there, with
+    no clone or build (--edit and --pkgbuild-view force a rebuild; -B and -F
+    never use local binaries). -C, -c and --prune also drop what they remove
+    from the repos; --localrepo-clean drops entries that are no longer
+    installed (-p lists, -a asks).
+    To let pacman see the repos, list them in /etc/pacman.conf after the
+    official repos, either with
+        Include = /etc/portage/ae-repos.conf
+    or with [ae-aur], [ae-abs] and [ae-local] sections, each with
+    SigLevel = Never and Server = file:///var/lib/aura-emerge/repos/<name>.
+    FEATURES is AE-only (never mapped to makepkg); localrepo is its only token.
+
 SCANNER
     Before an AUR/ABS build the PKGBUILD and .install are scanned (bash
     AST plus line heuristics, known-IOC list). When the checkout is on
@@ -276,6 +294,7 @@ EXAMPLES
     emerge --list-profiles          List profiles
     emerge --set-profile 12         Select profile number 12
     emerge --aelist                 List files left by AE Force
+    emerge --localrepo-clean -p     List local-repo entries that are no longer installed
     emerge --info                   System, repos, make.conf and log stats
     emerge --news                  List Arch Linux news, newest first
     emerge --news 3                 Read news item 3 in full
@@ -304,6 +323,9 @@ FILES
     /etc/portage/package.protect            Never-remove list (-C/-c/--prune/conflicts)
     /etc/portage/package.freeze             Never-upgrade list (-u; EMERGE_FREEZE in make.conf)
     /etc/portage/make.profile               Symlink to active profile (packages, package.mask)
+    /etc/portage/ae-repos.conf              Pacman Include for the local repos ae-aur/ae-abs/ae-local
+                                            (FEATURES=localrepo; see LOCAL REPOS)
+    /var/lib/aura-emerge/repos/<repo>/      Root-owned local repos (ae-aur, ae-abs, ae-local)
     /etc/portage/package.env                Per-package build-env overrides: `atom env...`
                                             (file, or a directory of files)
     /etc/portage/env/<name>                 Env files for package.env, make.conf syntax

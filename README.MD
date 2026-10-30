@@ -104,6 +104,7 @@ emerge neovim-git --aur --pkgbuild-view      # view/diff the PKGBUILD before bui
 emerge neovim-git --aur --edit               # edit the PKGBUILD first
 emerge --scan neovim-git --aur               # audit only, no build
 emerge --usepkgbuild ~/src/my-pkg       # build a local PKGBUILD through scanner + sandbox
+emerge --usepkg ./foo-1.0-1-x86_64.pkg.tar.zst   # install a built archive (pinned + audited)
 
 # Recovery
 emerge --resume                     # resume an interrupted transaction
@@ -111,6 +112,10 @@ emerge --undo                       # undo the last install/unmerge/depclean
 emerge --revdep-rebuild             # fix binaries linked to missing libraries
 emerge --list-profiles             # profiles (also: eselect profile list)
 emerge --aelist                     # files left by AE Force (.aenew / .aeforce / .aepark)
+
+# Local repos (FEATURES="localrepo")
+emerge --localrepo-clean -p         # list ae-* entries whose package is no longer installed
+emerge --localrepo-clean            # ...and drop them
 ```
 
 The full flag table is at the bottom of this page.
@@ -128,7 +133,7 @@ Arch has no USE flags, but compilation can be tuned much like [Gentoo](https://w
 | `RUSTFLAGS="-C opt-level=3"` | `RUSTFLAGS="-C opt-level=3"`  | Rust compiler flags         |
 | `MAKEOPTS="-j$(nproc)"`      | `MAKEFLAGS="-j$(nproc)"`      | Parallel build jobs         |
 | `USE="lto"`                  | `OPTIONS+=(lto)`              | Link-time optimisation      |
-| `FEATURES="localrepo candy"` | AE options only               | localrepo publish, candy UI |
+| `FEATURES="localrepo"`       | AE options only               | local repos (`ae-*`)        |
 | `PORTDIR` / `PKGDIR`         | `PKGDEST`, `SRCDEST`          | Build artefact directories  |
 
 See [GCC optimization flags](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html), [rustc codegen options](https://doc.rust-lang.org/rustc/codegen-options/index.html) and the [**example makepkg.conf**](misc/makepkg.conf).
@@ -155,9 +160,8 @@ NINJAFLAGS="-j$(nproc)"
 OPTIONS=(strip docs !debug lto)
 BUILDENV=(!distcc color check !sign)
 
-# Portage-style switches, mapped to makepkg
+# AE-only switches (no makepkg mapping)
 FEATURES="localrepo"
-BUILDENV=(ccache color check !sign)
 ```
 
 **Keys:** `EMERGE_DEFAULT_OPTS`, `COLORS`, `FEATURES`, `CFLAGS`, `CXXFLAGS`, `CPPFLAGS`, `LDFLAGS`, `RUSTFLAGS`, `MAKEFLAGS`, `NINJAFLAGS`, `BUILDENV`, `OPTIONS`.
@@ -165,9 +169,11 @@ BUILDENV=(ccache color check !sign)
 
 `COLORS` sets the palette for status output: `role=colour` tokens. Roles are `ok`, `warn`, `error`, `info`, `special`. Colours are `#RRGGBB` or a name (`red`, `bright-cyan`, …). Unknown roles or colours are warned and skipped.
 
-`FEATURES` is **AE-only** (no auto-map into makepkg arrays). Put ccache/check/strip in explicit `BUILDENV`/`OPTIONS`. Known AE tokens: `localrepo`, `candy`, and anything you gate with `has_feature` in code. `-name` turns a token off (last mention wins).
+`FEATURES` is **AE-only**: it switches aura-emerge's own functions and is never mapped onto makepkg. ccache, check, strip and the like go into explicit `BUILDENV` / `OPTIONS`. `-name` turns a token off (last mention wins). The only token today is `localrepo` ([local repositories](#local-repositories-featureslocalrepo)); any other token is read and shown by `--info` but does nothing.
 
-`emerge --info` prints the effective `FEATURES` list next to make.conf overrides.
+`emerge --info` prints the effective `FEATURES` list next to the make.conf overrides.
+
+Only `/etc/portage/make.conf` is read - there is no per-user make.conf.
 
 `EMERGE_DEFAULT_OPTS` accepts modifier flags only (`--ask`, `--verbose`, `--devel`, `--tree`, `--deep`, `--jobsr=N`, `--jobsa=N`, `--searchdesc`, `--exclude=<atom>`, ...), so it can't turn every run into `--unmerge`. Conflicting pairs are rejected if both are set: `--aur`/`--abs`, `--aur`/`--repos`, `--no-sandbox`/`--unshare-net-build`, `--skippgp`/`--autopgp`, `--select`/`--deselect`. If a config default conflicts with the command line, the config default is dropped. `--abs` and `--repos` do **not** conflict.
 
@@ -175,7 +181,7 @@ BUILDENV=(ccache color check !sign)
 
 ### `package.mask`
 
-Packages this machine must never install - checked even for transitive AUR dependencies and even when requested by name. A masked package hard-stops the request: no prompt, no override flag.
+Packages this machine must never install - checked even for transitive AUR dependencies and even when requested by name. A masked package hard-stops the request: no prompt, no override flag - the only way past a mask is an entry in `package.unmask`.
 
 `/etc/portage/package.mask` is a file or a directory (every regular file inside is read in name order; dotfiles are skipped; symlinks are refused). One entry per line, `*` globs and an optional repo prefix allowed, `# comment` at the end.
 
@@ -190,6 +196,14 @@ The repo prefix is honored everywhere the source is known: install plans (`extra
 
 Not the same as `--exclude`: a mask is permanent, `--exclude` is for one run.
 
+### `package.unmask`
+
+`/etc/portage/package.unmask` (file or directory, same syntax as `package.mask`) lists exceptions: a package that matches it is let through even if `package.mask` or the active profile's `package.mask` would block it. The root helper honors it too.
+
+```
+aur/some-git                   # allowed although *-git is masked above
+```
+
 ### `package.protect`
 
 `/etc/portage/package.protect` (file or directory of files) lists packages that must not be removed. Syntax matches `package.mask` (optional `repo/` prefix, `*` globs, `#` comments). Covers `-C`/`--unmerge`, `-c`/`--depclean`, `--prune`, and conflict-driven removals. `--deselect` may still drop the name from world, but the package stays installed and depclean will not take it. Profile `@system` packages are protected the same way.
@@ -200,7 +214,7 @@ Not the same as `--exclude`: a mask is permanent, `--exclude` is for one run.
 
 ### Profiles
 
-`/etc/portage/make.profile` is a symlink to a profile directory (Portage layout). `--list-profiles` lists the tree under `/var/db/repos/portage/profiles`; a `parent` of the form `repo:path` is resolved under `/var/db/repos/<repo>/profiles/`. A profile may define `parent`, `package.profile` (`*` = `@system` bootstrap set; old name `packages` still read), `package.mask`, `package.protect` and `make.defaults`. Nested `parent` chains are expanded depth-first. `emerge @system` installs the profile system set; every `package.profile` entry is protected from depclean like world entries. List and switch:
+`/etc/portage/make.profile` is a symlink to a profile directory (Portage layout). `--list-profiles` lists the tree under `/var/db/repos/portage/profiles`; a `parent` of the form `repo:path` is resolved under `/var/db/repos/<repo>/profiles/`. A profile may define `parent`, `package.profile` (`*` = `@system` bootstrap set; old name `packages` still read), `package.mask` (`-atom` or `!atom` drops a mask inherited from a parent), `package.protect` and `make.defaults`. Nested `parent` chains are expanded depth-first. `emerge @system` installs the profile system set; every `package.profile` entry is protected from depclean like world entries. List and switch:
 
 ```
 emerge --list-profiles
@@ -362,6 +376,53 @@ When an install would overwrite a file that no package owns, aura-emerge asks `A
 
 AUR/ABS packages are built one by one, so each has its own timer. A `pacman -S`/`-Syu` run is a single transaction, so its line lists all atoms with the total time. `--info` shows totals (merge/unmerge counts, cumulative build time).
 
+### Local repositories (`FEATURES="localrepo"`)
+
+aurutils-style: every package aura-emerge built from the AUR, ABS or a local PKGBUILD (or took from a `--usepkg` archive) is, once it passed the audit and was installed, filed under `/var/lib/aura-emerge/repos/<repo>/` and that repo's database is refreshed. The directories are root-owned (`0755`).
+
+| Repo | Holds |
+|------|-------|
+| `ae-aur` | AUR builds |
+| `ae-abs` | ABS builds (`--abs`) |
+| `ae-local` | `--usepkgbuild` and `--usepkg` |
+
+Turn it on in `/etc/portage/make.conf`:
+
+```bash
+FEATURES="localrepo"
+```
+
+The repos are filled either way, but pacman only **sees** them once they are listed in `/etc/pacman.conf`, after the official repos (`core` / `extra` / `multilib`). Two ways to do it:
+
+```ini
+# 1) include the shipped file (misc/ae-repos.conf -> /etc/portage/ae-repos.conf)
+Include = /etc/portage/ae-repos.conf
+```
+
+```ini
+# 2) or write the three sections yourself
+[ae-aur]
+SigLevel = Never
+Server = file:///var/lib/aura-emerge/repos/ae-aur
+
+[ae-abs]
+SigLevel = Never
+Server = file:///var/lib/aura-emerge/repos/ae-abs
+
+[ae-local]
+SigLevel = Never
+Server = file:///var/lib/aura-emerge/repos/ae-local
+```
+
+What you get: `pacman -Qm` no longer lists these packages, `pacman -Si ae-aur/<pkg>` works, and `pacman -S` / `-Su` can reinstall them from the audited copy. On a name clash the first repo that has the name wins, so keep the `ae-*` sections last and the official repos keep priority. `SigLevel = Never` is deliberate: nothing here is signed, the packages were audited and sha256-pinned by emerge and the directories are root-owned, so nobody can swap a file.
+
+What emerge does with it:
+
+- **Reuse:** a bare AUR install whose version is already in `ae-aur` and equals the AUR's current one is installed from the local repo - no clone, no build. `--edit` and `--pkgbuild-view` force a real rebuild; `-B` / `-F` never use local binaries; an explicit `ae-aur/<name>` goes through the normal repo install.
+- **Cleanup:** `-C`, `-c` and `--prune` also drop what they removed from the `ae-*` repos. `emerge --localrepo-clean` drops every entry whose package is no longer installed (`-p` only lists, `-a` asks). With `localrepo` off it says there is nothing to clean.
+- **Empty dbs:** created by the package's `post_install` / `post_upgrade` hook, by `emerge --sync` and by the first publish, so `pacman -Sy` never trips over a listed `file://` server with no packages.
+- **Best effort:** a failed publish is a warning, never a failed merge. If the `[ae-*]` sections are missing, emerge prints a one-time hint with the `Include` line.
+
 ### Batch install
 
 `--batchinstall <FILE>` installs from a plain-text list (one atom per line, `#` comments allowed). Same format as a [custom set](#custom-sets), but from any path - no registration needed. Combines with any other flag (`-p`, `-a`, `--aur`, `--abs`, `--repos`, ...).
@@ -375,6 +436,8 @@ emerge --batchinstall pkgs.txt
 **`--pkgbuild-view`** shows the PKGBUILD right before the build and asks for confirmation: a diff against the last copy you saw (cached in `~/.cache/aura-emerge/pkgbuild-view/`), or the whole file the first time. If you decline, it offers to open `$EDITOR` instead of just skipping. Works after `--edit`, so you see your own changes. Applies only to directly requested AUR/ABS packages - not to recursive AUR dependencies or batch paths (`@world`, `-u`, `--undo`).
 
 **`--usepkgbuild <PATH>`** builds and installs a local PKGBUILD checkout through the same pipeline as AUR/ABS (scanner → sandbox) instead of a bare `makepkg -si`. `PATH` must contain a `PKGBUILD`; a missing `.SRCINFO` is generated. It combines with `--pkgbuild-view`, `-a`, `-1`, `--skippgp`, `--no-sandbox`, `--unshare-net-build` and `--skip-srcinfo-regen`, but not with package/`@set` arguments or `--aur`/`--abs`. The package is recorded in `world` as `Err/` (source unknown) unless `-1` is given.
+
+**`--usepkg <FILE>…`** installs ready-built `.pkg.tar.*` archives (makepkg output, a file repo's package) with no PKGBUILD in sight. Every archive is pinned by hash, unpacked and audited (sensitive paths such as libalpm hooks, systemd units, sudoers, udev, `ld.so.preload`; setuid binaries; `.INSTALL` scripts; path traversal and symlink member names), re-hashed right before the privileged install and only then handed to libalpm; a failed `bsdtar` audit aborts instead of installing unaudited. Archives are recorded in `world` as `Err/<name>` and marked explicit (`-1` installs them as dependencies). Combines with `-p` / `-a`; several archives in one run are a single transaction.
 
 **`--scan`** audits a PKGBUILD (+ `.install`) without building or installing: it fetches from cgit for an AUR package, or reads a local checkout with `--usepkgbuild <PATH> --scan`. Same report as the pre-build scan, minus the "Continue anyway?" prompt. Exits non-zero on any finding, so it works in scripts. Not available for `--abs` yet.
 
@@ -516,7 +579,7 @@ Dependency install (`pacman -S`) and the final `pacman -U` run **outside** the s
 
 The frontend never works as root. Started as root (`sudo emerge …`, `doas`, `pkexec`, `su -`), it first starts the root helper, then drops for good to the invoking user (taken from `AE_USER`, `SUDO_UID`, `DOAS_USER`, `PKEXEC_UID` or the audit login uid; if none is known it stops). Started as a normal user, the helper is launched through `sudo` on first need. The resolver, AUR/ABS builds, the sandbox and all caches run unprivileged; libalpm work (install/remove/sync/upgrade/`-U`, signature checks) goes through the helper (`--ae-service`), which validates every request and enforces `package.mask` itself (`helper refused: … masked by …`).
 
-**Helper special conditions.** The privileged process only runs as `/usr/bin/emerge --ae-service` when the binary is root-owned and not group/world-writable (`install -m755 -o root -g root`), both real and effective uid are 0, stdin/stdout are pipes (a TTY is refused), and the parent is still alive after `PDEATHSIG` is armed. Unowned file conflicts during `-Su` and `-U` are offered AE Force (`--aeforce` / interactive `.aenew`) so a single stray file does not abort the whole shared upgrade pool.
+**Helper conditions.** The root helper (`/usr/bin/emerge --ae-service`) starts only if the binary is root-owned and not group/world-writable (`install -m755 -o root -g root`), uid is 0, stdin/stdout are pipes (no TTY) and the parent is alive. Unowned file conflicts on `-Su` / `-U` fall back to AE Force instead of aborting the whole upgrade.
 
 ### Other hardening
 
@@ -567,6 +630,7 @@ emerge --usepkgbuild ./scaner-test --ask
 | `--skip-srcinfo-regen` | With `--edit`: don't regenerate `.SRCINFO` |
 | `--pkgbuild-view` | Show/diff PKGBUILD and confirm before building (top-level package only; offers `$EDITOR` on decline) |
 | `--usepkgbuild <PATH>` | Build and install a local PKGBUILD checkout (scanner + bwrap); recorded in world as `Err/` unless `-1` |
+| `--usepkg <FILE…>` | Install local `.pkg.tar.*` archive(s) through audit + helper `-U`; recorded in world as `Err/` unless `-1` |
 | `--scan` | Audit PKGBUILD/.install only, no build/install; non-zero exit on findings (AUR or `--usepkgbuild`) |
 | `--sync` | Sync package databases |
 | `--refresh` | Force `-Syy` (with `--sync` or `-u`) |
@@ -579,6 +643,7 @@ emerge --usepkgbuild ./scaner-test --ask
 | `--check-world` | List world entries that are missing or not explicitly installed |
 | `--sync-explicit` | Mark explicit packages that are not in world, a world `@set` or `package.profile` as dependencies (so `-c` sees them). Alone: runs now (`-p` lists, `-a` asks). With an install/upgrade: runs after it succeeds. Allowed in `EMERGE_DEFAULT_OPTS` |
 | `--prune` | Remove packages not in world |
+| `--localrepo-clean` | Drop packages from `ae-aur` / `ae-abs` / `ae-local` that are no longer installed (`FEATURES="localrepo"`; `-p` lists, `-a` asks) |
 | `--regen` | Regenerate package metadata cache |
 | `--regen-world` | Re-resolve repo prefixes in world |
 | `--regen-sets <SET>` | Re-resolve prefixes in a custom set (`@game-kit` or `game-kit`) |
@@ -613,9 +678,9 @@ emerge --usepkgbuild ./scaner-test --ask
 | `--debug` | Show makepkg/compiler output live (also `AE_DEBUG=1`); by default it's hidden to keep the `>>>` lines readable, and a failed build still dumps the captured log |
 | `--log <PATH>` | Write a session log (command, emerge.log lines, full build output) for bug reports - no `| tee` needed; append-only, nothing already in the file is truncated or overwritten |
 | `-B` / `--buildpkgonly` (`-w` / `--getpkg`) | Archives only, no install (official → CacheDir; AUR/ABS/local → build) |
-| `-F` / `--fetch-all-uri` | Fetch only: official → archive; AUR/ABS → clone (no build/install) |
+| `-F` / `--fetch-all-uri` (`-f`) | Fetch only: official → archive; AUR/ABS → clone (no build/install) |
 | `--outdistfiles <DIR>` | With `-B`/`-F`: copy archives into DIR |
-| `-N`/`--newuse`, `-e`/`--emptytree`, `-q`, `-O`, `-o`, `-f`, `-F`, `-l`, `-A`, `--nodeps`, `--onlydeps`, `--complete-graph`, `--changed-use`, `--backtrack`, `--columns`, `--newrepo`, `--reinstall`, `--with-bdeps`, `--metadata`, `--clean`, `--config`, `--noconfmem`, `--verbose-conflicts` | Gentoo-compat: accepted, no effect |
+| `-N`/`--newuse`, `-e`/`--emptytree`, `-q`, `-O`, `-o`, `-l`, `-A`, `--nodeps`, `--onlydeps`, `--complete-graph`, `--changed-use`, `--backtrack`, `--columns`, `--newrepo`, `--reinstall`, `--with-bdeps`, `--metadata`, `--clean`, `--config`, `--noconfmem`, `--verbose-conflicts` | Gentoo-compat: accepted, no effect |
 | `-h`, `--help` | Help |
 | `-V`, `--version` | Version |
 
