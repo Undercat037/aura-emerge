@@ -50,6 +50,7 @@
         <a class="nav-link" href="#world"><span class="dot"></span> <span data-i18n="nav_world">World &amp; sets</span></a>
         <a class="nav-link" href="#makeconf"><span class="dot"></span> make.conf</a>
         <a class="nav-link" href="#mask"><span class="dot"></span> package.mask</a>
+        <a class="nav-link" href="#unmask"><span class="dot"></span> package.unmask</a>
         <a class="nav-link" href="#package-env"><span class="dot"></span> package.env</a>
         <a class="nav-link" href="#hold"><span class="dot"></span> protect / freeze</a>
         <a class="nav-link" href="#profiles"><span class="dot"></span> Profiles</a>
@@ -65,6 +66,7 @@
         <a class="nav-link" href="#progress"><span class="dot"></span> Progress / cache</a>
         <a class="nav-link" href="#batch"><span class="dot"></span> --undo / --batchinstall</a>
         <a class="nav-link" href="#aeforce"><span class="dot"></span> AE Force</a>
+        <a class="nav-link" href="#localrepo"><span class="dot"></span> Local repos</a>
         <a class="nav-link" href="#hooks"><span class="dot"></span> ALPM hooks</a>
         <a class="nav-link" href="#completion"><span class="dot"></span> Completion</a>
       </div>
@@ -73,7 +75,7 @@
         <a class="nav-link red" href="#scanner"><span class="dot"></span> <span data-i18n="nav_scanner">PKGBUILD scanner</span></a>
         <a class="nav-link blue" href="#sandbox"><span class="dot"></span> <span data-i18n="nav_sandbox">bwrap sandbox</span></a>
         <a class="nav-link" href="#pkgbuild-view"><span class="dot"></span> PKGBUILD review</a>
-        <a class="nav-link" href="#pkgarchive"><span class="dot"></span> --install-pkgarchive</a>
+        <a class="nav-link" href="#usepkg"><span class="dot"></span> --usepkg</a>
         <a class="nav-link" href="#devel"><span class="dot"></span> --devel</a>
         <a class="nav-link" href="#revdep"><span class="dot"></span> --revdep-rebuild</a>
       </div>
@@ -151,9 +153,9 @@ sudo install -Dm644 misc/eselect.fish /usr/share/fish/vendor_completions.d/esele
 
             <div class="callout callout-stripe purple note-helper">
               <div class="callout-title">Helper — special conditions</div>
-              <span class="lang-block" data-lang-block="en">The root helper (<code>--ae-service</code>) only starts when <strong>all</strong> of these hold: binary is exactly <code>/usr/bin/emerge</code>, owned <code>root:root</code>, mode not group/world-writable (install with <code>755</code>); real and effective uid are 0; stdin/stdout are pipes (never a TTY — interactive “run helper by hand” is refused); parent is still alive after <code>PDEATHSIG</code> is armed. Signature checks and keyring work run only inside the helper so user-side gpg never hits “unsafe ownership” on <code>/etc/pacman.d/gnupg</code>. Unowned file conflicts on <code>-Su</code> and <code>-U</code> are resolved with AE Force (<code>--aeforce</code> / interactive <code>.aenew</code>) instead of aborting the whole upgrade pool.</span>
-              <span class="lang-block" data-lang-block="ua" hidden>Root-хелпер (<code>--ae-service</code>) стартує лише коли <strong>усе</strong> з цього виконується: бінарник саме <code>/usr/bin/emerge</code>, власник <code>root:root</code>, без group/world write (ставити з <code>755</code>); real і effective uid = 0; stdin/stdout — пайпи (не TTY — ручний запуск відхиляється); батьківський процес живий після <code>PDEATHSIG</code>. Підписи та keyring лише в хелпері, щоб user-side gpg не ловив “unsafe ownership”. Конфлікти неналежних файлів на <code>-Su</code>/<code>-U</code> знімаються AE Force (<code>--aeforce</code> / інтерактивне <code>.aenew</code>), не зриваючи весь пул оновлення.</span>
-              <span class="lang-block" data-lang-block="ru" hidden>Root-хелпер (<code>--ae-service</code>) стартует только если <strong>всё</strong> из этого выполняется: бинарник именно <code>/usr/bin/emerge</code>, владелец <code>root:root</code>, без group/world write (ставить с <code>755</code>); real и effective uid = 0; stdin/stdout — пайпы (не TTY — ручной запуск отклоняется); родительский процесс жив после <code>PDEATHSIG</code>. Подписи и keyring только в хелпере, чтобы user-side gpg не ловил “unsafe ownership”. Конфликты чужих файлов на <code>-Su</code>/<code>-U</code> снимаются AE Force (<code>--aeforce</code> / интерактивное <code>.aenew</code>), не срывая весь пул обновления.</span>
+              <span class="lang-block" data-lang-block="en">Root helper (<code>--ae-service</code>) starts only if <code>/usr/bin/emerge</code> is <code>root:root</code> and not group/world-writable (<code>755</code>), uid is 0, stdin/stdout are pipes (no TTY) and the parent is alive. File conflicts on <code>-Su</code>/<code>-U</code> fall back to AE Force instead of aborting the upgrade.</span>
+              <span class="lang-block" data-lang-block="ua" hidden>Root-хелпер (<code>--ae-service</code>) стартує лише якщо <code>/usr/bin/emerge</code> — <code>root:root</code> без group/world write (<code>755</code>), uid = 0, stdin/stdout — пайпи (не TTY), а батьківський процес живий. Конфлікти файлів на <code>-Su</code>/<code>-U</code> розв’язуються через AE Force, а не зривають оновлення.</span>
+              <span class="lang-block" data-lang-block="ru" hidden>Root-хелпер (<code>--ae-service</code>) стартует, только если <code>/usr/bin/emerge</code> — <code>root:root</code> без group/world write (<code>755</code>), uid = 0, stdin/stdout — пайпы (не TTY), а родитель жив. Конфликты файлов на <code>-Su</code>/<code>-U</code> решаются через AE Force, а не срывают обновление.</span>
             </div>
 
           <h3 class="lang-block" data-lang-block="en">Dependencies</h3>
@@ -434,7 +436,9 @@ MAKEFLAGS="-j16"
 NINJAFLAGS="-j16"
 
 BUILDENV="!distcc color check !sign"
-OPTIONS="strip docs !libtool !staticlibs emptydirs zipman purge !debug !lto"</code></pre>
+OPTIONS="strip docs !libtool !staticlibs emptydirs zipman purge !debug !lto"
+
+FEATURES="localrepo"</code></pre>
             <ul>
               <li><strong>Syntax:</strong> flat shell-style assignments — <code>KEY="value"</code>, <code>KEY='literal'</code>, <code>KEY=(a b c)</code>. Lines starting with <code>#</code> are comments. Values are shell-expanded, so <code>-j$(nproc)</code> and <code>CXXFLAGS="$CFLAGS"</code> work.</li>
               <li><strong>Build flags</strong> are applied through a generated makepkg.conf passed to <code>makepkg --config</code>. Each build says so:</li>
@@ -445,6 +449,7 @@ OPTIONS="strip docs !libtool !staticlibs emptydirs zipman purge !debug !lto"</co
               <li><strong>Source cache:</strong> sources are cached under <code>~/.cache/aura-emerge/sources</code>; VCS sources (<code>-git</code>/<code>-hg</code>/<code>-svn</code>) are fetched incrementally on rebuild instead of re-cloned. Set <code>SRCDEST</code> in <code>makepkg.conf</code> to change the location.</li>
               <li><strong><code>EMERGE_DEFAULT_OPTS</code></strong> is spliced into every run and accepts only an allowlist of modifier flags — not actions such as <code>--unmerge</code>.</li>
               <li><strong><code>COLORS</code></strong> sets status-line palette: <code>role=colour</code> for <code>ok</code>, <code>warn</code>, <code>error</code>, <code>info</code>, <code>special</code> (<code>#RRGGBB</code> or named colours).</li>
+              <li><strong><code>FEATURES</code></strong> is AE-only: it switches aura-emerge's own functions and never maps onto makepkg (ccache/check/strip go into <code>BUILDENV</code>/<code>OPTIONS</code>). The only token is <code>localrepo</code> (see <a href="#localrepo">Local repos</a>); <code>-name</code> turns a token off, unknown tokens are shown by <code>--info</code> but do nothing.</li>
               <li><strong>Conflicts:</strong> contradicting pairs (<code>--aur</code>/<code>--abs</code>, <code>--no-sandbox</code>/<code>--unshare-net-build</code>, …) are rejected, or the config side is dropped when the command line is more specific.</li>
               <li><code>--ignore-default-opts</code> skips the defaults for one run; <code>emerge --info</code> shows the loaded files and the expanded values.</li>
             </ul>
@@ -466,7 +471,9 @@ MAKEFLAGS="-j16"
 NINJAFLAGS="-j16"
 
 BUILDENV="!distcc color check !sign"
-OPTIONS="strip docs !libtool !staticlibs emptydirs zipman purge !debug !lto"</code></pre>
+OPTIONS="strip docs !libtool !staticlibs emptydirs zipman purge !debug !lto"
+
+FEATURES="localrepo"</code></pre>
             <ul>
               <li><strong>Синтаксис:</strong> прості присвоєння в стилі shell — <code>KEY="value"</code>, <code>KEY='literal'</code>, <code>KEY=(a b c)</code>. Рядки з <code>#</code> на початку — коментарі. Значення проходять shell-розкриття, тож працюють <code>-j$(nproc)</code> і <code>CXXFLAGS="$CFLAGS"</code>.</li>
               <li><strong>Прапори збірки</strong> застосовуються через згенерований makepkg.conf, який передається в <code>makepkg --config</code>. Кожна збірка повідомляє про це:</li>
@@ -477,6 +484,7 @@ OPTIONS="strip docs !libtool !staticlibs emptydirs zipman purge !debug !lto"</co
               <li><strong>Кеш джерел:</strong> джерела кешуються в <code>~/.cache/aura-emerge/sources</code>; VCS-джерела (<code>-git</code>/<code>-hg</code>/<code>-svn</code>) під час перезбирання підтягуються інкрементально, а не клонуються заново. Змінити розташування можна через <code>SRCDEST</code> у <code>makepkg.conf</code>.</li>
               <li><strong><code>EMERGE_DEFAULT_OPTS</code></strong> підставляється в кожен запуск і приймає лише дозволений список модифікаторів — не дії на кшталт <code>--unmerge</code>.</li>
               <li><strong><code>COLORS</code></strong> задає палітру рядків статусу: <code>role=colour</code> для <code>ok</code>, <code>warn</code>, <code>error</code>, <code>info</code>, <code>special</code> (<code>#RRGGBB</code> або іменовані кольори).</li>
+              <li><strong><code>FEATURES</code></strong> — лише для AE: перемикає власні функції aura-emerge і не перекладається в makepkg (ccache/check/strip — у <code>BUILDENV</code>/<code>OPTIONS</code>). Єдиний токен — <code>localrepo</code> (див. <a href="#localrepo">Локальні репо</a>); <code>-name</code> вимикає токен, невідомі токени показує <code>--info</code>, але вони нічого не роблять.</li>
               <li><strong>Конфлікти:</strong> суперечливі пари (<code>--aur</code>/<code>--abs</code>, <code>--no-sandbox</code>/<code>--unshare-net-build</code>, …) відхиляються, а якщо командний рядок конкретніший — частина з конфігу відкидається.</li>
               <li><code>--ignore-default-opts</code> пропускає типові значення для одного запуску; <code>emerge --info</code> показує прочитані файли та розкриті значення.</li>
             </ul>
@@ -498,7 +506,9 @@ MAKEFLAGS="-j16"
 NINJAFLAGS="-j16"
 
 BUILDENV="!distcc color check !sign"
-OPTIONS="strip docs !libtool !staticlibs emptydirs zipman purge !debug !lto"</code></pre>
+OPTIONS="strip docs !libtool !staticlibs emptydirs zipman purge !debug !lto"
+
+FEATURES="localrepo"</code></pre>
             <ul>
               <li><strong>Синтаксис:</strong> плоские shell-присваивания — <code>KEY="value"</code>, <code>KEY='literal'</code>, <code>KEY=(a b c)</code>. Строки с <code>#</code> — комментарии. Значения раскрываются оболочкой, поэтому работают <code>-j$(nproc)</code> и <code>CXXFLAGS="$CFLAGS"</code>.</li>
               <li><strong>Флаги сборки</strong> применяются через сгенерированный makepkg.conf, передаваемый в <code>makepkg --config</code>. Каждая сборка пишет об этом:</li>
@@ -509,6 +519,7 @@ OPTIONS="strip docs !libtool !staticlibs emptydirs zipman purge !debug !lto"</co
               <li><strong>Кэш исходников:</strong> исходники кэшируются в <code>~/.cache/aura-emerge/sources</code>; VCS-источники (<code>-git</code>/<code>-hg</code>/<code>-svn</code>) подтягиваются инкрементально при пересборке, а не клонируются заново. Расположение меняется через <code>SRCDEST</code> в <code>makepkg.conf</code>.</li>
               <li><strong><code>EMERGE_DEFAULT_OPTS</code></strong> подставляется в каждый запуск и принимает только разрешённый список модификаторов — не действия вроде <code>--unmerge</code>.</li>
               <li><strong><code>COLORS</code></strong> задаёт палитру строк статуса: <code>role=colour</code> для <code>ok</code>, <code>warn</code>, <code>error</code>, <code>info</code>, <code>special</code> (<code>#RRGGBB</code> или именованные цвета).</li>
+              <li><strong><code>FEATURES</code></strong> — только для AE: переключает собственные функции aura-emerge и не переводится в makepkg (ccache/check/strip — в <code>BUILDENV</code>/<code>OPTIONS</code>). Единственный токен — <code>localrepo</code> (см. <a href="#localrepo">Локальные репо</a>); <code>-name</code> выключает токен, неизвестные токены показывает <code>--info</code>, но они ничего не делают.</li>
               <li><strong>Конфликты:</strong> противоречащие пары (<code>--aur</code>/<code>--abs</code>, <code>--no-sandbox</code>/<code>--unshare-net-build</code>, …) отклоняются, либо сторона конфига сбрасывается, когда командная строка конкретнее.</li>
               <li><code>--ignore-default-opts</code> пропускает дефолты на один запуск; <code>emerge --info</code> показывает загруженные файлы и раскрытые значения.</li>
             </ul>
@@ -599,6 +610,22 @@ system/*                       # целый репозиторий</code></pre>
 ...
 <span class="t-err">&gt;&gt;&gt;</span> Error: system/openssh-openrc: helper refused: openssh-openrc: masked by system/* (/etc/portage/package.mask/artix:4)</code></pre>
             <p>В поиске замаскированные пакеты помечаются <code>[masked]</code>. Это не то же самое, что <code>--exclude</code>: маска действует постоянно, <code>--exclude</code> — на один запуск.</p>
+          </div>
+        </section>
+
+        <section id="unmask">
+          <h2>package.unmask</h2>
+          <div class="lang-block" data-lang-block="en">
+            <p><code>/etc/portage/package.unmask</code> (file or directory, same syntax as <code>package.mask</code>) lists exceptions: a package that matches it is let through even if <code>package.mask</code> or the active profile's <code>package.mask</code> would block it. The root helper honors it too. It is the only way past a mask.</p>
+            <pre><code>aur/some-git                   # allowed although *-git is masked</code></pre>
+          </div>
+          <div class="lang-block" data-lang-block="ua" hidden>
+            <p><code>/etc/portage/package.unmask</code> (файл або каталог, синтаксис як у <code>package.mask</code>) перелічує винятки: пакунок, що підпадає під запис, проходить, навіть якщо його блокує <code>package.mask</code> або <code>package.mask</code> активного профілю. Root-хелпер це теж враховує. Це єдиний спосіб обійти маску.</p>
+            <pre><code>aur/some-git                   # дозволений, хоча *-git замасковані</code></pre>
+          </div>
+          <div class="lang-block" data-lang-block="ru" hidden>
+            <p><code>/etc/portage/package.unmask</code> (файл или каталог, синтаксис как у <code>package.mask</code>) перечисляет исключения: пакет, подходящий под запись, проходит, даже если его блокирует <code>package.mask</code> или <code>package.mask</code> активного профиля. Root-хелпер это тоже учитывает. Это единственный способ обойти маску.</p>
+            <pre><code>aur/some-git                   # разрешён, хотя *-git замаскированы</code></pre>
           </div>
         </section>
 
@@ -1003,8 +1030,9 @@ emerge @world                              # provision from world
 emerge -u --exclude linux --keep-going     # upgrade, skip one, don't stop on failure
 emerge -at @fonts --deep                   # sets, tree plan
 emerge --scan neovim-git --aur             # audit only
-emerge --install-pkgbuild ~/src/my-pkg     # local PKGBUILD (scanner + sandbox)
-emerge --install-pkgarchive ./foo-1.0-1-x86_64.pkg.tar.zst  # built archive (pinned + audited)
+emerge --usepkgbuild ~/src/my-pkg     # local PKGBUILD (scanner + sandbox)
+emerge --usepkg ./foo-1.0-1-x86_64.pkg.tar.zst  # built archive (pinned + audited)
+emerge --localrepo-clean                       # drop ae-* entries that are no longer installed
 emerge -u --devel                          # upgrade + rebuild moved -git
 emerge --revdep-rebuild                    # broken shared-library links
 emerge --batchinstall pkgs.txt             # mass-install from list
@@ -1059,8 +1087,9 @@ emerge @world                              # provision зі world
 emerge -u --exclude linux --keep-going     # оновити, пропустити один, не зупинятися при збої
 emerge -at @fonts --deep                   # набори, план деревом
 emerge --scan neovim-git --aur             # лише аудит
-emerge --install-pkgbuild ~/src/my-pkg     # локальний PKGBUILD (сканер + sandbox)
-emerge --install-pkgarchive ./foo-1.0-1-x86_64.pkg.tar.zst  # зібраний архів (pin + аудит)
+emerge --usepkgbuild ~/src/my-pkg     # локальний PKGBUILD (сканер + sandbox)
+emerge --usepkg ./foo-1.0-1-x86_64.pkg.tar.zst  # зібраний архів (pin + аудит)
+emerge --localrepo-clean                       # прибрати записи ae-*, чиї пакунки вже не встановлені
 emerge -u --devel                          # оновити + перезібрати -git, що пішли вперед
 emerge --revdep-rebuild                    # биті посилання на бібліотеки
 emerge --batchinstall pkgs.txt             # масове встановлення зі списку
@@ -1115,8 +1144,9 @@ emerge @world                              # provision из world
 emerge -u --exclude linux --keep-going     # обновить, пропустить один, не останавливаться при сбое
 emerge -at @fonts --deep                   # наборы, план деревом
 emerge --scan neovim-git --aur             # только аудит
-emerge --install-pkgbuild ~/src/my-pkg     # локальный PKGBUILD (сканер + sandbox)
-emerge --install-pkgarchive ./foo-1.0-1-x86_64.pkg.tar.zst  # готовый архив (pin + аудит)
+emerge --usepkgbuild ~/src/my-pkg     # локальный PKGBUILD (сканер + sandbox)
+emerge --usepkg ./foo-1.0-1-x86_64.pkg.tar.zst  # готовый архив (pin + аудит)
+emerge --localrepo-clean                       # убрать записи ae-*, чьи пакеты уже не установлены
 emerge -u --devel                          # обновить + пересобрать -git, ушедшие вперёд
 emerge --revdep-rebuild                    # битые ссылки на библиотеки
 emerge --batchinstall pkgs.txt             # массовая установка из списка
@@ -1789,6 +1819,85 @@ emerge --aeclean               # то же, что --aeclean all</code></pre>
           </div>
         </section>
 
+        <section id="localrepo">
+          <h2>Local repos (FEATURES="localrepo")</h2>
+          <div class="lang-block" data-lang-block="en">
+            <p>With <code>FEATURES="localrepo"</code> in <code>make.conf</code>, every package emerge built from the AUR, ABS or a local PKGBUILD (or took from a <code>--usepkg</code> archive) is filed, after audit and install, under <code>/var/lib/aura-emerge/repos/&lt;repo&gt;/</code> (root-owned, <code>0755</code>) and that repo's db is refreshed: <code>ae-aur</code> (AUR), <code>ae-abs</code> (<code>--abs</code>), <code>ae-local</code> (<code>--usepkgbuild</code>, <code>--usepkg</code>).</p>
+            <h3>Let pacman see them</h3>
+            <p>The repos are filled either way. To use them from pacman, list them in <code>/etc/pacman.conf</code> after the official repos, in one of two ways:</p>
+            <pre><code># 1) include the shipped file (misc/ae-repos.conf → /etc/portage/ae-repos.conf)
+Include = /etc/portage/ae-repos.conf</code></pre>
+            <pre><code># 2) or write the three sections yourself
+[ae-aur]
+SigLevel = Never
+Server = file:///var/lib/aura-emerge/repos/ae-aur
+
+[ae-abs]
+SigLevel = Never
+Server = file:///var/lib/aura-emerge/repos/ae-abs
+
+[ae-local]
+SigLevel = Never
+Server = file:///var/lib/aura-emerge/repos/ae-local</code></pre>
+            <ul>
+              <li>You get: <code>pacman -Qm</code> no longer lists them, <code>pacman -Si ae-aur/&lt;pkg&gt;</code> works, <code>-S</code>/<code>-Su</code> can reinstall from the audited copy. On a name clash the first repo wins, so keep <code>ae-*</code> last. <code>SigLevel = Never</code> is deliberate: the packages were audited and sha256-pinned by emerge and the directories are root-owned.</li>
+              <li><strong>Reuse:</strong> a bare AUR install whose version is already in <code>ae-aur</code> and equals the AUR's is installed from there — no clone, no build. <code>--edit</code>/<code>--pkgbuild-view</code> force a rebuild; <code>-B</code>/<code>-F</code> never use local binaries.</li>
+              <li><strong>Cleanup:</strong> <code>-C</code>, <code>-c</code>, <code>--prune</code> also drop what they removed from <code>ae-*</code>; <code>emerge --localrepo-clean</code> drops entries that are no longer installed (<code>-p</code> lists, <code>-a</code> asks).</li>
+              <li><strong>Empty dbs</strong> are created by the package hook, <code>emerge --sync</code> and the first publish, so <code>pacman -Sy</code> never trips over an empty <code>file://</code> server. A failed publish is a warning, never a failed merge.</li>
+            </ul>
+          </div>
+          <div class="lang-block" data-lang-block="ua" hidden>
+            <p>З <code>FEATURES="localrepo"</code> у <code>make.conf</code> кожен пакунок, який emerge зібрав з AUR, ABS чи локального PKGBUILD (або взяв з архіву <code>--usepkg</code>), після аудиту й встановлення розкладається в <code>/var/lib/aura-emerge/repos/&lt;repo&gt;/</code> (власник root, <code>0755</code>), а база репозиторію оновлюється: <code>ae-aur</code> (AUR), <code>ae-abs</code> (<code>--abs</code>), <code>ae-local</code> (<code>--usepkgbuild</code>, <code>--usepkg</code>).</p>
+            <h3>Щоб pacman їх бачив</h3>
+            <p>Репозиторії наповнюються в будь-якому разі. Щоб pacman їх бачив, вкажіть їх у <code>/etc/pacman.conf</code> після офіційних репозиторіїв — одним із двох способів:</p>
+            <pre><code># 1) підключити готовий файл (misc/ae-repos.conf → /etc/portage/ae-repos.conf)
+Include = /etc/portage/ae-repos.conf</code></pre>
+            <pre><code># 2) або записати три секції самому
+[ae-aur]
+SigLevel = Never
+Server = file:///var/lib/aura-emerge/repos/ae-aur
+
+[ae-abs]
+SigLevel = Never
+Server = file:///var/lib/aura-emerge/repos/ae-abs
+
+[ae-local]
+SigLevel = Never
+Server = file:///var/lib/aura-emerge/repos/ae-local</code></pre>
+            <ul>
+              <li>Результат: <code>pacman -Qm</code> їх більше не показує, працює <code>pacman -Si ae-aur/&lt;pkg&gt;</code>, <code>-S</code>/<code>-Su</code> можуть перевстановити з перевіреної копії. За збігу імен перемагає перший репозиторій, тож тримайте <code>ae-*</code> останніми. <code>SigLevel = Never</code> — навмисно: пакунки перевірені й закріплені sha256 самим emerge, а каталоги належать root.</li>
+              <li><strong>Повторне використання:</strong> звичайне встановлення з AUR, версія якого вже є в <code>ae-aur</code> і збігається з AUR, ставиться звідти — без clone і збірки. <code>--edit</code>/<code>--pkgbuild-view</code> примусово перезбирають; <code>-B</code>/<code>-F</code> локальні бінарники не використовують.</li>
+              <li><strong>Прибирання:</strong> <code>-C</code>, <code>-c</code>, <code>--prune</code> заодно прибирають видалене з <code>ae-*</code>; <code>emerge --localrepo-clean</code> прибирає записи, яких уже немає в системі (<code>-p</code> показує, <code>-a</code> питає).</li>
+              <li><strong>Порожні бази</strong> створюються хуком пакунка, <code>emerge --sync</code> і першою публікацією, тож <code>pacman -Sy</code> не спотикається об порожній <code>file://</code>-сервер. Збій публікації — попередження, а не провал merge.</li>
+            </ul>
+          </div>
+          <div class="lang-block" data-lang-block="ru" hidden>
+            <p>С <code>FEATURES="localrepo"</code> в <code>make.conf</code> каждый пакет, который emerge собрал из AUR, ABS или локального PKGBUILD (или взял из архива <code>--usepkg</code>), после аудита и установки раскладывается в <code>/var/lib/aura-emerge/repos/&lt;repo&gt;/</code> (владелец root, <code>0755</code>), а база репозитория обновляется: <code>ae-aur</code> (AUR), <code>ae-abs</code> (<code>--abs</code>), <code>ae-local</code> (<code>--usepkgbuild</code>, <code>--usepkg</code>).</p>
+            <h3>Чтобы pacman их видел</h3>
+            <p>Репозитории наполняются в любом случае. Чтобы pacman их видел, укажите их в <code>/etc/pacman.conf</code> после официальных репозиториев — одним из двух способов:</p>
+            <pre><code># 1) подключить готовый файл (misc/ae-repos.conf → /etc/portage/ae-repos.conf)
+Include = /etc/portage/ae-repos.conf</code></pre>
+            <pre><code># 2) или записать три секции самому
+[ae-aur]
+SigLevel = Never
+Server = file:///var/lib/aura-emerge/repos/ae-aur
+
+[ae-abs]
+SigLevel = Never
+Server = file:///var/lib/aura-emerge/repos/ae-abs
+
+[ae-local]
+SigLevel = Never
+Server = file:///var/lib/aura-emerge/repos/ae-local</code></pre>
+            <ul>
+              <li>Результат: <code>pacman -Qm</code> их больше не показывает, работает <code>pacman -Si ae-aur/&lt;pkg&gt;</code>, <code>-S</code>/<code>-Su</code> могут переустановить из проверенной копии. При совпадении имён побеждает первый репозиторий, так что держите <code>ae-*</code> последними. <code>SigLevel = Never</code> — намеренно: пакеты проверены и закреплены sha256 самим emerge, а каталоги принадлежат root.</li>
+              <li><strong>Повторное использование:</strong> обычная установка из AUR, версия которой уже есть в <code>ae-aur</code> и совпадает с AUR, ставится оттуда — без clone и сборки. <code>--edit</code>/<code>--pkgbuild-view</code> принудительно пересобирают; <code>-B</code>/<code>-F</code> локальные бинарники не используют.</li>
+              <li><strong>Уборка:</strong> <code>-C</code>, <code>-c</code>, <code>--prune</code> заодно убирают удалённое из <code>ae-*</code>; <code>emerge --localrepo-clean</code> убирает записи, которых уже нет в системе (<code>-p</code> показывает, <code>-a</code> спрашивает).</li>
+              <li><strong>Пустые базы</strong> создаёт хук пакета, <code>emerge --sync</code> и первая публикация, так что <code>pacman -Sy</code> не спотыкается о пустой <code>file://</code>-сервер. Сбой публикации — предупреждение, а не провал merge.</li>
+            </ul>
+          </div>
+        </section>
+
         <section id="hooks">
           <h2>ALPM hooks</h2>
           <div class="lang-block" data-lang-block="en">
@@ -1931,7 +2040,7 @@ sudo install -Dm644 misc/_eselect /usr/share/zsh/site-functions/_eselect</code><
             </div>
             <h3>Example</h3>
             <p>A deliberately hostile test package (output shortened, <code>…</code> marks omitted lines):</p>
-            <pre class="term" aria-label="Scanner output example"><code><span class="t-ps">$</span> <span class="t-cmd">emerge --install-pkgbuild ./scaner-test --ask</span>
+            <pre class="term" aria-label="Scanner output example"><code><span class="t-ps">$</span> <span class="t-cmd">emerge --usepkgbuild ./scaner-test --ask</span>
 <span class="t-p">&gt;&gt;&gt;</span> Scanning <b>scaner-test</b> for suspicious patterns...
 <span class="t-p">&gt;&gt;&gt;</span> 'scaner-test' wasn't scanned before cloning (cgit fetch failed or this pkgbase was only resolved after cloning) -- scanning the clone directly...
 
@@ -1979,8 +2088,8 @@ sudo install -Dm644 misc/_eselect /usr/share/zsh/site-functions/_eselect</code><
             <p>Next to the PKGBUILD the scanner also reads a <code>Makefile</code> (<code>Makefile</code> / <code>makefile</code> / <code>GNUmakefile</code>) and shell scripts the build refers to (<code>bash foo.sh</code>, <code>./install.sh</code>, …). Scripts get the full PKGBUILD-grade scan; Makefiles get a line-only scan, since make syntax has no bash AST. Findings name the file and line, like the PKGBUILD ones.</p>
             <h3>Audit only</h3>
             <pre class="red"><code>emerge --scan neovim-git --aur
-emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
-            <p><code>--scan</code> reports findings without building or installing anything. It needs at least one package name (or <code>--install-pkgbuild &lt;PATH&gt;</code> for a local checkout) and does not support <code>--abs</code> yet.</p>
+emerge --usepkgbuild ~/src/my-pkg --scan</code></pre>
+            <p><code>--scan</code> reports findings without building or installing anything. It needs at least one package name (or <code>--usepkgbuild &lt;PATH&gt;</code> for a local checkout) and does not support <code>--abs</code> yet.</p>
             <p>The scanner is a blocklist, so a clean result is not a guarantee. That is what the <a href="#sandbox">sandbox</a> is for.</p>
           </div>
           <div class="lang-block" data-lang-block="ua" hidden>
@@ -2034,7 +2143,7 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
             </div>
             <h3>Приклад</h3>
             <p>Навмисно шкідливий тестовий пакунок (вивід скорочено, <code>…</code> позначає пропущені рядки):</p>
-            <pre class="term" aria-label="Scanner output example"><code><span class="t-ps">$</span> <span class="t-cmd">emerge --install-pkgbuild ./scaner-test --ask</span>
+            <pre class="term" aria-label="Scanner output example"><code><span class="t-ps">$</span> <span class="t-cmd">emerge --usepkgbuild ./scaner-test --ask</span>
 <span class="t-p">&gt;&gt;&gt;</span> Scanning <b>scaner-test</b> for suspicious patterns...
 <span class="t-p">&gt;&gt;&gt;</span> 'scaner-test' wasn't scanned before cloning (cgit fetch failed or this pkgbase was only resolved after cloning) -- scanning the clone directly...
 
@@ -2082,8 +2191,8 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
             <p>Поруч із PKGBUILD сканер читає й <code>Makefile</code> (<code>Makefile</code> / <code>makefile</code> / <code>GNUmakefile</code>) та shell-скрипти, на які посилається збірка (<code>bash foo.sh</code>, <code>./install.sh</code>, …). Скрипти скануються так само ретельно, як PKGBUILD; Makefile — лише по рядках, бо в синтаксису make немає bash AST. Знахідки вказують файл і рядок, як і для PKGBUILD.</p>
             <h3>Лише аудит</h3>
             <pre class="red"><code>emerge --scan neovim-git --aur
-emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
-            <p><code>--scan</code> лише повідомляє про знахідки, нічого не збираючи й не встановлюючи. Потрібна принаймні одна назва пакунка (або <code>--install-pkgbuild &lt;PATH&gt;</code> для локального checkout); <code>--abs</code> поки не підтримується.</p>
+emerge --usepkgbuild ~/src/my-pkg --scan</code></pre>
+            <p><code>--scan</code> лише повідомляє про знахідки, нічого не збираючи й не встановлюючи. Потрібна принаймні одна назва пакунка (або <code>--usepkgbuild &lt;PATH&gt;</code> для локального checkout); <code>--abs</code> поки не підтримується.</p>
             <p>Сканер працює за принципом чорного списку, тож чистий результат не є гарантією. Для цього й потрібна <a href="#sandbox">пісочниця</a>.</p>
           </div>
 <div class="lang-block" data-lang-block="ru" hidden>
@@ -2137,7 +2246,7 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
             </div>
             <h3>Пример</h3>
             <p>Намеренно враждебный тестовый пакет (вывод сокращён, <code>…</code> — пропущенные строки):</p>
-            <pre class="term" aria-label="Scanner output example"><code><span class="t-ps">$</span> <span class="t-cmd">emerge --install-pkgbuild ./scaner-test --ask</span>
+            <pre class="term" aria-label="Scanner output example"><code><span class="t-ps">$</span> <span class="t-cmd">emerge --usepkgbuild ./scaner-test --ask</span>
 <span class="t-p">&gt;&gt;&gt;</span> Scanning <b>scaner-test</b> for suspicious patterns...
 <span class="t-p">&gt;&gt;&gt;</span> 'scaner-test' wasn't scanned before cloning (cgit fetch failed or this pkgbase was only resolved after cloning) -- scanning the clone directly...
 
@@ -2185,8 +2294,8 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
             <p>Рядом с PKGBUILD сканер читает и <code>Makefile</code> (<code>Makefile</code> / <code>makefile</code> / <code>GNUmakefile</code>), и shell-скрипты, на которые ссылается сборка (<code>bash foo.sh</code>, <code>./install.sh</code>, …). Скрипты сканируются так же тщательно, как PKGBUILD; Makefile — только построчно, так как у синтаксиса make нет bash AST. Находки указывают файл и строку, как и для PKGBUILD.</p>
             <h3>Только аудит</h3>
             <pre class="red"><code>emerge --scan neovim-git --aur
-emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
-            <p><code>--scan</code> сообщает о находках без сборки и установки. Нужно хотя бы одно имя пакета (или <code>--install-pkgbuild &lt;PATH&gt;</code> для локального checkout) и пока не поддерживает <code>--abs</code>.</p>
+emerge --usepkgbuild ~/src/my-pkg --scan</code></pre>
+            <p><code>--scan</code> сообщает о находках без сборки и установки. Нужно хотя бы одно имя пакета (или <code>--usepkgbuild &lt;PATH&gt;</code> для локального checkout) и пока не поддерживает <code>--abs</code>.</p>
             <p>Сканер — это blocklist, поэтому «чисто» не гарантия. Для этого есть <a href="#sandbox">песочница</a>.</p>
           </div>
         </section>
@@ -2306,9 +2415,9 @@ emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
         <section id="pkgbuild-view">
           <h2>PKGBUILD review</h2>
           <div class="lang-block" data-lang-block="en">
-            <p><code>--pkgbuild-view</code> shows the PKGBUILD that is about to be built and asks before the build starts. It works for AUR, ABS and <code>--install-pkgbuild</code>, but only for packages you requested directly — never for transitive dependencies or batch paths. It runs after <code>--edit</code>.</p>
+            <p><code>--pkgbuild-view</code> shows the PKGBUILD that is about to be built and asks before the build starts. It works for AUR, ABS and <code>--usepkgbuild</code>, but only for packages you requested directly — never for transitive dependencies or batch paths. It runs after <code>--edit</code>.</p>
             <pre><code>emerge neovim-git --aur --pkgbuild-view
-emerge --install-pkgbuild ~/src/my-pkg --pkgbuild-view</code></pre>
+emerge --usepkgbuild ~/src/my-pkg --pkgbuild-view</code></pre>
             <h3>What you see</h3>
             <ul>
               <li><strong>First time:</strong> the full PKGBUILD.</li>
@@ -2322,13 +2431,13 @@ emerge --install-pkgbuild ~/src/my-pkg --pkgbuild-view</code></pre>
               <li>On <code>y</code> the PKGBUILD opens in <code>$EDITOR</code> (then <code>$VISUAL</code>, then <code>nano</code>). Save and close to continue building; <code>.SRCINFO</code> is regenerated from your edit, unless you pass <code>--skip-srcinfo-regen</code>.</li>
             </ol>
             <p>If the PKGBUILD cannot be read, you get a warning and the review is skipped for that package. The scanner and the sandbox still apply as usual.</p>
-            <p><code>--install-pkgbuild &lt;PATH&gt;</code> builds a local checkout through the same scanner + sandbox pipeline. It is recorded in world as <code>Err/</code> unless <code>-1</code> is given.</p>
+            <p><code>--usepkgbuild &lt;PATH&gt;</code> builds a local checkout through the same scanner + sandbox pipeline. It is recorded in world as <code>Err/</code> unless <code>-1</code> is given.</p>
             <p>Note: <code>--scan</code> does not support <code>--abs</code> yet. For ABS, use <code>--pkgbuild-view</code> during a normal install.</p>
           </div>
           <div class="lang-block" data-lang-block="ua" hidden>
-            <p><code>--pkgbuild-view</code> показує PKGBUILD, який ось-ось збиратиметься, і запитує підтвердження перед початком збірки. Працює для AUR, ABS і <code>--install-pkgbuild</code>, але лише для пакунків, які ви запросили напряму — ніколи для транзитних залежностей чи пакетних шляхів. Виконується після <code>--edit</code>.</p>
+            <p><code>--pkgbuild-view</code> показує PKGBUILD, який ось-ось збиратиметься, і запитує підтвердження перед початком збірки. Працює для AUR, ABS і <code>--usepkgbuild</code>, але лише для пакунків, які ви запросили напряму — ніколи для транзитних залежностей чи пакетних шляхів. Виконується після <code>--edit</code>.</p>
             <pre><code>emerge neovim-git --aur --pkgbuild-view
-emerge --install-pkgbuild ~/src/my-pkg --pkgbuild-view</code></pre>
+emerge --usepkgbuild ~/src/my-pkg --pkgbuild-view</code></pre>
             <h3>Що ви бачите</h3>
             <ul>
               <li><strong>Уперше:</strong> увесь PKGBUILD.</li>
@@ -2342,34 +2451,34 @@ emerge --install-pkgbuild ~/src/my-pkg --pkgbuild-view</code></pre>
               <li>Після <code>y</code> PKGBUILD відкривається в <code>$EDITOR</code> (далі <code>$VISUAL</code>, далі <code>nano</code>). Збережіть і закрийте редактор, щоб збірка продовжилась; <code>.SRCINFO</code> перегенерується з вашої правки, якщо не вказано <code>--skip-srcinfo-regen</code>.</li>
             </ol>
             <p>Якщо PKGBUILD не вдається прочитати, ви побачите попередження, а перегляд для цього пакунка пропускається. Сканер і пісочниця працюють як завжди.</p>
-            <p><code>--install-pkgbuild &lt;PATH&gt;</code> збирає локальний checkout через той самий конвеєр зі сканером і пісочницею. У world він записується як <code>Err/</code>, якщо не вказано <code>-1</code>.</p>
+            <p><code>--usepkgbuild &lt;PATH&gt;</code> збирає локальний checkout через той самий конвеєр зі сканером і пісочницею. У world він записується як <code>Err/</code>, якщо не вказано <code>-1</code>.</p>
             <p>Зверніть увагу: <code>--scan</code> поки не підтримує <code>--abs</code>. Для ABS використовуйте <code>--pkgbuild-view</code> під час звичайного встановлення.</p>
           </div>
 <div class="lang-block" data-lang-block="ru" hidden>
-            <p><code>--pkgbuild-view</code> показывает PKGBUILD, который сейчас будет собираться, и спрашивает подтверждение перед стартом. Работает для AUR, ABS и <code>--install-pkgbuild</code>, но только для пакетов, запрошенных напрямую — никогда для транзитивных зависимостей или пакетных путей. Выполняется после <code>--edit</code>.</p>
+            <p><code>--pkgbuild-view</code> показывает PKGBUILD, который сейчас будет собираться, и спрашивает подтверждение перед стартом. Работает для AUR, ABS и <code>--usepkgbuild</code>, но только для пакетов, запрошенных напрямую — никогда для транзитивных зависимостей или пакетных путей. Выполняется после <code>--edit</code>.</p>
             <pre><code>emerge neovim-git --aur --pkgbuild-view
-emerge --install-pkgbuild ~/src/my-pkg --pkgbuild-view</code></pre>
+emerge --usepkgbuild ~/src/my-pkg --pkgbuild-view</code></pre>
             <ul>
               <li>Если копию уже видели — показывается diff относительно кэша; в первый раз — весь файл.</li>
               <li>При отказе предлагается открыть <code>$EDITOR</code>, а не просто пропустить.</li>
               <li>Последние показанные копии лежат в <code>~/.cache/aura-emerge/pkgbuild-view/&lt;pkgbase&gt;.PKGBUILD</code> (под <code>$XDG_CACHE_HOME</code>, если задан). Они нужны только для diff и не играют роли в безопасности — <a href="#scanner">сканер</a> сам сравнивает полученное с клонированным.</li>
             </ul>
-            <p><code>--scan</code> аудитит PKGBUILD (+ <code>.install</code>) без сборки и установки: тянет с cgit для пакета AUR или читает локальный checkout с <code>--install-pkgbuild &lt;PATH&gt; --scan</code>. Тот же отчёт, что у pre-build скана, без вопроса «Continue anyway?». Ненулевой код при любой находке — удобно для скриптов. Для <code>--abs</code> пока недоступно; для ABS используйте <code>--pkgbuild-view</code> при обычной установке.</p>
+            <p><code>--scan</code> аудитит PKGBUILD (+ <code>.install</code>) без сборки и установки: тянет с cgit для пакета AUR или читает локальный checkout с <code>--usepkgbuild &lt;PATH&gt; --scan</code>. Тот же отчёт, что у pre-build скана, без вопроса «Continue anyway?». Ненулевой код при любой находке — удобно для скриптов. Для <code>--abs</code> пока недоступно; для ABS используйте <code>--pkgbuild-view</code> при обычной установке.</p>
           </div>
         </section>
 
-        <section id="pkgarchive">
-          <h2>--install-pkgarchive</h2>
+        <section id="usepkg">
+          <h2>--usepkg</h2>
           <div class="lang-block" data-lang-block="en">
-            <p><code>emerge --install-pkgarchive ./foo-1.0-1-x86_64.pkg.tar.zst</code> installs ready-built package archives — makepkg output or a file repo's <code>.pkg.tar.zst</code>/<code>.zst</code> — with no PKGBUILD in sight. Every archive goes through the same pipeline a sandboxed build produces: it is pinned by hash, unpacked and audited (sensitive paths — libalpm hooks, systemd units, sudoers, udev, <code>ld.so.preload</code>, … — setuid binaries, <code>.INSTALL</code> scripts, path traversal and symlink member names), re-hashed right before the privileged install, and only then handed to libalpm. A <code>bsdtar</code> failure aborts instead of continuing unaudited.</p>
+            <p><code>emerge --usepkg ./foo-1.0-1-x86_64.pkg.tar.zst</code> installs ready-built package archives — makepkg output or a file repo's <code>.pkg.tar.zst</code>/<code>.zst</code> — with no PKGBUILD in sight. Every archive goes through the same pipeline a sandboxed build produces: it is pinned by hash, unpacked and audited (sensitive paths — libalpm hooks, systemd units, sudoers, udev, <code>ld.so.preload</code>, … — setuid binaries, <code>.INSTALL</code> scripts, path traversal and symlink member names), re-hashed right before the privileged install, and only then handed to libalpm. A <code>bsdtar</code> failure aborts instead of continuing unaudited.</p>
             <p>Archives land in world as <code>Err/&lt;name&gt;</code> and are marked explicit, so depclean keeps them; <code>-1</code> installs as dependencies instead. Combine with <code>-p</code>/<code>-a</code>; several archives in one run are a single transaction.</p>
           </div>
           <div class="lang-block" data-lang-block="ua" hidden>
-            <p><code>emerge --install-pkgarchive ./foo-1.0-1-x86_64.pkg.tar.zst</code> встановлює готові архіви пакунків — результат makepkg або <code>.pkg.tar.zst</code>/<code>.zst</code> з файлового репозиторію — без жодного PKGBUILD. Кожен архів проходить той самий конвеєр, що й продукт пісочної збірки: фіксується хешем, розпаковується й аудитується (чутливі шляхи — хуки libalpm, systemd-юніти, sudoers, udev, <code>ld.so.preload</code>, … — setuid-бінарники, <code>.INSTALL</code>-скрипти, traversal та symlink-імена членів), повторно хешується безпосередньо перед привілейованим встановленням і лише тоді передається libalpm. Збій <code>bsdtar</code> перериває процес замість продовження без аудиту.</p>
+            <p><code>emerge --usepkg ./foo-1.0-1-x86_64.pkg.tar.zst</code> встановлює готові архіви пакунків — результат makepkg або <code>.pkg.tar.zst</code>/<code>.zst</code> з файлового репозиторію — без жодного PKGBUILD. Кожен архів проходить той самий конвеєр, що й продукт пісочної збірки: фіксується хешем, розпаковується й аудитується (чутливі шляхи — хуки libalpm, systemd-юніти, sudoers, udev, <code>ld.so.preload</code>, … — setuid-бінарники, <code>.INSTALL</code>-скрипти, traversal та symlink-імена членів), повторно хешується безпосередньо перед привілейованим встановленням і лише тоді передається libalpm. Збій <code>bsdtar</code> перериває процес замість продовження без аудиту.</p>
             <p>Архіви потрапляють у world як <code>Err/&lt;назва&gt;</code> і позначаються явними, тож depclean їх лишає; <code>-1</code> встановлює їх як залежності. Поєднується з <code>-p</code>/<code>-a</code>; кілька архівів за один запуск — одна транзакція.</p>
           </div>
           <div class="lang-block" data-lang-block="ru" hidden>
-            <p><code>emerge --install-pkgarchive ./foo-1.0-1-x86_64.pkg.tar.zst</code> устанавливает готовые архивы пакетов — результат makepkg или <code>.pkg.tar.zst</code>/<code>.zst</code> из файлового репозитория — без всякого PKGBUILD. Каждый архив проходит тот же конвейер, что и продукт песочной сборки: фиксируется хешем, распаковывается и аудируется (чувствительные пути — хуки libalpm, systemd-юниты, sudoers, udev, <code>ld.so.preload</code>, … — setuid-бинарники, <code>.INSTALL</code>-скрипты, traversal и symlink-имена членов архива), повторно хешируется непосредственно перед привилегированной установкой и только потом передаётся libalpm. Сбой <code>bsdtar</code> прерывает процесс вместо продолжения без аудита.</p>
+            <p><code>emerge --usepkg ./foo-1.0-1-x86_64.pkg.tar.zst</code> устанавливает готовые архивы пакетов — результат makepkg или <code>.pkg.tar.zst</code>/<code>.zst</code> из файлового репозитория — без всякого PKGBUILD. Каждый архив проходит тот же конвейер, что и продукт песочной сборки: фиксируется хешем, распаковывается и аудируется (чувствительные пути — хуки libalpm, systemd-юниты, sudoers, udev, <code>ld.so.preload</code>, … — setuid-бинарники, <code>.INSTALL</code>-скрипты, traversal и symlink-имена членов архива), повторно хешируется непосредственно перед привилегированной установкой и только потом передаётся libalpm. Сбой <code>bsdtar</code> прерывает процесс вместо продолжения без аудита.</p>
             <p>Архивы попадают в world как <code>Err/&lt;имя&gt;</code> и помечаются явными, так что depclean их держит; <code>-1</code> ставит как зависимости. Сочетается с <code>-p</code>/<code>-a</code>; несколько архивов за один запуск — одна транзакция.</p>
           </div>
         </section>

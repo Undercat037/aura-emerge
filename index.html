@@ -610,7 +610,7 @@ OPTIONS=(strip docs !debug lto)</code></pre>
             <span data-i18n="not_hard_block_body">Findings are reported with file/line and a cgit link. You get Continue anyway? [y/N] — the decision stays with you.</span>
           </div>
           <pre class="red"><code>emerge --scan neovim-git --aur
-emerge --install-pkgbuild ~/src/my-pkg --scan</code></pre>
+emerge --usepkgbuild ~/src/my-pkg --scan</code></pre>
         </section>
 
         <section id="sandbox">
@@ -670,9 +670,9 @@ emerge pkg --aur --no-sandbox          # plain makepkg (with warning)</code></pr
 
           <div class="callout callout-stripe purple note-helper">
             <div class="callout-title">Helper — special conditions</div>
-            <span class="lang-block" data-lang-block="en">Root helper (<code>--ae-service</code>) requires <code>/usr/bin/emerge</code> owned <code>root:root</code> mode <code>755</code>, uid 0, pipe stdin/stdout (no TTY), and a live parent. Signatures/keyring only in the helper. File conflicts on <code>-Su</code>/<code>-U</code> use AE Force instead of aborting the whole upgrade pool.</span>
-            <span class="lang-block" data-lang-block="ua" hidden>Root-хелпер (<code>--ae-service</code>): бінарник <code>/usr/bin/emerge</code> як <code>root:root</code> <code>755</code>, uid 0, stdin/stdout — пайпи (не TTY), живий parent. Підписи/keyring лише в хелпері. Конфлікти файлів на <code>-Su</code>/<code>-U</code> — AE Force, без зриву всього пулу.</span>
-            <span class="lang-block" data-lang-block="ru" hidden>Root-хелпер (<code>--ae-service</code>): бинарник <code>/usr/bin/emerge</code> как <code>root:root</code> <code>755</code>, uid 0, stdin/stdout — пайпы (не TTY), живой parent. Подписи/keyring только в хелпере. Конфликты файлов на <code>-Su</code>/<code>-U</code> — AE Force, без срыва всего пула.</span>
+            <span class="lang-block" data-lang-block="en">Root helper (<code>--ae-service</code>) starts only if <code>/usr/bin/emerge</code> is <code>root:root</code> and not group/world-writable (<code>755</code>), uid is 0, stdin/stdout are pipes (no TTY) and the parent is alive. File conflicts on <code>-Su</code>/<code>-U</code> fall back to AE Force instead of aborting the upgrade.</span>
+              <span class="lang-block" data-lang-block="ua" hidden>Root-хелпер (<code>--ae-service</code>) стартує лише якщо <code>/usr/bin/emerge</code> — <code>root:root</code> без group/world write (<code>755</code>), uid = 0, stdin/stdout — пайпи (не TTY), а батьківський процес живий. Конфлікти файлів на <code>-Su</code>/<code>-U</code> розв’язуються через AE Force, а не зривають оновлення.</span>
+              <span class="lang-block" data-lang-block="ru" hidden>Root-хелпер (<code>--ae-service</code>) стартует, только если <code>/usr/bin/emerge</code> — <code>root:root</code> без group/world write (<code>755</code>), uid = 0, stdin/stdout — пайпы (не TTY), а родитель жив. Конфликты файлов на <code>-Su</code>/<code>-U</code> решаются через AE Force, а не срывают обновление.</span>
           </div>
         </section>
 

@@ -188,6 +188,12 @@
 <td class="lang-block" data-lang-block="ru" hidden>Информация о системе (в стиле Gentoo): версия, CPU/RAM, jobs, репозитории, переопределения makepkg.conf / make.conf, статистика mask/world/log</td>
                 </tr>
                 <tr>
+                  <td><code>--pkginfo &lt;PKG&gt;…</code></td>
+                  <td class="lang-block" data-lang-block="en">Installed package details (<code>-v</code> also lists files)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Відомості про встановлений пакунок (<code>-v</code> — ще й файли)</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Сведения об установленном пакете (<code>-v</code> — ещё и файлы)</td>
+                </tr>
+                <tr>
                   <td><code>--news [N|all]</code></td>
                   <td class="lang-block" data-lang-block="en">Arch Linux news; <code>N</code> reads one, <code>all</code> marks all read</td>
                   <td class="lang-block" data-lang-block="ua" hidden>Новини Arch; <code>N</code> — прочитати, <code>all</code> — позначити всі</td>
@@ -204,6 +210,12 @@
                   <td class="lang-block" data-lang-block="en">Remove packages not in world</td>
                   <td class="lang-block" data-lang-block="ua" hidden>Видалити пакунки поза world</td>
 <td class="lang-block" data-lang-block="ru" hidden>Удалить пакеты, которых нет в world</td>
+                </tr>
+                <tr>
+                  <td><code>--localrepo-clean</code></td>
+                  <td class="lang-block" data-lang-block="en">Drop packages from <code>ae-aur</code>/<code>ae-abs</code>/<code>ae-local</code> that are no longer installed (<code>FEATURES="localrepo"</code>; <code>-p</code> lists, <code>-a</code> asks)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Прибрати з <code>ae-aur</code>/<code>ae-abs</code>/<code>ae-local</code> пакунки, яких уже немає в системі (<code>FEATURES="localrepo"</code>; <code>-p</code> показує, <code>-a</code> питає)</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Убрать из <code>ae-aur</code>/<code>ae-abs</code>/<code>ae-local</code> пакеты, которых уже нет в системе (<code>FEATURES="localrepo"</code>; <code>-p</code> показывает, <code>-a</code> спрашивает)</td>
                 </tr>
                 <tr>
                   <td><code>--select</code></td>
@@ -260,22 +272,22 @@
 <td class="lang-block" data-lang-block="ru" hidden>Массовая установка из текстового списка (тот же формат, что у набора; строки <code>@набор</code> разворачиваются)</td>
                 </tr>
                 <tr>
-                  <td><code>--install-pkgbuild &lt;PATH&gt;</code></td>
+                  <td><code>--usepkgbuild &lt;PATH&gt;</code></td>
                   <td class="lang-block" data-lang-block="en">Build+install a local PKGBUILD checkout (scanner + bwrap)</td>
                   <td class="lang-block" data-lang-block="ua" hidden>Зібрати+встановити локальний checkout PKGBUILD</td>
 <td class="lang-block" data-lang-block="ru" hidden>Собрать и установить локальный PKGBUILD (сканер + bwrap)</td>
                 </tr>
                 <tr>
-                  <td><code>--install-pkgarchive &lt;FILE&gt;…</code></td>
+                  <td><code>--usepkg &lt;FILE&gt;…</code></td>
                   <td class="lang-block" data-lang-block="en">Install built package archives (<code>.pkg.tar.zst</code>, …): pin → tarball audit → sha256 re-check → install; world <code>Err/</code> + explicit unless <code>-1</code></td>
                   <td class="lang-block" data-lang-block="ua" hidden>Встановити зібрані архіви пакунків (<code>.pkg.tar.zst</code>, …): pin → аудит архіву → повторна перевірка sha256 → встановлення; world <code>Err/</code> + явний, якщо не <code>-1</code></td>
 <td class="lang-block" data-lang-block="ru" hidden>Установить собранные архивы пакетов (<code>.pkg.tar.zst</code>, …): pin → аудит архива → повторная проверка sha256 → установка; world <code>Err/</code> + явный, если не <code>-1</code></td>
                 </tr>
                 <tr>
                   <td><code>--scan</code></td>
-                  <td class="lang-block" data-lang-block="en">Audit-only PKGBUILD/.install scan (AUR or <code>--install-pkgbuild</code>); non-zero on findings</td>
+                  <td class="lang-block" data-lang-block="en">Audit-only PKGBUILD/.install scan (AUR or <code>--usepkgbuild</code>); non-zero on findings</td>
                   <td class="lang-block" data-lang-block="ua" hidden>Лише аудит PKGBUILD/.install; ненульовий код при знахідках</td>
-<td class="lang-block" data-lang-block="ru" hidden>Только аудит PKGBUILD/.install (AUR или <code>--install-pkgbuild</code>); ненулевой код при находках</td>
+<td class="lang-block" data-lang-block="ru" hidden>Только аудит PKGBUILD/.install (AUR или <code>--usepkgbuild</code>); ненулевой код при находках</td>
                 </tr>
                 <tr>
                   <td><code>--clean-source-cache</code></td>
@@ -358,6 +370,24 @@
                 </tr>
               </thead>
               <tbody>
+                <tr>
+                  <td><code>-B / --buildpkgonly (-w / --getpkg)</code></td>
+                  <td class="lang-block" data-lang-block="en">Archives only, no install (official → CacheDir; AUR/ABS/local → build)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Лише архіви, без встановлення (офіційні → CacheDir; AUR/ABS/локальні → збірка)</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Только архивы, без установки (официальные → CacheDir; AUR/ABS/локальные → сборка)</td>
+                </tr>
+                <tr>
+                  <td><code>-F / --fetch-all-uri (-f)</code></td>
+                  <td class="lang-block" data-lang-block="en">Fetch only: official → archive; AUR/ABS → clone (no build/install)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Лише завантаження: офіційні → архів; AUR/ABS → clone (без збірки)</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Только загрузка: официальные → архив; AUR/ABS → clone (без сборки)</td>
+                </tr>
+                <tr>
+                  <td><code>--outdistfiles &lt;DIR&gt;</code></td>
+                  <td class="lang-block" data-lang-block="en">With <code>-B</code>/<code>-F</code>: copy archives into DIR</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>З <code>-B</code>/<code>-F</code>: скопіювати архіви в DIR</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>С <code>-B</code>/<code>-F</code>: скопировать архивы в DIR</td>
+                </tr>
                 <tr>
                   <td><code>--aur</code></td>
                   <td class="lang-block" data-lang-block="en">Force AUR (AUR-only deps resolved recursively)</td>
@@ -806,18 +836,6 @@
                   <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
                 </tr>
                 <tr>
-                  <td><code>-b</code> / <code>--buildpkg</code></td>
-                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
-                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
-                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
-                </tr>
-                <tr>
-                  <td><code>-B</code> / <code>--buildpkgonly</code></td>
-                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
-                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
-                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
-                </tr>
-                <tr>
                   <td><code>--changed-use</code></td>
                   <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
                   <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
@@ -849,30 +867,6 @@
                 </tr>
                 <tr>
                   <td><code>--config</code></td>
-                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
-                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
-                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
-                </tr>
-                <tr>
-                  <td><code>-F</code> / <code>--fetch-all-uri</code></td>
-                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
-                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
-                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
-                </tr>
-                <tr>
-                  <td><code>-f</code> / <code>--fetchonly</code></td>
-                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
-                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
-                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
-                </tr>
-                <tr>
-                  <td><code>-g</code> / <code>--getbinpkg</code></td>
-                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
-                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
-                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
-                </tr>
-                <tr>
-                  <td><code>-G</code> / <code>--getbinpkgonly</code></td>
                   <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
                   <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
                   <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
@@ -915,18 +909,6 @@
                 </tr>
                 <tr>
                   <td><code>--reinstall</code></td>
-                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
-                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
-                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
-                </tr>
-                <tr>
-                  <td><code>-k</code> / <code>--usepkg</code></td>
-                  <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
-                  <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
-                  <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
-                </tr>
-                <tr>
-                  <td><code>-K</code> / <code>--usepkgonly</code></td>
                   <td class="lang-block" data-lang-block="en">Accepted, no effect</td>
                   <td class="lang-block" data-lang-block="ua" hidden>Приймається, не діє</td>
                   <td class="lang-block" data-lang-block="ru" hidden>Принимается, не действует</td>
@@ -977,15 +959,33 @@
                 </tr>
                 <tr>
                   <td><code>/etc/portage/make.conf</code></td>
-                  <td class="lang-block" data-lang-block="en">Default flags and build-env overrides (<code>CFLAGS</code>, <code>MAKEFLAGS</code>, <code>FEATURES</code>, <code>COLORS</code>, …); system path only</td>
-                  <td class="lang-block" data-lang-block="ua" hidden>Типові прапори й перевизначення середовища збірки (<code>CFLAGS</code>, <code>MAKEFLAGS</code>, <code>FEATURES</code>, <code>COLORS</code>, …); лише системний шлях</td>
-                  <td class="lang-block" data-lang-block="ru" hidden>Флаги по умолчанию и переопределения окружения сборки (<code>CFLAGS</code>, <code>MAKEFLAGS</code>, <code>FEATURES</code>, <code>COLORS</code>, …); только системный путь</td>
+                  <td class="lang-block" data-lang-block="en">Default flags and build-env overrides (<code>CFLAGS</code>, <code>MAKEFLAGS</code>, <code>FEATURES</code> (AE-only: <code>localrepo</code>), <code>COLORS</code>, …); system path only</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Типові прапори й перевизначення середовища збірки (<code>CFLAGS</code>, <code>MAKEFLAGS</code>, <code>FEATURES</code> (AE-only: <code>localrepo</code>), <code>COLORS</code>, …); лише системний шлях</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Флаги по умолчанию и переопределения окружения сборки (<code>CFLAGS</code>, <code>MAKEFLAGS</code>, <code>FEATURES</code> (AE-only: <code>localrepo</code>), <code>COLORS</code>, …); только системный путь</td>
                 </tr>
                 <tr>
                   <td><code>/etc/portage/package.mask</code></td>
                   <td class="lang-block" data-lang-block="en">Never-install list (file or directory); a hard stop, even for dependencies</td>
                   <td class="lang-block" data-lang-block="ua" hidden>Список заборонених до встановлення (файл або каталог); жорстка зупинка, навіть для залежностей</td>
                   <td class="lang-block" data-lang-block="ru" hidden>Список запрещённых к установке (файл или каталог); жёсткая остановка, даже для зависимостей</td>
+                </tr>
+                <tr>
+                  <td><code>/etc/portage/package.unmask</code></td>
+                  <td class="lang-block" data-lang-block="en">Exceptions to <code>package.mask</code> and profile masks (file or directory)</td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Винятки з <code>package.mask</code> і масок профілю (файл або каталог)</td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Исключения из <code>package.mask</code> и масок профиля (файл или каталог)</td>
+                </tr>
+                <tr>
+                  <td><code>/etc/portage/ae-repos.conf</code></td>
+                  <td class="lang-block" data-lang-block="en">Pacman include for the local repos <code>ae-aur</code>/<code>ae-abs</code>/<code>ae-local</code>: <code>Include = /etc/portage/ae-repos.conf</code></td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Include для pacman: локальні репо <code>ae-aur</code>/<code>ae-abs</code>/<code>ae-local</code>: <code>Include = /etc/portage/ae-repos.conf</code></td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Include для pacman: локальные репо <code>ae-aur</code>/<code>ae-abs</code>/<code>ae-local</code>: <code>Include = /etc/portage/ae-repos.conf</code></td>
+                </tr>
+                <tr>
+                  <td><code>/var/lib/aura-emerge/repos/</code></td>
+                  <td class="lang-block" data-lang-block="en">Root-owned local repos filled with <code>FEATURES="localrepo"</code></td>
+                  <td class="lang-block" data-lang-block="ua" hidden>Локальні репо (власник root), що наповнюються з <code>FEATURES="localrepo"</code></td>
+                  <td class="lang-block" data-lang-block="ru" hidden>Локальные репо (владелец root), наполняемые с <code>FEATURES="localrepo"</code></td>
                 </tr>
                 <tr>
                   <td><code>/etc/portage/package.protect</code></td>
