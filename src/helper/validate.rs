@@ -247,6 +247,8 @@ pub(crate) struct FileOpts {
     /// `--noaefile`: nothing is kept aside. Alone: old files stay, new
     /// ones are dropped. With `aeforce`: new files win, old ones are dropped.
     pub(crate) aekeep: bool,
+    /// `-dd`: skip dependency and version checks (`--usepkg -O`).
+    pub(crate) nodeps: bool,
 }
 
 impl FileOpts {
@@ -271,6 +273,9 @@ impl FileOpts {
         if self.aekeep {
             parts.push("aekeep");
         }
+        if self.nodeps {
+            parts.push("nodeps");
+        }
         if parts.is_empty() {
             "-".to_string()
         } else {
@@ -288,6 +293,7 @@ impl FileOpts {
         let mut aeforce = false;
         let mut aenew = false;
         let mut aekeep = false;
+        let mut nodeps = false;
         for part in id.split(',') {
             match part {
                 "needed" if !needed => needed = true,
@@ -296,6 +302,7 @@ impl FileOpts {
                 "aeforce" if !aeforce => aeforce = true,
                 "aenew" if !aenew => aenew = true,
                 "aekeep" if !aekeep => aekeep = true,
+                "nodeps" if !nodeps => nodeps = true,
                 _ => return None,
             }
         }
@@ -306,6 +313,7 @@ impl FileOpts {
             aeforce,
             aenew,
             aekeep,
+            nodeps,
         })
     }
 }
@@ -404,6 +412,7 @@ mod tests {
                 aeforce: n && r,
                 aenew: d && r,
                 aekeep: n && !d,
+                nodeps: r && !n,
             };
             assert_eq!(FileOpts::from_id(&o.id()), Some(o));
         }
@@ -417,6 +426,7 @@ mod tests {
                 aeforce: false,
                 aenew: false,
                 aekeep: false,
+                nodeps: false,
             })
         );
         assert_eq!(

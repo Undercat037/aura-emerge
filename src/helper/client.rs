@@ -169,11 +169,13 @@ impl Client {
         names: &[String],
         needed: bool,
         download_only: bool,
+        nodeps: bool,
         on_event: &mut dyn FnMut(&str),
     ) -> Result<(), ClientError> {
         let req = Request::Install {
             needed,
             download_only,
+            nodeps,
             names: names.to_vec(),
         };
         self.request(&req, on_event)

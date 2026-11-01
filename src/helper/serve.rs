@@ -41,6 +41,7 @@ pub(crate) trait Backend {
         _names: &[String],
         _needed: bool,
         _download_only: bool,
+        _nodeps: bool,
         _emit: &mut dyn FnMut(&str),
     ) -> io::Result<()> {
         unsupported()
@@ -111,9 +112,12 @@ impl Backend for Real {
         names: &[String],
         needed: bool,
         download_only: bool,
+        nodeps: bool,
         emit: &mut dyn FnMut(&str),
     ) -> io::Result<()> {
-        pkgdb::retry_after_keyring(|| pkgdb::install(names, needed, download_only, &mut *emit))
+        pkgdb::retry_after_keyring(|| {
+            pkgdb::install(names, needed, download_only, nodeps, &mut *emit)
+        })
     }
 
     fn install_files(
@@ -171,7 +175,8 @@ fn dispatch<B: Backend, W: Write>(be: &mut B, req: &Request, out: &mut W) -> io:
             names,
             needed,
             download_only,
-        } => be.install(names, *needed, *download_only, &mut |t| {
+            nodeps,
+        } => be.install(names, *needed, *download_only, *nodeps, &mut |t| {
             let _ = proto::write_response(out, &Response::Event(t.to_string()));
         }),
         Request::InstallFiles { opts, files } => be.install_files(*opts, files, &mut |t| {
@@ -338,6 +343,7 @@ mod tests {
             names: &[String],
             _needed: bool,
             _download_only: bool,
+            _nodeps: bool,
             _emit: &mut dyn FnMut(&str),
         ) -> io::Result<()> {
             if self.fail {
@@ -471,6 +477,7 @@ mod tests {
             aeforce: false,
             aenew: false,
             aekeep: false,
+            nodeps: false,
         };
         assert_eq!(be.files, vec![(opts, vec![spec])]);
     }

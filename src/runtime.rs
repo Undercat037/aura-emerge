@@ -30,7 +30,7 @@ pub(crate) struct Runtime {
     pub(crate) nospinner: bool,
     /// `--load-average`: hold new builds while the 1-min load is above this.
     pub(crate) load_average: Option<f32>,
-    /// Max concurrent official-repo installs (`--jobsr` / `--jobs`).
+    /// Max concurrent official-repo installs (`--jobs`).
     pub(crate) jobsr: u32,
     /// Max concurrent AUR/ABS builds (`--jobsa`).
     pub(crate) jobsa: u32,
@@ -41,6 +41,10 @@ pub(crate) struct Runtime {
     /// (build for AUR/ABS/local, download for official — once wired).
     pub(crate) buildpkgonly: bool,
     pub(crate) fetch_all: bool,
+    /// `-O` / `--nodeps` and `-o` / `--onlydeps` (official-repo installs;
+    /// AUR/ABS only warn).
+    pub(crate) nodeps: bool,
+    pub(crate) onlydeps: bool,
     /// `--outdistfiles DIR`: where `-w` writes archives.
     pub(crate) outdistfiles: Option<std::path::PathBuf>,
 }

@@ -69,7 +69,7 @@ emerge aur/neovim-git abs/nano cachyos-extra-v3/neovim   # pick the source per p
 emerge -p neovim                    # dry run
 emerge -a neovim                    # ask before acting
 emerge -1 htop                      # install as a dependency (not added to world)
-emerge -at aur/setrixtui abs/nano @fonts --jobsr=7 --jobsa=2   # mixed sources, parallel jobs
+emerge -at aur/setrixtui abs/nano @fonts --jobs=7 --jobsa=2   # mixed sources, parallel jobs
 
 # Remove
 emerge -C neovim                    # unmerge
@@ -145,7 +145,7 @@ aura-emerge's own config. It overrides `/etc/makepkg.conf` for builds made by au
 ```bash
 # Default flags, added before whatever you type (the command line wins on conflict).
 # Skip them for one run with --ignore-default-opts.
-EMERGE_DEFAULT_OPTS="--jobsr=8 --tree --deep"
+EMERGE_DEFAULT_OPTS="--jobs=8 --tree --deep"
 
 # Theme colours for status lines (roles: ok, warn, error, info, special).
 # #RRGGBB or named colours (red, bright-cyan, …). Last mention of a role wins.
@@ -175,7 +175,7 @@ FEATURES="localrepo"
 
 Only `/etc/portage/make.conf` is read - there is no per-user make.conf.
 
-`EMERGE_DEFAULT_OPTS` accepts modifier flags only (`--ask`, `--verbose`, `--devel`, `--tree`, `--deep`, `--jobsr=N`, `--jobsa=N`, `--searchdesc`, `--exclude=<atom>`, ...), so it can't turn every run into `--unmerge`. Conflicting pairs are rejected if both are set: `--aur`/`--abs`, `--aur`/`--repos`, `--no-sandbox`/`--unshare-net-build`, `--skippgp`/`--autopgp`, `--select`/`--deselect`. If a config default conflicts with the command line, the config default is dropped. `--abs` and `--repos` do **not** conflict.
+`EMERGE_DEFAULT_OPTS` accepts modifier flags only (`--ask`, `--verbose`, `--devel`, `--tree`, `--deep`, `--jobs=N`, `--jobsa=N`, `--searchdesc`, `--exclude=<atom>`, ...), so it can't turn every run into `--unmerge`. Conflicting pairs are rejected if both are set: `--aur`/`--abs`, `--aur`/`--repos`, `--no-sandbox`/`--unshare-net-build`, `--skippgp`/`--autopgp`, `--select`/`--deselect`. If a config default conflicts with the command line, the config default is dropped. `--abs` and `--repos` do **not** conflict.
 
 `emerge --info` shows what was read and the final value of each override. [**→ Example make.conf**](misc/make.conf)
 
@@ -286,10 +286,10 @@ A dependency that isn't named in anyone's "Depends On" (resolved via `provides`,
 
 ### Parallel jobs
 
-`--jobsr=N` runs up to N official-repo installs at once, `--jobsa=N` up to N AUR/ABS builds (both default to 1; `--jobs` is an alias for `--jobsr`). Put your defaults in `EMERGE_DEFAULT_OPTS`. `--load-average=X` holds new builds back while the 1-minute load is above X (never when nothing else is running); `--nospinner` hides the live Jobs row.
+`--jobs=N` runs up to N official-repo installs at once, `--jobsa=N` up to N AUR/ABS builds (both default to 1). Put your defaults in `EMERGE_DEFAULT_OPTS`. `--load-average=X` holds new builds back while the 1-minute load is above X (never when nothing else is running); `--nospinner` hides the live Jobs row.
 
 ```bash
-emerge -at aur/setrixtui cachyos-extra-v3/neovim abs/nano @fonts --jobsr=7 --jobsa=2
+emerge -at aur/setrixtui cachyos-extra-v3/neovim abs/nano @fonts --jobs=7 --jobsa=2
 ```
 
 ```
@@ -358,7 +358,7 @@ When an install would overwrite a file that no package owns, aura-emerge asks `A
 
 ### `--info`
 
-`emerge --info` prints the version (with the libalpm it was built against), kernel, CPU/memory/swap, the effective `--jobsr`/`--jobsa`, every repository in `pacman.conf` order with its mirror, the `makepkg.conf` and `make.conf` values (including `FEATURES`), the profile, mask/world sizes, and merge-log totals.
+`emerge --info` prints the version (with the libalpm it was built against), kernel, CPU/memory/swap, the effective `--jobs`/`--jobsa`, every repository in `pacman.conf` order with its mirror, the `makepkg.conf` and `make.conf` values (including `FEATURES`), the profile, mask/world sizes, and merge-log totals.
 
 ### `--pkginfo`
 
@@ -418,7 +418,7 @@ What you get: `pacman -Qm` no longer lists these packages, `pacman -Si ae-aur/<p
 
 What emerge does with it:
 
-- **Reuse:** a bare AUR install whose version is already in `ae-aur` and equals the AUR's current one is installed from the local repo - no clone, no build. `--edit` and `--pkgbuild-view` force a real rebuild; `-B` / `-F` never use local binaries; an explicit `ae-aur/<name>` goes through the normal repo install.
+- **Reuse:** a bare AUR install whose version is already in `ae-aur` and equals the AUR's current one is installed from the local repo - no clone, no build. `--edit` and `--pkgbuild-view` force a real rebuild; `-B` / `-f` never use local binaries; an explicit `ae-aur/<name>` goes through the normal repo install.
 - **Cleanup:** `-C`, `-c` and `--prune` also drop what they removed from the `ae-*` repos. `emerge --localrepo-clean` drops every entry whose package is no longer installed (`-p` only lists, `-a` asks). With `localrepo` off it says there is nothing to clean.
 - **Empty dbs:** created by the package's `post_install` / `post_upgrade` hook, by `emerge --sync` and by the first publish, so `pacman -Sy` never trips over a listed `file://` server with no packages.
 - **Best effort:** a failed publish is a warning, never a failed merge. If the `[ae-*]` sections are missing, emerge prints a one-time hint with the `Include` line.
@@ -630,14 +630,14 @@ emerge --usepkgbuild ./scaner-test --ask
 | `--skip-srcinfo-regen` | With `--edit`: don't regenerate `.SRCINFO` |
 | `--pkgbuild-view` | Show/diff PKGBUILD and confirm before building (top-level package only; offers `$EDITOR` on decline) |
 | `--usepkgbuild <PATH>` | Build and install a local PKGBUILD checkout (scanner + bwrap); recorded in world as `Err/` unless `-1` |
-| `--usepkg <FILE…>` | Install local `.pkg.tar.*` archive(s) through audit + helper `-U`; recorded in world as `Err/` unless `-1` |
+| `--usepkg <FILE…\|DIR>` | Install local `.pkg.tar.*` archive(s) through audit + helper `-U`, in one transaction (dependencies among them are resolved together; a directory means every archive in it, e.g. a `-f --outdistfiles` result); recorded in world as `Err/` unless `-1` |
+| `-O` / `--nodeps` | With `--usepkg`: install exactly one archive file without checking dependencies (`pacman -Udd`) |
 | `--scan` | Audit PKGBUILD/.install only, no build/install; non-zero exit on findings (AUR or `--usepkgbuild`) |
 | `--sync` | Sync package databases |
 | `--refresh` | Force `-Syy` (with `--sync` or `-u`) |
 | `--info` | System info, like Gentoo's `emerge --info` |
 | `--pkginfo <pkg…>` | Installed package details (`-v` lists files) |
 | `--news [N\|all]` | Arch Linux news: bare lists items, `N` reads one, `all` marks all as read |
-| `--check-news [N\|all]` | Alias for `--news` |
 | `--select` | Add to world without installing |
 | `--deselect` | Remove from world without unmerging |
 | `--check-world` | List world entries that are missing or not explicitly installed |
@@ -661,9 +661,8 @@ emerge --usepkgbuild ./scaner-test --ask
 | `--revdep-rebuild` | Rebuild packages whose binaries link against a missing library |
 | `-t`, `--tree` | Show the plan as a dependency tree |
 | `-D`, `--deep[=N]` | With `-t`: nest N levels, or all levels if bare |
-| `--jobsr <N>` | Max parallel official-repo installs (default 1) |
+| `--jobs <N>` | Max parallel official-repo installs (default 1) |
 | `--jobsa <N>` | Max parallel AUR/ABS builds (default 1) |
-| `--jobs <N>` | Alias for `--jobsr` (Portage-style) |
 | `--load-average <X>` | Hold new builds while the 1-minute load average is above X |
 | `--nospinner` | No live Jobs row |
 | `--color <y\|n\|auto>` | Force or disable colour output |
@@ -677,10 +676,10 @@ emerge --usepkgbuild ./scaner-test --ask
 | `--ignore-default-opts` | Ignore `EMERGE_DEFAULT_OPTS` from make.conf for this run |
 | `--debug` | Show makepkg/compiler output live (also `AE_DEBUG=1`); by default it's hidden to keep the `>>>` lines readable, and a failed build still dumps the captured log |
 | `--log <PATH>` | Write a session log (command, emerge.log lines, full build output) for bug reports - no `| tee` needed; append-only, nothing already in the file is truncated or overwritten |
-| `-B` / `--buildpkgonly` (`-w` / `--getpkg`) | Archives only, no install (official → CacheDir; AUR/ABS/local → build) |
-| `-F` / `--fetch-all-uri` (`-f`) | Fetch only: official → archive; AUR/ABS → clone (no build/install) |
-| `--outdistfiles <DIR>` | With `-B`/`-F`: copy archives into DIR |
-| `-N`/`--newuse`, `-e`/`--emptytree`, `-q`, `-O`, `-o`, `-l`, `-A`, `--nodeps`, `--onlydeps`, `--complete-graph`, `--changed-use`, `--backtrack`, `--columns`, `--newrepo`, `--reinstall`, `--with-bdeps`, `--metadata`, `--clean`, `--config`, `--noconfmem`, `--verbose-conflicts` | Gentoo-compat: accepted, no effect |
+| `-B` / `--buildpkgonly` | Archives only, no install (official → CacheDir; AUR/ABS/local → build) |
+| `-f` / `--fetchonly` | Fetch only, whole dependency tree: official → archives in CacheDir (deps included); AUR/ABS → clone + sources verified in the sandbox (`makepkg --verifysource`, into SRCDEST) for the package and its AUR/ABS deps, official deps as archives. No build, no install |
+| `--outdistfiles <DIR>` | With `-B`/`-f`: copy archives (deps included) into DIR; AUR/ABS checkouts are linked there |
+| `-N`/`--newuse`, `-e`/`--emptytree`, `-q`, `-o`, `-l`, `-A`, `--onlydeps`, `--complete-graph`, `--changed-use`, `--backtrack`, `--columns`, `--newrepo`, `--reinstall`, `--with-bdeps`, `--metadata`, `--clean`, `--config`, `--noconfmem`, `--verbose-conflicts` | Gentoo-compat: accepted, no effect |
 | `-h`, `--help` | Help |
 | `-V`, `--version` | Version |
 

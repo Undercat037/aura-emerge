@@ -603,7 +603,7 @@ enum Arity {
 struct FlagSpec {
     long: &'static str,
     short: Option<char>,
-    /// Spellings of one option share a key (`--jobs` = `--jobsr`).
+    /// Spellings of one option share a key (`--searchdesc` = `-S`).
     key: &'static str,
     arity: Arity,
     /// Values add up instead of replacing (`--exclude`).
@@ -703,8 +703,7 @@ static SPECS: &[FlagSpec] = &[
     sw("--pkgbuild-view", None),
     valued("--quiet-build", "--quiet-build", Val::YesNo),
     // parallelism
-    valued("--jobs", "--jobsr", Val::Count),
-    valued("--jobsr", "--jobsr", Val::Count),
+    valued("--jobs", "--jobs", Val::Count),
     valued("--jobsa", "--jobsa", Val::Count),
     valued("--load-average", "--load-average", Val::Load),
     // action modifiers
@@ -1362,8 +1361,8 @@ mod config_tests {
     #[test]
     fn typed_value_replaces_default_value() {
         assert_eq!(
-            run("--jobs 4 --jobsa 3", &["--jobsr", "2"]),
-            vec!["emerge", "--jobsa=3", "--jobsr", "2"]
+            run("--jobs 4 --jobsa 3", &["--jobs", "2"]),
+            vec!["emerge", "--jobsa=3", "--jobs", "2"]
         );
         assert_eq!(
             run("--color=y", &["--color=n"]),
@@ -1418,7 +1417,7 @@ mod config_tests {
 
     #[test]
     fn last_default_wins_inside_the_config() {
-        assert_eq!(run("--jobs 2 --jobsr 8", &[]), vec!["emerge", "--jobsr=8"]);
+        assert_eq!(run("--jobs 2 --jobs 8", &[]), vec!["emerge", "--jobs=8"]);
     }
 
     #[test]

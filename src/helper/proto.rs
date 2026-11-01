@@ -95,6 +95,8 @@ pub(crate) enum Request {
         needed: bool,
         /// pacman `-w`: download into CacheDir, do not install.
         download_only: bool,
+        /// pacman `-dd`: no dependency resolution, targets only.
+        nodeps: bool,
         names: Vec<String>,
     },
     /// `-U`: `<sha256> <abs path>` per file (see `validate::file_spec`).
@@ -159,6 +161,7 @@ impl Request {
             Request::Install {
                 needed,
                 download_only,
+                nodeps,
                 names,
             } => {
                 let mut a = Vec::new();
@@ -167,6 +170,9 @@ impl Request {
                 }
                 if *download_only {
                     a.push("--downloadonly".into());
+                }
+                if *nodeps {
+                    a.push("--nodeps".into());
                 }
                 a.extend(names.iter().cloned());
                 ("install", a)
@@ -246,11 +252,13 @@ impl Request {
             "install" => {
                 let mut needed = false;
                 let mut download_only = false;
+                let mut nodeps = false;
                 let mut rest = Vec::new();
                 for a in args {
                     match a.as_str() {
                         "--needed" => needed = true,
                         "--downloadonly" => download_only = true,
+                        "--nodeps" => nodeps = true,
                         _ => rest.push(a),
                     }
                 }
@@ -258,6 +266,7 @@ impl Request {
                 Ok(Request::Install {
                     needed,
                     download_only,
+                    nodeps,
                     names: rest,
                 })
             }
@@ -476,6 +485,7 @@ mod tests {
         roundtrip(Request::Jobs { n: 7 });
         roundtrip(Request::Install {
             download_only: false,
+            nodeps: false,
             needed: false,
             names: vec!["extra/nano".into(), "vim".into()],
         });
@@ -606,6 +616,7 @@ mod tests {
         let mut buf = Vec::new();
         let evil = Request::Install {
             download_only: false,
+            nodeps: false,
             needed: false,
             names: vec!["nano\nEND\nCMD sync".into()],
         };
@@ -665,6 +676,7 @@ mod tests {
                 aeforce: false,
                 aenew: false,
                 aekeep: false,
+                nodeps: false,
             },
             files: vec![format!("{} /tmp/a b.pkg.tar.zst", h)],
         };

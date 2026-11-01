@@ -608,12 +608,13 @@ pub(crate) fn install(
     names: &[String],
     needed: bool,
     download_only: bool,
+    nodeps: bool,
     emit: &mut dyn FnMut(&str),
 ) -> io::Result<()> {
     let names = names.to_vec();
     with_live_events(emit, move |tx| {
         let mut alpm = open()?;
-        install_in_with(&mut alpm, &names, needed, download_only, tx)
+        install_in_with(&mut alpm, &names, needed, download_only, nodeps, tx)
     })
 }
 
@@ -629,7 +630,7 @@ pub(crate) fn install_in(
     emit: &mut dyn FnMut(&str),
 ) -> io::Result<()> {
     let (tx, rx) = mpsc::channel::<String>();
-    let res = install_in_with(alpm, names, needed, download_only, tx);
+    let res = install_in_with(alpm, names, needed, download_only, false, tx);
     for ev in rx.try_iter() {
         emit(&ev);
     }
@@ -641,6 +642,7 @@ fn install_in_with(
     names: &[String],
     needed: bool,
     download_only: bool,
+    nodeps: bool,
     tx: mpsc::Sender<String>,
 ) -> io::Result<()> {
     let mut targets = Vec::with_capacity(names.len());
@@ -664,6 +666,10 @@ fn install_in_with(
     if download_only {
         // Same as pacman `-w`: fetch into CacheDir, do not commit install.
         flags |= TransFlag::DOWNLOAD_ONLY;
+    }
+    if nodeps {
+        // pacman `-dd`: targets only, no dependency / version checks.
+        flags |= TransFlag::NO_DEPS | TransFlag::NO_DEP_VERSION;
     }
     wire_events(alpm, tx);
     alpm.trans_init(flags)
@@ -772,6 +778,9 @@ fn install_files_in_with(
     }
     if opts.asdeps {
         flags |= TransFlag::ALL_DEPS;
+    }
+    if opts.nodeps {
+        flags |= TransFlag::NO_DEPS | TransFlag::NO_DEP_VERSION;
     }
     let ev = tx.clone();
     wire_events(alpm, tx);
@@ -1663,6 +1672,7 @@ mod tests {
             aeforce: false,
             aenew: false,
             aekeep: false,
+            nodeps: false,
         };
         install_files_in(
             &mut fx.handle(),

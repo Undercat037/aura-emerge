@@ -1777,6 +1777,232 @@ pub(crate) fn maybe_regen_srcinfo(dir: &std::path::Path, skip_srcinfo_regen: boo
     }
 }
 
+// ── `-f` / --fetchonly: whole-tree fetch ────────────────────────────────
+
+/// Official packages the AUR/ABS side of a `-f` run depends on, collected
+/// while the tree is walked and downloaded as archives at the end.
+static FETCH_REPO_DEPS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+fn note_fetch_repo_dep(dep: &str) {
+    let name = strip_version_operator(dep);
+    if name.is_empty() {
+        return;
+    }
+    if let Ok(mut v) = FETCH_REPO_DEPS.lock()
+        && !v.contains(&name)
+    {
+        v.push(name);
+    }
+}
+
+fn take_fetch_repo_deps() -> Vec<String> {
+    FETCH_REPO_DEPS
+        .lock()
+        .map(|mut v| std::mem::take(&mut *v))
+        .unwrap_or_default()
+}
+
+/// Downloads the official dependencies noted during an AUR/ABS `-f` walk
+/// (archives into CacheDir, with their own dependencies; `--outdistfiles`
+/// gets a copy). Dependency names may be virtual, so they are mapped to
+/// real sync packages first.
+fn fetch_noted_repo_deps() -> bool {
+    let deps = take_fetch_repo_deps();
+    if deps.is_empty() {
+        return true;
+    }
+    let (names, unresolved) = crate::alpm_db::sync_providers(&deps);
+    for u in &unresolved {
+        eprintln!(
+            "{} dependency '{}' is in no sync repo - not fetched",
+            ">>> Warning:".t_yellow().bold(),
+            u
+        );
+    }
+    if names.is_empty() {
+        return true;
+    }
+    println!(
+        "{} fetching {} official dependency package(s) of the AUR/ABS tree",
+        ">>>".t_green().bold(),
+        names.len()
+    );
+    let (ok, _) = crate::repo_install_landed(&names, true);
+    ok
+}
+
+/// `-O` / `-o` only exist for official-repo packages; say so once when an
+/// AUR/ABS install runs with either.
+fn warn_deps_flags_unsupported() {
+    let rt = crate::runtime::get();
+    if !(rt.nodeps || rt.onlydeps) {
+        return;
+    }
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        eprintln!(
+            "{} -O/-o are not implemented for AUR/ABS packages - their dependencies are resolved as usual.",
+            ">>> Warning:".t_yellow().bold()
+        );
+    });
+}
+
+/// Tail of `aur_install` / `abs_install` when `-f` is on.
+fn finish_fetch_tree(ok: bool, pretend: bool) -> bool {
+    if pretend || !crate::runtime::get().fetch_all {
+        return ok;
+    }
+    if !ok && !crate::runtime::keep_going() {
+        return false;
+    }
+    let deps_ok = fetch_noted_repo_deps();
+    ok && deps_ok
+}
+
+/// `--outdistfiles DIR`: link the checkout there; returns the " → path"
+/// suffix for the log line (empty without the flag).
+fn link_into_outdistfiles(dir: &std::path::Path, name: &str) -> String {
+    let Some(out) = crate::runtime::get().outdistfiles.clone() else {
+        return String::new();
+    };
+    let _ = std::fs::create_dir_all(&out);
+    let target = out.join(name);
+    if !target.exists() {
+        let _ = std::os::unix::fs::symlink(dir, &target);
+    }
+    format!(" → {}", target.display())
+}
+
+/// ABS counterpart of the dependency walk in `resolve_and_build_aur`:
+/// official deps are noted for download, AUR-only ones are pointed out.
+fn note_abs_fetch_deps(dir: &std::path::Path, pkg: &str) {
+    let arch = current_arch();
+    let srcinfo = dir.join(".SRCINFO");
+    let deps = if srcinfo.exists() {
+        crate::aur::srcinfo_dependencies(&srcinfo, &arch)
+    } else {
+        fs::read_to_string(dir.join("PKGBUILD"))
+            .ok()
+            .and_then(|t| crate::bash_ast::pkgbuild_dependencies(&t, &arch))
+    };
+    let Some(deps) = deps else {
+        eprintln!(
+            "{} could not resolve the dependencies of '{}' statically - only the package itself is fetched.",
+            ">>> Warning:".t_yellow().bold(),
+            pkg
+        );
+        return;
+    };
+    for dep in &deps {
+        if already_satisfied(dep) {
+            continue;
+        }
+        if is_satisfiable_without_aur(dep) {
+            note_fetch_repo_dep(dep);
+        } else {
+            eprintln!(
+                "{} '{}' needs '{}', which is AUR-only - fetch it with: emerge -f aur/{}",
+                ">>> Warning:".t_yellow().bold(),
+                pkg,
+                strip_version_operator(dep),
+                strip_version_operator(dep)
+            );
+        }
+    }
+}
+
+/// `-f` for one AUR/ABS package: download every source into SRCDEST and
+/// verify checksums / signatures, inside the sandbox
+/// (`makepkg --verifysource`). No extract, no build, no install -- but a
+/// later build (or the same package on this machine, offline) finds the
+/// sources in place. Same SRCDEST binds, make.conf flags and PGP-key retry
+/// as the real build. The PKGBUILD must already have passed the scan.
+fn fetch_sources_sandboxed(build_dir: &std::path::Path, pkgbase: &str, skippgp: bool) -> bool {
+    let _fakeroot_shim_guard = crate::sandbox::FakerootShimGuard::new(build_dir);
+
+    let mut args: Vec<&str> = vec!["--verifysource"];
+    if skippgp {
+        args.push("--skippgpcheck");
+    }
+    let build_cfg = build_config(build_dir);
+    let conf_override = makepkg_conf_override(build_dir, &build_cfg);
+    if let Some(path) = &conf_override {
+        args.push("--config");
+        args.push(path.as_str());
+    }
+
+    let real_gnupg = std::env::var("HOME")
+        .ok()
+        .map(|h| std::path::PathBuf::from(h).join(".gnupg"));
+    let (extra_dest_dirs, _default_source_cache) = resolve_dest_dirs(build_dir);
+    let mut sandbox_keys: Vec<String> = fs::read_to_string(build_dir.join("PKGBUILD"))
+        .map(|text| parse_validpgpkeys(&text))
+        .unwrap_or_default();
+
+    println!(
+        "{} fetching sources for '{}' (verify only, no build)...",
+        ">>>".t_green().bold(),
+        pkgbase
+    );
+    for attempt in 0..2 {
+        let res = run_build_cmd(
+            crate::sandbox::sandboxed_makepkg(
+                MAKEPKG_BIN,
+                build_dir,
+                &args,
+                real_gnupg.as_deref(),
+                &extra_dest_dirs,
+                &sandbox_keys,
+                true,
+            ),
+            pkgbase,
+        );
+        match res {
+            Ok(()) => {
+                if let Some((_, dir)) = extra_dest_dirs.iter().find(|d| d.0 == "SRCDEST") {
+                    println!(
+                        "{} sources of '{}' are in {}",
+                        ">>>".t_green().bold(),
+                        pkgbase,
+                        dir.display()
+                    );
+                }
+                return true;
+            }
+            Err(log) => {
+                let keys = pgp_keys_from_log(&log);
+                if attempt == 0 && !skippgp && !keys.is_empty() {
+                    println!(
+                        "{} Importing {} PGP key(s) into the sandbox keyring...",
+                        ">>>".t_green().bold(),
+                        keys.len()
+                    );
+                    for k in &keys {
+                        let _ = import_pgp_key(k);
+                        if !sandbox_keys.iter().any(|x| x == k) {
+                            sandbox_keys.push(k.clone());
+                        }
+                    }
+                    continue;
+                }
+                eprintln!(
+                    "{} fetching sources failed for '{}'",
+                    ">>> Error:".t_red().bold(),
+                    pkgbase
+                );
+                if !skippgp {
+                    eprintln!(
+                        "{} for a missing PGP key not in validpgpkeys retry with --autopgp or --skippgp.",
+                        ">>> Hint:".t_yellow().bold()
+                    );
+                }
+                return false;
+            }
+        }
+    }
+    false
+}
+
 fn resolve_and_build_aur(
     pkg: &str,
     build_root: &std::path::Path,
@@ -1867,32 +2093,6 @@ fn resolve_and_build_aur(
     );
     crate::progress::line(crate::progress::Stage::Emerging, stage_n, &stage_atom);
 
-    // `-F`: sources are on disk; no scan gate / build / install.
-    if crate::runtime::get().fetch_all {
-        let dest_note = if let Some(out) = crate::runtime::get().outdistfiles.clone() {
-            let _ = std::fs::create_dir_all(&out);
-            let target = out.join(&pkgbase);
-            // best-effort: symlink or copy path notice
-            if !target.exists() {
-                let _ = std::os::unix::fs::symlink(&dir, &target);
-            }
-            format!(" → {}", target.display())
-        } else {
-            String::new()
-        };
-        println!(
-            "{} fetched (clone only) {}{}",
-            ">>>".t_green().bold(),
-            dir.display(),
-            dest_note
-        );
-        crate::progress::line(crate::progress::Stage::Completed, stage_n, &stage_atom);
-        building.remove(&pkgbase);
-        let names = vec![pkgbase.clone()];
-        built.insert(pkgbase.clone(), names.clone());
-        return Some(names);
-    }
-
     let fetched = crate::security::scan_aur_pkgbuilds_or_abort(std::slice::from_ref(&pkgbase));
     crate::security::verify_local_clone_or_rescan(&pkgbase, &dir, fetched.get(&pkgbase));
 
@@ -1956,10 +2156,19 @@ fn resolve_and_build_aur(
 
     let mut aur_dep_tarballs = Vec::new();
     for dep in &deps {
-        if already_satisfied(dep) || is_satisfiable_without_aur(dep) {
+        if already_satisfied(dep) {
             continue;
         }
-        // AUR-only deps are always resolved and built recursively.
+        if is_satisfiable_without_aur(dep) {
+            // `-f`: official deps are downloaded as archives once the AUR
+            // walk is done (see `fetch_noted_repo_deps`).
+            if crate::runtime::get().fetch_all {
+                note_fetch_repo_dep(dep);
+            }
+            continue;
+        }
+        // AUR-only deps are always resolved and built recursively
+        // (with `-f`: recursively fetched).
         match resolve_and_build_aur(
             dep,
             build_root,
@@ -1987,6 +2196,38 @@ fn resolve_and_build_aur(
                 return None;
             }
         }
+    }
+
+    // `-f`: the walk above covered the AUR side of the tree; this package
+    // only needs its sources now. The PKGBUILD has been scanned already;
+    // makepkg runs in the sandbox. Nothing is built or installed.
+    if crate::runtime::get().fetch_all {
+        let ok = match isolation {
+            BuildIsolation::Bwrap => fetch_sources_sandboxed(&dir, &pkgbase, skippgp),
+            BuildIsolation::None => {
+                eprintln!(
+                    "{} no sandbox: '{}' is cloned but its sources are not downloaded (makepkg would run the PKGBUILD unconfined).",
+                    ">>> Warning:".t_yellow().bold(),
+                    pkgbase
+                );
+                true
+            }
+        };
+        building.remove(&pkgbase);
+        if !ok {
+            return None;
+        }
+        let dest_note = link_into_outdistfiles(&dir, &pkgbase);
+        println!(
+            "{} fetched {}{}",
+            ">>>".t_green().bold(),
+            dir.display(),
+            dest_note
+        );
+        crate::progress::line(crate::progress::Stage::Completed, stage_n, &stage_atom);
+        let names = vec![pkgbase.clone()];
+        built.insert(pkgbase.clone(), names.clone());
+        return Some(names);
     }
 
     let build_started = std::time::SystemTime::now();
@@ -2089,6 +2330,35 @@ fn build_base_dir(name: &str) -> std::path::PathBuf {
 /// instead of shelling out to `aura -A`. `pkgctl` is not involved here
 /// at all -- only `--abs` ever calls it, and only for `repo clone`.
 pub(crate) fn aur_install(
+    pkgs: &[String],
+    pretend: bool,
+    ask: bool,
+    oneshot: bool,
+    skippgp: bool,
+    edit: bool,
+    no_sandbox: bool,
+    skip_srcinfo_regen: bool,
+    unshare_net_build: bool,
+    pkgbuild_view: bool,
+) -> bool {
+    warn_deps_flags_unsupported();
+    let ok = aur_install_inner(
+        pkgs,
+        pretend,
+        ask,
+        oneshot,
+        skippgp,
+        edit,
+        no_sandbox,
+        skip_srcinfo_regen,
+        unshare_net_build,
+        pkgbuild_view,
+    );
+    finish_fetch_tree(ok, pretend)
+}
+
+/// The AUR install proper; `aur_install` adds the `-f` tail on top.
+fn aur_install_inner(
     pkgs: &[String],
     pretend: bool,
     ask: bool,
@@ -2713,6 +2983,7 @@ fn install_local_tarballs(tarballs: &[String], ask: bool, mark_asdeps: bool) -> 
         aeforce: false,
         aenew: false,
         aekeep: false,
+        nodeps: false,
     };
     if install_files_resolving_conflicts(&pinned, opts, ask) {
         for t in tarballs {
@@ -2735,12 +3006,13 @@ fn install_local_tarballs(tarballs: &[String], ask: bool, mark_asdeps: bool) -> 
 /// hooks, setuid bits), so the archive audit gate is not optional here.
 ///
 /// Returns the installed package names on success (the caller records
-/// them in world with the "Err/" prefix, same as --usepkgbuild),
+/// them in world with the "local/" prefix, same as --usepkgbuild),
 /// or `None` on failure.
 pub(crate) fn install_pkgarchives(
     files: &[String],
     ask: bool,
     oneshot: bool,
+    nodeps: bool,
 ) -> Option<Vec<String>> {
     if files.is_empty() {
         return None;
@@ -2777,9 +3049,14 @@ pub(crate) fn install_pkgarchives(
         return None;
     }
     println!(
-        "{} Installing {} package archive(s)...",
+        "{} Installing {} package archive(s){}...",
         ">>>".t_green().bold(),
-        files.len()
+        files.len(),
+        if nodeps {
+            " (-O: dependencies not checked)"
+        } else {
+            ""
+        }
     );
     // Honour `-n` / `--noreplace` so re-running with the same archive is
     // a no-op instead of a forced reinstall; `-1` marks everything asdeps.
@@ -2790,6 +3067,7 @@ pub(crate) fn install_pkgarchives(
         aeforce: false,
         aenew: false,
         aekeep: false,
+        nodeps,
     };
     if !install_files_resolving_conflicts(&pinned, opts, ask) {
         return None;
@@ -3242,6 +3520,7 @@ fn build_with_sandbox(
         aeforce: false,
         aenew: false,
         aekeep: false,
+        nodeps: false,
     };
     let ok = install_files_resolving_conflicts(&pinned, opts, ask);
     if ok && !oneshot {
@@ -3813,6 +4092,39 @@ pub(crate) fn abs_install(
     pkgbuild_view: bool,
     skip_plan: bool,
 ) -> bool {
+    warn_deps_flags_unsupported();
+    let ok = abs_install_inner(
+        pkgs,
+        pretend,
+        ask,
+        oneshot,
+        skippgp,
+        edit,
+        autopgp,
+        no_sandbox,
+        skip_srcinfo_regen,
+        unshare_net_build,
+        pkgbuild_view,
+        skip_plan,
+    );
+    finish_fetch_tree(ok, pretend)
+}
+
+/// The ABS install proper; `abs_install` adds the `-f` tail on top.
+fn abs_install_inner(
+    pkgs: &[String],
+    pretend: bool,
+    ask: bool,
+    oneshot: bool,
+    skippgp: bool,
+    edit: bool,
+    autopgp: bool,
+    no_sandbox: bool,
+    skip_srcinfo_regen: bool,
+    unshare_net_build: bool,
+    pkgbuild_view: bool,
+    skip_plan: bool,
+) -> bool {
     if !warn_critical_libc(pkgs, "ABS") {
         return false;
     }
@@ -4025,20 +4337,32 @@ fn abs_build_one(
         return false;
     }
 
-    // `-F`: checkout only, no build/install.
+    // `-f`: checkout + sources of this package; its official deps are
+    // noted for the archive download that follows. Nothing is built.
     if crate::runtime::get().fetch_all {
-        let dest_note = if let Some(out) = crate::runtime::get().outdistfiles.clone() {
-            let _ = std::fs::create_dir_all(&out);
-            let target = out.join(&info.name);
-            if !target.exists() {
-                let _ = std::os::unix::fs::symlink(&pkg_dir, &target);
+        note_abs_fetch_deps(&pkg_dir, &info.name);
+        if !skippgp {
+            ensure_pgp_keys(&pkg_dir.join("PKGBUILD"), autopgp);
+        }
+        let ok = match isolation {
+            BuildIsolation::Bwrap => fetch_sources_sandboxed(&pkg_dir, &info.name, skippgp),
+            BuildIsolation::None => {
+                eprintln!(
+                    "{} no sandbox: '{}' is checked out but its sources are not downloaded (makepkg would run the PKGBUILD unconfined).",
+                    ">>> Warning:".t_yellow().bold(),
+                    info.name
+                );
+                true
             }
-            format!(" → {}", target.display())
-        } else {
-            String::new()
         };
+        if !ok {
+            crate::progress::abort_one();
+            crate::runtime::record_failure(&info.name, "ABS source fetch failed");
+            return false;
+        }
+        let dest_note = link_into_outdistfiles(&pkg_dir, &info.name);
         println!(
-            "{} fetched (clone only) {}{}",
+            "{} fetched {}{}",
             ">>>".t_green().bold(),
             pkg_dir.display(),
             dest_note
@@ -4474,7 +4798,7 @@ pub(crate) fn source_builds_parallel(
 /// sandboxed build -> install sequence every other path uses.
 ///
 /// Returns the `.SRCINFO`-declared `pkgname`(s) built on success (for
-/// the caller to record in world with the "Err/" prefix -- see
+/// the caller to record in world with the "local/" prefix -- see
 /// `world_set::pkg_world_entry`), or `None` on failure.
 /// Copy a local PKGBUILD tree into `~/.cache/aura-emerge/build/local/<label>/`
 /// so makepkg never writes `src/` / `pkg/` next to the user's sources
@@ -4996,59 +5320,144 @@ pub(crate) fn user_makepkg_conf_path() -> String {
     String::new()
 }
 
-/// pacman.conf repos in file order (Server/Include resolved one level).
+/// pacman.conf repos in file order.
+///
+/// Follows `Include` the way libalpm does: the included file is parsed as
+/// if its lines stood in place, so a file that carries its own `[section]`
+/// headers (`/etc/portage/ae-repos.conf` -> `[ae-aur]`, `[ae-abs]`,
+/// `[ae-local]`) defines new repos instead of being booked to whichever
+/// repo the `Include` happened to sit under. A plain mirrorlist (no
+/// sections) stays one line under the repo, with its first `Server`.
+/// Repos that came from an included file get a leading
+/// `from <file>` line (shown on the priority line by `--info`).
 pub(crate) fn parse_pacman_repos() -> Vec<(String, Vec<String>)> {
-    let mut repos: Vec<(String, Vec<String>)> = Vec::new();
-    let Ok(file) = fs::File::open(PACMAN_CONF) else {
-        return repos;
-    };
-    let reader = io::BufReader::new(file);
+    parse_pacman_conf(std::path::Path::new(PACMAN_CONF))
+}
 
-    let mut current: Option<(String, Vec<String>)> = None;
-    for line in reader.lines().map_while(Result::ok) {
+/// Include nesting limit; pacman itself has none, this only stops a loop.
+const CONF_INCLUDE_DEPTH: usize = 8;
+
+fn parse_pacman_conf(path: &std::path::Path) -> Vec<(String, Vec<String>)> {
+    let mut repos: Vec<(String, Vec<String>)> = Vec::new();
+    let mut cur: Option<usize> = None;
+    parse_conf_file(path, None, &mut repos, &mut cur, 0);
+    repos
+}
+
+/// True when the text has at least one `[section]` header line.
+fn conf_has_sections(text: &str) -> bool {
+    text.lines()
+        .map(str::trim)
+        .any(|l| !l.starts_with('#') && l.len() > 2 && l.starts_with('[') && l.ends_with(']'))
+}
+
+/// `*` / `?` wildcard match (no classes), enough for `Include = dir/*.conf`.
+fn conf_wildcard(pat: &[u8], s: &[u8]) -> bool {
+    match (pat.first(), s.first()) {
+        (None, None) => true,
+        (Some(b'*'), _) => {
+            conf_wildcard(&pat[1..], s) || (!s.is_empty() && conf_wildcard(pat, &s[1..]))
+        }
+        (Some(b'?'), Some(_)) => conf_wildcard(&pat[1..], &s[1..]),
+        (Some(a), Some(b)) if a == b => conf_wildcard(&pat[1..], &s[1..]),
+        _ => false,
+    }
+}
+
+/// Expands an `Include` value. Wildcards are supported in the last path
+/// component only (the pacman.conf.d/*.conf case); anything else is one path.
+fn expand_conf_include(val: &str) -> Vec<std::path::PathBuf> {
+    let path = std::path::Path::new(val);
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return vec![path.to_path_buf()];
+    };
+    if !name.contains(['*', '?']) {
+        return vec![path.to_path_buf()];
+    }
+    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let mut out: Vec<std::path::PathBuf> = fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| conf_wildcard(name.as_bytes(), n.as_bytes()))
+        })
+        .map(|e| e.path())
+        .collect();
+    out.sort();
+    out
+}
+
+/// One config file. `origin` is `Some(file)` while parsing an included file
+/// (repos defined there are tagged with it). `cur` is shared with the caller:
+/// like in libalpm, the section a file ends in stays active afterwards.
+fn parse_conf_file(
+    path: &std::path::Path,
+    origin: Option<&std::path::Path>,
+    repos: &mut Vec<(String, Vec<String>)>,
+    cur: &mut Option<usize>,
+    depth: usize,
+) {
+    let Ok(text) = fs::read_to_string(path) else {
+        return;
+    };
+    for line in text.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
         if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            if let Some(repo) = current.take() {
-                repos.push(repo);
-            }
-            let name = trimmed
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .to_string();
-            if name != "options" {
-                current = Some((name, Vec::new()));
+            let name = trimmed[1..trimmed.len() - 1].trim().to_string();
+            if name == "options" {
+                *cur = None;
+            } else {
+                let mut lines = Vec::new();
+                if let Some(o) = origin {
+                    lines.push(format!("from {}", o.display()));
+                }
+                repos.push((name, lines));
+                *cur = Some(repos.len() - 1);
             }
             continue;
         }
-        let Some((_, lines)) = current.as_mut() else {
+        let Some((key, val)) = trimmed.split_once('=') else {
             continue;
         };
-        if let Some((key, val)) = trimmed.split_once('=') {
-            let key = key.trim();
-            let val = val.trim();
-            if key == "Include" {
-                let resolved = fs::read_to_string(val).ok().and_then(|inc| {
-                    inc.lines()
-                        .map(str::trim)
-                        .find(|l| l.starts_with("Server") && !l.starts_with('#'))
-                        .map(str::to_string)
-                });
-                match resolved {
-                    Some(server) => lines.push(format!("Include = {}  ({})", val, server)),
-                    None => lines.push(format!("Include = {}", val)),
+        let (key, val) = (key.trim(), val.trim());
+        match key {
+            "Include" => {
+                for inc in expand_conf_include(val) {
+                    let inc_text = fs::read_to_string(&inc).ok();
+                    let has_sections = inc_text.as_deref().is_some_and(conf_has_sections);
+                    if has_sections && depth < CONF_INCLUDE_DEPTH {
+                        parse_conf_file(&inc, Some(&inc), repos, cur, depth + 1);
+                        continue;
+                    }
+                    let Some(idx) = *cur else {
+                        continue;
+                    };
+                    let first_server = inc_text.as_deref().and_then(|t| {
+                        t.lines()
+                            .map(str::trim)
+                            .find(|l| l.starts_with("Server") && !l.starts_with('#'))
+                            .map(str::to_string)
+                    });
+                    repos[idx].1.push(match first_server {
+                        Some(server) => format!("Include = {}  ({})", inc.display(), server),
+                        None => format!("Include = {}", inc.display()),
+                    });
                 }
-            } else if key == "Server" {
-                lines.push(format!("Server = {}", val));
             }
+            "Server" => {
+                if let Some(idx) = *cur {
+                    repos[idx].1.push(format!("Server = {}", val));
+                }
+            }
+            _ => {}
         }
     }
-    if let Some(repo) = current.take() {
-        repos.push(repo);
-    }
-    repos
 }
 
 pub(crate) fn read_meminfo() -> Option<(u64, u64, u64, u64)> {
@@ -5117,7 +5526,7 @@ pub(crate) fn print_system_info() {
     }
     let rt = crate::runtime::get();
     println!(
-        "Jobs:       --jobsr={} (repo), --jobsa={} (aur/abs)",
+        "Jobs:       --jobs={} (repo), --jobsa={} (aur/abs)",
         rt.jobsr, rt.jobsa
     );
     println!();
@@ -5130,12 +5539,17 @@ pub(crate) fn print_system_info() {
     }
     for (i, (name, lines)) in repos.iter().enumerate() {
         println!("{}", name);
-        println!(
-            "    priority: {} (order of appearance in {})",
-            i + 1,
-            PACMAN_CONF
-        );
-        for l in lines {
+        // Repos that came from an `Include`d file carry a leading
+        // `from <file>` marker; show it on the priority line.
+        let (origin, rest) = match lines.split_first() {
+            Some((first, rest)) if first.starts_with("from ") => (Some(&first[5..]), rest),
+            _ => (None, lines.as_slice()),
+        };
+        match origin {
+            Some(o) => println!("    priority: {} (from {})", i + 1, o),
+            None => println!("    priority: {}", i + 1),
+        }
+        for l in rest {
             println!("    {}", l);
         }
         println!();
@@ -5566,6 +5980,51 @@ mod plan_tree_tests {
         std::fs::remove_file(dir.join(".SRCINFO")).unwrap();
         assert!(expected_pkg_names(&dir, "pkgname=(${_x})\n").is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pacman_conf_include_with_sections_defines_repos() {
+        let dir = std::env::temp_dir().join(format!("ae-pconf-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mirrors = dir.join("mirrorlist");
+        let local = dir.join("ae-repos.conf");
+        let conf = dir.join("pacman.conf");
+        std::fs::write(&mirrors, "# c\nServer = https://m.example/$repo\n").unwrap();
+        std::fs::write(
+            &local,
+            "# local\n[ae-aur]\nSigLevel = Never\nServer = file:///x/ae-aur\n\n[ae-abs]\nServer = file:///x/ae-abs\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &conf,
+            format!(
+                "[options]\nHoldPkg = pacman\n\n[core]\nInclude = {m}\n\n[blackarch]\nInclude = {m}\n\n# AE\nInclude = {l}\n\n[system]\nInclude = {m}\n",
+                m = mirrors.display(),
+                l = local.display()
+            ),
+        )
+        .unwrap();
+        let repos = parse_pacman_conf(&conf);
+        let names: Vec<&str> = repos.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["core", "blackarch", "ae-aur", "ae-abs", "system"]);
+        // blackarch keeps only its own mirrorlist, not the local repos' include.
+        assert_eq!(repos[1].1.len(), 1);
+        assert!(repos[1].1[0].contains("Server = https://m.example/$repo"));
+        // included repos are tagged and carry their own Server.
+        assert!(repos[2].1[0].starts_with("from "));
+        assert!(repos[2].1.iter().any(|l| l == "Server = file:///x/ae-aur"));
+        assert!(repos[3].1.iter().any(|l| l == "Server = file:///x/ae-abs"));
+        // the section after the include is not swallowed by it.
+        assert!(repos[4].1[0].starts_with("Include = "));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn conf_wildcard_matches_star_and_question() {
+        assert!(conf_wildcard(b"*.conf", b"a.conf"));
+        assert!(conf_wildcard(b"ae-?.conf", b"ae-1.conf"));
+        assert!(!conf_wildcard(b"*.conf", b"a.confx"));
     }
 
     fn pkg(name: &str, status: &str) -> PkgInfo {

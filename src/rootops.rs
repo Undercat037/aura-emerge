@@ -13,7 +13,7 @@ use crate::helper::sha256;
 use crate::helper::validate::{self, FileOpts};
 
 /// Process-wide helper: one sudo prompt, safe across worker threads
-/// (parallel --jobsr / --jobsa).
+/// (parallel --jobs / --jobsa).
 static HELPER: Mutex<Option<Client>> = Mutex::new(None);
 
 /// Runs `f` on the shared helper, starting it on first use. A dead
@@ -152,7 +152,7 @@ pub(crate) fn repo_remove(names: &[String], on_event: &mut dyn FnMut(&str)) -> R
     with_helper(|c| c.repo_remove(names, on_event)).map_err(|e| e.to_string())
 }
 
-/// `--jobsr` > 1 = that many parallel downloads; default keeps pacman.conf.
+/// `--jobs` > 1 = that many parallel downloads; default keeps pacman.conf.
 fn set_dl_jobs(c: &mut Client) -> Result<(), ClientError> {
     let j = crate::runtime::get().jobsr;
     if j > 1 {
@@ -168,14 +168,16 @@ pub(crate) fn install(
     needed: bool,
     on_event: &mut dyn FnMut(&str),
 ) -> Result<(), String> {
-    install_ex(names, needed, false, on_event)
+    install_ex(names, needed, false, false, on_event)
 }
 
-/// Like `install`, with pacman `-w` style download-only.
+/// Like `install`, with pacman `-w` style download-only and/or `-dd`
+/// (`nodeps`: no dependency resolution, targets only).
 pub(crate) fn install_ex(
     names: &[String],
     needed: bool,
     download_only: bool,
+    nodeps: bool,
     on_event: &mut dyn FnMut(&str),
 ) -> Result<(), String> {
     if names.is_empty() {
@@ -183,7 +185,7 @@ pub(crate) fn install_ex(
     }
     with_helper(|c| {
         set_dl_jobs(c)?;
-        c.install(names, needed, download_only, on_event)
+        c.install(names, needed, download_only, nodeps, on_event)
     })
     .map_err(|e| e.to_string())
 }

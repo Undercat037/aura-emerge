@@ -175,8 +175,8 @@ SOURCE PREFIXES
     version, maintainer, votes, popularity and license for AUR packages.
 
 PARALLEL JOBS
-    --jobsr=N runs up to N official-repo installs at once, --jobsa=N up to
-    N AUR/ABS builds (both default to 1; --jobs is an alias for --jobsr).
+    --jobs=N runs up to N official-repo installs at once, --jobsa=N up to
+    N AUR/ABS builds (both default to 1).
     Keep defaults in EMERGE_DEFAULT_OPTS. --load-average=X holds new builds
     back while the 1-minute load is above X. Progress is shown as
     '>>> Emerging (k of n, p%)' lines and a live Jobs footer
@@ -284,7 +284,7 @@ EXAMPLES
     emerge @game-kit                Install a custom set
     emerge --prune                  Remove anything not tracked in world
     emerge -uat @world --sync       Sync, then upgrade (asks first)
-    emerge -at aur/foo abs/nano @fonts --jobsr=7 --jobsa=2
+    emerge -at aur/foo abs/nano @fonts --jobs=7 --jobsa=2
                                      Mixed sources and sets, parallel jobs
     emerge -pt pkg --deep --keep-going  Dependency tree, full depth
     emerge -s abs/nano              Search ABS only
@@ -491,8 +491,11 @@ struct Cli {
     #[arg(long = "usepkgbuild", value_name = "PATH", value_hint = clap::ValueHint::DirPath)]
     usepkgbuild: Option<String>,
 
-    /// Install local .pkg.tar.* archive(s) through audit + helper -U;
-    /// world Err/ unless -1
+    /// Install local .pkg.tar.* archive(s) through audit + helper -U, in one
+    /// transaction (dependencies among them are resolved together). A
+    /// directory means every archive in it (e.g. an `-f --outdistfiles`
+    /// result). With `-O`: exactly one archive, no dependency check.
+    /// World Err/ unless -1
     #[arg(
         long = "usepkg",
         value_name = "FILE",
@@ -674,8 +677,13 @@ struct Cli {
     ignore_default_opts: bool,
 
     // Dependency / graph control
+    /// Skip dependency resolution: official-repo targets only (`pacman
+    /// -Sdd`); with `--usepkg` one archive file (`-Udd`). AUR/ABS: not
+    /// implemented (warning).
     #[arg(short = 'O', long = "nodeps")]
     nodeps: bool,
+    /// Install (or with `-f` fetch) only the dependencies of the official-repo
+    /// targets, not the targets; implies `-1`. AUR/ABS: not implemented.
     #[arg(short = 'o', long = "onlydeps")]
     onlydeps: bool,
     #[arg(short = 't', long = "tree")]
@@ -690,14 +698,11 @@ struct Cli {
     #[arg(long = "backtrack")]
     backtrack: Option<u32>,
     /// Max parallel official-repo installs (default 1)
-    #[arg(long = "jobsr", value_name = "N")]
-    jobsr: Option<u32>,
+    #[arg(long = "jobs", value_name = "N")]
+    jobs: Option<u32>,
     /// Max parallel AUR/ABS builds (default 1)
     #[arg(long = "jobsa", value_name = "N")]
     jobsa: Option<u32>,
-    /// Alias for --jobsr (Portage-style)
-    #[arg(long = "jobs", value_name = "N")]
-    jobs: Option<u32>,
     /// Hold new builds while the 1-minute load average is above X
     #[arg(long = "load-average")]
     load_average: Option<f32>,
@@ -715,24 +720,19 @@ struct Cli {
     revdep_rebuild: bool,
 
     /// Archives only, no install (Portage `-B`): AUR/ABS/local → build;
-    /// official → download into CacheDir. Alias: `-w` / `--getpkg`.
-    #[arg(
-        short = 'B',
-        long = "buildpkgonly",
-        visible_alias = "getpkg",
-        short_aliases = ['w']
-    )]
+    /// official → download into CacheDir.
+    #[arg(short = 'B', long = "buildpkgonly")]
     buildpkgonly: bool,
-    /// Collect archives (`-B`) / clones (`-F`) into DIR.
+    /// Collect archives (`-B`/`-f`) / clones (`-f`) into DIR.
     #[arg(long = "outdistfiles", value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
     outdistfiles: Option<String>,
 
-    /// Fetch only: official → archive to CacheDir; AUR/ABS → clone sources.
-    /// No build/install. Optional `--outdistfiles` copies results.
-    #[arg(short = 'F', long = "fetch-all-uri")]
-    fetch_all_uri: bool,
-    /// Gentoo `-f` (same as `-F` for us).
-    #[arg(short = 'f', long = "fetchonly", hide = true)]
+    /// Fetch only (Portage `-f`): download what the merge needs, then stop.
+    /// Official: the whole dependency tree as archives into CacheDir.
+    /// AUR/ABS: clone + sources (verified, sandboxed) of the package and its
+    /// AUR/ABS deps; their official deps as archives. Nothing is built or
+    /// installed. `--outdistfiles` copies the results.
+    #[arg(short = 'f', long = "fetchonly")]
     fetchonly: bool,
 
     // Misc compat
@@ -769,10 +769,6 @@ struct Cli {
     #[arg(long = "news", value_name = "N|all", num_args = 0..=1, default_missing_value = "")]
     news: Option<String>,
 
-    /// Alias for `--news`.
-    #[arg(long = "check-news", value_name = "N|all", num_args = 0..=1, default_missing_value = "")]
-    check_news: Option<String>,
-
     /// Packages to install or @set names.
     packages: Vec<String>,
 }
@@ -789,11 +785,11 @@ fn print_help() {
     println!("Options: -[1aCcDehnpstuVv]");
     println!("          [ --abs                   ] [ --aur                       ]");
     println!("          [ --skippgp               ] [ --autopgp                   ]");
-    println!("          [ --repos                 ] [ --jobsr=N   | --jobsa=N     ]");
+    println!("          [ --repos                 ] [ --jobs=N    | --jobsa=N     ]");
     println!("          [ --edit                  ] [ --skip-srcinfo-regen        ]");
     println!("          [ --pkgbuild-view         ] [ --list-profiles             ]");
     println!("          [ --noreplace             ] [ --with-optdeps              ]");
-    println!("          [ --jobs=N | --load-average=X ] [ --debug | --log <PATH>  ]");
+    println!("          [ --load-average=X        ] [ --debug | --log <PATH>  ]");
     println!("          [ --set-profile <N|PATH>  ] [ --color <y|n|auto>          ]");
     println!("          [ --aeforce               ] [ --noaefile                   ]");
     println!("          [ --aelist                ] [ --aeclean [new|old|park|all]]");
@@ -813,9 +809,9 @@ fn print_help() {
         "          [ --regen-world | --version | --info | --pkginfo | --regen-world-from-explicit ]"
     );
     println!("          [ --list-sets | --regen-sets @<name>  | --news [N|all]    ]");
-    println!("          [ --check-news [N|all]  | --check-devel | --undo          ]");
+    println!("          [ --check-devel         | --undo                          ]");
     println!("          [ --scan <pkg...>       | --usepkgbuild <PATH>       ]");
-    println!("          [ --usepkg <FILE...>                           ]");
+    println!("          [ --usepkg <FILE|DIR...> [-O]                  ]");
     println!("          [ --batchinstall <FILE> | --clean-source-cache            ]");
     println!("          [ --localrepo-clean     | --revdep-rebuild                ]");
     println!("Sets:     [ @world | @preserved-rebuild | @<custom-sets>            ]");
@@ -1200,11 +1196,71 @@ pub(crate) fn alpm_install_quiet(
 /// Official-repo install through libalpm with live Installing / Completed
 /// lines driven by helper `pkg start|done` events (one package finishes
 /// before the next starts inside the transaction). Batches of up to
-/// `--jobsr` packages still share one alpm transaction (faster; hooks run
+/// `--jobs` packages still share one alpm transaction (faster; hooks run
 /// once per batch). Hooks are printed via `progress::note` so the Jobs
 /// footer stays pinned.
 /// `asdeps` = `--oneshot`. Targets may be bare or `repo/name`.
 pub(crate) fn repo_install_landed(names: &[String], asdeps: bool) -> (bool, Vec<String>) {
+    repo_install_landed_opts(names, asdeps, false, false)
+}
+
+/// Dependencies the transaction would add for `names`, minus the named
+/// targets themselves (`-o`). `repo/name` atoms, as resolved by libalpm.
+fn repo_deps_only(names: &[String]) -> Option<Vec<String>> {
+    let want: std::collections::HashSet<String> = names
+        .iter()
+        .map(|n| n.rsplit('/').next().unwrap_or(n).to_string())
+        .collect();
+    match alpm_db::plan_sync(names) {
+        Ok((planned, _)) => Some(
+            planned
+                .into_iter()
+                .filter(|p| !want.contains(&p.name))
+                .map(|p| {
+                    if p.repo.is_empty() {
+                        p.name
+                    } else {
+                        format!("{}/{}", p.repo, p.name)
+                    }
+                })
+                .collect(),
+        ),
+        Err(e) => {
+            eprintln!(
+                "{} cannot resolve the dependencies: {}",
+                ">>> Error:".t_red().bold(),
+                e
+            );
+            None
+        }
+    }
+}
+
+/// `repo_install_landed` for the packages the user named on the command
+/// line: `nodeps` = `-O` (targets only, `-Sdd`), `onlydeps` = `-o`
+/// (only what the targets pull in; the caller has already implied `-1`).
+pub(crate) fn repo_install_landed_opts(
+    names: &[String],
+    asdeps: bool,
+    nodeps: bool,
+    onlydeps: bool,
+) -> (bool, Vec<String>) {
+    let dep_names: Vec<String>;
+    let mut names = names;
+    if onlydeps && !names.is_empty() {
+        dep_names = match repo_deps_only(names) {
+            Some(d) => d,
+            None => return (false, Vec::new()),
+        };
+        if dep_names.is_empty() {
+            println!(
+                "{} Nothing to do: the target(s) pull in no dependencies.",
+                ">>>".t_green().bold()
+            );
+            return (true, Vec::new());
+        }
+        names = dep_names.as_slice();
+    }
     let needed = runtime::get().noreplace;
     let buildpkgonly = runtime::get().buildpkgonly || runtime::get().fetch_all;
     let jobsr = runtime::get().jobsr.max(1) as usize;
@@ -1254,6 +1310,17 @@ pub(crate) fn repo_install_landed(names: &[String], asdeps: bool) -> (bool, Vec<
         let mut nums: HashMap<String, usize> = HashMap::new();
         let mut wave_ok: HashMap<String, bool> = HashMap::new();
 
+        // `-f` / `-B`: DOWNLOAD_ONLY pulls the whole dependency tree into
+        // CacheDir. Plan it up front so the report (and `--outdistfiles`)
+        // covers the dependencies as well, not just the named targets.
+        let fetch_tree: Vec<String> = if buildpkgonly {
+            alpm_db::plan_sync(&targets)
+                .map(|(planned, _)| planned.into_iter().map(|p| p.name).collect())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
         let mut on_event = |ev: &str| {
             if ev.starts_with("hook ") {
                 progress::on_hook_event(ev);
@@ -1284,11 +1351,11 @@ pub(crate) fn repo_install_landed(names: &[String], asdeps: bool) -> (bool, Vec<
 
         if buildpkgonly {
             println!(
-                "{} download only (-B/-F): writing archives under CacheDir…",
+                "{} download only (-B/-f): writing archives under CacheDir…",
                 ">>>".t_green().bold()
             );
         }
-        let mut res = rootops::install_ex(&targets, needed, buildpkgonly, &mut on_event);
+        let mut res = rootops::install_ex(&targets, needed, buildpkgonly, nodeps, &mut on_event);
         // An installed package blocks the new one (`quickshell` vs
         // `noctalia-qs`): list it like Portage does, ask once, then run the
         // same transaction again with the installed side unmerged. Retrying
@@ -1307,7 +1374,13 @@ pub(crate) fn repo_install_landed(names: &[String], asdeps: bool) -> (bool, Vec<
                 retried = true;
                 res = match packages::unmerge_blockers(&gone) {
                     Ok(()) => {
-                        let r = rootops::install_ex(&targets, needed, buildpkgonly, &mut on_event);
+                        let r = rootops::install_ex(
+                            &targets,
+                            needed,
+                            buildpkgonly,
+                            nodeps,
+                            &mut on_event,
+                        );
                         if r.is_err() {
                             eprintln!(
                                 "{} already unmerged: {}",
@@ -1355,6 +1428,22 @@ pub(crate) fn repo_install_landed(names: &[String], asdeps: bool) -> (bool, Vec<
                                 let n = progress::take();
                                 progress::line(progress::Stage::Completed, n, &atom);
                             }
+                        }
+                    }
+                    for dep in fetch_tree.iter().filter(|d| !chunk.contains(*d)) {
+                        let paths = crate::packages::cache_pkg_files_for(dep, &cache);
+                        if paths.is_empty() {
+                            eprintln!(
+                                "{} no archive found for dependency {} under {}",
+                                ">>> Warning:".t_yellow().bold(),
+                                dep,
+                                cache.display()
+                            );
+                        } else {
+                            for path in &paths {
+                                println!("{} {}", ">>>".t_green().bold(), path.display());
+                            }
+                            all_paths.extend(paths);
                         }
                     }
                     if let Some(ref d) = runtime::get().outdistfiles {
@@ -1920,7 +2009,7 @@ fn action_from_long(token: &str) -> Option<ActionKind> {
         "--version" => Some(ActionKind::Version),
         "--info" => Some(ActionKind::Info),
         "--pkginfo" => Some(ActionKind::PkgInfo),
-        "--news" | "--check-news" => Some(ActionKind::News),
+        "--news" => Some(ActionKind::News),
         "--list-sets" => Some(ActionKind::ListSets),
         "--list-profiles" => Some(ActionKind::ListProfiles),
         "--set-profile" => Some(ActionKind::SetProfile),
@@ -1975,7 +2064,7 @@ fn active_actions(cli: &Cli) -> Vec<ActionKind> {
     if !cli.pkginfo.is_empty() {
         out.push(ActionKind::PkgInfo);
     }
-    if cli.news.is_some() || cli.check_news.is_some() {
+    if cli.news.is_some() {
         out.push(ActionKind::News);
     }
     if cli.list_sets {
@@ -2840,7 +2929,16 @@ fn run() -> anyhow::Result<()> {
     let cfg = config::load();
     theme::init(&cfg.colors);
     let effective_argv = config::build_argv(&argv, &cfg);
-    let cli = Cli::parse_from(&effective_argv);
+    let mut cli = Cli::parse_from(&effective_argv);
+    if cli.nodeps && cli.onlydeps {
+        eprintln!(">>> Error: -O/--nodeps and -o/--onlydeps exclude each other.");
+        std::process::exit(1);
+    }
+    // -o installs only dependencies: nothing becomes explicit or lands in
+    // world, which is exactly what -1 does.
+    if cli.onlydeps {
+        cli.oneshot = true;
+    }
     enforce_action_priority(&cli, &effective_argv);
 
     // Everything read from deep inside the build path lands here once.
@@ -2877,8 +2975,8 @@ fn run() -> anyhow::Result<()> {
             .join(" ");
         logbook::session_open(std::path::Path::new(path), &cmd_line);
     }
-    // --jobsr wins over legacy --jobs; both default to 1.
-    let jobsr = cli.jobsr.or(cli.jobs).unwrap_or(1).max(1);
+    // --jobs (official repos) and --jobsa (AUR/ABS) both default to 1.
+    let jobsr = cli.jobs.unwrap_or(1).max(1);
     let jobsa = cli.jobsa.unwrap_or(1).max(1);
     runtime::init(runtime::Runtime {
         config: cfg,
@@ -2895,7 +2993,9 @@ fn run() -> anyhow::Result<()> {
         jobsa,
         sync_explicit: cli.sync_explicit,
         buildpkgonly: cli.buildpkgonly,
-        fetch_all: cli.fetch_all_uri || cli.fetchonly,
+        fetch_all: cli.fetchonly,
+        nodeps: cli.nodeps,
+        onlydeps: cli.onlydeps,
         outdistfiles: cli
             .outdistfiles
             .as_ref()
@@ -2948,10 +3048,9 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // --news / --check-news (full alias, same [N|all] argument): no
-    // aura/sudo needed (read state lives under ~/.cache, not
+    // --news [N|all]: no aura/sudo needed (read state lives under ~/.cache, not
     // /etc/emerge), so this runs before check_binaries().
-    if let Some(arg) = cli.news.as_deref().or(cli.check_news.as_deref()) {
+    if let Some(arg) = cli.news.as_deref() {
         news::run_news(arg);
         return Ok(());
     }
@@ -3142,6 +3241,10 @@ fn run() -> anyhow::Result<()> {
             eprintln!(">>> Error: --usepkg is not compatible with --aur/--abs.");
             std::process::exit(1);
         }
+        if cli.onlydeps {
+            eprintln!(">>> Error: -o/--onlydeps does not apply to --usepkg.");
+            std::process::exit(1);
+        }
         if cli.scan {
             eprintln!(
                 ">>> Error: --scan has no PKGBUILD to scan in a package archive; use --usepkgbuild <PATH> --scan for source."
@@ -3150,7 +3253,9 @@ fn run() -> anyhow::Result<()> {
         }
         // Resolve to absolute paths up front: a missing file is an error
         // for the whole run (a typo must not turn into a half-install).
-        let mut files = Vec::with_capacity(cli.usepkg.len());
+        // A directory stands for every package archive in it, so a tree
+        // fetched with `-f --outdistfiles DIR` goes in as one transaction.
+        let mut files: Vec<String> = Vec::with_capacity(cli.usepkg.len());
         for f in &cli.usepkg {
             let p = std::path::Path::new(f.trim_end_matches('/'));
             let canon = match p.canonicalize() {
@@ -3160,11 +3265,49 @@ fn run() -> anyhow::Result<()> {
                     std::process::exit(1);
                 }
             };
+            if canon.is_dir() {
+                if cli.nodeps {
+                    eprintln!(
+                        ">>> Error: -O/--nodeps installs a single archive file, not a directory ({}).",
+                        canon.display()
+                    );
+                    std::process::exit(1);
+                }
+                let rd = match std::fs::read_dir(&canon) {
+                    Ok(rd) => rd,
+                    Err(e) => {
+                        eprintln!(">>> Error: cannot read {}: {}", canon.display(), e);
+                        std::process::exit(1);
+                    }
+                };
+                let mut found: Vec<String> = rd
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        p.is_file()
+                            && p.file_name()
+                                .and_then(|n| n.to_str())
+                                .is_some_and(|n| n.contains(".pkg.tar.") && !n.ends_with(".sig"))
+                    })
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect();
+                found.sort();
+                if found.is_empty() {
+                    eprintln!(">>> Error: no *.pkg.tar.* archives in {}.", canon.display());
+                    std::process::exit(1);
+                }
+                files.extend(found);
+                continue;
+            }
             if !canon.is_file() {
                 eprintln!(">>> Error: {} is not a regular file.", canon.display());
                 std::process::exit(1);
             }
             files.push(canon.to_string_lossy().into_owned());
+        }
+        if cli.nodeps && files.len() != 1 {
+            eprintln!(">>> Error: -O/--nodeps with --usepkg takes exactly one archive file.");
+            std::process::exit(1);
         }
 
         if cli.pretend {
@@ -3175,13 +3318,15 @@ fn run() -> anyhow::Result<()> {
             );
             return Ok(());
         }
-        return match install_pkgarchives(&files, cli.ask, cli.oneshot) {
+        return match install_pkgarchives(&files, cli.ask, cli.oneshot, cli.nodeps) {
             Some(names) => {
                 if !cli.oneshot && !names.is_empty() {
                     mark_asexplicit(&names);
-                    // Local archives have no traceable source for world
-                    // (same "Err/" convention as --usepkgbuild).
-                    if let Err(e) = add_to_world_set(&names, Some("Err")) {
+                    // Same "local/" origin as --usepkgbuild. With
+                    // FEATURES=localrepo the db lookup says `local` too;
+                    // without it the lookup is empty and the forced prefix
+                    // keeps the entry `local/<name>`.
+                    if let Err(e) = add_to_world_set(&names, Some("local")) {
                         eprintln!(
                             ">>> Warning: package(s) installed but world was not updated: {:#}",
                             e
@@ -5312,7 +5457,12 @@ fn run() -> anyhow::Result<()> {
                     .collect();
                 let timer = logbook::Timer::start();
                 let world_snapshot = world_set::world_installed_snapshot();
-                let (ok, landed_names) = repo_install_landed(&official_names, cli.oneshot);
+                let (ok, landed_names) = repo_install_landed_opts(
+                    &official_names,
+                    cli.oneshot,
+                    cli.nodeps,
+                    cli.onlydeps,
+                );
                 success = success && ok;
                 world_set::reconcile_world_after_install(&world_snapshot);
                 if ok {
@@ -5466,7 +5616,12 @@ fn run() -> anyhow::Result<()> {
                     .collect();
                 let timer = logbook::Timer::start();
                 let world_snapshot = world_set::world_installed_snapshot();
-                let (ok, landed_names) = repo_install_landed(&official_names, cli.oneshot);
+                let (ok, landed_names) = repo_install_landed_opts(
+                    &official_names,
+                    cli.oneshot,
+                    cli.nodeps,
+                    cli.onlydeps,
+                );
                 success = ok;
                 world_set::reconcile_world_after_install(&world_snapshot);
                 if ok {
@@ -5525,7 +5680,8 @@ fn run() -> anyhow::Result<()> {
                 print_emerge_emerging(&official_infos);
                 let timer = logbook::Timer::start();
                 let world_snapshot = world_set::world_installed_snapshot();
-                let (ok, landed_names) = repo_install_landed(&target_pkgs, cli.oneshot);
+                let (ok, landed_names) =
+                    repo_install_landed_opts(&target_pkgs, cli.oneshot, cli.nodeps, cli.onlydeps);
                 success = ok;
                 world_set::reconcile_world_after_install(&world_snapshot);
                 installed_infos = if success {
@@ -5585,7 +5741,12 @@ fn run() -> anyhow::Result<()> {
                     .collect();
                 let timer = logbook::Timer::start();
                 let world_snapshot = world_set::world_installed_snapshot();
-                let (off_success, landed_names) = repo_install_landed(&official_names, cli.oneshot);
+                let (off_success, landed_names) = repo_install_landed_opts(
+                    &official_names,
+                    cli.oneshot,
+                    cli.nodeps,
+                    cli.onlydeps,
+                );
                 world_set::reconcile_world_after_install(&world_snapshot);
                 installed_infos = if off_success {
                     logbook::log_merge_batch("repo", &official_names, timer.elapsed());
@@ -5704,7 +5865,12 @@ fn run() -> anyhow::Result<()> {
                     .collect();
                 let timer = logbook::Timer::start();
                 let world_snapshot = world_set::world_installed_snapshot();
-                let (ok, landed_names) = repo_install_landed(&official_names, cli.oneshot);
+                let (ok, landed_names) = repo_install_landed_opts(
+                    &official_names,
+                    cli.oneshot,
+                    cli.nodeps,
+                    cli.onlydeps,
+                );
                 success = ok;
                 world_set::reconcile_world_after_install(&world_snapshot);
                 if success {
