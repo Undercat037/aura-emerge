@@ -14,7 +14,7 @@ makedepends=('rust' 'cargo')
 conflicts=('portage' 'portage-git' 'eselect-git' 'aura-emerge')
 provides=('emerge' 'portageq' 'eselect')
 install=aura-emerge.install
-backup=('etc/portage/world' 'etc/portage/ae-repos.conf')
+backup=('etc/portage/world' 'etc/portage/ae-repos.conf' 'etc/portage/repos.conf')
 source=()
 sha256sums=()
 
@@ -92,9 +92,12 @@ package() {
   install -Dm644 misc/make.conf "$pkgdir/usr/share/doc/$pkgname/examples/make.conf"
   install -Dm644 misc/makepkg.conf "$pkgdir/usr/share/doc/$pkgname/examples/makepkg.conf"
   install -Dm644 misc/package.mask "$pkgdir/usr/share/doc/$pkgname/examples/package.mask"
+  install -Dm644 misc/repos.conf "$pkgdir/usr/share/doc/$pkgname/examples/repos.conf"
 
   # local repos (FEATURES="localrepo")
   install -Dm644 misc/ae-repos.conf "$pkgdir/etc/portage/ae-repos.conf"
+  # repos.conf (FEATURES="repos")
+  install -Dm644 misc/repos.conf "$pkgdir/etc/portage/repos.conf"
 
   # install manpage
   install -Dm644 man.1 "$pkgdir/usr/share/man/man1/emerge.1"

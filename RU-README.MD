@@ -134,6 +134,7 @@ emerge --localrepo-clean            # ...и убрать их
 | `MAKEOPTS="-j$(nproc)"`      | `MAKEFLAGS="-j$(nproc)"`      | Параллельные задачи сборки      |
 | `USE="lto"`                  | `OPTIONS+=(lto)`              | Оптимизация на этапе компоновки |
 | `FEATURES="localrepo"`       | только опции AE               | локальные репозитории `ae-*`    |
+| `FEATURES="repos"`           | только опции AE               | Portage-style `repos.conf`  |
 | `PORTDIR` / `PKGDIR`         | `PKGDEST`, `SRCDEST`          | Каталоги артефактов сборки      |
 
 См. [флаги оптимизации GCC](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html), [параметры кодогенерации rustc](https://doc.rust-lang.org/rustc/codegen-options/index.html) и [**пример makepkg.conf**](misc/makepkg.conf).
@@ -375,9 +376,49 @@ libalpm выполняет каждый `*.hook` при установке, уд
 
 Пакеты AUR/ABS собираются по одному, поэтому у каждого свой таймер. `pacman -S`/`-Syu` - одна транзакция, так что её строка содержит все атомы и общее время. `--info` показывает итоги (число merge/unmerge, суммарное время сборки).
 
+
+### `repos.conf` (`FEATURES="repos"`)
+
+Список репозиториев в стиле Portage: `/etc/portage/repos.conf` (файл) или `/etc/portage/repos.conf/*.conf`.
+
+Включается через `FEATURES="repos"` в make.conf. Тогда `emerge --info` показывает effective order (priority по убыванию) и пишет `/etc/portage/ae-generated-repos.conf`. Подключите этот фрагмент в pacman **вместо** ручного перечисления тех же репозиториев — уберите соответствующие блоки `[repo]` из `pacman.conf` и добавьте:
+
+```ini
+Include = /etc/portage/ae-generated-repos.conf
+```
+
+| Ключ | Смысл |
+|------|--------|
+| `priority` | Больше = выше приоритет. При равенстве — порядок объявления (только warning, числа не переписываются). |
+| `sync-uri` | Один или несколько URL (`$repo` / `$arch`). |
+| `include` | Путь к mirrorlist pacman (`Server = …`); совместимо с rate-mirrors. Явные `sync-uri` идут первыми. |
+| `verify-signature` | Строка `SigLevel` as-is (`Never`, `Required DatabaseOptional`, …). |
+| `location` | Необязательно (для `file://` — каталог репо). |
+
+Шаблон в поставке: `misc/repos.conf` → `/etc/portage/repos.conf` (секции закомментированы). Раскомментируйте и правьте по необходимости:
+
+```ini
+[g14]
+priority = 55
+sync-uri = https://arch.asus-linux.org
+verify-signature = Required DatabaseOptional
+
+[core]
+priority = 50
+include = /etc/pacman.d/mirrorlist
+verify-signature = Required DatabaseOptional
+
+[ae-aur]
+priority = 10
+sync-uri = file:///var/lib/aura-emerge/repos/ae-aur
+verify-signature = Never
+```
+
+При `FEATURES="localrepo"` отсутствующие секции `ae-aur` / `ae-abs` / `ae-local` подставляются с приоритетами 10 / 9 / 8.
+
 ### Локальные репозитории (`FEATURES="localrepo"`)
 
-В стиле aurutils: каждый пакет, который aura-emerge собрал из AUR, ABS или локального PKGBUILD (или взял из архива `--usepkg`), после аудита и установки раскладывается в `/var/lib/aura-emerge/repos/<repo>/`, и база этого репозитория обновляется. Каталоги принадлежат root (`0755`).
+На подобиии aurutils: каждый пакет, который aura-emerge собрал из AUR, ABS или локального PKGBUILD (или взял из архива `--usepkg`), после аудита и установки раскладывается в `/var/lib/aura-emerge/repos/<repo>/`, и база этого репозитория обновляется. Каталоги принадлежат root (`0755`).
 
 | Репозиторий | Что хранит |
 |-------------|------------|

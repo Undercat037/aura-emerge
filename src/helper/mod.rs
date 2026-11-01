@@ -12,6 +12,7 @@ pub(crate) mod localrepo;
 pub(crate) mod pkgdb;
 pub(crate) mod pkgmask;
 pub(crate) mod proto;
+pub(crate) mod reposconf;
 pub(crate) mod serve;
 pub(crate) mod sha256;
 pub(crate) mod stage;

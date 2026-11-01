@@ -38,6 +38,10 @@ pub(crate) struct AlpmPkg {
 fn open() -> Option<Alpm> {
     let conf = PacmanConfig::new().ok()?;
     let mut alpm = alpm_with_conf(&conf).ok()?;
+    // FEATURES="repos": same effective repo order as the root helper.
+    if let Err(e) = crate::repos::apply_to_alpm(&mut alpm) {
+        eprintln!("emerge: repos.conf: {}", e);
+    }
     disable_user_sig_verify(&mut alpm);
     Some(alpm)
 }
@@ -140,7 +144,7 @@ pub(crate) fn installed_names() -> std::collections::HashSet<String> {
         .collect()
 }
 
-/// name → version for every installed package (one alpm open).
+/// name  version for every installed package (one alpm open).
 pub(crate) fn installed_versions() -> HashMap<String, String> {
     let Some(alpm) = open() else {
         return HashMap::new();
@@ -167,7 +171,7 @@ pub(crate) fn is_meta_mirror_repo(db_name: &str) -> bool {
     matches!(db_name, "world" | "system")
 }
 
-/// Map an alpm db name to the world/source prefix. `ae-aur` → `aur`,
+/// Map an alpm db name to the world/source prefix. `ae-aur`  `aur`,
 /// etc.; anything else is returned unchanged. World must not record
 /// `ae-*` — that is storage, not origin.
 pub(crate) fn world_repo_name(db_name: &str) -> &str {
@@ -254,7 +258,7 @@ pub(crate) fn foreign_packages() -> Vec<(String, String)> {
 
 /// Official upgrades: (name, installed, available, repo).
 ///
-/// `pins` maps bare name → world/set origin (`extra`, `cachyos-extra-v3`,
+/// `pins` maps bare name  world/set origin (`extra`, `cachyos-extra-v3`,
 /// `aur`, …). When the pin is an official sync repo, that db is preferred
 /// over pacman.conf order (world origin wins). `aur`/`abs` pins are skipped
 /// here — those upgrade via the AUR/ABS path.
@@ -852,7 +856,7 @@ pub(crate) fn pkg_status(name: &str, new_ver: &str) -> String {
     }
 }
 
-/// bare → Some(repo) | Some("None") for true foreign/local builds | key absent.
+/// bare  Some(repo) | Some("None") for true foreign/local builds | key absent.
 ///
 /// Local-repo dbs (`ae-aur` / …) are reported as their *source* prefix
 /// (`aur` / `abs` / `local`) so world entries stay `aur/foo`, not
@@ -862,7 +866,7 @@ pub(crate) fn pkg_status(name: &str, new_ver: &str) -> String {
 /// Resolution for an *installed* package (pacman.conf order):
 ///   1. first sync db whose version equals the installed one;
 ///   2. else first sync db that still carries the name at any version;
-///   3. else `"None"` (foreign / local-only) → world writes `Err/name`.
+///   3. else `"None"` (foreign / local-only)  world writes `Err/name`.
 /// Multiple dbs with the same version used to collapse to `"None"`/`Err/`,
 /// which flipped correct `extra/` / `cachyos-…` prefixes to `Err/` or to a
 /// lower-priority mirror repo (e.g. a file:// `world` db) on `--regen-world`.

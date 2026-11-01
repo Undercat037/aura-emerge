@@ -143,7 +143,7 @@ pub(crate) fn parse_news(xml: &str) -> Vec<NewsItem> {
         .collect()
 }
 
-/// RFC 822 date → "21 Jul 2026"; else raw string.
+/// RFC 822 date  "21 Jul 2026"; else raw string.
 fn short_date(pub_date: &str) -> String {
     let parts: Vec<&str> = pub_date.split_whitespace().collect();
     if parts.len() >= 4 {
@@ -178,13 +178,14 @@ fn save_read_guids(guids: &std::collections::HashSet<String>) {
         return;
     };
     if let Some(parent) = path.parent()
-        && fs::create_dir_all(parent).is_err() {
-            eprintln!(
-                ">>> Warning: could not create {}, news read-state not saved",
-                parent.display()
-            );
-            return;
-        }
+        && fs::create_dir_all(parent).is_err()
+    {
+        eprintln!(
+            ">>> Warning: could not create {}, news read-state not saved",
+            parent.display()
+        );
+        return;
+    }
     let tmp = path.with_extension("tmp");
     let write_result = (|| -> std::io::Result<()> {
         let mut f = fs::File::create(&tmp)?;

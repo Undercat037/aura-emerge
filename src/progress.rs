@@ -96,7 +96,7 @@ pub(crate) fn abort_one() {
 }
 
 /// `atom` is `repo/name-version` (or bare `name-version`).
-/// Erase Jobs → print stage line → redraw Jobs on the next row (in place).
+/// Erase Jobs  print stage line  redraw Jobs on the next row (in place).
 pub(crate) fn line(stage: Stage, n: usize, atom: &str) {
     stage_line(stage, n, atom, None);
 }
@@ -163,7 +163,7 @@ pub(crate) fn status_resume() {
     status_draw();
 }
 
-/// One-shot note above the Jobs line: erase → print → redraw Jobs.
+/// One-shot note above the Jobs line: erase  print  redraw Jobs.
 pub(crate) fn note(text: &str) {
     let _g = OUT.lock().unwrap_or_else(|e| e.into_inner());
     status_erase();
@@ -173,7 +173,7 @@ pub(crate) fn note(text: &str) {
 
 /// Handle a helper `hook …` event, keeping the Jobs footer pinned.
 ///
-///   `hook start pre|post` → `>>> Running pre/post-transaction hooks...`
+///   `hook start pre|post`  `>>> Running pre/post-transaction hooks...`
 pub(crate) fn on_hook_event(ev: &str) {
     let mut it = ev.split_whitespace();
     let (Some("hook"), Some(kind)) = (it.next(), it.next()) else {

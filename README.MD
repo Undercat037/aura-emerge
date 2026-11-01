@@ -134,6 +134,7 @@ Arch has no USE flags, but compilation can be tuned much like [Gentoo](https://w
 | `MAKEOPTS="-j$(nproc)"`      | `MAKEFLAGS="-j$(nproc)"`      | Parallel build jobs         |
 | `USE="lto"`                  | `OPTIONS+=(lto)`              | Link-time optimisation      |
 | `FEATURES="localrepo"`       | AE options only               | local repos (`ae-*`)        |
+| `FEATURES="repos"`           | AE options only               | Portage-style `repos.conf`  |
 | `PORTDIR` / `PKGDIR`         | `PKGDEST`, `SRCDEST`          | Build artefact directories  |
 
 See [GCC optimization flags](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html), [rustc codegen options](https://doc.rust-lang.org/rustc/codegen-options/index.html) and the [**example makepkg.conf**](misc/makepkg.conf).
@@ -169,7 +170,7 @@ FEATURES="localrepo"
 
 `COLORS` sets the palette for status output: `role=colour` tokens. Roles are `ok`, `warn`, `error`, `info`, `special`. Colours are `#RRGGBB` or a name (`red`, `bright-cyan`, …). Unknown roles or colours are warned and skipped.
 
-`FEATURES` is **AE-only**: it switches aura-emerge's own functions and is never mapped onto makepkg. ccache, check, strip and the like go into explicit `BUILDENV` / `OPTIONS`. `-name` turns a token off (last mention wins). The only token today is `localrepo` ([local repositories](#local-repositories-featureslocalrepo)); any other token is read and shown by `--info` but does nothing.
+`FEATURES` is **AE-only**: it switches aura-emerge's own functions and is never mapped onto makepkg. ccache, check, strip and the like go into explicit `BUILDENV` / `OPTIONS`. `-name` turns a token off (last mention wins). Tokens today: `localrepo` ([local repositories](#local-repositories-featureslocalrepo)) and `repos` ([repos.conf](#reposconf-featuresrepos)). Any other token is read and shown by `--info` but does nothing.
 
 `emerge --info` prints the effective `FEATURES` list next to the make.conf overrides.
 
@@ -375,6 +376,46 @@ When an install would overwrite a file that no package owns, aura-emerge asks `A
 ```
 
 AUR/ABS packages are built one by one, so each has its own timer. A `pacman -S`/`-Syu` run is a single transaction, so its line lists all atoms with the total time. `--info` shows totals (merge/unmerge counts, cumulative build time).
+
+
+### `repos.conf` (`FEATURES="repos"`)
+
+Portage-style repository list at `/etc/portage/repos.conf` (a single file) or `/etc/portage/repos.conf/*.conf`.
+
+Enable with `FEATURES="repos"` in make.conf. Then `emerge --info` prints the effective order (priority DESC) and writes `/etc/portage/ae-generated-repos.conf`. Point pacman at that fragment **instead of** listing the same repos by hand — remove the matching `[repo]` blocks from `pacman.conf` and add:
+
+```ini
+Include = /etc/portage/ae-generated-repos.conf
+```
+
+| Key | Meaning |
+|-----|---------|
+| `priority` | Higher number = preferred. Equal values keep declaration order (warning only; priorities are not rewritten). |
+| `sync-uri` | One or more Server URLs (`$repo` / `$arch` as in pacman). |
+| `include` | Path to a pacman mirrorlist (`Server = …`). Works with rate-mirrors/reflector; explicit `sync-uri` entries are tried first. |
+| `verify-signature` | Pacman `SigLevel` string (`Never`, `Required DatabaseOptional`, …). |
+| `location` | Optional (for `file://` — on-disk repo dir). |
+
+Shipped template: `misc/repos.conf` → `/etc/portage/repos.conf` (sections commented out). Uncomment and edit as needed:
+
+```ini
+[g14]
+priority = 55
+sync-uri = https://arch.asus-linux.org
+verify-signature = Required DatabaseOptional
+
+[core]
+priority = 50
+include = /etc/pacman.d/mirrorlist
+verify-signature = Required DatabaseOptional
+
+[ae-aur]
+priority = 10
+sync-uri = file:///var/lib/aura-emerge/repos/ae-aur
+verify-signature = Never
+```
+
+With `FEATURES="localrepo"`, missing `ae-aur` / `ae-abs` / `ae-local` sections are injected at priorities 10 / 9 / 8.
 
 ### Local repositories (`FEATURES="localrepo"`)
 

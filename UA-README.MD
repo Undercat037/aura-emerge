@@ -134,6 +134,7 @@ emerge --localrepo-clean            # ...і прибрати їх
 | `MAKEOPTS="-j$(nproc)"`      | `MAKEFLAGS="-j$(nproc)"`      | Паралельні завдання збірки       |
 | `USE="lto"`                  | `OPTIONS+=(lto)`              | Оптимізація на етапі компонування |
 | `FEATURES="localrepo"`       | лише опції AE                 | локальні репозиторії `ae-*`     |
+| `FEATURES="repos"`           | лише опції AE                 | Portage-style `repos.conf`      |
 | `PORTDIR` / `PKGDIR`         | `PKGDEST`, `SRCDEST`          | Каталоги артефактів збірки       |
 
 Див. [прапори оптимізації GCC](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html), [параметри кодогенерації rustc](https://doc.rust-lang.org/rustc/codegen-options/index.html) та [**приклад makepkg.conf**](misc/makepkg.conf).
@@ -374,6 +375,46 @@ libalpm виконує кожен `*.hook` під час встановленн�
 ```
 
 Пакунки AUR/ABS збираються по одному, тому в кожного свій таймер. `pacman -S`/`-Syu` - одна транзакція, тож її рядок містить усі атоми та загальний час. `--info` показує підсумки (кількість merge/unmerge, сумарний час збірки).
+
+
+### `repos.conf` (`FEATURES="repos"`)
+
+Список репозиторіїв у стилі Portage: `/etc/portage/repos.conf` (файл) або `/etc/portage/repos.conf/*.conf`.
+
+Вмикається через `FEATURES="repos"` у make.conf. Тоді `emerge --info` показує effective order (priority за спаданням) і пише `/etc/portage/ae-generated-repos.conf`. Підключіть цей фрагмент у pacman **замість** ручного переліку тих самих репозиторіїв — приберіть відповідні блоки `[repo]` з `pacman.conf` і додайте:
+
+```ini
+Include = /etc/portage/ae-generated-repos.conf
+```
+
+| Ключ | Зміст |
+|------|--------|
+| `priority` | Більше = вищий пріоритет. За рівності — порядок оголошення (лише warning, числа не переписуються). |
+| `sync-uri` | Один або кілька URL (`$repo` / `$arch`). |
+| `include` | Шлях до mirrorlist pacman (`Server = …`); сумісно з rate-mirrors. Явні `sync-uri` йдуть першими. |
+| `verify-signature` | Рядок `SigLevel` as-is (`Never`, `Required DatabaseOptional`, …). |
+| `location` | Необов’язково (для `file://` — каталог репо). |
+
+Шаблон у поставці: `misc/repos.conf` → `/etc/portage/repos.conf` (секції закоментовані). Розкоментуйте й редагуйте за потреби:
+
+```ini
+[g14]
+priority = 55
+sync-uri = https://arch.asus-linux.org
+verify-signature = Required DatabaseOptional
+
+[core]
+priority = 50
+include = /etc/pacman.d/mirrorlist
+verify-signature = Required DatabaseOptional
+
+[ae-aur]
+priority = 10
+sync-uri = file:///var/lib/aura-emerge/repos/ae-aur
+verify-signature = Never
+```
+
+З `FEATURES="localrepo"` відсутні секції `ae-aur` / `ae-abs` / `ae-local` підставляються з пріоритетами 10 / 9 / 8.
 
 ### Локальні репозиторії (`FEATURES="localrepo"`)
 

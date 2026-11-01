@@ -122,6 +122,10 @@ where
 fn open() -> io::Result<Alpm> {
     let conf = Config::new().map_err(|e| fail(format!("pacman.conf: {}", e)))?;
     let mut alpm = alpm_with_conf(&conf).map_err(|e| fail(format!("libalpm: {}", e)))?;
+    // FEATURES="repos": replace sync dbs with /etc/portage/repos.conf order.
+    if let Err(e) = super::reposconf::apply_to_alpm(&mut alpm) {
+        return Err(fail(format!("repos.conf: {}", e)));
+    }
     ensure_hook_dirs(&mut alpm);
     capture_log(&alpm);
     Ok(alpm)

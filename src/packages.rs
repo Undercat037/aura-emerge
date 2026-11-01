@@ -5531,7 +5531,24 @@ pub(crate) fn print_system_info() {
     );
     println!();
 
-    println!("Repositories:");
+    // Portage-style repos.conf (FEATURES="repos")
+    if crate::runtime::config().has_feature("repos") {
+        crate::repos::print_info(crate::runtime::config().has_feature("localrepo"));
+        println!();
+        // Best-effort regenerate the pacman Include fragment for the user.
+        if let Err(e) = crate::repos::write_generated_fragment(
+            crate::runtime::config().has_feature("localrepo"),
+        ) {
+            println!(
+                "    (could not write {}: {})",
+                crate::repos::GENERATED_PACMAN_FRAGMENT,
+                e
+            );
+        }
+        println!();
+    }
+
+    println!("Repositories (pacman.conf):");
     println!();
     let repos = parse_pacman_repos();
     if repos.is_empty() {

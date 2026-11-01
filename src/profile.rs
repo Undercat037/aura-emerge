@@ -179,7 +179,7 @@ fn expand_rec(
 }
 
 fn resolve_repo_profile(repo: &str, path: &str) -> Option<PathBuf> {
-    // gentoo:default/linux/amd64 → /var/db/repos/gentoo/profiles/default/linux/amd64
+    // gentoo:default/linux/amd64  /var/db/repos/gentoo/profiles/default/linux/amd64
     let cand = PathBuf::from(format!("/var/db/repos/{}/profiles/{}", repo, path));
     if cand.is_dir() {
         return Some(cand);
@@ -469,7 +469,7 @@ pub(crate) fn print_list() {
     }
 }
 
-/// Set `/etc/portage/make.profile` → profile by 1-based index or relative/absolute path.
+/// Set `/etc/portage/make.profile`  profile by 1-based index or relative/absolute path.
 pub(crate) fn set_profile(spec: &str) -> Result<(), String> {
     let target = resolve_set_spec(spec)?;
     if !target.is_dir() {

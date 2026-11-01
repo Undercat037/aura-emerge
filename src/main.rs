@@ -27,6 +27,7 @@ mod packages;
 mod privdrop;
 mod profile;
 mod progress;
+mod repos;
 mod revdep;
 mod rootops;
 mod runtime;
@@ -191,7 +192,9 @@ REMOVING PACKAGES
     everything not in world. -C and -c wait 5 seconds (Ctrl-C aborts)
     unless -a or -p is given. -c never removes world entries, members of
     sets recorded in world, package.protect entries or profile packages;
-    --show-protected lists them.
+    --show-protected lists them. With package arguments, -c is a
+    dependency-aware unmerge: only packages that nothing else requires
+    are removed (-cv lists reverse dependencies that block removal).
 
 PROTECT AND FREEZE
     package.protect lists packages that must never be removed (-C, -c,
@@ -231,7 +234,7 @@ LOCAL REPOS
         Include = /etc/portage/ae-repos.conf
     or with [ae-aur], [ae-abs] and [ae-local] sections, each with
     SigLevel = Never and Server = file:///var/lib/aura-emerge/repos/<name>.
-    FEATURES is AE-only (never mapped to makepkg); localrepo is its only token.
+    FEATURES is AE-only (never mapped to makepkg); tokens: localrepo, repos.
 
 SCANNER
     Before an AUR/ABS build the PKGBUILD and .install are scanned (bash
@@ -404,7 +407,7 @@ struct Cli {
     #[arg(short = 'u', long)]
     update: bool,
 
-    /// Remove orphans
+    /// Remove orphans; with package args, dependency-aware unmerge
     #[arg(short = 'c', long = "depclean")]
     depclean: bool,
 
@@ -4742,28 +4745,30 @@ fn run() -> anyhow::Result<()> {
             return Ok(());
         }
 
+        // Full -u uses one libalpm -Su transaction (versioned dep stacks
+        // like pipewire=* must stay together). `--jobs` still caps parallel
+        // *downloads* via rootops::set_dl_jobs; Emerging lines can exceed
+        // that count because alpm reports every package in the single tx.
+        // Selective installs (`emerge pkg…`, `emerge -u pkg…`) already
+        // batch by jobsr through repo_install_landed.
         let ok1 = if cli.pretend {
             true
         } else if !confirm_merge(cli.ask) {
             return Ok(());
         } else if !sync_dbs(false) {
             false
+        } else if official_upgrades.is_empty() {
+            true
         } else {
             progress::begin(official_upgrades.len() + aur_plan.len());
             let atoms: HashMap<String, String> = official_upgrades
                 .iter()
                 .map(|(n, _, v, r)| (n.clone(), progress::atom(r, n, v)))
                 .collect();
-            // Interior mutability: the event closure lives across an optional
-            // AE Force retry of the same -Su, so counters must be resettable
-            // without fighting the borrow checker.
             let nums: std::cell::RefCell<HashMap<String, usize>> =
                 std::cell::RefCell::new(HashMap::new());
-            // `plan <n>` from the helper: how many packages libalpm queued.
             let tx_size: std::cell::Cell<Option<usize>> = std::cell::Cell::new(None);
             let done_pkgs: std::cell::Cell<usize> = std::cell::Cell::new(0);
-            // Helper: `pkg start|done <name>` and `hook …`, live.
-            // Hooks go through progress::note so the Jobs footer stays pinned.
             let mut show = |ev: &str| {
                 let mut it = ev.split_whitespace();
                 let (Some(head), Some(kind)) = (it.next(), it.next()) else {
@@ -4801,8 +4806,6 @@ fn run() -> anyhow::Result<()> {
             let timer = logbook::Timer::start();
             let mut ae_opts = helper::validate::FileOpts::default();
             let mut res = rootops::sysupgrade(&ignores, ae_opts, &mut show);
-            // Unowned file conflicts: offer AE Force (same path as `-U`),
-            // then retry the whole -Su transaction once with the chosen mode.
             if let Err(ref e) = res {
                 let msg = e.strip_prefix("helper refused: ").unwrap_or(e.as_str());
                 if let Some(list) = msg.strip_prefix("conflicting files:") {
@@ -4853,15 +4856,12 @@ fn run() -> anyhow::Result<()> {
                     };
                     progress::status_resume();
                     if mode {
-                        // Reset progress counters for the retry so Jobs stays coherent.
                         done_pkgs.set(0);
                         nums.borrow_mut().clear();
                         tx_size.set(None);
                         res = rootops::sysupgrade(&ignores, ae_opts, &mut show);
                     }
                 } else if msg.contains("conflicting dependencies") {
-                    // Same path as -S: list [conflict], ask, unmerge installed
-                    // blockers, retry the whole -Su once.
                     if let Some(gone) = repo_conflict_unmerge_list(msg) {
                         match packages::unmerge_blockers(&gone) {
                             Ok(()) => {
@@ -4891,7 +4891,8 @@ fn run() -> anyhow::Result<()> {
             progress::fetch_clear();
             let res = match res {
                 Ok(()) if !official_upgrades.is_empty() && done_pkgs.get() == 0 => Err(format!(
-                    "libalpm queued {} package(s) and installed none, but the plan lists {}                      (first sync repo for those names is not the newer one?)",
+                    "libalpm queued {} package(s) and installed none, but the plan lists {} \
+                     (first sync repo for those names is not the newer one?)",
                     tx_size.get().unwrap_or(0),
                     official_upgrades.len()
                 )),
@@ -4916,7 +4917,6 @@ fn run() -> anyhow::Result<()> {
                 }
             }
         };
-
         // A failed repo upgrade usually needs a human; --keep-going
         // pushes on anyway rather than burying the error under an AUR
         // build against a half-upgraded system.
@@ -4986,6 +4986,163 @@ fn run() -> anyhow::Result<()> {
 
     // 4. Depclean: orphans via libalpm, never remove world entries.
     if cli.depclean {
+        // Portage: `emerge -c atom…` is a dependency-aware unmerge —
+        // remove only packages that have no reverse dependencies.
+        // Bare `emerge -c` still walks the full orphan closure.
+        if !target_pkgs.is_empty() {
+            crate::candy::calculating_deps_line();
+            println!(">>> Checking reverse dependencies...");
+
+            let mut candidates: Vec<String> = Vec::new();
+            let mut blocked: Vec<(String, Vec<String>)> = Vec::new();
+            let mut missing: Vec<String> = Vec::new();
+            let mut protected_held: Vec<(String, &'static crate::hold::HoldEntry)> = Vec::new();
+
+            for raw in &target_pkgs {
+                let bare = raw.split('/').next_back().unwrap_or(raw).to_string();
+                if crate::alpm_db::installed_version(&bare).is_none() {
+                    missing.push(bare);
+                    continue;
+                }
+                if let Some(e) = crate::hold::find_protect(&bare, None) {
+                    protected_held.push((bare, e));
+                    continue;
+                }
+                if runtime::is_excluded(&bare) {
+                    println!(
+                        "{} {} excluded (--exclude), not removing",
+                        ">>>".t_yellow().bold(),
+                        bare
+                    );
+                    continue;
+                }
+                if !candidates.contains(&bare) {
+                    candidates.push(bare);
+                }
+            }
+
+            // Fixed point: a package is removable when every reverse dep is
+            // either also a candidate or already gone. Drop anything still
+            // required from outside the set.
+            let mut to_remove = candidates.clone();
+            loop {
+                let set: HashSet<String> = to_remove.iter().cloned().collect();
+                let next: Vec<String> = to_remove
+                    .iter()
+                    .filter(|n| {
+                        crate::alpm_db::required_by(n)
+                            .iter()
+                            .all(|dep| set.contains(dep))
+                    })
+                    .cloned()
+                    .collect();
+                if next.len() == to_remove.len() {
+                    break;
+                }
+                to_remove = next;
+            }
+            let removable: HashSet<String> = to_remove.iter().cloned().collect();
+            for n in &candidates {
+                if removable.contains(n) {
+                    continue;
+                }
+                let outside: Vec<String> = crate::alpm_db::required_by(n)
+                    .into_iter()
+                    .filter(|dep| !removable.contains(dep))
+                    .collect();
+                blocked.push((n.clone(), outside));
+            }
+
+            if !missing.is_empty() {
+                eprintln!(
+                    "{} not installed, skipped: {}",
+                    ">>> Warning:".t_yellow().bold(),
+                    missing.join(", ")
+                );
+            }
+            if !protected_held.is_empty() {
+                crate::hold::report_protected(&protected_held);
+            }
+            for (name, deps) in &blocked {
+                println!(
+                    "{} {} is still required by: {}",
+                    ">>>".t_yellow().bold(),
+                    name,
+                    deps.join(", ")
+                );
+                if cli.verbose {
+                    for d in deps {
+                        if let Some(v) = crate::alpm_db::installed_version(d) {
+                            println!("    {}-{}", d, v);
+                        } else {
+                            println!("    {}", d);
+                        }
+                    }
+                }
+            }
+
+            if to_remove.is_empty() {
+                if blocked.is_empty() && missing.is_empty() && protected_held.is_empty() {
+                    println!("{} Nothing to depclean.", ">>>".t_green().bold());
+                } else {
+                    println!(
+                        "{} nothing left to remove (still required, protected, or missing).",
+                        ">>>".t_yellow().bold()
+                    );
+                }
+                return Ok(());
+            }
+
+            println!();
+            println!("Total: {} package(s) to depclean", to_remove.len());
+            for n in &to_remove {
+                let ver = crate::alpm_db::installed_version(n).unwrap_or_else(|| "?".to_string());
+                println!(" {}", format!("{}-{}", n, ver).t_yellow());
+            }
+            println!();
+
+            if cli.pretend {
+                return Ok(());
+            }
+            if !confirm_action(cli.ask, "depclean") {
+                return Ok(());
+            }
+            if !cli.ask {
+                progress::countdown("Unmerging", 5);
+            }
+
+            let repos = get_pkg_repos_batch(&to_remove);
+            let versions: Vec<(String, String)> = to_remove
+                .iter()
+                .filter_map(|n| crate::alpm_db::installed_version(n).map(|v| (n.clone(), v)))
+                .collect();
+            let (_ok, removed) = unmerge_loop(&to_remove);
+            if !removed.is_empty() {
+                let atoms: Vec<String> = removed
+                    .iter()
+                    .map(|n| match repos.get(n.as_str()) {
+                        Some(Some(r)) if r != "None" => format!("{}/{}", r, n),
+                        Some(Some(_)) => format!("Err/{}", n),
+                        _ => n.clone(),
+                    })
+                    .collect();
+                let vers: Vec<(String, String)> = versions
+                    .into_iter()
+                    .filter(|(n, _)| removed.contains(n))
+                    .collect();
+                save_last_action_versions(LastAction::Depclean, &atoms, &vers);
+                // Drop from world if present (same as -C for these names).
+                if let Err(e) = remove_from_world_set(&removed) {
+                    eprintln!(
+                        ">>> Warning: package(s) depcleaned but world was not updated: {:#}",
+                        e
+                    );
+                }
+                logbook::log_unmerge(&removed);
+            }
+            return Ok(());
+        }
+
         crate::candy::calculating_deps_line();
         println!(">>> Checking for orphaned packages...");
 

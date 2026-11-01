@@ -580,13 +580,13 @@ fn bpf(code: u16, jt: u8, jf: u8, k: u32) -> SockFilter {
 }
 
 /// Berkeley Packet Filter program for bwrap `--seccomp FD`:
-/// validate arch → kill denied syscalls → ALLOW everything else.
+/// validate arch  kill denied syscalls  ALLOW everything else.
 fn seccomp_filter_bytes() -> Vec<u8> {
     let denied = denied_syscalls();
     let mut f: Vec<SockFilter> = Vec::with_capacity(denied.len() + 6);
     // A = arch
     f.push(bpf(BPF_LD | BPF_W | BPF_ABS, 0, 0, SECCOMP_DATA_ARCH));
-    // if arch != host → kill
+    // if arch != host  kill
     f.push(bpf(BPF_JMP | BPF_JEQ | BPF_K, 1, 0, SECCOMP_AUDIT_ARCH));
     f.push(bpf(BPF_RET | BPF_K, 0, 0, SECCOMP_RET_KILL_PROCESS));
     // A = nr
@@ -597,8 +597,8 @@ fn seccomp_filter_bytes() -> Vec<u8> {
         f.push(bpf(BPF_ALU | BPF_AND | BPF_K, 0, 0, !0x4000_0000u32));
     }
     for &nr in denied {
-        // if A == nr → kill (jt=0 jumps over the kill when not equal? JEQ jt jf:
-        // true → jt, false → jf. We want equal → kill.
+        // if A == nr  kill (jt=0 jumps over the kill when not equal? JEQ jt jf:
+        // true  jt, false  jf. We want equal  kill.
         f.push(bpf(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, nr));
         f.push(bpf(BPF_RET | BPF_K, 0, 0, SECCOMP_RET_KILL_PROCESS));
     }

@@ -519,7 +519,7 @@ fn valid_array_token(t: &str) -> bool {
 }
 
 /// FEATURES is AE-only (localrepo, candy, …). Makepkg knobs live in
-/// explicit BUILDENV/OPTIONS in make.conf — no FEATURES→array mapping.
+/// explicit BUILDENV/OPTIONS in make.conf — no FEATURESarray mapping.
 
 /// makepkg.conf that sources the system one then overrides it with
 /// this config's build vars. `None` if none are set (the common case).

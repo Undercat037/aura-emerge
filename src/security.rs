@@ -1,4 +1,4 @@
-//! AUR PKGBUILD safety scanner (pre-install tripwire; hit → ask before continue).
+//! AUR PKGBUILD safety scanner (pre-install tripwire; hit  ask before continue).
 //!
 //! Heuristics + 2026 campaigns: Atomic Arch (npm/bun infostealer),
 //! openconnect-sso (`sudo` + validator, Tor stage2), early-August
@@ -827,7 +827,7 @@ pub(crate) fn line_of_compromised_marker(source: &str) -> Option<usize> {
 }
 
 /// Exact package-name IOCs (rotates; high confidence). Atomic Arch 2026
-/// npm/bun names; openconnect-sso mechanism → sudo_escalation_line.
+/// npm/bun names; openconnect-sso mechanism  sudo_escalation_line.
 const KNOWN_MALICIOUS_PACKAGE_NAMES: &[&str] = &["atomic-lockfile", "js-digest", "lockfile-js"];
 
 /// openconnect-sso stage hashes; exact sha256sums=() match = known-bad.
@@ -2706,7 +2706,7 @@ pub(crate) struct FetchedSource {
 }
 
 /// Re-scan the git checkout vs cgit pre-scan (TOCTOU / cache lag).
-/// Mismatch → same prompt as pre-scan. prefetched=None → full local scan.
+/// Mismatch  same prompt as pre-scan. prefetched=None  full local scan.
 pub(crate) fn verify_local_clone_or_rescan(
     pkgbase: &str,
     dir: &std::path::Path,

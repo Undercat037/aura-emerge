@@ -94,7 +94,7 @@ pub(crate) fn get_pkg_repos_batch(
 /// world entry ("repo/name", "Err/name" local, or bare "name") from an
 /// already-resolved get_pkg_repos_batch lookup.
 ///
-/// `repos` already maps `ae-aur` → `aur` (see `alpm_db::world_repo_name`),
+/// `repos` already maps `ae-aur`  `aur` (see `alpm_db::world_repo_name`),
 /// so entries stay source-oriented: `aur/foo`, not `ae-aur/foo`.
 pub(crate) fn pkg_world_entry_from(
     bare: &str,
@@ -103,7 +103,7 @@ pub(crate) fn pkg_world_entry_from(
 ) -> String {
     // Intentional source pins (aur/abs from world or sets) always win over
     // whatever sync db currently carries the same version (e.g. chaotic-aur
-    // mirroring an AUR package must not rewrite `aur/figcraft` → chaotic-…).
+    // mirroring an AUR package must not rewrite `aur/figcraft`  chaotic-…).
     if let Some(p) = forced_prefix {
         if p == "aur" || p == "abs" {
             return format!("{}/{}", p, bare);
@@ -139,7 +139,7 @@ pub(crate) fn pkg_world_entry_from(
     }
 }
 
-/// Bare name → repo/source prefix from world + expanded `@sets` in world.
+/// Bare name  repo/source prefix from world + expanded `@sets` in world.
 /// First win: explicit world line, then set membership (aur/abs preferred
 /// over a later official pin so design.set `aur/figcraft` sticks).
 pub(crate) fn world_origin_pins() -> std::collections::HashMap<String, String> {
@@ -639,7 +639,7 @@ pub(crate) fn provision_from_world_set(
         return Ok(true);
     }
 
-    // Already installed → skip. A name an installed package provides counts
+    // Already installed  skip. A name an installed package provides counts
     // too (aura-emerge-git provides aura-emerge): no blocker, nothing to do.
     let mut installed: HashSet<String> = crate::alpm_db::installed_names();
     installed.extend(crate::alpm_db::installed_providers().into_keys());
@@ -1247,7 +1247,7 @@ pub(crate) fn register_sets_in_world(set_names: &[String]) -> Result<()> {
     write_world_set(&sorted)
 }
 
-/// One read → apply every (packages, prefix) group → one write.
+/// One read  apply every (packages, prefix) group  one write.
 /// Single `>>> Adding to world...` line even when official + aur + abs
 /// all need updating (avoids the double-print from sequential calls).
 pub(crate) fn add_to_world_groups(groups: &[(&[String], Option<&str>)]) -> Result<()> {
@@ -1261,7 +1261,7 @@ pub(crate) fn add_to_world_groups(groups: &[(&[String], Option<&str>)]) -> Resul
     // only covers individual -S/-U requests, not this cycle).
     let _state_lock = lock_state();
 
-    // bare name → full "repo/name" entry; `@set` lines keyed by full token
+    // bare name  full "repo/name" entry; `@set` lines keyed by full token
     let mut current_set: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     match open_nofollow(std::path::Path::new(WORLD_SET_FILE)) {

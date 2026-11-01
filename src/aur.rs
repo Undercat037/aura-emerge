@@ -498,7 +498,7 @@ fn extract_json_string_field(json: &str, field: &str) -> Option<String> {
     Some(decode_entities_json(raw))
 }
 
-/// Join a JSON string array field: `"License":["MIT","GPL"]` → `MIT GPL`.
+/// Join a JSON string array field: `"License":["MIT","GPL"]`  `MIT GPL`.
 fn extract_json_array_join(json: &str, field: &str) -> Option<String> {
     let needle = format!("\"{}\":", field);
     let start = json.find(&needle)? + needle.len();
