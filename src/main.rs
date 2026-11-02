@@ -2517,12 +2517,24 @@ fn masked_tag(name: &str, repo: Option<&str>) -> String {
     }
 }
 
+fn installed_tag(installed: bool) -> String {
+    if installed {
+        format!(" {}", "[ Installed ]".t_green().bold())
+    } else {
+        String::new()
+    }
+}
+
 /// One package block at a time (buffered), not line-by-line flushes.
 fn print_sync_search_results(results: &[crate::alpm_db::AlpmPkg], verbose: bool) {
     use std::io::Write;
     let mut out = String::with_capacity(results.len().saturating_mul(160));
     for p in results {
-        let tag = masked_tag(&p.name, Some(p.repo.as_str()));
+        let tag = format!(
+            "{}{}",
+            masked_tag(&p.name, Some(p.repo.as_str())),
+            installed_tag(p.installed)
+        );
         out.push_str(&format!(
             "*  {}/{}{}\n",
             p.repo.t_magenta().bold(),
@@ -2565,7 +2577,11 @@ fn print_abs_search_results(results: &[crate::alpm_db::AlpmPkg], verbose: bool) 
     use std::io::Write;
     let mut out = String::with_capacity(results.len().saturating_mul(160));
     for p in results {
-        let tag = masked_tag(&p.name, Some("abs"));
+        let tag = format!(
+            "{}{}",
+            masked_tag(&p.name, Some("abs")),
+            installed_tag(p.installed)
+        );
         out.push_str(&format!(
             "*  {}/{}{}\n",
             "abs".t_yellow().bold(),
@@ -2606,15 +2622,12 @@ fn print_abs_search_results(results: &[crate::alpm_db::AlpmPkg], verbose: bool) 
 
 fn print_aur_search_results(results: &[aur::AurPkgInfo], verbose: bool) {
     use std::io::Write;
-    // One localdb pass for installed versions (-sv).
-    let installed = if verbose {
-        crate::alpm_db::installed_versions()
-    } else {
-        HashMap::new()
-    };
+    // One localdb pass: tags always, versions for -sv.
+    let installed = crate::alpm_db::installed_versions();
     let mut out = String::with_capacity(results.len().saturating_mul(200));
     for r in results {
         let mut tag = masked_tag(&r.name, Some("aur"));
+        tag.push_str(&installed_tag(installed.contains_key(&r.name)));
         if r.out_of_date {
             tag.push_str(&format!(" {}", "[out of date]".t_red().bold()));
         }
