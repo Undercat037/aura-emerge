@@ -1920,7 +1920,7 @@ fn note_abs_fetch_deps(dir: &std::path::Path, pkg: &str) {
 fn fetch_sources_sandboxed(build_dir: &std::path::Path, pkgbase: &str, skippgp: bool) -> bool {
     let _fakeroot_shim_guard = crate::sandbox::FakerootShimGuard::new(build_dir);
 
-    let mut args: Vec<&str> = vec!["--verifysource"];
+    let mut args: Vec<&str> = vec!["--verifysource", "--force"];
     if skippgp {
         args.push("--skippgpcheck");
     }
