@@ -97,7 +97,7 @@ package() {
   # local repos (FEATURES="localrepo")
   install -Dm644 misc/ae-repos.conf "$pkgdir/etc/portage/ae-repos.conf"
   # repos.conf (FEATURES="repos")
-  install -Dm644 misc/repos.conf "$pkgdir/etc/portage/repos.conf"
+  install -Dm644 misc/repos.conf "$pkgdir/etc/portage/repos.conf/99example.conf"
 
   # install manpage
   install -Dm644 man.1 "$pkgdir/usr/share/man/man1/emerge.1"

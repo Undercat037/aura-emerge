@@ -756,6 +756,10 @@ struct Cli {
     #[arg(long = "gen-completions", hide = true, value_name = "SHELL")]
     gen_completions: Option<Shell>,
 
+    /// Print package names matching PREFIX (shell completion); hidden.
+    #[arg(long = "complete-pkgs", hide = true, value_name = "PREFIX", num_args = 0..=1, default_missing_value = "")]
+    complete_pkgs: Option<String>,
+
     /// Generate the man page to stdout; hidden from help.
     #[arg(long = "gen-manpage", hide = true)]
     gen_manpage: bool,
@@ -829,58 +833,165 @@ fn print_help() {
     println!("Author: Undercat037");
 }
 
-// ── Shell completion: dynamic @set support ──────────────────────────────
-//
-// Appends a shell snippet that shells out to `emerge --list-sets` when
-// completing a word starting with '@', so `emerge @<TAB>` offers real
-// set names (clap_complete alone doesn't know sets/'s contents).
+// ── Shell completion glue ────────────────────────────────────────────────
+// clap_complete emits static flags; the wrapper below adds:
+//   @… → sets,  -… → flags (Options-only after an Action), else packages.
 
-fn print_set_completion_glue(shell: Shell) {
+/// Action flags: pick a mode. After one of these is present, tab on `-`
+/// only offers Options (not a second Action).
+const COMP_ACTIONS: &str = "\
+-s --search --sync --refresh -c --depclean -C --unmerge --prune \
+--info --list-sets --list-profiles --set-profile --pkginfo --scan \
+--check-devel --resume --undo --regen --regen-world --regen-sets \
+--aelist --aeclean --localrepo-clean --install-pkgarchive";
+
+/// Option flags: modifiers. Shown alone when an Action is already typed.
+const COMP_OPTIONS: &str = "\
+-h --help -V --version -p --pretend -a --ask --sudoloop -1 --oneshot \
+-v --verbose -n --noreplace -u --update -D --deep -N --newuse -e --emptytree \
+-O --nodeps -B --buildpkg -f --fetchonly --outdistfiles --with-bdeps \
+--jobs --jobsr --jobsa --load-average --quiet-build --debug \
+--aur --repos --abs --skippgp --autopgp --no-sandbox --unshare-net-build \
+--edit --skip-srcinfo-regen --pkgbuild-view --usepkgbuild --usepkg \
+--aeforce --noaefile --with-optdeps --show-protected --err-install \
+--complete-graph --tree --columns --color --no-color";
+
+fn print_completion_glue(shell: Shell) {
+    let actions = COMP_ACTIONS;
+    let options = COMP_OPTIONS;
     match shell {
         Shell::Bash => {
             println!(
-                "
-# aura-emerge: dynamic @<set> completion (world, preserved-rebuild, sets/*)
-_emerge_with_sets() {{
-    _emerge
-    local cur=\"${{COMP_WORDS[COMP_CWORD]}}\"
-    if [[ \"$cur\" == @* ]]; then
+                r#"
+# aura-emerge: smart completion (@sets / flags / packages)
+_AE_ACTIONS='{actions}'
+_AE_OPTIONS='{options}'
+_emerge_smart() {{
+    local cur="${{COMP_WORDS[COMP_CWORD]}}"
+    local w has_action=0
+
+    # @sets
+    if [[ "$cur" == @* ]]; then
         local sets
         sets=$(emerge --list-sets 2>/dev/null)
-        COMPREPLY=( $(compgen -W \"$sets\" -- \"$cur\") )
+        COMPREPLY=( $(compgen -W "$sets" -- "$cur") )
+        return 0
     fi
+
+    # flags: full clap list, or Options-only once an Action is present
+    if [[ "$cur" == -* ]]; then
+        for w in "${{COMP_WORDS[@]:1:COMP_CWORD-1}}"; do
+            for a in $_AE_ACTIONS; do
+                if [[ "$w" == "$a" ]]; then has_action=1; break 2; fi
+            done
+        done
+        if (( has_action )); then
+            COMPREPLY=( $(compgen -W "$_AE_OPTIONS" -- "$cur") )
+        else
+            if declare -F _emerge >/dev/null 2>&1; then
+                _emerge
+            else
+                COMPREPLY=( $(compgen -W "$_AE_ACTIONS $_AE_OPTIONS" -- "$cur") )
+            fi
+        fi
+        return 0
+    fi
+
+    # package names (prefix match from sync + local db)
+    local pkgs
+    pkgs=$(emerge --complete-pkgs "$cur" 2>/dev/null)
+    COMPREPLY=( $(compgen -W "$pkgs" -- "$cur") )
 }}
-complete -o bashdefault -o default -F _emerge_with_sets emerge 2>/dev/null \\
-    || complete -F _emerge_with_sets emerge
-"
+complete -o bashdefault -o default -F _emerge_smart emerge 2>/dev/null \
+    || complete -F _emerge_smart emerge
+"#,
+                actions = actions,
+                options = options,
             );
         }
         Shell::Zsh => {
             println!(
-                "
-# aura-emerge: dynamic @<set> completion (world, preserved-rebuild, sets/*)
-_emerge_with_sets() {{
-    _emerge \"$@\"
-    if [[ \"$PREFIX\" == @* ]]; then
+                r#"
+# aura-emerge: smart completion (@sets / flags / packages)
+_AE_ACTIONS='{actions}'
+_AE_OPTIONS='{options}'
+_emerge_smart() {{
+    local cur="$words[CURRENT]"
+    local w has_action=0
+
+    if [[ "$cur" == @* ]]; then
         local -a sets
-        sets=(${{(f)\"$(emerge --list-sets 2>/dev/null)\"}})
+        sets=(${{(f)"$(emerge --list-sets 2>/dev/null)"}})
         compadd -a sets
+        return
     fi
+
+    if [[ "$cur" == -* ]]; then
+        for w in ${{words[2,CURRENT-1]}}; do
+            for a in ${{=_AE_ACTIONS}}; do
+                if [[ "$w" == "$a" ]]; then has_action=1; break 2; fi
+            done
+        done
+        if (( has_action )); then
+            local -a opts
+            opts=(${{=_AE_OPTIONS}})
+            compadd -a opts
+        else
+            if typeset -f _emerge >/dev/null 2>&1; then
+                _emerge "$@"
+            else
+                local -a flags
+                flags=(${{=_AE_ACTIONS}} ${{=_AE_OPTIONS}})
+                compadd -a flags
+            fi
+        fi
+        return
+    fi
+
+    local -a pkgs
+    pkgs=(${{(f)"$(emerge --complete-pkgs "$cur" 2>/dev/null)"}})
+    compadd -a pkgs
 }}
-compdef _emerge_with_sets emerge
-"
+compdef _emerge_smart emerge
+"#,
+                actions = actions,
+                options = options,
             );
         }
         Shell::Fish => {
+            let action_longs: Vec<&str> = actions
+                .split_whitespace()
+                .filter(|a| a.starts_with("--"))
+                .collect();
+            let fish_actions = action_longs
+                .iter()
+                .map(|a| format!("'{a}'"))
+                .collect::<Vec<_>>()
+                .join(" ");
             println!(
-                "
-# aura-emerge: dynamic @<set> completion (world, preserved-rebuild, sets/*)
-complete -c emerge -f -n 'string match -q \"@*\" -- (commandline -ct)' -a '(emerge --list-sets 2>/dev/null)'
-"
+                r#"
+# aura-emerge: smart completion (@sets / packages; flags from clap above)
+function __ae_has_action
+    set -l actions {fish_actions}
+    for t in (commandline -opc)
+        if contains -- $t $actions
+            return 0
+        end
+    end
+    return 1
+end
+
+# @sets
+complete -c emerge -f -n 'string match -q "@*" -- (commandline -ct)' -a '(emerge --list-sets 2>/dev/null)'
+
+# packages (no leading - or @)
+complete -c emerge -f -n 'not string match -q -- "-*" (commandline -ct); and not string match -q -- "@*" (commandline -ct)' -a '(emerge --complete-pkgs (commandline -ct) 2>/dev/null)'
+"#,
+                fish_actions = fish_actions,
             );
         }
         _ => {
-            // Elvish/PowerShell: no glue, static flag completion only.
+            // Elvish/PowerShell: static clap flags only.
         }
     }
 }
@@ -3027,10 +3138,16 @@ fn run() -> anyhow::Result<()> {
 
     // No db/world needed -- just prints a script. Handled
     // before check_binaries() so it works in a clean chroot too.
+    if let Some(prefix) = cli.complete_pkgs {
+        for name in alpm_db::complete_pkg_names(&prefix, 200) {
+            println!("{name}");
+        }
+        return Ok(());
+    }
     if let Some(shell) = cli.gen_completions {
         let mut cmd = <Cli as clap::CommandFactory>::command();
         clap_complete::generate(shell, &mut cmd, "emerge", &mut io::stdout());
-        print_set_completion_glue(shell);
+        print_completion_glue(shell);
         return Ok(());
     }
 

@@ -1272,6 +1272,43 @@ pub(crate) fn sync_pkg_names() -> Vec<String> {
     out
 }
 
+/// Package names for shell completion: sync dbs + installed, filtered by
+/// prefix. Caps at `limit` matches (bash/zsh stay responsive).
+pub(crate) fn complete_pkg_names(prefix: &str, limit: usize) -> Vec<String> {
+    let Some(alpm) = open() else {
+        return Vec::new();
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let push = |name: &str, seen: &mut std::collections::HashSet<String>, out: &mut Vec<String>| {
+        if out.len() >= limit {
+            return;
+        }
+        if !prefix.is_empty() && !name.starts_with(prefix) {
+            return;
+        }
+        if seen.insert(name.to_string()) {
+            out.push(name.to_string());
+        }
+    };
+    for db in alpm.syncdbs() {
+        for p in db.pkgs() {
+            push(p.name(), &mut seen, &mut out);
+            if out.len() >= limit {
+                return out;
+            }
+        }
+    }
+    for p in alpm.localdb().pkgs() {
+        push(p.name(), &mut seen, &mut out);
+        if out.len() >= limit {
+            break;
+        }
+    }
+    out.sort();
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
