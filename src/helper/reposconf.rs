@@ -15,6 +15,16 @@ pub(crate) const REPOS_CONF: &str = "/etc/portage/repos.conf";
 /// Generated pacman fragment (user may `Include =` this from pacman.conf).
 pub(crate) const GENERATED_PACMAN_FRAGMENT: &str = "/etc/portage/ae-generated-repos.conf";
 
+/// How `emerge --sync` refreshes this repo's db.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum SyncType {
+    /// Normal update (`-Sy` / alpm force=false). Default.
+    #[default]
+    Sync,
+    /// Always force-refresh this db (`-Syy` style), even when the run is not `--refresh`.
+    Refresh,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RepoEntry {
     pub(crate) name: String,
@@ -25,7 +35,17 @@ pub(crate) struct RepoEntry {
     pub(crate) includes: Vec<PathBuf>,
     /// Pacman SigLevel string, if set.
     pub(crate) verify_signature: Option<String>,
+    /// Package cache directory (pacman CacheDir). Applied via alpm when
+    /// FEATURES=repos; not a Gentoo-style ebuild tree path.
     pub(crate) location: Option<String>,
+    /// When true, refresh this db before any root op that mutates the local
+    /// package db (install / remove / -Su / -U). Default false = no effect
+    /// (same as omitting the key). Does not change `emerge --sync` itself.
+    pub(crate) auto_sync: bool,
+    /// Per-repo force on `emerge --sync`: `sync` (default) or `refresh`
+    /// (`-Syy` style for the whole run when any entry asks for refresh —
+    /// libalpm only updates the full syncdb list in one shot).
+    pub(crate) sync_type: SyncType,
     /// Source path + 1-based line of the `[section]` header.
     pub(crate) source: String,
     pub(crate) line: usize,
@@ -259,6 +279,8 @@ fn parse_file(path: &Path) -> io::Result<(Vec<RepoEntry>, Vec<String>)> {
                 includes: Vec::new(),
                 verify_signature: None,
                 location: None,
+                auto_sync: false,
+                sync_type: SyncType::Sync,
                 source: src.clone(),
                 line: line_no,
             });
@@ -293,6 +315,14 @@ fn parse_file(path: &Path) -> io::Result<(Vec<RepoEntry>, Vec<String>)> {
                 let p = PathBuf::from(v);
                 if p.as_os_str().is_empty() {
                     warnings.push(format!("{}:{}: empty include", src, line_no));
+                } else if let Err(why) = mirrorlist_ok(&p) {
+                    warnings.push(format!(
+                        "{}:{}: include {}: {}",
+                        src,
+                        line_no,
+                        p.display(),
+                        why
+                    ));
                 } else {
                     ent.includes.push(p);
                 }
@@ -309,6 +339,21 @@ fn parse_file(path: &Path) -> io::Result<(Vec<RepoEntry>, Vec<String>)> {
                     ent.location = Some(v.to_string());
                 }
             }
+            "auto-sync" | "auto_sync" => match parse_bool(v) {
+                Some(b) => ent.auto_sync = b,
+                None => warnings.push(format!(
+                    "{}:{}: bad auto-sync '{}' (want true/false / yes/no)",
+                    src, line_no, v
+                )),
+            },
+            "sync-type" | "sync_type" => match v.to_ascii_lowercase().as_str() {
+                "sync" => ent.sync_type = SyncType::Sync,
+                "refresh" => ent.sync_type = SyncType::Refresh,
+                other => warnings.push(format!(
+                    "{}:{}: bad sync-type '{}' (want sync|refresh)",
+                    src, line_no, other
+                )),
+            },
             other => warnings.push(format!(
                 "{}:{}: unknown key '{}' (ignored)",
                 src, line_no, other
@@ -317,6 +362,81 @@ fn parse_file(path: &Path) -> io::Result<(Vec<RepoEntry>, Vec<String>)> {
     }
     flush(&mut cur, &mut entries);
     Ok((entries, warnings))
+}
+
+fn parse_bool(v: &str) -> Option<bool> {
+    match v.trim().to_ascii_lowercase().as_str() {
+        "true" | "yes" | "1" | "on" => Some(true),
+        "false" | "no" | "0" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+/// Any entry opted into `auto-sync = true`?
+pub(crate) fn any_auto_sync() -> bool {
+    load_effective(feature_enabled("localrepo"))
+        .entries
+        .iter()
+        .any(|e| e.auto_sync)
+}
+
+/// Any entry has `sync-type = refresh`?
+pub(crate) fn any_sync_type_refresh() -> bool {
+    load_effective(feature_enabled("localrepo"))
+        .entries
+        .iter()
+        .any(|e| e.sync_type == SyncType::Refresh)
+}
+
+/// Force flag for the pre-op auto-sync pass (true if an auto-sync entry
+/// also asks for refresh).
+pub(crate) fn auto_sync_force() -> bool {
+    load_effective(feature_enabled("localrepo"))
+        .entries
+        .iter()
+        .any(|e| e.auto_sync && e.sync_type == SyncType::Refresh)
+}
+
+/// CacheDir paths from `location =` keys (unique, non-empty).
+pub(crate) fn cache_dirs() -> Vec<String> {
+    let mut out = Vec::new();
+    for e in load_effective(feature_enabled("localrepo")).entries {
+        if let Some(loc) = e.location {
+            let t = loc.trim();
+            if !t.is_empty() && !out.iter().any(|x| x == t) {
+                out.push(t.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// `include` must be a mirrorlist: has `Server =`, no `[section]` headers.
+fn mirrorlist_ok(path: &Path) -> Result<(), String> {
+    let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let mut has_server = false;
+    for raw in text.lines() {
+        let t = strip_comment(raw).trim();
+        if t.is_empty() {
+            continue;
+        }
+        if t.starts_with('[') && t.ends_with(']') {
+            return Err(
+                "looks like a pacman.conf fragment ([section]); include is mirrorlist-only".into(),
+            );
+        }
+        if let Some((k, _)) = split_kv(t) {
+            if k.eq_ignore_ascii_case("server") {
+                has_server = true;
+            } else if k.eq_ignore_ascii_case("include") {
+                return Err("nested Include not allowed in mirrorlist".into());
+            }
+        }
+    }
+    if !has_server {
+        return Err("no Server = lines (not a mirrorlist)".into());
+    }
+    Ok(())
 }
 
 fn strip_comment(line: &str) -> &str {
@@ -425,6 +545,8 @@ pub(crate) fn localrepo_defaults() -> Vec<RepoEntry> {
             includes: Vec::new(),
             verify_signature: Some("Never".into()),
             location: Some(format!("{}/{}", ROOT, name)),
+            auto_sync: false,
+            sync_type: SyncType::Sync,
             source: "FEATURES=localrepo".into(),
             line: 0,
         })
@@ -494,6 +616,9 @@ pub(crate) fn feature_enabled(name: &str) -> bool {
 }
 
 /// Map a pacman `SigLevel =` string to libalpm flags.
+/// Tokens apply left-to-right and *override* the package/database half they
+/// touch (same as pacman): `Required DatabaseOptional` ⇒ packages required,
+/// databases optional — not both DATABASE and DATABASE_OPTIONAL at once.
 pub(crate) fn parse_siglevel(s: Option<&str>) -> SigLevel {
     let Some(s) = s.map(str::trim).filter(|t| !t.is_empty()) else {
         return SigLevel::PACKAGE | SigLevel::DATABASE_OPTIONAL;
@@ -507,25 +632,46 @@ pub(crate) fn parse_siglevel(s: Option<&str>) -> SigLevel {
         match t.as_str() {
             "never" => return SigLevel::NONE,
             "optional" => {
+                level.remove(SigLevel::PACKAGE | SigLevel::DATABASE);
                 level |= SigLevel::PACKAGE_OPTIONAL | SigLevel::DATABASE_OPTIONAL;
             }
             "required" => {
+                level.remove(SigLevel::PACKAGE_OPTIONAL | SigLevel::DATABASE_OPTIONAL);
                 level |= SigLevel::PACKAGE | SigLevel::DATABASE;
             }
-            "trustedonly" => {}
+            "trustedonly" => {
+                level.remove(
+                    SigLevel::PACKAGE_UNKNOWN_OK
+                        | SigLevel::PACKAGE_MARGINAL_OK
+                        | SigLevel::DATABASE_UNKNOWN_OK
+                        | SigLevel::DATABASE_MARGINAL_OK,
+                );
+            }
             "trustall" => {
                 level |= SigLevel::PACKAGE_UNKNOWN_OK
                     | SigLevel::PACKAGE_MARGINAL_OK
                     | SigLevel::DATABASE_UNKNOWN_OK
                     | SigLevel::DATABASE_MARGINAL_OK;
             }
-            "packageoptional" => level |= SigLevel::PACKAGE_OPTIONAL,
-            "packagerequired" => level |= SigLevel::PACKAGE,
+            "packageoptional" => {
+                level.remove(SigLevel::PACKAGE);
+                level |= SigLevel::PACKAGE_OPTIONAL;
+            }
+            "packagerequired" => {
+                level.remove(SigLevel::PACKAGE_OPTIONAL);
+                level |= SigLevel::PACKAGE;
+            }
             "packagetrustall" => {
                 level |= SigLevel::PACKAGE_UNKNOWN_OK | SigLevel::PACKAGE_MARGINAL_OK;
             }
-            "databaseoptional" => level |= SigLevel::DATABASE_OPTIONAL,
-            "databaserequired" => level |= SigLevel::DATABASE,
+            "databaseoptional" => {
+                level.remove(SigLevel::DATABASE);
+                level |= SigLevel::DATABASE_OPTIONAL;
+            }
+            "databaserequired" => {
+                level.remove(SigLevel::DATABASE_OPTIONAL);
+                level |= SigLevel::DATABASE;
+            }
             "databasetrustall" => {
                 level |= SigLevel::DATABASE_UNKNOWN_OK | SigLevel::DATABASE_MARGINAL_OK;
             }
@@ -542,6 +688,34 @@ pub(crate) fn parse_siglevel(s: Option<&str>) -> SigLevel {
 /// When `FEATURES="repos"` and repos.conf defines sections: drop pacman.conf
 /// sync dbs and register effective order from repos.conf.
 /// Empty / missing conf → leave the handle unchanged.
+/// Fully expand mirror URL variables before `add_server`.
+///
+/// libalpm only substitutes `$arch` / `$repo` at download time, using the
+/// handle's first Architecture. On CachyOS that is often `x86_64_v3`, which
+/// 404s on Arch/Artix mirrors (`…/os/x86_64_v3/…`). CachyOS mirrorlists use
+/// the non-standard `$arch_v3` / `$arch_v4` tokens instead.
+///
+/// Rules:
+/// - `$arch_v3` / `$arch_v4` → `{base}_v3` / `{base}_v4` (base strips `_v*`)
+/// - `$arch` → `base` when the handle arch is a v3/v4 variant, else as-is
+/// - `$repo` → the section name we are registering
+///
+/// After expansion the URL has no `$` left, so libalpm will not re-substitute
+/// a wrong arch for Arch-style servers.
+fn expand_server_url(url: &str, repo: &str, arches: &[String]) -> String {
+    let arch = arches.first().map(String::as_str).unwrap_or("x86_64");
+    let base = arch.trim_end_matches("_v4").trim_end_matches("_v3");
+    let arch_for_dollar = if arch.ends_with("_v3") || arch.ends_with("_v4") {
+        base
+    } else {
+        arch
+    };
+    url.replace("$arch_v3", &format!("{base}_v3"))
+        .replace("$arch_v4", &format!("{base}_v4"))
+        .replace("$arch", arch_for_dollar)
+        .replace("$repo", repo)
+}
+
 pub(crate) fn apply_to_alpm(alpm: &mut Alpm) -> io::Result<()> {
     if !feature_enabled("repos") {
         return Ok(());
@@ -550,6 +724,7 @@ pub(crate) fn apply_to_alpm(alpm: &mut Alpm) -> io::Result<()> {
     if cfg.entries.is_empty() {
         return Ok(());
     }
+    let arches: Vec<String> = alpm.architectures().iter().map(|s| s.to_string()).collect();
     alpm.unregister_all_syncdbs()
         .map_err(|e| io::Error::other(format!("unregister syncdbs: {e}")))?;
     for e in &cfg.entries {
@@ -557,13 +732,30 @@ pub(crate) fn apply_to_alpm(alpm: &mut Alpm) -> io::Result<()> {
         let db = alpm
             .register_syncdb_mut(e.name.as_str(), level)
             .map_err(|e2| io::Error::other(format!("register [{}]: {e2}", e.name)))?;
-        for url in cfg.servers_for(e) {
+        let servers: Vec<String> = cfg
+            .servers_for(e)
+            .into_iter()
+            .map(|u| expand_server_url(&u, &e.name, &arches))
+            .collect();
+        if servers.is_empty() {
+            return Err(io::Error::other(format!(
+                "[{}] no Server URLs after resolving sync-uri/include — check mirrorlist",
+                e.name
+            )));
+        }
+        for url in &servers {
             if let Err(err) = db.add_server(url.as_str()) {
                 return Err(io::Error::other(format!(
                     "[{}] add_server {}: {err}",
                     e.name, url
                 )));
             }
+        }
+    }
+    // location = CacheDir (pacman package cache), not an ebuild tree.
+    for dir in cache_dirs() {
+        if let Err(err) = alpm.add_cachedir(dir.clone()) {
+            return Err(io::Error::other(format!("CacheDir {dir}: {err}")));
         }
     }
     Ok(())
@@ -676,6 +868,8 @@ sync-uri = https://a.example/$repo/os/$arch
             includes: vec![],
             verify_signature: Some("Never".into()),
             location: None,
+            auto_sync: false,
+            sync_type: SyncType::Sync,
             source: "test".into(),
             line: 1,
         };
@@ -687,6 +881,114 @@ sync-uri = https://a.example/$repo/os/$arch
         assert!(frag.contains("[ae-aur]"));
         assert!(frag.contains("SigLevel = Never"));
         assert!(frag.contains("Server = file:///var/lib/aura-emerge/repos/ae-aur"));
+    }
+
+    #[test]
+    fn include_rejects_pacman_conf_fragment() {
+        let dir = tmp_dir();
+        let bad = dir.join("not-mirrorlist");
+        fs::write(
+            &bad,
+            "[core]
+Server = https://example/$repo/os/$arch
+",
+        )
+        .unwrap();
+        let f = dir.join("e.conf");
+        fs::write(
+            &f,
+            format!(
+                "[core]
+priority = 50
+include = {}
+",
+                bad.display()
+            ),
+        )
+        .unwrap();
+        let cfg = load_from(&dir);
+        assert!(
+            cfg.warnings
+                .iter()
+                .any(|w| w.contains("mirrorlist-only") || w.contains("[section]")),
+            "{:?}",
+            cfg.warnings
+        );
+        assert!(
+            cfg.entries.iter().all(|e| e.includes.is_empty())
+                || cfg.entries.is_empty()
+                || cfg.entries.iter().any(|e| e.includes.is_empty())
+        );
+    }
+
+    #[test]
+    fn siglevel_required_database_optional() {
+        let l = parse_siglevel(Some("Required DatabaseOptional"));
+        assert!(l.contains(SigLevel::PACKAGE), "{l:?}");
+        assert!(l.contains(SigLevel::DATABASE_OPTIONAL), "{l:?}");
+        assert!(!l.contains(SigLevel::DATABASE), "{l:?}");
+        assert!(!l.contains(SigLevel::PACKAGE_OPTIONAL), "{l:?}");
+    }
+
+    #[test]
+    fn expand_arch_tokens_for_cachyos_and_arch() {
+        let arches = vec!["x86_64".into()];
+        assert_eq!(
+            expand_server_url(
+                "https://m.example/repo/$arch_v3/$repo",
+                "cachyos-v3",
+                &arches
+            ),
+            "https://m.example/repo/x86_64_v3/cachyos-v3"
+        );
+        // Handle arch is v3 → $arch must still become x86_64 for Arch mirrors.
+        let arches = vec!["x86_64_v3".into()];
+        assert_eq!(
+            expand_server_url(
+                "https://mirror.example/archlinux/$repo/os/$arch",
+                "core",
+                &arches
+            ),
+            "https://mirror.example/archlinux/core/os/x86_64"
+        );
+        assert_eq!(
+            expand_server_url(
+                "https://m.example/repo/$arch_v3/$repo",
+                "cachyos-v3",
+                &arches
+            ),
+            "https://m.example/repo/x86_64_v3/cachyos-v3"
+        );
+    }
+
+    #[test]
+    fn parses_auto_sync_and_sync_type() {
+        let dir = tmp_dir();
+        let f = dir.join("as.conf");
+        fs::write(
+            &f,
+            r#"
+[core]
+priority = 50
+sync-uri = https://a.example/$repo/os/$arch
+auto-sync = false
+sync-type = refresh
+
+[extra]
+priority = 50
+sync-uri = https://a.example/$repo/os/$arch
+auto-sync = yes
+"#,
+        )
+        .unwrap();
+        let cfg = load_from(&dir);
+        assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
+        let core = cfg.entries.iter().find(|e| e.name == "core").unwrap();
+        assert!(!core.auto_sync);
+        assert_eq!(core.sync_type, SyncType::Refresh);
+        let extra = cfg.entries.iter().find(|e| e.name == "extra").unwrap();
+        assert!(extra.auto_sync); // auto-sync = yes
+        assert_eq!(extra.sync_type, SyncType::Sync);
     }
 
     #[test]

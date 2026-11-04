@@ -3,7 +3,6 @@
 
 pub(crate) use crate::helper::reposconf::{
     GENERATED_PACMAN_FRAGMENT, REPOS_CONF, apply_to_alpm, load_effective, read_mirrorlist,
-    write_generated_fragment,
 };
 
 use std::path::Path;
@@ -34,10 +33,17 @@ pub(crate) fn print_info(localrepo: bool) {
             e.line
         );
         if let Some(ref sig) = e.verify_signature {
-            println!("    SigLevel = {}", sig);
+            // Same key name as in repos.conf (not pacman's SigLevel).
+            println!("    verify-signature = {}", sig);
         }
         if let Some(ref loc) = e.location {
-            println!("    location = {}", loc);
+            println!("    location = {}  (CacheDir)", loc);
+        }
+        if e.auto_sync {
+            println!("    auto-sync = true");
+        }
+        if e.sync_type != crate::helper::reposconf::SyncType::Sync {
+            println!("    sync-type = refresh");
         }
         for u in &e.sync_uris {
             println!("    Server = {}", u);
@@ -63,8 +69,16 @@ pub(crate) fn print_info(localrepo: bool) {
         }
         println!();
     }
-    println!(
-        "    pacman fragment: {} (Include from pacman.conf)",
-        GENERATED_PACMAN_FRAGMENT
-    );
+    let frag = Path::new(GENERATED_PACMAN_FRAGMENT);
+    if frag.is_file() {
+        println!(
+            "    pacman fragment: {} (present; Include from pacman.conf)",
+            GENERATED_PACMAN_FRAGMENT
+        );
+    } else {
+        println!(
+            "    pacman fragment: {} (missing — regenerated on `emerge --sync`)",
+            GENERATED_PACMAN_FRAGMENT
+        );
+    }
 }

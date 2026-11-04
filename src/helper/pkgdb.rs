@@ -337,6 +337,7 @@ pub(crate) fn remove(
     names: &[String],
     emit: &mut dyn FnMut(&str),
 ) -> io::Result<()> {
+    ensure_auto_sync()?;
     let names = names.to_vec();
     with_live_events(emit, move |tx| {
         let mut alpm = open()?;
@@ -430,6 +431,18 @@ pub(crate) fn sync(force: bool, emit: &mut dyn FnMut(&str)) -> io::Result<()> {
         Err(e) => emit(&format!("repo ensure: {}", e)),
     }
 
+    // FEATURES="repos": keep /etc/portage/ae-generated-repos.conf in sync
+    // with repos.conf so pacman (and other tools) can Include it. Root-only;
+    // never attempted from `emerge --info`.
+    if super::reposconf::feature_enabled("repos") {
+        match super::reposconf::write_generated_fragment(super::reposconf::feature_enabled(
+            "localrepo",
+        )) {
+            Ok(()) => emit("reposconf fragment updated"),
+            Err(e) => emit(&format!("reposconf fragment: {}", e)),
+        }
+    }
+
     std::thread::scope(|s| {
         let (tx, rx) = mpsc::channel::<String>();
         let worker = s.spawn(move || {
@@ -444,6 +457,31 @@ pub(crate) fn sync(force: bool, emit: &mut dyn FnMut(&str)) -> io::Result<()> {
             .join()
             .unwrap_or_else(|_| Err(fail("sync: worker panicked")))
     })
+}
+
+/// If any repos.conf entry has `auto-sync = true`, refresh sync dbs before
+/// a root op that mutates the local db (install / remove / -Su / -U).
+/// No-op when FEATURES=repos is off or no entry opted in.
+pub(crate) fn ensure_auto_sync() -> io::Result<()> {
+    if !super::reposconf::feature_enabled("repos") {
+        return Ok(());
+    }
+    if !super::reposconf::any_auto_sync() {
+        return Ok(());
+    }
+    let mut alpm = open()?;
+    // Bulk update: libalpm has no per-db update in the safe API.
+    // force if any opted-in repo also has sync-type=refresh.
+    let force = super::reposconf::auto_sync_force();
+    alpm.trans_init(TransFlag::NONE)
+        .map_err(|e| fail(format!("db lock: {}", e)))?;
+    let res = alpm
+        .syncdbs_mut()
+        .update(force)
+        .map(|_| ())
+        .map_err(|e| fail(format!("auto-sync: {}", e)));
+    let _ = alpm.trans_release();
+    res
 }
 
 /// Same, on a given handle. Takes the db lock.
@@ -482,6 +520,17 @@ pub(crate) fn sync_in_with(
 
     alpm.trans_init(TransFlag::NONE)
         .map_err(|e| fail(format!("db lock: {}", e)))?;
+
+    // FEATURES="repos": honour auto-sync / sync-type per entry.
+    // Otherwise one shot for every registered sync db (pacman.conf order).
+    // alpm only exposes update() on the full SyncDbs list (not per-Db).
+    // sync-type=refresh → force this run; auto-sync is handled separately
+    // (pre-op hook), not by skipping dbs here.
+    let force = if super::reposconf::feature_enabled("repos") {
+        force || super::reposconf::any_sync_type_refresh()
+    } else {
+        force
+    };
     let res = alpm
         .syncdbs_mut()
         .update(force)
@@ -514,6 +563,7 @@ pub(crate) fn sysupgrade(
 ) -> io::Result<()> {
     use std::sync::mpsc;
 
+    ensure_auto_sync()?;
     std::thread::scope(|s| {
         let (tx, rx) = mpsc::channel::<String>();
         let worker = s.spawn(move || {
@@ -615,6 +665,7 @@ pub(crate) fn install(
     nodeps: bool,
     emit: &mut dyn FnMut(&str),
 ) -> io::Result<()> {
+    ensure_auto_sync()?;
     let names = names.to_vec();
     with_live_events(emit, move |tx| {
         let mut alpm = open()?;
@@ -740,6 +791,7 @@ pub(crate) fn install_files(
     specs: &[String],
     emit: &mut dyn FnMut(&str),
 ) -> io::Result<()> {
+    ensure_auto_sync()?;
     let mut stage = Stage::create()?;
     let paths = stage.copy_specs(specs)?;
     with_live_events(emit, move |tx| {

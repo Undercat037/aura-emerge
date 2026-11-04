@@ -1051,8 +1051,10 @@ fn sync_line(name: &str, state: Option<&str>) -> String {
     let label = format!("{}...", name);
     let tail = match state {
         Some("updated") => format!(" {}", "done".t_green().bold()),
+        Some("uptodate") => format!(" {}", "uptodate".dimmed()),
+        Some("skipped") => format!(" {}", "skipped".t_yellow()),
         Some("failed") => format!(" {}", "failed".t_red().bold()),
-        // Pending, or already current: no verdict.
+        // Pending: no verdict yet.
         _ => String::new(),
     };
     format!("{} {}{}", ">>>".t_green().bold(), label, tail)
@@ -4652,7 +4654,7 @@ fn run() -> anyhow::Result<()> {
 
         crate::candy::calculating_deps_line();
         println!();
-        println!(">>> Upgrading system (official repos)...");
+        println!(">>> Upgrading system...");
         // `-u @world aur/foo` used to silently drop `aur/foo` (full -u
         // ignores target_pkgs). Tell the user they will be installed after
         // the upgrade, and actually install them once the -u half is done.
@@ -4716,47 +4718,54 @@ fn run() -> anyhow::Result<()> {
         // (which repo/version is shown) and mask/origin; the commit is a
         // single sysupgrade. Selective `emerge -u repo/pkg` still pins.
 
-        // Always show the ebuild-style plan (pretend and real).
-        if official_upgrades.is_empty() {
-            println!(">>> No official packages out of date.");
-        } else {
-            println!();
-            for (name, old, newv, repo) in &official_upgrades {
-                let atom = if repo.is_empty() {
-                    name.clone()
-                } else {
-                    format!("{}/{}", repo, name)
-                };
-                println!(
-                    "[{} {:<4}] {} [{} -> {}]",
-                    "ebuild".t_green(),
-                    "U".t_yellow().bold(),
-                    atom.t_yellow().bold(),
-                    old,
-                    newv
-                );
-            }
-            println!();
-            println!(
-                "{}: {} official package(s) to upgrade",
-                "Total".bold(),
-                official_upgrades.len()
-            );
-            println!();
-        }
-
-        // AUR half planned up front so repo + AUR share one numbered pool.
+        // AUR half planned up front so repo + AUR share one numbered pool
+        // (same shape as the MERGE log line: `repo+aur …`).
         let aur_plan = aur_upgrade_plan(cli.devel);
 
         // Nothing to do: no prompt, no auto-clean noise.
         if official_upgrades.is_empty() && aur_plan.is_empty() {
-            println!();
             println!(">>> Nothing to merge; quitting.");
             if !cli.pretend {
                 clear_resume_state();
             }
             return Ok(());
         }
+
+        // One ebuild list + one Total for official and AUR together.
+        println!();
+        for (name, old, newv, repo) in &official_upgrades {
+            let atom = if repo.is_empty() {
+                name.clone()
+            } else {
+                format!("{}/{}", repo, name)
+            };
+            println!(
+                "[{} {:<4}] {} [{} -> {}]",
+                "ebuild".t_green(),
+                "U".t_yellow().bold(),
+                atom.t_yellow().bold(),
+                old,
+                newv
+            );
+        }
+        for (name, old, newv) in &aur_plan {
+            println!(
+                "[{} {:<4}] {} [{} -> {}]",
+                "ebuild".t_green(),
+                "U".t_yellow().bold(),
+                format!("aur/{}", name).t_yellow().bold(),
+                old,
+                newv
+            );
+        }
+        packages::print_aur_upgrade_blockers();
+        println!();
+        println!(
+            "{}: {} package(s) to upgrade",
+            "Total".bold(),
+            official_upgrades.len() + aur_plan.len()
+        );
+        println!();
 
         // Full -u uses one libalpm -Su transaction (versioned dep stacks
         // like pipewire=* must stay together). `--jobs` still caps parallel
@@ -4944,8 +4953,9 @@ fn run() -> anyhow::Result<()> {
             false
         } else {
             // Plan prompt already answered for the whole -u run.
+            let aur_names: Vec<String> = aur_plan.iter().map(|(n, _, _)| n.clone()).collect();
             aur_upgrade_names(
-                &aur_plan,
+                &aur_names,
                 false,
                 cli.skippgp,
                 cli.no_sandbox,

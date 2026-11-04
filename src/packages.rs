@@ -386,7 +386,7 @@ pub(crate) fn print_similar_names(term: &str) {
     if bare.is_empty() {
         return;
     }
-    eprintln!("{} searching for similar names...", "emerge:".t_yellow());
+    eprintln!("{} searching for similar names...", " *".t_yellow());
 
     // Try full term, then progressively shorter prefixes (Portage-ish).
     let mut stems: Vec<&str> = vec![bare];
@@ -426,14 +426,13 @@ pub(crate) fn print_similar_names(term: &str) {
     hits.dedup();
     hits.truncate(5);
     if hits.is_empty() {
-        eprintln!("{} no similar package names found.", "emerge:".t_yellow());
+        eprintln!("{} no similar package names found.", " *".t_yellow());
         return;
     }
-    eprintln!(
-        "{} Maybe you meant any of these: {}",
-        "emerge:".t_yellow(),
-        hits.join(", ")
-    );
+    eprintln!("{} Maybe you meant any of these:", " *".t_yellow());
+    for h in &hits {
+        eprintln!("    {}", h);
+    }
 }
 
 /// AUR-only dependencies (depends + makedepends) `resolve_and_build_aur`
@@ -2780,11 +2779,14 @@ pub(crate) fn check_devel_all() -> bool {
     true
 }
 
-pub(crate) fn aur_upgrade_plan(devel: bool) -> Vec<String> {
+/// Plan AUR upgrades for a full `-u`. Returns `(name, old_ver, new_ver)`.
+/// Side notes (foreign not in AUR, held back, blockers) are printed here;
+/// the ebuild list and Total are left to the caller so repo + AUR can share
+/// one numbered pool (same shape as the MERGE log line).
+pub(crate) fn aur_upgrade_plan(devel: bool) -> Vec<(String, String, String)> {
     let installed: Vec<(String, String)> = crate::alpm_db::foreign_packages();
 
     if installed.is_empty() {
-        println!(">>> No foreign (AUR/local) packages installed - nothing to upgrade.");
         return Vec::new();
     }
 
@@ -2873,41 +2875,24 @@ pub(crate) fn aur_upgrade_plan(devel: bool) -> Vec<String> {
         );
     }
 
-    if to_upgrade.is_empty() {
-        println!(">>> No AUR packages out of date.");
-        return Vec::new();
-    }
-
-    println!();
-    for (name, old, new) in &to_upgrade {
-        println!(
-            "[{} {:<4}] {} [{} -> {}]",
-            "ebuild".t_green(),
-            "U".t_yellow().bold(),
-            name.t_yellow().bold(),
-            old,
-            new
+    if !to_upgrade.is_empty() {
+        // Register blockers now; the caller prints them after the ebuild list.
+        note_aur_blockers(
+            to_upgrade
+                .iter()
+                .filter_map(|(n, _, _)| latest_by_name.get(n.as_str()).copied()),
         );
     }
-    // New versions vs the system: `[conflict]` lines now, asked in
-    // confirm_merge, not after the build.
-    note_aur_blockers(
-        to_upgrade
-            .iter()
-            .filter_map(|(n, _, _)| latest_by_name.get(n.as_str()).copied()),
-    );
+
+    to_upgrade
+}
+
+/// Print conflict/blocker lines registered by `aur_upgrade_plan` (and any
+/// other preflight notes). Call after the unified ebuild list.
+pub(crate) fn print_aur_upgrade_blockers() {
     if let Some((pairs, incoming)) = crate::conflict::take_planned() {
         crate::conflict::print_planned(&pairs, &incoming, &crate::alpm_db::required_by);
     }
-    println!();
-    println!(
-        "{}: {} AUR package(s) to upgrade",
-        "Total".bold(),
-        to_upgrade.len()
-    );
-    println!();
-
-    to_upgrade.into_iter().map(|(n, _, _)| n).collect()
 }
 
 /// Full-upgrade AUR half: build the names from `aur_upgrade_plan`.
@@ -5531,45 +5516,44 @@ pub(crate) fn print_system_info() {
     );
     println!();
 
-    // Portage-style repos.conf (FEATURES="repos")
+    // Portage-style repos.conf (FEATURES="repos"). Read-only: never write
+    // the pacman fragment from --info (that needs root; done on --sync).
     if crate::runtime::config().has_feature("repos") {
         crate::repos::print_info(crate::runtime::config().has_feature("localrepo"));
         println!();
-        // Best-effort regenerate the pacman Include fragment for the user.
-        if let Err(e) = crate::repos::write_generated_fragment(
-            crate::runtime::config().has_feature("localrepo"),
-        ) {
-            println!(
-                "    (could not write {}: {})",
-                crate::repos::GENERATED_PACMAN_FRAGMENT,
-                e
-            );
-        }
-        println!();
     }
 
-    println!("Repositories (pacman.conf):");
-    println!();
-    let repos = parse_pacman_repos();
-    if repos.is_empty() {
-        println!("    (could not read {})", PACMAN_CONF);
-    }
-    for (i, (name, lines)) in repos.iter().enumerate() {
-        println!("{}", name);
-        // Repos that came from an `Include`d file carry a leading
-        // `from <file>` marker; show it on the priority line.
-        let (origin, rest) = match lines.split_first() {
-            Some((first, rest)) if first.starts_with("from ") => (Some(&first[5..]), rest),
-            _ => (None, lines.as_slice()),
-        };
-        match origin {
-            Some(o) => println!("    priority: {} (from {})", i + 1, o),
-            None => println!("    priority: {}", i + 1),
-        }
-        for l in rest {
-            println!("    {}", l);
-        }
+    // With FEATURES="repos", repos.conf is the source of truth — skip the
+    // pacman.conf mirror (priorities there are declaration order only).
+    // Without it, show pacman.conf repos with Portage-style priorities:
+    // first listed = 50, then 49, 48, … (higher number = higher priority).
+    if !crate::runtime::config().has_feature("repos") {
+        println!("Repositories (pacman.conf):");
         println!();
+        let repos = parse_pacman_repos();
+        if repos.is_empty() {
+            println!("    (could not read {})", PACMAN_CONF);
+        }
+        for (i, (name, lines)) in repos.iter().enumerate() {
+            println!("{}", name);
+            // Repos that came from an `Include`d file carry a leading
+            // `from <file>` marker; show it on the priority line.
+            let (origin, rest) = match lines.split_first() {
+                Some((first, rest)) if first.starts_with("from ") => (Some(&first[5..]), rest),
+                _ => (None, lines.as_slice()),
+            };
+            // Match repos.conf / Portage: higher number wins. First in
+            // pacman.conf is most important → 50, next 49, …
+            let pri = 50i32.saturating_sub(i as i32);
+            match origin {
+                Some(o) => println!("    priority: {} (from {})", pri, o),
+                None => println!("    priority: {}", pri),
+            }
+            for l in rest {
+                println!("    {}", l);
+            }
+            println!();
+        }
     }
 
     let user_conf = user_makepkg_conf_path();
