@@ -574,6 +574,7 @@ pub(crate) fn load_effective(localrepo: bool) -> ReposConfig {
 
 /// Write the generated pacman Include fragment (best-effort).
 pub(crate) fn write_generated_fragment(localrepo: bool) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
     let cfg = load_effective(localrepo);
     let body = cfg.to_pacman_fragment();
     let path = Path::new(GENERATED_PACMAN_FRAGMENT);
@@ -582,6 +583,8 @@ pub(crate) fn write_generated_fragment(localrepo: bool) -> io::Result<()> {
     }
     let tmp = path.with_extension("conf.tmp");
     fs::write(&tmp, body)?;
+    // Readable by non-root users who include the fragment from pacman.conf.
+    fs::set_permissions(&tmp, fs::Permissions::from_mode(0o644))?;
     fs::rename(&tmp, path)?;
     Ok(())
 }
@@ -975,7 +978,7 @@ auto-sync = false
 sync-type = refresh
 
 [extra]
-priority = 50
+priority = 40
 sync-uri = https://a.example/$repo/os/$arch
 auto-sync = yes
 "#,

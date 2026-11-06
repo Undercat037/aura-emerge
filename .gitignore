@@ -2,6 +2,7 @@ target
 .init
 aura-emerge-aur
 AE-ToDo.md
+TESTIFICATE.md
 aura-emerge-main
 src/aura-emerge-main
 .aura-emerge-*
