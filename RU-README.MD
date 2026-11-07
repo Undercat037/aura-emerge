@@ -640,9 +640,8 @@ PKGBUILD, чьи зависимости нельзя разрешить стат
 <summary><h3>Проверка сканера (после установки)</h3></summary>
 
 ```bash
-git clone https://github.com/Undercat037/aura-emerge.git
-cd aura-emerge
-emerge --usepkgbuild ./scaner-test --ask
+git clone https://github.com/Undercat037/ae-scanner-checker.git
+emerge --usepkgbuild ./ae-scanner-checker --scan
 ```
 </details>
 

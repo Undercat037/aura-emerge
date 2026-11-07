@@ -33,7 +33,7 @@ const PROFILE_PKG_FILE: &str = "packages";
 const PROFILE_PKG_LEGACY: &str = "package.profile";
 
 /// Profile tree root (`eselect profile` style). Cynosure/portage layout only.
-pub(crate) const PROFILE_ROOTS: &[&str] = &["/var/db/repos/portage/profiles"];
+pub(crate) const PROFILE_ROOTS: &[&str] = &["/var/db/portage/profiles"];
 
 #[derive(Debug, Default)]
 pub(crate) struct Profile {

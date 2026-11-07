@@ -27,9 +27,16 @@ _ae_init_localrepos() {
   done
 }
 
+_ae_eselect_shim() {
+  # eselect shim: only when no real eselect (ae-eselect) is installed
+  if [[ -x /usr/lib/aura-emerge/eselect-shim ]]; then
+    /usr/lib/aura-emerge/eselect-shim "$1" || true
+  fi
+}
+
 post_install() {
   ln -sf /usr/bin/emerge /usr/bin/portageq
-  ln -sf /usr/bin/emerge /usr/bin/eselect
+  _ae_eselect_shim install
   _ae_init_localrepos || true
 }
 
@@ -38,5 +45,8 @@ post_upgrade() {
 }
 
 pre_remove() {
-  rm -f /usr/bin/portageq /usr/bin/eselect
+  if [[ -L /usr/bin/portageq && $(readlink -- /usr/bin/portageq) == /usr/bin/emerge ]]; then
+    rm -f /usr/bin/portageq
+  fi
+  _ae_eselect_shim remove
 }

@@ -207,9 +207,9 @@ PROFILES
     layout: parent, packages, package.mask, package.protect,
     make.defaults). Profile package.mask supports -atom / !atom to drop
     a parent mask. --list-profiles lists them, --set-profile <N|PATH>
-    selects one, @system installs the profile's * packages. With
-    /usr/bin/eselect symlinked to emerge, 'eselect profile list|set|show'
-    works too.
+    selects one, @system installs the profile's * packages. Without the
+    ae-eselect package, a built-in shim answers 'eselect profile
+    list|set|show' (/usr/local/bin/eselect -> emerge).
 
 AE FORCE
     When an install would overwrite a file no package owns, emerge asks
@@ -356,8 +356,9 @@ FILES
 INSTALLATION
     Built with `cargo build --release`; the resulting binary is installed as
     /usr/bin/emerge (root-owned, mode 755: the helper refuses to start
-    otherwise), with /usr/bin/portageq and /usr/bin/eselect symlinked to it
-    so it can also answer as the portageq and eselect shims.
+    otherwise), with /usr/bin/portageq symlinked to it, and
+    /usr/local/bin/eselect too unless a real eselect (ae-eselect) is
+    installed; emerge then also answers as the portageq and eselect shims.
 
     Everything below is generated straight from this Cli definition at
     install time (never hand-edited, so none of it can drift from
@@ -1069,7 +1070,8 @@ fn eselect_shim() -> i32 {
                 "!!! eselect module '{}' is not provided by aura-emerge",
                 mod_name
             );
-            eprintln!("!!! only: eselect profile list|set|show");
+            eprintln!("!!! shim only: eselect profile list|set|show");
+            eprintln!("!!! install ae-eselect for the full eselect");
             1
         }
     }

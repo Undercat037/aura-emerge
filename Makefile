@@ -17,22 +17,21 @@ push: git
 	git push --follow-tags
 
 uninstall:
-	sudo rm -f /usr/bin/emerge /usr/bin/portageq /usr/bin/eselect
+	sudo AE_SHIM_SRC=$(CURDIR)/misc bash misc/eselect-shim.sh remove
+	sudo rm -f /usr/bin/emerge /usr/bin/portageq
 
 clean:
 	cargo clean
 
+# eselect shim is skipped when a real eselect (ae-eselect) is installed
 link:
 	sudo ln -sfn /usr/bin/emerge /usr/bin/portageq
-	sudo ln -sfn /usr/bin/emerge /usr/bin/eselect
+	sudo AE_SHIM_SRC=$(CURDIR)/misc bash misc/eselect-shim.sh install
 
 completions:
 	$(BIN) --gen-completions bash | sudo tee /usr/share/bash-completion/completions/emerge > /dev/null
 	$(BIN) --gen-completions zsh | sudo tee /usr/share/zsh/site-functions/_emerge > /dev/null
 	$(BIN) --gen-completions fish | sudo tee /usr/share/fish/vendor_completions.d/emerge.fish > /dev/null
-	sudo install -m644 misc/eselect.bash-completion /usr/share/bash-completion/completions/eselect
-	sudo install -m644 misc/_eselect /usr/share/zsh/site-functions/_eselect
-	sudo install -m644 misc/eselect.fish /usr/share/fish/vendor_completions.d/eselect.fish
 
 man:
 	$(BIN) --gen-manpage | sudo tee /usr/share/man/man1/emerge.1 > /dev/null

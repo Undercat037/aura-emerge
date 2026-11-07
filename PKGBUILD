@@ -9,12 +9,13 @@ url="https://undercat037.github.io/aura-emerge/"
 # Gitlab repo: https://gitlab.com/Undercat037/aura-emerge
 license=('GPL-3.0-only')
 depends=('git' 'sudo' 'bubblewrap' 'pacman' 'gnupg')
-optdepends=('devtools: for --abs support (pkgctl repo clone)')
+optdepends=('devtools: for --abs support (pkgctl repo clone)'
+            'ae-eselect: full eselect (profile, repository, world, cache, db) instead of the profile-only shim')
 makedepends=('rust' 'cargo')
 conflicts=('portage' 'portage-git' 'eselect-git' 'aura-emerge')
 provides=('emerge' 'portageq' 'eselect')
 install=aura-emerge.install
-backup=('etc/portage/world' 'etc/portage/ae-repos.conf' 'etc/portage/repos.conf')
+backup=('etc/portage/world' 'etc/portage/ae-repos.conf' 'etc/portage/repos.conf/99example.conf')
 source=()
 sha256sums=()
 
@@ -112,8 +113,11 @@ package() {
   install -Dm644 comp.zsh "$pkgdir/usr/share/zsh/site-functions/_emerge"
   install -Dm644 comp.fish "$pkgdir/usr/share/fish/vendor_completions.d/emerge.fish"
 
-  # eselect shim completions (profile module only)
-  install -Dm644 misc/eselect.bash-completion "$pkgdir/usr/share/bash-completion/completions/eselect"
-  install -Dm644 misc/_eselect "$pkgdir/usr/share/zsh/site-functions/_eselect"
-  install -Dm644 misc/eselect.fish "$pkgdir/usr/share/fish/vendor_completions.d/eselect.fish"
+  # eselect shim (profile module only). post_install links it into
+  # /usr/local only when no real eselect (aura-emerge-eselect) is installed, so
+  # nothing here can conflict with ae-eselect's files.
+  install -Dm755 misc/eselect-shim.sh "$pkgdir/usr/lib/aura-emerge/eselect-shim"
+  install -Dm644 misc/eselect.bash-completion "$pkgdir/usr/share/aura-emerge/eselect-shim/eselect.bash-completion"
+  install -Dm644 misc/_eselect "$pkgdir/usr/share/aura-emerge/eselect-shim/_eselect"
+  install -Dm644 misc/eselect.fish "$pkgdir/usr/share/aura-emerge/eselect-shim/eselect.fish"
 }
