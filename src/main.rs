@@ -782,53 +782,213 @@ struct Cli {
 }
 
 fn print_help() {
+    use crate::theme::Themed;
     let ver = concat!(env!("CARGO_PKG_VERSION"));
+    // Portage colours: flag names + section labels are bold green / bold;
+    // value placeholders cyan; brackets and punctuation stay plain.
+    let g = |s: &str| s.t_green().bold().to_string();
+    let c = |s: &str| s.t_cyan().bold().to_string();
+    let sec = |s: &str| s.bold().to_string();
+
     println!("aura-emerge: command-line interface to the Portage system (Arch Linux)");
-    println!("Usage:");
+    println!("{}:", sec("Usage"));
     println!("   emerge [ options ] [ action ] [ package | @set ] [ ... ]");
     println!("   emerge [ options ] [ action ] < @world >");
-    println!("   emerge < --sync | --info | --list-sets | --list-profiles >");
-    println!("   emerge --resume [ --pretend | --ask | --skipfirst ]");
-    println!("   emerge --help");
-    println!("Options: -[1aCcDehnpstuVv]");
-    println!("          [ --abs                   ] [ --aur                       ]");
-    println!("          [ --skippgp               ] [ --autopgp                   ]");
-    println!("          [ --repos                 ] [ --jobs=N    | --jobsa=N     ]");
-    println!("          [ --edit                  ] [ --skip-srcinfo-regen        ]");
-    println!("          [ --pkgbuild-view         ] [ --list-profiles             ]");
-    println!("          [ --noreplace             ] [ --with-optdeps              ]");
-    println!("          [ --load-average=X        ] [ --debug | --log <PATH>  ]");
-    println!("          [ --set-profile <N|PATH>  ] [ --color <y|n|auto>          ]");
-    println!("          [ --aeforce               ] [ --noaefile                   ]");
-    println!("          [ --aelist                ] [ --aeclean [new|old|park|all]]");
-    println!("          [ --oneshot               ] [ --pretend                   ]");
-    println!("          [ --skipfirst             ] [ --refresh                   ]");
-    println!("          [ --no-sandbox            ] [ --unshare-net-build         ]");
-    println!("          [ --devel                 ] [ --sudoloop                  ]");
-    println!("          [ --verbose-conflicts     ] [ --with-bdeps                ]");
-    println!("          [ --err-install           ] [ --regen-sort                ]");
-    println!("          [ --deep[=N]              ] [ --keep-going                ]");
-    println!("          [ --exclude <ATOM>        ] [ --ignore-default-opts       ]");
-    println!("          [ --sync-explicit         ]");
-    println!("Actions:  [ --depclean  | --deselect | --prune      | --check-world ]");
-    println!("          [ --regen     | --resume   | --search     | --searchdesc  ]");
-    println!("          [ --select    | --sync     | --unmerge    | --update      ]");
     println!(
-        "          [ --regen-world | --version | --info | --pkginfo | --regen-world-from-explicit ]"
+        "   emerge < {} | {} | {} | {} >",
+        g("--sync"),
+        g("--info"),
+        g("--list-sets"),
+        g("--list-profiles")
     );
-    println!("          [ --list-sets | --regen-sets @<name>  | --news [N|all]    ]");
-    println!("          [ --check-devel         | --undo                          ]");
-    println!("          [ --scan <pkg...>       | --usepkgbuild <PATH>       ]");
-    println!("          [ --usepkg <FILE|DIR...> [-O]                  ]");
-    println!("          [ --batchinstall <FILE> | --clean-source-cache            ]");
-    println!("          [ --localrepo-clean     | --revdep-rebuild                ]");
-    println!("Sets:     [ @world | @preserved-rebuild | @<custom-sets>            ]");
+    println!(
+        "   emerge {} [ {} | {} | {} ]",
+        g("--resume"),
+        g("--pretend"),
+        g("--ask"),
+        g("--skipfirst")
+    );
+    println!("   emerge {}", g("--help"));
     println!();
-    println!("Hooks:    /usr/share/libalpm/hooks/  /etc/pacman.d/hooks/  /etc/portage/hooks/");
-    println!("          (libalpm runs *.hook on install/remove/-U/-Su; see man emerge)");
+    println!("{}: -[{}]", sec("Options"), g("1aCcDehnpstuVv"));
+    println!(
+        "          [ {}                   ] [ {}                       ]",
+        g("--abs"),
+        g("--aur")
+    );
+    println!(
+        "          [ {}               ] [ {}                   ]",
+        g("--skippgp"),
+        g("--autopgp")
+    );
+    println!(
+        "          [ {}                 ] [ {}={}    | {}={}     ]",
+        g("--repos"),
+        g("--jobs"),
+        c("N"),
+        g("--jobsa"),
+        c("N")
+    );
+    println!(
+        "          [ {}                  ] [ {}        ]",
+        g("--edit"),
+        g("--skip-srcinfo-regen")
+    );
+    println!(
+        "          [ {}         ] [ {}             ]",
+        g("--pkgbuild-view"),
+        g("--list-profiles")
+    );
+    println!(
+        "          [ {}             ] [ {}              ]",
+        g("--noreplace"),
+        g("--with-optdeps")
+    );
+    println!(
+        "          [ {}={}        ] [ {} | {} {}      ]",
+        g("--load-average"),
+        c("X"),
+        g("--debug"),
+        g("--log"),
+        c("<PATH>")
+    );
+    println!(
+        "          [ {} {}  ] [ {} {}          ]",
+        g("--set-profile"),
+        c("<N|PATH>"),
+        g("--color"),
+        c("<y|n|auto>")
+    );
+    println!(
+        "          [ {}               ] [ {}                  ]",
+        g("--aeforce"),
+        g("--noaefile")
+    );
+    println!(
+        "          [ {}                ] [ {} {}]",
+        g("--aelist"),
+        g("--aeclean"),
+        c("[new|old|park|all]")
+    );
+    println!(
+        "          [ {}               ] [ {}                   ]",
+        g("--oneshot"),
+        g("--pretend")
+    );
+    println!(
+        "          [ {}             ] [ {}                   ]",
+        g("--skipfirst"),
+        g("--refresh")
+    );
+    println!(
+        "          [ {}            ] [ {}         ]",
+        g("--no-sandbox"),
+        g("--unshare-net-build")
+    );
+    println!(
+        "          [ {}                 ] [ {}                  ]",
+        g("--devel"),
+        g("--sudoloop")
+    );
+    println!(
+        "          [ {}     ] [ {}                ]",
+        g("--verbose-conflicts"),
+        g("--with-bdeps")
+    );
+    println!(
+        "          [ {}           ] [ {}                ]",
+        g("--err-install"),
+        g("--regen-sort")
+    );
+    println!(
+        "          [ {}{}              ] [ {}                ]",
+        g("--deep"),
+        c("[=N]"),
+        g("--keep-going")
+    );
+    println!(
+        "          [ {} {}        ] [ {}       ]",
+        g("--exclude"),
+        c("<ATOM>"),
+        g("--ignore-default-opts")
+    );
+    println!("          [ {}         ]", g("--sync-explicit"));
     println!();
-    println!("Full docs, examples and flag-by-flag details: man emerge");
-    println!("README: https://github.com/Undercat037/aura-emerge");
+    println!(
+        "{}:  [ {}  | {} | {}      | {} ]",
+        sec("Actions"),
+        g("--depclean"),
+        g("--deselect"),
+        g("--prune"),
+        g("--check-world")
+    );
+    println!(
+        "          [ {}     | {}   | {}     | {}  ]",
+        g("--regen"),
+        g("--resume"),
+        g("--search"),
+        g("--searchdesc")
+    );
+    println!(
+        "          [ {}    | {}     | {}    | {}      ]",
+        g("--select"),
+        g("--sync"),
+        g("--unmerge"),
+        g("--update")
+    );
+    println!(
+        "          [ {} | {}  | {}   |  {}      ]",
+        g("--regen-world"),
+        g("--version"),
+        g("--info"),
+        g("--pkginfo"),
+    );
+    println!(
+        "          [ {} | {} {}  | {} {}    ]",
+        g("--list-sets"),
+        g("--regen-sets"),
+        c("@<name>"),
+        g("--news"),
+        c("[N|all]")
+    );
+    println!(
+        "          [ {}         | {}                          ]",
+        g("--check-devel"),
+        g("--undo")
+    );
+    println!(
+        "          [ {} {}       | {} {}            ]",
+        g("--scan"),
+        c("<pkg...>"),
+        g("--usepkgbuild"),
+        c("<PATH>")
+    );
+    println!(
+        "          [ {} {} {} | {} ]",
+        g("--usepkg"),
+        c("<FILE|DIR...>"),
+        g("[-O]"),
+        g("--regen-world-from-explicit")
+    );
+    println!(
+        "          [ {} {} | {}            ]",
+        g("--batchinstall"),
+        c("<FILE>"),
+        g("--clean-source-cache")
+    );
+    println!(
+        "          [ {}     | {}                ]",
+        g("--localrepo-clean"),
+        g("--revdep-rebuild")
+    );
+    println!();
+    println!(
+        "{}:     [ {} | {} | {}            ]",
+        sec("Sets"),
+        g("@world"),
+        g("@preserved-rebuild"),
+        g("@<custom-sets>")
+    );
     println!();
     println!("aura-emerge: v{}", ver);
     println!("Author: Undercat037");
@@ -3059,6 +3219,12 @@ fn run() -> anyhow::Result<()> {
     crate::candy::mark_start();
     let cfg = config::load();
     theme::init(&cfg.colors);
+    // Portage: bare `emerge` (no flags, packages, sets) prints usage.
+    // Decide from the real user argv so EMERGE_DEFAULT_OPTS does not hide help.
+    if argv.len() <= 1 {
+        print_help();
+        return Ok(());
+    }
     let effective_argv = config::build_argv(&argv, &cfg);
     let mut cli = Cli::parse_from(&effective_argv);
     if cli.nodeps && cli.onlydeps {

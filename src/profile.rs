@@ -455,17 +455,11 @@ pub(crate) fn print_list() {
         println!("No profiles found under:\n  {}", PROFILE_ROOTS.join("\n  "));
         return;
     }
+    // Match `eselect profile list`: header + "[N]   path *"
+    println!("{}", "Available profile symlink targets:".t_green().bold());
     for (n, _root, rel, cur) in &rows {
-        let mark = if *cur { " * " } else { "   " };
-        println!("{:>4}{}{}", n, mark, rel);
-    }
-    if let Some(p) = show_path() {
-        println!();
-        println!("Current profile symlink: {}", MAKE_PROFILE);
-        println!("  -> {}", p);
-    } else {
-        println!();
-        println!("{} not set", MAKE_PROFILE);
+        let mark = if *cur { " *" } else { "" };
+        println!("  [{:>2}]   {}{}", n, rel, mark);
     }
 }
 

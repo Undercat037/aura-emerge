@@ -45,9 +45,9 @@ cargo build --release
 sudo install -Dm755 -o root -g root target/release/aura-emerge /usr/bin/emerge
 sudo ln -sf /usr/bin/emerge /usr/bin/portageq
 sudo ln -sf /usr/bin/emerge /usr/bin/eselect
-emerge --gen-completions bash | sudo tee /usr/share/bash-completion/completions/emerge
-emerge --gen-completions zsh  | sudo tee /usr/share/zsh/site-functions/_emerge
-emerge --gen-completions fish | sudo tee /usr/share/fish/vendor_completions.d/emerge.fish
+emerge --gen-completions bash | sudo tee /usr/share/bash-completion/completions/emerge >/dev/null
+emerge --gen-completions zsh  | sudo tee /usr/share/zsh/site-functions/_emerge >/dev/null
+emerge --gen-completions fish | sudo tee /usr/share/fish/vendor_completions.d/emerge.fish >/dev/null
 emerge --gen-manpage | sudo tee /usr/share/man/man1/emerge.1 >/dev/null
 sudo install -Dm644 misc/eselect.bash-completion /usr/share/bash-completion/completions/eselect
 sudo install -Dm644 misc/_eselect /usr/share/zsh/site-functions/_eselect
@@ -55,9 +55,9 @@ sudo install -Dm644 misc/eselect.fish /usr/share/fish/vendor_completions.d/esele
 ```
 </details>
 
-**Зависимости:** `git`, `sudo`, `bubblewrap` (песочница сборки AUR/ABS), `pacman` (libalpm, makepkg), `gnupg` (импорт ключей для внутренней реализации `pacman-key` и для `--autopgp` с ABS).
+> **Зависимости:** `git`, `sudo`, `bubblewrap` (песочница сборки AUR/ABS), `pacman` (libalpm, makepkg), `gnupg` (импорт ключей для внутренней реализации `pacman-key` и для `--autopgp` с ABS).
 
-**Опционально:** `devtools` (поддержка `--abs`).
+> **Опционально:** `devtools` (поддержка `--abs`).
 
 ## Примеры использования
 

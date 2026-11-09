@@ -612,30 +612,33 @@ fn sysupgrade_in_with(
             prepare_and_commit(alpm, false, &mut movable)
         })();
         let _ = alpm.trans_release();
-        if (opts.aeforce || opts.aenew || opts.aekeep)
-            && !tried
-            && res.is_err()
-            && !movable.is_empty()
-        {
-            tried = true;
-            let ext = if opts.aeforce {
-                validate::AE_FORCE_EXT
-            } else {
-                validate::AE_PARK_EXT
-            };
-            let mut r = Ok(());
-            for f in &movable {
-                match move_aside(f, ext) {
-                    Ok(dst) => moved.push((f.clone(), dst)),
-                    Err(e) => {
-                        r = Err(e);
-                        break;
-                    }
+        if (opts.aeforce || opts.aenew || opts.aekeep) && !tried && res.is_err() {
+            if movable.is_empty() {
+                if let Err(ref e) = res {
+                    movable = force_candidates_from_err(e);
                 }
             }
-            match r {
-                Ok(()) => continue,
-                Err(e) => break Err(e),
+            if !movable.is_empty() {
+                tried = true;
+                let ext = if opts.aeforce {
+                    validate::AE_FORCE_EXT
+                } else {
+                    validate::AE_PARK_EXT
+                };
+                let mut r = Ok(());
+                for f in &movable {
+                    match move_aside(f, ext) {
+                        Ok(dst) => moved.push((f.clone(), dst)),
+                        Err(e) => {
+                            r = Err(e);
+                            break;
+                        }
+                    }
+                }
+                match r {
+                    Ok(()) => continue,
+                    Err(e) => break Err(e),
+                }
             }
         }
         // Surface movable conflicts so the frontend can offer AE Force.
@@ -850,37 +853,71 @@ fn install_files_in_with(
         let mut movable = Vec::new();
         let res = run_install_files(alpm, files, level, opts.replace, &mut movable);
         let _ = alpm.trans_release();
-        if (opts.aeforce || opts.aenew || opts.aekeep)
-            && !tried
-            && res.is_err()
-            && !movable.is_empty()
-        {
-            tried = true;
-            // --aeforce: old file -> `.aeforce`, the new one lands in its
-            // place. Otherwise the old one is parked until the swap below.
-            let ext = if opts.aeforce {
-                validate::AE_FORCE_EXT
-            } else {
-                validate::AE_PARK_EXT
-            };
-            let mut r = Ok(());
-            for f in &movable {
-                match move_aside(f, ext) {
-                    Ok(dst) => moved.push((f.clone(), dst)),
-                    Err(e) => {
-                        r = Err(e);
-                        break;
-                    }
+        if (opts.aeforce || opts.aenew || opts.aekeep) && !tried && res.is_err() {
+            // Prefer the list from commit_error; if classification left
+            // everything "stuck", fall back to paths in the error text
+            // that exist as plain files (manual-install leftovers).
+            if movable.is_empty() {
+                if let Err(ref e) = res {
+                    movable = force_candidates_from_err(e);
                 }
             }
-            match r {
-                Ok(()) => continue,
-                Err(e) => break Err(e),
+            if !movable.is_empty() {
+                tried = true;
+                // --aeforce: old file -> `.aeforce`, the new one lands in its
+                // place. Otherwise the old one is parked until the swap below.
+                let ext = if opts.aeforce {
+                    validate::AE_FORCE_EXT
+                } else {
+                    validate::AE_PARK_EXT
+                };
+                let mut r = Ok(());
+                for f in &movable {
+                    match move_aside(f, ext) {
+                        Ok(dst) => moved.push((f.clone(), dst)),
+                        Err(e) => {
+                            r = Err(e);
+                            break;
+                        }
+                    }
+                }
+                match r {
+                    Ok(()) => continue,
+                    Err(e) => break Err(e),
+                }
             }
         }
         break res;
     };
     finish_moves(opts, res, &moved, &ev)
+}
+
+/// Paths listed in a "file conflicts…" error that exist as non-directory
+/// entries on disk. Used when AE Force is on and the strict movable
+/// classifier rejected everything (root-relative path form, stale
+/// ownership, etc.).
+fn force_candidates_from_err(e: &io::Error) -> Vec<String> {
+    let msg = e.to_string();
+    let list = msg
+        .strip_prefix("file conflicts that cannot be moved:")
+        .or_else(|| msg.strip_prefix("conflicting files:"))
+        .unwrap_or("");
+    let mut out = Vec::new();
+    for f in list
+        .split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "...")
+    {
+        match fs::symlink_metadata(f) {
+            Ok(m) if !m.is_dir() => {
+                if !out.contains(&f.to_string()) {
+                    out.push(f.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// After the install: report `--aeforce`, swap for `--aenew` /
@@ -963,28 +1000,62 @@ fn move_aside(path: &str, ext: &str) -> io::Result<String> {
     Ok(dst)
 }
 
-/// Only a plain file or symlink that no installed package owns may be
-/// moved. The path also has to fit the helper's event lines.
-fn movable_file(alpm: &Alpm, path: &str) -> bool {
+/// Absolute path under the alpm root for a conflict path.
+/// libalpm may report `usr/share/…` (root-relative) or `/usr/share/…`.
+fn abs_under_root(alpm: &Alpm, path: &str) -> Option<String> {
     use std::path::{Component, Path};
-    let p = Path::new(path);
-    if !p.is_absolute()
+    if path.is_empty()
         || path.len() > 400
-        || p.components().any(|c| matches!(c, Component::ParentDir))
         || path.contains(';')
         || path.contains(" -> ")
         || validate::line(path).is_err()
     {
-        return false;
+        return None;
     }
+    let root = alpm.root();
+    let root = root.trim_end_matches('/');
+    let abs = if Path::new(path).is_absolute() {
+        path.to_string()
+    } else {
+        format!(
+            "{}/{}",
+            if root.is_empty() { "" } else { root },
+            path.trim_start_matches('/')
+        )
+    };
+    let p = Path::new(&abs);
+    if p.components().any(|c| matches!(c, Component::ParentDir)) {
+        return None;
+    }
+    // Must stay under the install root (or be absolute when root is "/").
+    if !root.is_empty() && root != "/" {
+        if abs != root && !abs.starts_with(&format!("{}/", root)) {
+            return None;
+        }
+    }
+    Some(abs)
+}
+
+/// Only a plain file or symlink that no installed package owns may be
+/// moved. The path also has to fit the helper's event lines.
+fn movable_file(alpm: &Alpm, path: &str) -> bool {
+    use std::path::Path;
+    let Some(abs) = abs_under_root(alpm, path) else {
+        return false;
+    };
+    let p = Path::new(&abs);
     match fs::symlink_metadata(p) {
         Ok(m) if !m.is_dir() => {}
         _ => return false,
     }
-    let rel = path
+    // FileList stores paths without a leading slash.
+    let rel = abs
         .strip_prefix(alpm.root())
-        .unwrap_or(path)
+        .unwrap_or(abs.as_str())
         .trim_start_matches('/');
+    if rel.is_empty() {
+        return false;
+    }
     !alpm
         .localdb()
         .pkgs()
@@ -993,7 +1064,9 @@ fn movable_file(alpm: &Alpm, path: &str) -> bool {
 }
 
 /// Commit failed: for file conflicts, sort them into movable and not.
-/// `movable` is filled only when every conflict can be moved.
+/// `movable` is filled with every conflict that can be moved (even when
+/// some others cannot — AE Force then clears the movable ones and the
+/// next attempt surfaces only what is still stuck).
 fn commit_error(alpm: &Alpm, e: &alpm::CommitError, movable: &mut Vec<String>) -> io::Error {
     let Some(alpm::CommitData::FileConflict(list)) = e.data() else {
         return fail(format!("commit: {}{}", e, log_suffix()));
@@ -1005,9 +1078,12 @@ fn commit_error(alpm: &Alpm, e: &alpm::CommitError, movable: &mut Vec<String>) -
         // with `alpm_fileconflict_t` (same layout as `FileConflict`).
         let c: &alpm::FileConflict =
             unsafe { &*(c as *const alpm::Conflict as *const alpm::FileConflict) };
-        let f = c.file().to_string();
-        let fixable = matches!(c.conflict_type(), alpm::FileConflictType::Filesystem)
-            && movable_file(alpm, &f);
+        let raw = c.file().to_string();
+        // Prefer absolute paths in messages / move_aside so the frontend
+        // and free_name always see a stable form.
+        let f = abs_under_root(alpm, &raw).unwrap_or(raw);
+        let is_fs = matches!(c.conflict_type(), alpm::FileConflictType::Filesystem);
+        let fixable = is_fs && movable_file(alpm, &f);
         let dst = if fixable { &mut ok } else { &mut stuck };
         if !dst.contains(&f) {
             dst.push(f);
@@ -1020,12 +1096,14 @@ fn commit_error(alpm: &Alpm, e: &alpm::CommitError, movable: &mut Vec<String>) -
         }
         s
     };
+    // Always hand movable files to the caller so --aeforce can clear them
+    // even when other conflicts remain stuck.
+    if !ok.is_empty() {
+        *movable = ok.clone();
+    }
     if stuck.is_empty() && !ok.is_empty() {
-        let msg = format!("conflicting files: {}", cap(&ok));
-        *movable = ok;
-        fail(msg)
+        fail(format!("conflicting files: {}", cap(&ok)))
     } else {
-        stuck.extend(ok);
         fail(format!(
             "file conflicts that cannot be moved: {}",
             cap(&stuck)

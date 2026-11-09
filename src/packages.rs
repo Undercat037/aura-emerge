@@ -691,9 +691,20 @@ pub(crate) fn warn_critical_libc(names: &[String], source: &str) -> bool {
 /// Hard blockers (both incoming) are shown and the install stops.
 fn install_files_resolving_conflicts(
     pinned: &[crate::rootops::Pinned],
-    opts: crate::helper::validate::FileOpts,
+    mut opts: crate::helper::validate::FileOpts,
     ask: bool,
 ) -> bool {
+    // Seed AE Force flags on the first attempt so the helper can move
+    // unowned blockers without a refuse → retry round-trip.
+    let rt = crate::runtime::get();
+    if rt.aeforce {
+        opts.aeforce = true;
+        opts.aekeep = rt.noaefile;
+    } else if rt.noaefile {
+        // --noaefile alone: keep old, drop new (no .ae* left).
+        opts.aekeep = true;
+        opts.aenew = true;
+    }
     let first =
         crate::rootops::install_files(pinned, opts, &mut |ev| crate::progress::on_hook_event(ev));
     let err = match first {
@@ -702,8 +713,19 @@ fn install_files_resolving_conflicts(
     };
     // ClientError::Refused prefixes "helper refused: " - drop for display.
     let msg = err.strip_prefix("helper refused: ").unwrap_or(err.as_str());
+    // Movable unowned conflicts (helper did not already apply AE Force).
     if let Some(list) = msg.strip_prefix("conflicting files:") {
         return retry_with_aeforce(pinned, opts, ask, list);
+    }
+    // Some conflicts looked unmovable (path form / ownership). When the
+    // user asked for AE Force, still try the listed paths that exist as
+    // plain files — leftovers from a manual install often land here.
+    if let Some(list) = msg.strip_prefix("file conflicts that cannot be moved:") {
+        if rt.aeforce || rt.noaefile || ask {
+            return retry_with_aeforce(pinned, opts, ask, list);
+        }
+        eprintln!("{} {}", ">>> Error:".t_red().bold(), msg);
+        return false;
     }
     if !msg.contains("conflicting dependencies") {
         eprintln!("{} {}", ">>> Error:".t_red().bold(), msg);
